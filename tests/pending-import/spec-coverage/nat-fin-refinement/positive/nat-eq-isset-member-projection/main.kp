@@ -1,0 +1,51 @@
+-- Spec 14.1 declares `trait IsSet a => Eq (parametric 0 a : Type)` with
+-- eqSound/eqComplete as required proof members; Spec 28.2 obtains the
+-- Eq Nat evidence from the mandatory `derive Eq Nat` (Spec 14.5.1).
+-- Member projection (Spec 7.3) must resolve both members at Nat, and the
+-- IsSet supertrait must be reachable from the same evidence by ordinary
+-- supertrait projection (Spec 14.1.4, 14.3.3, 14.5.1).
+
+natEqSound :
+    (x : Nat) ->
+    (y : Nat) ->
+    (@evidence : Eq Nat) ->
+    (@0 p : (x == y) = True) ->
+    x = y
+
+let natEqSound x y @evidence @p =
+    evidence.eqSound x y p
+
+natEqComplete :
+    (x : Nat) ->
+    (y : Nat) ->
+    (@evidence : Eq Nat) ->
+    (@0 p : x = y) ->
+    (x == y) = True
+
+let natEqComplete x y @evidence @p =
+    evidence.eqComplete x y p
+
+-- Supertrait projection from abstract Eq evidence: no global instance can
+-- match the abstract carrier, so only the declared `IsSet a =>` premise
+-- of Eq (Spec 14.1) can discharge the goal.
+isSetFromEq :
+    forall (A : Type).
+    (@evidence : Eq A) ->
+    IsSet A
+
+let isSetFromEq @evidence =
+    witness
+
+-- At Nat both the prelude `derive IsSet Nat` instance and the supertrait
+-- of the derived Eq Nat are in play; Spec 14.5.1 makes them one canonical
+-- generated evidence object, so the goal stays coherent.
+natIsSet :
+    IsSet Nat
+
+let natIsSet =
+    summon (IsSet Nat)
+
+--! assertNoErrors
+--! assertType natEqSound (x : Nat) -> (y : Nat) -> (@evidence : Eq Nat) -> (@0 p : (x == y) = True) -> x = y
+--! assertType natEqComplete (x : Nat) -> (y : Nat) -> (@evidence : Eq Nat) -> (@0 p : x = y) -> (x == y) = True
+--! assertType natIsSet IsSet Nat

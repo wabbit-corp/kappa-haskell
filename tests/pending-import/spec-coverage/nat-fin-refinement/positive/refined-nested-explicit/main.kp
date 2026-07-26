@@ -1,0 +1,17 @@
+-- Spec 16.1.9 (restrictions): the elaborator never chains refinement views,
+-- but EXPLICIT two-step construction of a refinement over a refined base is
+-- ordinary code: the outer predicate constrains the inner refined value's
+-- projection. Complements negative/refinement-no-chain-search.
+type EvenNat : Type =
+    Refined Nat (\value -> (value % 2 == 0) = True)
+
+type SmallEvenNat : Type =
+    Refined EvenNat (\value -> (refinedValue value <= 10) = True)
+
+six : EvenNat
+let six = 6
+
+smallSix : SmallEvenNat
+let smallSix = six
+
+--! assertNoErrors

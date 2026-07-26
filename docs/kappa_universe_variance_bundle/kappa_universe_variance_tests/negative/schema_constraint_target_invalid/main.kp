@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_LIFT_INVALID
+--! assertDiagnosticFamily error kappa.universe.schema-lift
+
+-- The constructor field generates the retained schema constraint `succ u <= 3`.
+data Bounded.{covariant u} : Type3 =
+    Bounded (ordinary 0 A : Type u)
+
+bad : Bounded.{1} -> Bounded.{4}
+let bad x = x

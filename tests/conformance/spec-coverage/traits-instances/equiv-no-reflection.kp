@@ -2,13 +2,19 @@
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- §14.1.2 (Spec.md L14210-L14224): `Eq` is reflective decidable
--- observational identity — with a proof-carrying `eqSound` member, boolean
--- equality reflects into propositional equality. `Equiv` is a
--- NON-reflecting boolean equivalence: "The compiler MUST NOT derive
--- `x = y` from `(x ~= y) = True`". The positive half shows reflection is
--- available exactly when it is carried by a proof member; the negative
--- half shows Equiv evidence grants no such derivation.
+-- §14.1.1 + §16.3.3 step 5: `Eq` is reflective decidable observational
+-- identity — §14.1.1 declares `trait IsSet a => Eq` with required
+-- `eqSound`/`eqComplete` proof members, and §16.3.3 step 5 reflects
+-- `(x == y) = True` into `x = y` only through `Eq.eqSound`. `Equiv` is a
+-- NON-reflecting boolean equivalence: "The compiler never synthesizes
+-- `x = y` from `(x ~= y) = True`. Only `Eq` supports equality reflection;
+-- `Equiv` does not." The hand-written PropEq below mirrors the normative
+-- Eq shape so the positive half is independent of the shipped prelude;
+-- the prelude-Eq member probes (eqSound at Int, IsSet-supertrait
+-- projection, the removed eqIsSet member) are pinned by
+-- tests/pending-import/spec-coverage/nat-fin-refinement/negative/
+-- eq-reflection-equiv-boundary. The negative half shows Equiv evidence
+-- grants no derivation.
 module main
 
 -- A proof-carrying equality trait in the §14.1.1 Eq mold.

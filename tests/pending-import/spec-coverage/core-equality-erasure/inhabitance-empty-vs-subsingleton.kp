@@ -6,6 +6,18 @@
 -- makes the whole type Empty (product rule), so `impossible` is
 -- accepted; an equality type at a neutral endpoint is at best
 -- Subsingleton (interval [0,1]) and MUST NOT be treated as unreachable.
+-- (§17.1.5 as amended also admits the required §15.8 arithmetic/proof
+-- fragment when the contradiction is arithmetic or lies in a refined
+-- proof fiber — a neutral `b = True` is neither, so notEmpty below is
+-- still rejected.)
+--
+-- The Empty summary for an inter-constructor equality is grounded in
+-- §10.2.1: every accepted ordinary data declaration carries a MANDATORY
+-- generated no-confusion package whose derivations include
+-- "constructor disjointness: an equality between applications of
+-- distinct visible constructors implies Void", listed for use by
+-- "indexed reachability and exhaustiveness"; §16.3.3 step 4 names that
+-- generated evidence first among the checked proof solvers.
 module main
 
 data Bottom : Type
@@ -27,10 +39,22 @@ let notEmpty q =
     case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
 
 -- control: an equality that IS refuted by no-confusion on distinct
--- visible constructors summarizes to Empty and discharges
+-- visible constructors summarizes to Empty and discharges — no longer
+-- an optional strengthening but a consequence of the mandatory §10.2.1
+-- package for Bool
 falseIsNotTrue : (q : False = True) -> Int
 let falseIsNotTrue q =
     match q
     case impossible
 
--- STATUS(a0497523): FAIL — fromDead and notEmpty behave per spec (Empty ctor-field propagation accepted; Subsingleton impossible rejected with E_INDEXED_IMPOSSIBLE_REACHABLE), but falseIsNotTrue gets an extra E_PATTERN_NON_EXHAUSTIVE: the no-confusion Empty summary for False = True is not applied to case impossible
+-- the same fact at the now-inductive prelude Nat (§28.2): §10.2.1
+-- explicitly lists natZeroNotSucc among the propositional consequences
+-- of the standard Nat package, and the reachability side of that
+-- package must discharge case impossible here. (The applied-function
+-- side of natZeroNotSucc/natSuccInjective is owned by
+-- tests/pending-import/spec-coverage/nat-fin-refinement/positive/nat-no-confusion-derived-hlevel,
+-- which never reaches exhaustiveness.)
+zeroNotSucc : forall (n : Nat). (q : Nat.Zero = Nat.Succ n) -> Int
+let zeroNotSucc q =
+    match q
+    case impossible

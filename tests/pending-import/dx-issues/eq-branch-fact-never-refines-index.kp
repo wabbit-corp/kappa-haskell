@@ -1,16 +1,29 @@
--- DX EXPECTATION (§16.4.1, §16.3.3 step 4, §16.1.8, §17.1.1): inside the
+-- DX EXPECTATION (§16.4.1, §16.3.3 steps 4-5, §16.1.8, §17.1.1, §30.2.7;
+-- citations re-based 2026-07-25 on the Nat/Fin revision): inside the
 -- then-branch of `if n == 0`, the branch fact (n == 0) = True should be
--- reflected — via Eq.eqSound, one of §16.3.3's proof sources — into the
--- propositional fact n = 0, and that fact should feed all three consumers
--- a dependent-types user reaches for:
+-- reflected into the propositional fact n = 0 — via §16.3.3 step 5
+-- (equality reflection through Eq.eqSound; guaranteed present because Eq
+-- now has an IsSet supertrait, `trait IsSet a => Eq`) and §16.3.3 step 4
+-- (checked proof solvers over the §15.8 required fragment) — and that
+-- fact should feed all the consumers a dependent-types user reaches for:
 --   (a) constructing a value at the refined GADT index (P 0 where P n is
---       expected),
---   (b) discharging an implicit (@0 p : n = 0) proof parameter at a call,
+--       expected) — §16.1.8 lists "Eq.eqSound applied to an available
+--       proof of (x == y) = True" as a transport proof source, so this
+--       rejection is nonconformance, not conservatism,
+--   (b) discharging an implicit (@0 p : n = 0) proof parameter at a call
+--       (§16.3.3 step 5),
 --   (c) index-driven exhaustiveness: matching P n with only the index-0
---       constructor, MkO : P 1 being refuted under n = 0.
+--       constructor. Under the lexical assumption n = 0, refuting
+--       MkO : P 1 is the closed Presburger disequality 1 = 0 (§15.8.4),
+--       so §30.2.7's four-way judgment yields Refuted and §17.1.1's
+--       rewritten MUSTs make the single-arm match exhaustive,
+--   (d) the same remainder stated explicitly via `case impossible`
+--       (§17.1.5 + §15.8.8).
 -- Negative controls (branching on n == 1 instead, or calling atZero with
 -- no branch at all) were verified separately to fail identically, so the
--- rejections below are genuine conservatism, not vacuity.
+-- rejections below are genuine gaps, not vacuity; §16.3.3 step 4's "must
+-- prove exactly G from the current lexical assumptions" now makes their
+-- rejection normative.
 --
 -- CURRENTLY (a0497523): the branch evidence is never reflected; all three
 -- consumers fail. (a) gets E_APPLICATION_ARGUMENT_MISMATCH "no equality
@@ -45,7 +58,18 @@ let onlyZeroCase n p =
         match p
           case MkZ -> 0
     else 1
+
+-- (d) the same refuted remainder, stated explicitly (§17.1.5, §15.8.8).
+onlyZeroCaseRemainder : (n : Int) -> P n -> Int
+let onlyZeroCaseRemainder n p =
+    if n == 0 then
+        match p
+          case MkZ -> 0
+          case impossible
+    else 1
 -- STATUS(a0497523): FAIL — expected 0 errors, got 3: E_APPLICATION_ARGUMENT_MISMATCH
 -- (actual P 0 / expected P @0, "no equality evidence licenses the transport (§16.1.8)")
 -- at line 32; E_UNSOLVED_IMPLICIT "= Integer @0 0" at line 39;
 -- E_PATTERN_NON_EXHAUSTIVE "missing cases: MkO" at line 45.
+-- (Recorded against the pre-revision file shape; consumer (d) was added
+-- 2026-07-25 and has not been run on a0497523.)

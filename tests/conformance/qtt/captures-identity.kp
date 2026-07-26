@@ -1,5 +1,5 @@
 --! mode check
---! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnostic error E_CAPTURE_SET_MISMATCH
 
 -- §12.3.1/§31.1: the capture set is part of type identity; capture
 -- subsumption is NOT definitional equality. A closure literal still

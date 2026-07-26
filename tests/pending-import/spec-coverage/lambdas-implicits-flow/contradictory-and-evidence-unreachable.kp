@@ -1,10 +1,15 @@
--- §16.4.2 × §16.4.1 × §30.2.2.11 (L39136-L39137): `if a && b` lowers to
+-- §16.4.2 × §16.4.1 × §30.2.2.11: `if a && b` lowers to
 -- nested ifs, so the then-branch of `p is Box && p is Empty` is checked
 -- under both HasCtor p ⟨Box⟩ and HasCtor p ⟨Empty⟩ — a contradictory
 -- refinement context, which "marks the branch unreachable". An `impossible`
 -- body (and an empty match on the doubly-refined scrutinee) MUST therefore
 -- be accepted; the same applies to nested is-tests on a GADT whose
--- contradiction goes through forced index equations (§17.1.2).
+-- contradiction goes through forced index equations (§17.1.2). For the
+-- GADT half the refutation is now the normative §30.2.7 rule 3: the
+-- §10.2.1 constructor-result consequences record the family equalities
+-- forced by each constructor, a supported no-confusion rule produces the
+-- checked refutation of the required bridge ("This yields Refuted"), and
+-- "Refuted contributes Empty".
 --! mode check
 --! assertNoErrors
 module main
@@ -28,7 +33,8 @@ let contraTags p =
     if p is Box && p is Empty then impossible else 0
 
 -- POSITIVE per spec: nested is-tests; HasCtor Succ forces n = S m and
--- HasCtor Zero forces n = Z, a no-confusion index contradiction.
+-- HasCtor Zero forces n = Z (§10.2.1 constructor-result consequences),
+-- a no-confusion index contradiction — §30.2.7 Refuted, hence Empty.
 contraIndex : Natural (S Z) -> Int
 let contraIndex v =
     if v is Succ then

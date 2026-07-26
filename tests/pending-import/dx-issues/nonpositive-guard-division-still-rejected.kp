@@ -1,0 +1,14 @@
+-- SPEC-REQUIRED negative control for positive-guard-division-discharge.kp
+-- (added 2026-07-25 with the Nat/Fin revision): a NON-strict guard admits
+-- y = 0, so the divDefined obligation must stay unsolved. (y >= 0) = True
+-- does not entail (y /= 0) = True, §15.8.6 forbids guessing assignments
+-- for underconstrained goals, and §16.3.3 ends with the unsolved-implicit
+-- error when every resolution step fails. This proves the newly required
+-- §16.3.3-step-4 solver wiring does not over-fire.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+module main
+
+nonStrictDiv : Int -> Int -> Int
+let nonStrictDiv x y = if y >= 0 then x / y else 0    --!! kappa.implicit.unsolved

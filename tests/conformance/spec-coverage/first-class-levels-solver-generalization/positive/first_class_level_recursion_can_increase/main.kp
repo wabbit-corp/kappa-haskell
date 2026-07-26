@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+walk :
+    (u : TypeLevel) ->
+    (n : Nat) ->
+    Nat
+let walk u n decreases n =
+    if n == 0 then 0
+    else walk (succ u) (n - 1)

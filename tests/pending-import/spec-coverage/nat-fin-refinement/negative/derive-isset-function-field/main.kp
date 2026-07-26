@@ -1,0 +1,7 @@
+data UnsupportedFunctionField : Type =
+    UnsupportedFunctionField
+        (run : Int -> Int)
+
+derive IsSet UnsupportedFunctionField
+
+--! assertErrorCount 1

@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Box 0 irrelevant
+--! assertSchemaCertificateValid Box
+
+data Box.{u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)

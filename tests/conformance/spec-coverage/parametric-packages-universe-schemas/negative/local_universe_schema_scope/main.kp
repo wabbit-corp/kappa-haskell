@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_SCOPE
+--! assertDiagnosticFamily error kappa.universe.schema-scope
+
+bad : TypeLevel
+let bad =
+    let expose.{u} : TypeLevel = u
+    expose.{0}

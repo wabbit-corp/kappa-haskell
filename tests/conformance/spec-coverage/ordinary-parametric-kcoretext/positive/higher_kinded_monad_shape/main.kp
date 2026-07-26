@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+trait MiniMonad
+    (m : (A : Type) -> Type) =
+
+    pure :
+        forall a.
+        a -> m a
+
+    bind :
+        forall a b.
+        m a ->
+        (a -> m b) ->
+        m b

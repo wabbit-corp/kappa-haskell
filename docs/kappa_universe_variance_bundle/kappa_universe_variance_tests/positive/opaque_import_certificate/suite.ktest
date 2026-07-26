@@ -1,0 +1,3 @@
+--! mode check
+--! sources lib.kp main.kp
+--! assertNoErrors

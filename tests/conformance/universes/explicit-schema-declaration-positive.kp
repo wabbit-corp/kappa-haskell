@@ -1,0 +1,7 @@
+module main
+
+data Box.{u} (A : Type u) : Type u =
+    Box (value : A)
+
+--! mode check
+--! assertNoErrors

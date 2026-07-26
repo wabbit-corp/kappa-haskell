@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+data Some : Type =
+    Some (A : Type) (value : A)
+
+repack :
+    Some -> Some
+
+let repack x =
+    match x
+    case Some A value ->
+        Some A value

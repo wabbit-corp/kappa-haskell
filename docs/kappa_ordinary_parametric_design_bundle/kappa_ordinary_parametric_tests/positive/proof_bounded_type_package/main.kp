@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+type TypeBelow
+    (ordinary 0 bound : TypeLevel)
+    : Type bound =
+
+    (ordinary 0 level : TypeLevel,
+     @0 proof : level < bound,
+     ordinary 0 T : Type level)

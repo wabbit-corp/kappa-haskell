@@ -1,0 +1,47 @@
+predecessorOrZero :
+    Nat ->
+    Nat
+
+let predecessorOrZero n =
+    match n
+    case Nat.Zero ->
+        Nat.Zero
+    case Nat.Succ pred ->
+        pred
+
+structuralCopy :
+    Nat ->
+    Nat
+
+let structuralCopy n =
+    match n
+    case Nat.Zero ->
+        Nat.Zero
+    case Nat.Succ pred ->
+        Nat.Succ (structuralCopy pred)
+
+closedAdd :
+    Nat
+
+let closedAdd =
+    natAdd (Nat.Succ (Nat.Succ Nat.Zero)) (Nat.Succ Nat.Zero)
+
+closedMultiply :
+    Nat
+
+let closedMultiply =
+    natMultiply (Nat.Succ (Nat.Succ Nat.Zero)) (Nat.Succ (Nat.Succ (Nat.Succ Nat.Zero)))
+
+copiedThree :
+    Nat
+
+let copiedThree =
+    structuralCopy (Nat.Succ (Nat.Succ (Nat.Succ Nat.Zero)))
+
+--! assertNoErrors
+--! assertType natAdd Nat -> Nat -> Nat
+--! assertType natMultiply Nat -> Nat -> Nat
+--! assertType natCompare Nat -> Nat -> Ordering
+--! assertEval closedAdd 3
+--! assertEval closedMultiply 6
+--! assertEval copiedThree 3

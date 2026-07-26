@@ -1,0 +1,13 @@
+-- Spec 14.5.2: derive RefinementView fails (rather than guessing) when the
+-- visible shape has TWO retained runtime fields after erasure — there is no
+-- single base-value field to select.
+data TwoFields : Type =
+    MkTwoFields
+        (value : Nat)
+        (extra : Nat)
+        (@0 isP : IsProp ((value <= 9) = True))
+        (@0 prf : (value <= 9) = True)
+
+derive RefinementView TwoFields
+
+--! assertErrorCount 1

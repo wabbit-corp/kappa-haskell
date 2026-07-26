@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+expect data F (A : Type) : Type
+expect term foo : forall A. F A
+
+let boo = foo
+
+--! assertType boo forall A. F A

@@ -14,8 +14,8 @@ let failing = throwIO "boom"
 
 emit : String -> Exit Void Int -> UIO Unit
 let emit label ex = match ex
-    case Success v -> printlnString (label ++ ":" ++ showInt v)
-    case Failure c -> printlnString (label ++ ":failed")
+    case Exit.Success v -> printlnString (label ++ ":" ++ showInt v)
+    case Exit.Failure c -> printlnString (label ++ ":failed")
 
 main : UIO Unit
 let main = do
@@ -26,8 +26,8 @@ let main = do
     let m <- monitor w
     let e1 <- awaitMonitor m
     match e1
-      case Success v -> printlnString ("recorded:" ++ showInt v)
-      case Failure c -> printlnString "recorded:failed"
+      case Exit.Success v -> printlnString ("recorded:" ++ showInt v)
+      case Exit.Failure c -> printlnString "recorded:failed"
     -- a failed fiber's recorded Exit is observable; the monitoring fiber
     -- is NOT terminated by the monitored failure
     let bad <- fork failing
@@ -36,9 +36,9 @@ let main = do
     let m2 <- monitor bad
     let e2 <- awaitMonitor m2
     match e2
-      case Success v -> printlnString "recorded-fail:none"
-      case Failure (Fail msg) -> printlnString ("recorded-fail:" ++ msg)
-      case Failure c -> printlnString "recorded-fail:other"
+      case Exit.Success v -> printlnString "recorded-fail:none"
+      case Exit.Failure (Cause.Fail msg) -> printlnString ("recorded-fail:" ++ msg)
+      case Exit.Failure c -> printlnString "recorded-fail:other"
     printlnString "monitor-survived"
     -- multiple monitors all observe the same recorded Exit
     let m3 <- monitor w

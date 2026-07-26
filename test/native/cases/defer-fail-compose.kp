@@ -3,7 +3,7 @@
 -- failing cleanup or dropping later cleanup causes.
 module main
 
-import std.prelude.(type Cause(..))
+import std.prelude.(type Exit(..), type Cause(..))
 
 cleanupOne : IO String Unit
 let cleanupOne = do

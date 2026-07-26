@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+bad :
+    (A : Type) ->
+    Type
+
+let bad A =
+    Option A

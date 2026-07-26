@@ -1,0 +1,11 @@
+module main
+
+type R = (0 ghost : Int, value : Int)
+
+pickValue : R -> Int
+let pickValue r =
+    match r
+    case (_, value) -> value
+
+main : UIO Unit
+let main = printlnString (showInt (pickValue (ghost = 10, value = 20)))

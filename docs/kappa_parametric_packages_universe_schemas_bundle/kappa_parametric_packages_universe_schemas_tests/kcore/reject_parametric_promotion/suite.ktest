@@ -1,0 +1,3 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreRejects bad.kcore E_PARAMETRIC_TYPE_PROMOTION

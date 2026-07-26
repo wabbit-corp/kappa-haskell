@@ -1,0 +1,99 @@
+-- §17.1.1 (exhaustiveness with indexed types), §17.1.2 (family-argument
+-- refinement from constructor knowledge). Indexed matches over a Vec
+-- indexed by a user-defined inductive natural:
+--   * ground Z index: a single VNil case is exhaustive, and an explicit
+--     VCons arm may be marked impossible;
+--   * abstract successor index: a single VCons case is exhaustive;
+--   * matching a runtime PNat VALUE refines the goal index (replicate)
+--     and the types of sibling binders (appendW);
+--   * an inductive bound witness (Lt i n) drives a total bounded lookup
+--     in double-witness style, including `case impossible` at Lt i Z.
+-- NEGATIVE: at an abstract index neither constructor is excluded, so a
+-- single-arm match is non-exhaustive.
+
+module main
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S (p : PNat)
+
+data Vec (n : PNat) (a : Type) : Type =
+    VNil  : Vec Z a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (S n) a
+
+-- POSITIVE: ground Z index — single VNil case is exhaustive.
+onlyNil : forall (@0 a : Type). Vec Z a -> Int
+let onlyNil v =
+    match v
+    case VNil -> 0
+
+-- POSITIVE: the VCons arm at ground Z may be spelled out as impossible.
+onlyNil2 : forall (@0 a : Type). Vec Z a -> Int
+let onlyNil2 v =
+    match v
+    case VNil -> 0
+    case VCons _ _ -> impossible
+
+-- POSITIVE: abstract successor index — single VCons case is exhaustive.
+vhead : forall (@0 a : Type) (@0 n : PNat). Vec (S n) a -> a
+let vhead v =
+    match v
+    case VCons x _ -> x
+
+-- POSITIVE: matching the VALUE n refines the goal index per branch.
+replicate : forall (@0 a : Type). (n : PNat) -> a -> Vec n a
+let replicate n x =
+    match n
+    case Z -> VNil
+    case S k -> VCons x (replicate k x)
+
+plus : PNat -> PNat -> PNat
+let plus a b =
+    match a
+    case Z -> b
+    case S k -> S (plus k b)
+
+-- POSITIVE: matching the witness n refines the sibling binder v's type,
+-- making each inner match sit at a ctor-headed ground index (§17.1.2).
+appendW : forall (@0 a : Type) (@0 m : PNat). (n : PNat) -> Vec n a -> Vec m a -> Vec (plus n m) a
+let appendW n v w =
+    match n
+    case Z ->
+        match v
+        case VNil -> w
+    case S k ->
+        match v
+        case VCons x t -> VCons x (appendW k t w)
+
+data Lt (i : PNat) (n : PNat) : Type =
+    LtZ : Lt Z (S n)
+    LtS : (prf : Lt i n) -> Lt (S i) (S n)
+
+-- POSITIVE: bounded lookup with an inductive Lt witness; at n = Z the
+-- witness type Lt i Z is empty and `case impossible` is accepted.
+indexW : forall (@0 a : Type). (i : PNat) -> (n : PNat) -> Vec n a -> Lt i n -> a
+let indexW i n v prf =
+    match n
+    case Z ->
+        match prf
+        case impossible
+    case S m ->
+        match v
+        case VCons x t ->
+            match i
+            case Z -> x
+            case S j ->
+                match prf
+                case LtS p -> indexW j m t p
+
+-- NEGATIVE: at an abstract index neither constructor is excluded, so
+-- covering only VNil is non-exhaustive (§17.1.1).
+vsumBad : forall (@0 n : PNat). Vec n Int -> Int
+let vsumBad v =
+    match v --!! kappa.pattern.non-exhaustive
+    case VNil -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

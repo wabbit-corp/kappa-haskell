@@ -1,0 +1,17 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+useRecursive :
+    (A : Type) ->
+    A -> A
+
+let useRecursive A x =
+    block
+        localId : (B : Type) -> B -> B
+        let localId B y =
+            if True then y else localId B y
+        let low : Bool = localId Bool True
+        localId A x

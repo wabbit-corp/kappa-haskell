@@ -1,0 +1,12 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+bad :
+    (0 A : Type) ->
+    ((ordinary 0 B : Type) -> B -> B) ->
+    A ->
+    A
+
+let bad A f x =
+    f A x

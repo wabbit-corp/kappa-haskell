@@ -1,0 +1,15 @@
+-- §30.2.0: application propagation inspects the immediate codomain of each
+-- binder. Applying the later argument must not erase A's dependency from the
+-- first application before it reaches an ordinary consumer.
+module main
+
+consume : Int -> Int
+let consume x = x
+
+bad : (A : Type) -> (f : forall B. B -> Int) -> A -> Int
+let bad A f x = consume (f @A x)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion

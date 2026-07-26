@@ -7,6 +7,15 @@
 -- type indices, with ι-reduction finishing the job. (The contrast that
 -- assertTerminates/assertTotal alone never grant unfolding is pinned by
 -- tests/conformance/spec-coverage/unsafe-debug/assert-terminates-never-reducible.)
+--
+-- Since the §28.2 revision, the prelude's own Nat is exactly this
+-- theory: `data Nat = Zero | Succ (pred : Nat)` with transparent total
+-- `natAdd` recursing on its LEFT argument, and the portable symbolic
+-- equations `natAdd Zero n -> n` / `natAdd (Succ m) n -> Succ (natAdd m n)`
+-- are "ordinary beta/delta/iota computation through transparent total
+-- source definitions". The second half of this file mirrors the private
+-- copy at prelude Nat, which the pre-revision opaque-primitive Nat could
+-- not express.
 module main
 
 data N : Type =
@@ -35,4 +44,34 @@ data Vec (n : N) : Type =
 grow : Vec (plus (S Z) (S Z)) -> Vec (S (S Z))
 let grow v = v
 
--- STATUS(a0497523): PASS
+-- ============================================================
+-- Prelude-Nat mirror (§28.2 canonical source theory).
+-- ============================================================
+
+-- closed computation: "Closed Nat computation is exact" — δ + ι through
+-- natAdd, with the literals normalized per §31.1.3
+twoPlusOneNat : natAdd 2 1 = 3
+let twoPlusOneNat = refl
+
+-- the DEFINITIONAL left-recursion case: natAdd Zero b -> b even with b a
+-- stuck neutral, exactly like zeroPlus above
+zeroPlusNat : (b : Nat) -> natAdd Nat.Zero b = b
+let zeroPlusNat b = refl
+
+-- one δ + ι step under an open head: natAdd (Succ m) n -> Succ (natAdd m n)
+succPlusNat : (m : Nat) -> (n : Nat) -> natAdd (Nat.Succ m) n = Nat.Succ (natAdd m n)
+let succPlusNat m n = refl
+
+-- δ + ι inside a type index at prelude Nat
+data VecN (n : Nat) : Type =
+    MkVecN
+
+growNat : VecN (natAdd 1 1) -> VecN 2
+let growNat v = v
+
+-- Deliberately NOT pinned here: `natAdd n Nat.Zero = n`. §28.2 keeps the
+-- symmetric right-identity PROPOSITIONAL ("V1 does not add the symmetric
+-- propositional equations n + Zero = n ... to definitional equality");
+-- that side of the boundary is owned by
+-- tests/pending-import/spec-coverage/nat-fin-refinement/positive/nat-right-identity-transport,
+-- which pins the §15.8-evidence + explicit-transport acceptance path.

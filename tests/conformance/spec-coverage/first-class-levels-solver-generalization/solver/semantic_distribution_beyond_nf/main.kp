@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelEntails u + max v w <= max (u + v) (u + w)
+--! assertLevelEntails max (u + v) (u + w) <= u + max v w
+
+expect term u : TypeLevel
+expect term v : TypeLevel
+expect term w : TypeLevel

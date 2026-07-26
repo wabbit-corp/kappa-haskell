@@ -1,0 +1,15 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  term-node "schema-lift-family-argument-mismatch" {
+    family = global-ref-value(@variance.demo.Box#3400);
+    sourceArgument = global-ref-value(@std.Int#10);
+    targetArgument = global-ref-value(@std.String#11);
+  }
+}

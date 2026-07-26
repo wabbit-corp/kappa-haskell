@@ -4,14 +4,22 @@
 --         tests/srcgen2/TEST/JS/DATA/basics0.sats
 --         (sort-level definitions, `#abssort view`, sort-indexed types)
 -- Spec: §10.1.3 (uniform data-family arguments), §10.2 (GADT-style
---       constructors), §3.2.3 (family kappa.type.mismatch).
+--       constructors), §3.2.3 (family kappa.type.mismatch), §28.2
+--       (inductive prelude Nat; `natAdd` computation equations), §15.8
+--       (required arithmetic/index solver), §16.1.8 (automatic transport
+--       insertion), §30.2.7 (transport-aware constructor compatibility),
+--       §17.1.4 (`impossible`).
 -- ATS3 datasorts are sort-level inductive indices. The Kappa counterpart
 -- is a uniform data-family argument (here of type `List Nat` or `Nat`)
 -- instantiated by GADT constructor result types. Annotating a value at a
 -- wrong family-argument (index) value is kappa.type.mismatch.
--- Symbolic index identities (e.g. `0 + n = n`) are not definitional
--- (prelude Nat arithmetic is primitive), so only literal indices are
--- pinned here.
+-- Symbolic index identities: `0 + n = n` IS definitional under §28.2
+-- (`natAdd` recurses on its first argument: `natAdd Zero n -> n`), while
+-- `n + 0 = n` and commutativity are NOT definitional (§28.2 excludes the
+-- symmetric propositional equations from definitional equality) but MUST
+-- be discharged by the §15.8 required solver, with transport inserted at
+-- the expected-type boundary per §16.1.8. Both channels are pinned below
+-- alongside the literal indices.
 
 --! mode check
 
@@ -32,7 +40,9 @@ let tbl1 = TBLCons TBLNil
 tbl2 : TBL (3 :: 5 :: Nil)
 let tbl2 = TBLCons (TBLCons TBLNil)
 
--- NEGATIVE: a two-element index is not a one-element index.
+-- NEGATIVE: a two-element index is not a one-element index. Refutation
+-- is the §10.2.1 no-confusion package for List/Nat constructor spines
+-- (a literal Nat index is now a `Succ`/`Zero` constructor term).
 badLen : TBL (42 :: Nil)
 let badLen = tbl2                        --!! kappa.type.mismatch
 
@@ -41,7 +51,11 @@ data Matrix (rows : Nat) (cols : Nat) : Type =
     MatZero : Matrix 0 cols
     MatRow  : (prev : Matrix rows cols) -> Matrix (rows + 1) cols
 
--- POSITIVE: a 2 x 3 matrix witness; literal `+` folds during checking.
+-- POSITIVE: a 2 x 3 matrix witness. Note the mechanism: `MatRow` yields
+-- index `?rows + 1`, and `natAdd`'s recursion argument is the
+-- metavariable, so no iota reduction fires. Acceptance is §15.8.6
+-- unique-principal-solution inversion (`?rows + 1 = 2` solves
+-- `?rows := 1`), not literal folding.
 m2x3 : Matrix 2 3
 let m2x3 = MatRow (MatRow MatZero)
 
@@ -53,5 +67,63 @@ let badRows = MatRow (MatRow MatZero)    --!! kappa.type.mismatch
 badCols : Matrix 2 4
 let badCols = m2x3                       --!! kappa.type.mismatch
 
+-- POSITIVE (definitional, no transport): `0 + r` computes to `r` by the
+-- §28.2 computation equation `natAdd Zero n -> n`; plain conversion
+-- accepts the body with no solver involvement.
+matLeftId : forall (r : Nat) (c : Nat). Matrix r c -> Matrix (0 + r) c
+let matLeftId m = m
+
+-- POSITIVE (solver + auto-transport): `r + 0` is stuck (`natAdd`
+-- recurses on its first argument, here the rigid `r`). Acceptance
+-- requires a §15.8.4 (commutative-)monoid right-identity proof consumed
+-- at the expected-type boundary by §16.1.8. The insertion is
+-- erased-safe: §28.2 `derive IsSet Nat` makes the Nat index equality
+-- IsProp, satisfying §16.1.8's runtime-relevance restriction.
+matRightId : forall (r : Nat) (c : Nat). Matrix r c -> Matrix (r + 0) c
+let matRightId m = m
+
+-- POSITIVE (solver + auto-transport): commutativity. §15.8.3 forbids
+-- installing `x + y -> y + x` as a rewrite pair; the §15.8.4
+-- commutative-monoid provider instead computes a canonical atom order
+-- and constructs a proof that each side equals the canonical form.
+matComm : forall (a : Nat) (b : Nat) (c : Nat). Matrix (a + b) c -> Matrix (b + a) c
+let matComm m = m
+
+-- POSITIVE (spelling bridge): `Nat.Succ r` and `r + 1` are NOT
+-- definitionally equal (`natAdd r 1` is stuck on the rigid `r`), but
+-- they are bridged propositionally: §30.2.7 rule 2 yields
+-- `PropositionallyCompatible` through the §15.8 solver, and §16.1.8
+-- consumes the erased bridge evidence at the boundary. Per §30.2.7 the
+-- bridge "does not enlarge definitional equality".
+matSuccBridge : forall (r : Nat) (c : Nat). Matrix (r + 1) c -> Matrix (Nat.Succ r) c
+let matSuccBridge m = m
+
+-- POSITIVE (symbolic refutation, now required): at `Matrix (r + 1) c`
+-- the `MatZero : Matrix 0 cols` arm needs `0 = r + 1`, which §15.8.4
+-- quantifier-free Presburger (with non-negativity side conditions)
+-- refutes. §30.2.7 returns `Refuted`, the refined case type is `Empty`,
+-- and §17.1.4 MUST accept `-> impossible`. The MatRow arm is solved by
+-- ordinary metavariable unification on the shared stuck head
+-- (`natAdd ?k 1 = natAdd r 1` gives `?k := r`), not by a bridge.
+matPred : forall (r : Nat) (c : Nat). Matrix (r + 1) c -> Matrix r c
+let matPred m =
+    match m
+    case MatRow prev -> prev
+    case MatZero -> impossible
+
+-- NEGATIVE (guard rail): a nonlinear index (`r * r`) lies outside the
+-- required §15.8.4 fragment, so `MatZero : Matrix 0 cols` demanded at
+-- `Matrix (r * r) c` is `UnknownCompatibility` (`0 = r * r` is neither
+-- proved nor refuted portably). Per §17.1.1 an unsolved index bridge
+-- "never justifies omitting the constructor branch", and per §15.8.8
+-- only the required portable fragment may justify `impossible` — so
+-- claiming the arm impossible is a compile-time error.
+matStuck : forall (r : Nat) (c : Nat). Matrix (r * r) c -> Nat
+let matStuck m =
+    match m
+    case MatRow _ -> 1
+    case MatZero -> impossible           --!! E_IMPOSSIBLE_REACHABLE
+
 --! assertDiagnosticFamily error kappa.type.mismatch
---! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+--! assertErrorCount 4

@@ -1,0 +1,7 @@
+-- A finite TypeLevel comparison proof supplies the same scoped ceiling as an
+-- omega bound; the proof interface is independent of telescope shape.
+--! mode check
+--! assertNoErrors
+
+type LevelRecordBelowTwo : Type2 =
+    (u : TypeLevel, @0 p : u < 2, T : Type u)

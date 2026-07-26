@@ -1,0 +1,53 @@
+-- T.12.1 / Spec 28.2: natAdd, natMultiply, and natCompare are ordinary
+-- total-certified source definitions, so their first-argument computation
+-- rules are definitional (the portable symbolic computation equations).
+-- Every function below is accepted by CONVERSION ALONE: no transport, no
+-- solver evidence, no provider law. The symmetric right-hand equations
+-- (natAdd n Zero = n, ...) are deliberately NOT definitional; that side
+-- lives in positive/nat-right-identity-transport.
+data Vec (n : Nat) (0 a : Type) : Type =
+    VNil  : Vec Nat.Zero a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (Nat.Succ n) a
+
+-- natAdd Zero n -> n
+idLeft :
+    (n : Nat) ->
+    Vec (natAdd Nat.Zero n) a ->
+    Vec n a
+
+let idLeft n xs =
+    xs
+
+-- natAdd (Succ m) n -> Succ (natAdd m n)
+addSuccCase :
+    (m : Nat) ->
+    (n : Nat) ->
+    Vec (natAdd (Nat.Succ m) n) a ->
+    Vec (Nat.Succ (natAdd m n)) a
+
+let addSuccCase m n xs =
+    xs
+
+-- natMultiply Zero n -> Zero
+multiplyZeroCase :
+    (n : Nat) ->
+    Vec (natMultiply Nat.Zero n) a ->
+    Vec Nat.Zero a
+
+let multiplyZeroCase n xs =
+    xs
+
+-- natMultiply (Succ m) n -> natAdd n (natMultiply m n)
+multiplySuccCase :
+    (m : Nat) ->
+    (n : Nat) ->
+    Vec (natMultiply (Nat.Succ m) n) a ->
+    Vec (natAdd n (natMultiply m n)) a
+
+let multiplySuccCase m n xs =
+    xs
+
+--! assertNoErrors
+--! assertTotal natAdd
+--! assertTotal natMultiply
+--! assertTotal natCompare

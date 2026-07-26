@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+
+both :
+    (Int, String)
+let both =
+    let local A x = x
+    (local Int 1, local String "x")

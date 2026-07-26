@@ -1,0 +1,84 @@
+--! requires capability arithmeticCertificates
+
+data Idx (n : Nat) : Type =
+    Idx
+
+data IntIdx (i : Integer) : Type =
+    IntIdx
+
+-- Spec 15.8.4 (quantifier-free Presburger arithmetic): linear equalities
+-- with literal coefficients are decided over Nat, so the demanded index
+-- 2*n + 3 meets the offered index n + n + 3 through solver equality
+-- evidence and an inserted transport, never by definitional conversion.
+literalCoefficient :
+    (n : Nat) ->
+    Idx (natAdd (natMultiply 2 n) 3) ->
+    Idx (natAdd (natAdd n n) 3)
+
+let literalCoefficient n value =
+    value
+
+-- Integer indices belong to the same required fragment. Integer
+-- subtraction is total (subDefined x y = True, Spec 28.2.3), so the
+-- solver cancels (i + 5) - 5 without any separate domain premise.
+integerCancellation :
+    (i : Integer) ->
+    IntIdx ((i + 5) - 5) ->
+    IntIdx i
+
+let integerCancellation i value =
+    value
+
+-- Int is the transparent Integer alias (Spec 28.2), which makes an Int
+-- binder exercise the third required Presburger carrier.
+intLinear :
+    (i : Int) ->
+    IntIdx ((2 * i) + 6) ->
+    IntIdx ((i + i) + 6)
+
+let intLinear i value =
+    value
+
+-- A linear inequality over an open Nat variable: n <= 3*n + 4 holds for
+-- every Nat by non-negativity, so implicit resolution (Spec 16.3.3
+-- step 4) discharges the erased premise through the arithmetic solver.
+requiresUpperBound :
+    (n : Nat) ->
+    (@0 within : (n <= natAdd (natMultiply 3 n) 4) = True) ->
+    Idx n ->
+    Idx n
+
+let requiresUpperBound n @within value =
+    value
+
+dischargesUpperBound :
+    (n : Nat) ->
+    Idx n ->
+    Idx n
+
+let dischargesUpperBound n value =
+    requiresUpperBound n value
+
+-- Entailment from a lexical assumption: natAdd n 1 <= m rigidly entails
+-- the strict comparison n < m inside the same Presburger fragment
+-- (Spec 16.3.3 step 4 proves the goal from lexical assumptions only).
+requiresStrict :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 strict : (n < m) = True) ->
+    Nat
+
+let requiresStrict m n @strict =
+    m
+
+strictFromSuccessorBound :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 fromSucc : (natAdd n 1 <= m) = True) ->
+    Nat
+
+let strictFromSuccessorBound m n @fromSucc =
+    requiresStrict m n
+
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

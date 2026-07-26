@@ -14,7 +14,7 @@
 
 -- A trait whose method demands a mutable (owned/linear) receiver so it
 -- can modify the value.
-trait Resettable (a : Type) =
+trait Resettable (0 a : Type) =
     reset : (1 x : a) -> a
 
 -- A mutable record — can implement Resettable because a linear receiver
@@ -30,22 +30,20 @@ let okReset = reset (MutableCounter 99)
 -- An immutable record — declared with no mutation capability.
 data ImmutableLabel imm : Type = ImmutableLabel String
 
--- NEGATIVE: trying to implement Resettable for ImmutableLabel. The trait
--- demands a linear (owned) receiver, but the record is immutable and
--- cannot offer a linear receiver because its fields cannot be mutated.
--- The method signature mismatch is kappa.type.mismatch.
-instance Resettable ImmutableLabel =      --!! kappa.type.mismatch
-    let reset (ImmutableLabel _) = ImmutableLabel ""
+-- NEGATIVE: the implementation returns MutableCounter where the selected
+-- Resettable instance requires ImmutableLabel Unit.
+instance Resettable (ImmutableLabel Unit) =
+    let reset (ImmutableLabel _) = MutableCounter 0 --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
 -- A second trait whose method only borrows the receiver read-only.
-trait Readable (a : Type) =
+trait Readable (0 a : Type) =
     readValue : (& x : a) -> String
 
 -- POSITIVE: an immutable record implementing a read-only trait.
-instance Readable ImmutableLabel =
+instance Readable (ImmutableLabel Unit) =
     let readValue (ImmutableLabel s) = s
 
 okRead : String
-let okRead = readValue (ImmutableLabel "hello")
+let okRead = readValue (ImmutableLabel @Unit "hello")

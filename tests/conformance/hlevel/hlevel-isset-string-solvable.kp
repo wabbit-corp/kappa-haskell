@@ -1,14 +1,18 @@
 module main
 
--- §8 h-level — the one base h-level fact this implementation actually carries.
+-- §8 h-level: `IsSet String` resolves as ordinary instance evidence.
 --
 -- 'String' is a genuine set: a sequence of unicode scalars with decidable
--- structural equality (Hedberg ⇒ UIP).  The prelude provides exactly one
--- h-level instance, 'instance IsSet String', so this evidence resolves where
--- all the others (IsSet Bool, IsContr Unit, IsSubsingleton Void/Unit, …) do not.
--- This is the lone positive base-h-level test; the doc's other "pass"
--- expectations require compiler-owned intrinsic h-level rules that this
--- implementation does not provide (see hlevel-no-intrinsic-synthesis.kp).
+-- structural equality (Hedberg ⇒ UIP). This test pins the `String`
+-- instance specifically — under the revised spec it is one of MANY
+-- standard h-level facts, not the only one: §14.1.1 makes `IsSet a` a
+-- supertrait of `Eq a` (so every required `Eq` instance of §28.2.3
+-- carries `IsSet` in its coherent evidence closure), and §28.2 requires
+-- `derive IsSet Nat` outright. Those companions are pinned by the
+-- nat-fin-refinement bundle (positive/nat-eq-isset-member-projection,
+-- positive/isset-supertrait-closure); what this file guards is that the
+-- base `String` fact keeps resolving on its own, with no Eq evidence
+-- bound in scope.
 
 let strIsSet = summon (IsSet String)
 

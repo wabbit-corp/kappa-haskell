@@ -12,8 +12,8 @@ let main = do
     shutdownSupervisor sup
     let exit <- awaitSupervisor sup
     match exit
-      case Success () -> printInt 1
-      case Failure _ -> printInt 0
+      case Exit.Success () -> printInt 1
+      case Exit.Failure _ -> printInt 0
 
 --! assertNoErrors
 --! assertType main UIO Unit

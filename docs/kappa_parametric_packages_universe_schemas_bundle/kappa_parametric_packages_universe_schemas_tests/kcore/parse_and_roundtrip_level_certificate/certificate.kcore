@@ -1,0 +1,26 @@
+kcore 1;
+
+module @tests.kcore.certificate#1102 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.certificate",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  level-certificate @certificate.tests.kcore.zero_le_omega#5001 :
+    0 <= omega
+  {
+    closed;
+  }
+
+  def ordinary @tests.kcore.certificate.raise#2300 :
+    Type omega
+  {
+    body =
+      lift [0 <= omega by certificate(@certificate.tests.kcore.zero_le_omega#5001)]
+        @std.prelude.Int#4b415050413a76313a4b436f7265476c6f62616c007374642e7072656c7564652e496e74;
+  }
+}

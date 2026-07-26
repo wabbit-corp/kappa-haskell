@@ -2,14 +2,14 @@ module main
 
 -- Source issues: hylo#1509, hylo#936, hylo#955
 -- Spec: §5.5.10, §14.3
-type X = (a : Int)
+type X = (a : Int,)
 type Y = X
 
 sumFields : X -> Y -> Int
 let sumFields x y = x.a + y.a
 
 result : Int
-let result = sumFields (a = 20) (a = 22)
+let result = sumFields (a = 20,) (a = 22,)
 
 --! assertNoErrors
 --! assertType sumFields X -> Y -> Int

@@ -1,0 +1,72 @@
+-- §15.1 (case 2) + §15.3 + §16.1.8 + §15.8: the prove-then-transport chain
+-- over a USER inductive natural, kept as the control for the prelude-Nat
+-- solver path. Over the standard `Nat` the right-identity lemma would be
+-- unnecessary — §15.8 proves `natAdd n Zero = n` from the required
+-- CommutativeAdditiveMonoid provider evidence and §16.1.8 inserts the
+-- transport automatically. `UNat`/`plus` have NO provider evidence, and
+-- §15.8.2 forbids scavenging look-alike proof terms while §15.8.1 scopes
+-- the canonical operation identities to the std.prelude exports, so here:
+-- (i) plus Z n reduces definitionally (first defining equation, §15.1
+-- case 2); (ii) the symbolic right identity plus n Z = n is NOT
+-- definitional and is NOT auto-closed — it needs a hand-written induction
+-- lifting the IH through cong (§15.3); (iii) prelude subst lowers when its
+-- proof is definitionally refl (§11.4.1). Negative controls: the
+-- application with no lemma applied is rejected (no solver plan exists for
+-- a user natural), and returning the raw IH without the cong lift is
+-- rejected, so the positive halves are not vacuous.
+--! mode check
+--! assertErrorCount 2
+--! assertNoWarnings
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+module main
+
+data UNat : Type =
+    Z
+    S UNat
+
+plus : UNat -> UNat -> UNat
+let plus (m : UNat) (n : UNat) : UNat =
+    match m
+    case Z -> n
+    case S k -> S (plus k n)
+
+data Vec (n : UNat) : Type =
+    MkVec
+
+expectsN : (n : UNat) -> Vec n -> Unit
+let expectsN (n : UNat) (v : Vec n) : Unit = ()
+
+-- POSITIVE (i): plus Z n reduces to n inside the index; no evidence needed.
+zeroPlus : (n : UNat) -> Vec (plus Z n) -> Unit
+let zeroPlus (n : UNat) (v : Vec (plus Z n)) : Unit = expectsN n v
+
+-- POSITIVE (ii): plus n Z = n by structural induction plus cong.
+plusZeroRight : (n : UNat) -> (=) (plus n Z) n
+let plusZeroRight (n : UNat) : (=) (plus n Z) n =
+    match n
+    case Z -> refl
+    case S k -> cong (\ (x : UNat) -> S x) (plusZeroRight k)
+
+-- POSITIVE (iii): the current profile lowers runtime-relevant subst when the
+-- proof is definitionally refl. Abstract plusZeroRight transport is covered by
+-- the dedicated §11.4.1 rejection fixtures until computational paths exist.
+coerceRefl : (n : UNat) -> Vec n -> Vec n
+let coerceRefl (n : UNat) (v : Vec n) : Vec n = subst refl v
+
+-- NEGATIVE (control, newly load-bearing): the §15.8 solver must NOT
+-- auto-close plus n Z = n for a user natural lacking §15.8.2 provider
+-- evidence, even though the same shape over prelude Nat is accepted via
+-- §15.8.4 + §16.1.8 (pinned by tests/pending-import/spec-coverage/
+-- nat-fin-refinement/positive/nat-right-identity-transport). No transport
+-- plan exists, so the application is rejected.
+plusZeroAuto : (n : UNat) -> Vec (plus n Z) -> Unit
+let plusZeroAuto (n : UNat) (v : Vec (plus n Z)) : Unit = expectsN n v    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: the S branch must lift the IH through cong; the raw IH proves
+-- plus k Z = k, whose endpoints do not convert with plus (S k) Z = S k.
+plusZeroBad : (n : UNat) -> (=) (plus n Z) n
+let plusZeroBad (n : UNat) : (=) (plus n Z) n =
+    match n
+    case Z -> refl
+    case S k -> plusZeroBad k    --!! kappa.type.mismatch

@@ -1,0 +1,40 @@
+-- T.12.3 / Spec 15.8.2: algebraic normalization consumes only law
+-- members explicitly bound by a validated provider artifact for the
+-- selected coherent evidence. A total equality proof whose type merely
+-- LOOKS like commutativity is never scavenged into the normalization
+-- theory. The carrier is a local nominal wrapper on purpose: the prelude
+-- DOES provide CommutativeAdditiveMonoid Nat, so Nat itself would make
+-- the commutation goal legitimately provable.
+data Tally : Type =
+    MkTally (count : Nat)
+
+-- ACCEPTED control (T.12.3 first bullet): identity simplification uses
+-- the selected AdditiveMonoid evidence, so plain monoid reasoning on
+-- Tally is available from the single premise.
+identityStillWorks :
+    (@additiveOnly : AdditiveMonoid Tally) ->
+    (x : Tally) ->
+    add x zero = x
+
+let identityStillWorks @additiveOnly x =
+    refl
+
+-- REJECTED: the look-alike is in scope, total, and shaped exactly like
+-- addCommutative, but it is not a provider law member of any selected
+-- CommutativeAdditiveMonoid Tally evidence (none exists). Commutative
+-- normalization is therefore unavailable, and the goal is nested so the
+-- hypothesis cannot close it by direct definitional candidate match
+-- either: the stuck goal must fail as an ordinary mismatch.
+commutationStillRejected :
+    (@additiveOnly : AdditiveMonoid Tally) ->
+    (@lookalike : (x : Tally) -> (y : Tally) -> add x y = add y x) ->
+    (x : Tally) ->
+    (y : Tally) ->
+    (z : Tally) ->
+    add (add x y) z = add (add y x) z
+
+let commutationStillRejected @additiveOnly @lookalike x y z =
+    refl
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH

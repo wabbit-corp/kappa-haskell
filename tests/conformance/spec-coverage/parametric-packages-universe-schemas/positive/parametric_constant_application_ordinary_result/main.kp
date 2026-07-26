@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+constant :
+    forall A.
+    Int
+
+let constant A =
+    1
+
+useConstant :
+    (A : Type) ->
+    Int
+
+let useConstant A =
+    constant @A

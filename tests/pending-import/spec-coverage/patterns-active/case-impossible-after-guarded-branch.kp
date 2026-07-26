@@ -1,8 +1,12 @@
--- §17.1.5 (Spec L17914-L17922) + §17.1.9: `case impossible` is accepted
--- only if the remainder AFTER the preceding cases and guards is
--- unreachable. A guarded case excludes only the pattern-and-guard
--- conjunction, so the guarded constructor remains in the remainder and
--- `case impossible` must be rejected.
+-- §17.1.5 + §17.1.9: `case impossible` is accepted "only if, after
+-- accounting for the preceding cases and guards, the remaining
+-- uncovered remainder of the scrutinee is unreachable using
+-- definitional equality, family-argument unification, the required
+-- structural inhabitance rules of §30.2.7, and the required portable
+-- arithmetic/proof fragment of §15.8 when the contradiction is
+-- arithmetic or lies in a refined proof fiber". A guarded case excludes
+-- only the pattern-and-guard conjunction, so the guarded constructor
+-- remains in the remainder and `case impossible` must be rejected.
 
 --! mode check
 

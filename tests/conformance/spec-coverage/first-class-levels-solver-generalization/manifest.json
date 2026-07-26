@@ -1,0 +1,995 @@
+{
+  "baseSpec": "docs/Spec.md",
+  "baseSuiteCount": 67,
+  "sourceManifest": "docs/kappa_first_class_levels_solver_generalization_bundle/kappa_first_class_levels_solver_generalization_tests/manifest.json",
+  "sourceManifestSha256": "98cdf86d525078684ed792f06c3879e3f25d0ad97135d08218aeeed4b694bd7a",
+  "sourceSpecPatch": "docs/kappa_first_class_levels_solver_generalization_bundle/kappa_first_class_levels_solver_generalization_spec_patch.md",
+  "sourceSpecPatchSha256": "4906eb0998386889dc51d39971742f354b32a1b21ef98c5f00a4fa8298730d15",
+  "name": "kappa-first-class-levels-solver-generalization-tests",
+  "schemaVersion": 1,
+  "strengtheningSuiteCount": 4,
+  "strengtheningSuites": [
+    "kcore/monotone_witness_alpha_roundtrip",
+    "kcore/monotone_witness_proof_irrelevant_hash",
+    "kcore/reject_unwitnessed_neutral_covariance",
+    "positive/imported_monotone_certificate"
+  ],
+  "suiteCount": 71,
+  "suites": [
+    {
+      "name": "arithmetic_certificate_bad_assumption",
+      "path": "kcore/arithmetic_certificate_bad_assumption",
+      "category": "kcore",
+      "description": "Arithmetic replay rejects an unavailable assumption index.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "arithmetic_certificate_valid",
+      "path": "kcore/arithmetic_certificate_valid",
+      "category": "kcore",
+      "description": "Arithmetic replay proves max-least from the selected assumptions.",
+      "files": [
+        "main.kp",
+        "proof.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "canonical_ac_level_hash",
+      "path": "kcore/canonical_ac_level_hash",
+      "category": "kcore",
+      "description": "AC-equivalent level expressions have canonical KCore semantic identity.",
+      "files": [
+        "a.kcore",
+        "b.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "direct_and_composed_lift_same_hash",
+      "path": "kcore/direct_and_composed_lift_same_hash",
+      "category": "kcore",
+      "description": "Canonical lift composition makes direct and transitively composed lifts semantically identical.",
+      "files": [
+        "composed.kcore",
+        "direct.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "lift_proof_identity_hash",
+      "path": "kcore/lift_proof_identity_hash",
+      "category": "kcore",
+      "description": "Different proofs of the same lift theorem produce the same semantic hash.",
+      "files": [
+        "arithmetic.kcore",
+        "closed.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "monotone_witness_alpha_roundtrip",
+      "path": "kcore/monotone_witness_alpha_roundtrip",
+      "category": "kcore",
+      "description": "A selected monotonicity witness canonicalizes with its owning family telescope.",
+      "files": [
+        "main.kp",
+        "suite.ktest",
+        "witness.kcore"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "monotone_witness_proof_irrelevant_hash",
+      "path": "kcore/monotone_witness_proof_irrelevant_hash",
+      "category": "kcore",
+      "description": "Different checked proofs of one Monotone goal have the same semantic hash.",
+      "files": [
+        "left.kcore",
+        "main.kp",
+        "right.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "reject_unwitnessed_neutral_covariance",
+      "path": "kcore/reject_unwitnessed_neutral_covariance",
+      "category": "kcore",
+      "description": "A neutral level operator cannot claim covariance without matching checked Monotone evidence.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "reject_declared_sealing_eliminator",
+      "path": "kcore/reject_declared_sealing_eliminator",
+      "category": "kcore",
+      "description": "KCore has no generic sealing eliminator authority.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "structural_and_arithmetic_same_hash",
+      "path": "kcore/structural_and_arithmetic_same_hash",
+      "category": "kcore",
+      "description": "Structural and arithmetic proofs canonicalize to the same level-evidence semantic identity.",
+      "files": [
+        "arithmetic.kcore",
+        "main.kp",
+        "structural.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "typelevel_algebra_version_mismatch",
+      "path": "kcore/typelevel_algebra_version_mismatch",
+      "category": "kcore",
+      "description": "KCoreText artifacts with an incompatible TypeLevel algebra version are rejected.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-G4"
+    },
+    {
+      "name": "distinct_neutral_atoms_need_evidence",
+      "path": "negative/distinct_neutral_atoms_need_evidence",
+      "category": "negative",
+      "description": "Distinct opaque level terms are not ordered without evidence.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "forall_does_not_commute_implicitly",
+      "path": "negative/forall_does_not_commute_implicitly",
+      "category": "negative",
+      "description": "Universal quantification is not silently moved through a type constructor.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "generalization_meta_free_in_environment",
+      "path": "negative/generalization_meta_free_in_environment",
+      "category": "negative",
+      "description": "A candidate variable free in the surrounding environment is not generalized by a nested declaration.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "generalization_parametric_escape",
+      "path": "negative/generalization_parametric_escape",
+      "category": "negative",
+      "description": "Rigid parametric rechecking rejects a declaration that returns its generalized type witness ordinarily.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "inverse_schema_lift_not_implicit",
+      "path": "negative/inverse_schema_lift_not_implicit",
+      "category": "negative",
+      "description": "A covariant upward schema lift has no implicit inverse.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "monadic_bound_value_not_generalized",
+      "path": "negative/monadic_bound_value_not_generalized",
+      "category": "negative",
+      "description": "A monadic bind variable does not introduce fresh outer quantification.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "monotone_theorem_not_scanned",
+      "path": "negative/monotone_theorem_not_scanned",
+      "category": "negative",
+      "description": "A nearby theorem is not discovered unless packaged as ordinary evidence.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "mutable_current_level_index",
+      "path": "negative/mutable_current_level_index",
+      "category": "negative",
+      "description": "A mutable current-value facet is not a stable universe index in v1.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "pattern_match_does_not_drop_dependency",
+      "path": "negative/pattern_match_does_not_drop_dependency",
+      "category": "negative",
+      "description": "Pattern matching a parametric field preserves the parametric origin.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "principal_self_containment",
+      "path": "negative/principal_self_containment",
+      "category": "negative",
+      "description": "Positive self-occurrence beneath successor is rejected.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "recursive_schema_increase",
+      "path": "negative/recursive_schema_increase",
+      "category": "negative",
+      "description": "An upward recursive declaration-schema instantiation is rejected in v1.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "recursive_schema_leq_not_termination",
+      "path": "negative/recursive_schema_leq_not_termination",
+      "category": "negative",
+      "description": "A non-increasing schema edge alone is not a strict termination argument.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "recursive_schema_nonidentity_implicit",
+      "path": "negative/recursive_schema_nonidentity_implicit",
+      "category": "negative",
+      "description": "A non-identity recursive schema instantiation may not be inferred.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "schema_constraint_unsatisfied",
+      "path": "negative/schema_constraint_unsatisfied",
+      "category": "negative",
+      "description": "Explicit schema instantiation must discharge its erased comparison proof.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "schema_reification_does_not_fill_explicit_level",
+      "path": "negative/schema_reification_does_not_fill_explicit_level",
+      "category": "negative",
+      "description": "Schema reification never supplies an omitted explicit term-level TypeLevel argument.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "unbounded_parametric_package_no_code_escape",
+      "path": "negative/unbounded_parametric_package_no_code_escape",
+      "category": "negative",
+      "description": "A projected parametric witness cannot be returned as an ordinary type code.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "wrong_type_level_index",
+      "path": "negative/wrong_type_level_index",
+      "category": "negative",
+      "description": "A non-TypeLevel term cannot index Type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "action_value_generalizes_outer_parameter",
+      "path": "positive/action_value_generalizes_outer_parameter",
+      "category": "positive",
+      "description": "A monadic action value may be generalized; each use instantiates before execution.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "branch_expected_widening",
+      "path": "positive/branch_expected_widening",
+      "category": "positive",
+      "description": "Expected-type-directed branch joining may forget an exact level through cumulativity.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "exact_level_result_not_widened",
+      "path": "positive/exact_level_result_not_widened",
+      "category": "positive",
+      "description": "Application to an opaque index retains Type (f x) rather than widening to a ceiling.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "explicit_schema_constraint_proof_binder",
+      "path": "positive/explicit_schema_constraint_proof_binder",
+      "category": "positive",
+      "description": "A user-written erased proof binder expresses a declaration-universe constraint.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "first_class_level_recursion_can_increase",
+      "path": "positive/first_class_level_recursion_can_increase",
+      "category": "positive",
+      "description": "A first-class TypeLevel argument may increase when another ordinary measure decreases.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "forall_commutes_with_selected_evidence",
+      "path": "positive/forall_commutes_with_selected_evidence",
+      "category": "positive",
+      "description": "Expected-type-directed quantifier interchange succeeds through PreservesParametricForall evidence.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "inferred_schema_constraint_becomes_binder",
+      "path": "positive/inferred_schema_constraint_becomes_binder",
+      "category": "positive",
+      "description": "An inferred declaration constraint is serialized as an anonymous erased proof binder.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "level_snapshot_from_var",
+      "path": "positive/level_snapshot_from_var",
+      "category": "positive",
+      "description": "An immutable snapshot of a mutable current value may be used in a local type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "local_declaration_universe_generalization",
+      "path": "positive/local_declaration_universe_generalization",
+      "category": "positive",
+      "description": "A local semantic declaration may generalize a fresh universe and be instantiated independently.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "monotone_global_instance",
+      "path": "positive/monotone_global_instance",
+      "category": "positive",
+      "description": "An ordinary global Monotone instance permits covariance through an opaque TypeLevel function.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "imported_monotone_certificate",
+      "path": "positive/imported_monotone_certificate",
+      "category": "positive",
+      "description": "An opaque imported family retains the checked Monotone witness used by its covariance certificate.",
+      "files": [
+        "lib.impl.kp",
+        "lib.kp",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "monotone_local_evidence",
+      "path": "positive/monotone_local_evidence",
+      "category": "positive",
+      "description": "A local erased Monotone binder is selected before variance inference.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "neutral_level_bound_evidence",
+      "path": "positive/neutral_level_bound_evidence",
+      "category": "positive",
+      "description": "Ordinary erased proof evidence may bound an opaque neutral level term.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "neutral_term_schema_instantiation",
+      "path": "positive/neutral_term_schema_instantiation",
+      "category": "positive",
+      "description": "An explicit declaration-schema instantiation may use a stable opaque TypeLevel term.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "opaque_level_application_exact_result",
+      "path": "positive/opaque_level_application_exact_result",
+      "category": "positive",
+      "description": "An opaque total TypeLevel application is a valid universe index and the exact dependent result is retained.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "preserve_existing_forall",
+      "path": "positive/preserve_existing_forall",
+      "category": "positive",
+      "description": "Aliasing an already polymorphic value preserves its first-class polymorphic type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "record_projection_level_index",
+      "path": "positive/record_projection_level_index",
+      "category": "positive",
+      "description": "A stable immutable record projection of TypeLevel may index Type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "recursive_schema_identity",
+      "path": "positive/recursive_schema_identity",
+      "category": "positive",
+      "description": "An identity recursive schema call may omit its universe instantiation.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "recursive_schema_lower",
+      "path": "positive/recursive_schema_lower",
+      "category": "positive",
+      "description": "A non-identity recursive schema call is explicit and pointwise lower-or-equal.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "recursive_schema_strict_level_termination",
+      "path": "positive/recursive_schema_strict_level_termination",
+      "category": "positive",
+      "description": "A strict same-or-lower schema edge may contribute a well-founded termination decrease.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G5"
+    },
+    {
+      "name": "same_neutral_term_atom_identity",
+      "path": "positive/same_neutral_term_atom_identity",
+      "category": "positive",
+      "description": "Definitionally identical neutral level terms receive the same rigid atom identity.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G1"
+    },
+    {
+      "name": "schema_lift_expected_type_direct",
+      "path": "positive/schema_lift_expected_type_direct",
+      "category": "positive",
+      "description": "schemaLift is inserted only against a known expected fully saturated same-family target.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "schema_lift_not_used_for_meta_solving",
+      "path": "positive/schema_lift_not_used_for_meta_solving",
+      "category": "positive",
+      "description": "Exact same-family unification solves a bare target instance without inserting schemaLift.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "schema_reify_bounded_expected_type",
+      "path": "positive/schema_reify_bounded_expected_type",
+      "category": "positive",
+      "description": "A declaration schema eta-expands into a bounded first-class level function from an expected type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "schema_store_bounded_first_class",
+      "path": "positive/schema_store_bounded_first_class",
+      "category": "positive",
+      "description": "A field with an expected bounded first-class type preserves declaration-level polymorphism by eta-expansion.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "schema_store_monomorphic_context",
+      "path": "positive/schema_store_monomorphic_context",
+      "category": "positive",
+      "description": "Without an expected level-polymorphic type, a declaration schema is instantiated once.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G6"
+    },
+    {
+      "name": "standard_add_partial_monotone",
+      "path": "positive/standard_add_partial_monotone",
+      "category": "positive",
+      "description": "The standard prelude provides Monotone evidence for addition by a fixed level.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G7"
+    },
+    {
+      "name": "unbounded_parametric_package_projection",
+      "path": "positive/unbounded_parametric_package_projection",
+      "category": "positive",
+      "description": "An unbounded package may project its type field parametrically and use it in a dependent result.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "unbounded_parametric_package_repack",
+      "path": "positive/unbounded_parametric_package_repack",
+      "category": "positive",
+      "description": "Ordinary construction and projection are sufficient to repack an unbounded parametric witness.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "user_constraint_reuses_generated_obligation",
+      "path": "positive/user_constraint_reuses_generated_obligation",
+      "category": "positive",
+      "description": "An equivalent user proof binder prevents a duplicate generated constraint.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
+    },
+    {
+      "name": "constructor_nf_add_ac",
+      "path": "solver/constructor_nf_add_ac",
+      "category": "solver",
+      "description": "Addition constructor normalization is AC, zero-eliminating, sorted, and multiplicity-preserving.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "constructor_nf_max_aci",
+      "path": "solver/constructor_nf_max_aci",
+      "category": "solver",
+      "description": "Maximum constructor normalization is ACI, zero-eliminating, sorted, and duplicate-free.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "monotone_not_order_embedding",
+      "path": "solver/monotone_not_order_embedding",
+      "category": "solver",
+      "description": "Monotone evidence alone does not authorize inverse-order cancellation.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "neutral_atom_not_entailed",
+      "path": "solver/neutral_atom_not_entailed",
+      "category": "solver",
+      "description": "An opaque neutral atom has no unproved relation to another atom.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "no_pointwise_least",
+      "path": "solver/no_pointwise_least",
+      "category": "solver",
+      "description": "Two metas under max have no pointwise least assignment.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "outside_portable_fragment",
+      "path": "solver/outside_portable_fragment",
+      "category": "solver",
+      "description": "A minimizable symbolic context outside the portable assignment fragment requires annotation.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "principal_additive_cancellation",
+      "path": "solver/principal_additive_cancellation",
+      "category": "solver",
+      "description": "Common additive context cancellation solves p+1 <= ?u+1.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "principal_closed_residuation",
+      "path": "solver/principal_closed_residuation",
+      "category": "solver",
+      "description": "Closed additive residuation computes the least pair solution.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "principal_direct_lower_bounds",
+      "path": "solver/principal_direct_lower_bounds",
+      "category": "solver",
+      "description": "The portable solver joins direct lower bounds by maximum.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "principal_single_meta_max_context",
+      "path": "solver/principal_single_meta_max_context",
+      "category": "solver",
+      "description": "A single-meta maximum context is solved when the other arm is rigidly insufficient.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "principal_successor_cancellation",
+      "path": "solver/principal_successor_cancellation",
+      "category": "solver",
+      "description": "Common successor cancellation solves succ p <= succ ?u.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "semantic_distribution_beyond_nf",
+      "path": "solver/semantic_distribution_beyond_nf",
+      "category": "solver",
+      "description": "Rigid Presburger semantics proves distributive equality not used by stored syntax normalization.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    },
+    {
+      "name": "semantic_equality_beyond_nf",
+      "path": "solver/semantic_equality_beyond_nf",
+      "category": "solver",
+      "description": "Rigid semantic equality recognizes dominance not performed by constructor normalization.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G2"
+    }
+  ]
+}

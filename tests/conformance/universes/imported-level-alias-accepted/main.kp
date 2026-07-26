@@ -1,0 +1,14 @@
+-- §11.1.2.2/§11.1.2.5: typed module metadata preserves the semantic identity
+-- of a transparent alias proven eta-equivalent to the standard level add.
+--! mode check
+--! assertNoErrors
+
+module main
+import lib.ops.(plus)
+
+type ImportedAlias : Typeω =
+    (u : TypeLevel) ->
+    (v : TypeLevel) ->
+    (@0 bound : plus u v < ω) ->
+    Type(plus u v)
+

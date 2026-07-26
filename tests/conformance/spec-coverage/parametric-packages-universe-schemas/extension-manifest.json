@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "suiteCount": 17,
+  "purpose": "Active strengthening regressions added while implementing U-E1, U-E3, and U-E5; the imported 71-suite contract remains unchanged in manifest.json.",
+  "suites": [
+    {
+      "path": "kcore/reject_forged_formation_mode",
+      "category": "kcore",
+      "description": "Strengthening coverage for kcore: reject forged formation mode.",
+      "files": [
+        "main.kp",
+        "bad.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "negative/explicit_universe_schema_incomplete",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: explicit universe schema incomplete.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "negative/local_signature_definition_schema_mismatch",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: local signature definition schema mismatch.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "negative/local_explicit_universe_schema_incomplete",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: local explicit universe schema incomplete.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "negative/local_universe_schema_arity",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: local universe schema arity.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "negative/local_universe_schema_scope",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: local universe schema scope.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "negative/parametric_immediate_codomain_dependency",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: parametric immediate codomain dependency.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_runtime_value_return",
+      "category": "negative",
+      "description": "Strengthening coverage for negative: parametric runtime value return.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "positive/local_explicit_universe_schema",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: local explicit universe schema.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/local_mutual_explicit_universe_schema",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: local mutual explicit universe schema.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/local_mutual_universe_generalization",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: local mutual universe generalization.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/local_recursive_universe_generalization",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: local recursive universe generalization.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/local_universe_generalization_high",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: local universe generalization high.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/principal_universe_body_result",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: principal universe body result.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/nested_explicit_local_universe_schema",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: nested explicit local universe schema.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/nested_local_universe_definition",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: nested local universe definition.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/nested_local_universe_generalization",
+      "category": "positive",
+      "description": "Strengthening coverage for positive: nested local universe generalization.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E3"
+    }
+  ]
+}

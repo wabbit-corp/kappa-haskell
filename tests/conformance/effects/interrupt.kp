@@ -18,6 +18,6 @@ let main = do
     interrupt s
     let ex <- await s
     match ex
-    case Success v -> printlnString "completed"
-    case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupt:Requested"
-    case Failure c -> printlnString "other"
+    case Exit.Success v -> printlnString "completed"
+    case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupt:Requested"
+    case Exit.Failure c -> printlnString "other"

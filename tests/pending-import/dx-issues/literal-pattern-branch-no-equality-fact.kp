@@ -1,22 +1,27 @@
--- DX EXPECTATION (§17.1.6, §17.2.1, §16.4.1, §16.1.8): matching an integer
+-- DX EXPECTATION (§17.1.6, §17.2.1, §16.4.1, §16.1.8): matching an INTEGER
 -- scrutinee against a literal pattern (`match n ... case 0 ->`) should
 -- introduce a branch fact — the propositional n = 0, or at least the
 -- boolean (n == 0) = True — exactly as §17.1.6 already mandates for Bool
--- literal patterns (pinned PASS by tests/conformance/spec-coverage/
--- patterns-active/bool-match-assumption-refinement.kp with the identical
--- Option ((=) b True) shape). This is the ATS/Idris `case 0` idiom; it is
--- also a SPEC gap: §17.1.6 covers only True/False literals and §17.2.1
--- admits numeric literal patterns with no evidence rule at all.
+-- literal patterns. This is a SPEC gap that the 2026-07 Nat/Fin revision
+-- left open: §17.1.6 covers only True/False literals, and §17.2.1 still
+-- lists "Literal: numeric" as a pattern form with no evidence rule at all.
+-- Integer remains `expect data Integer` (§28.2) with no constructor
+-- theory, so no constructor-branch channel exists for it.
 --
--- CURRENTLY (a0497523): the branch carries NO fact of either shape, for
--- Int and primitive Nat alike. The Int proof goals fail E_UNSOLVED_IMPLICIT
--- ("= Integer @0 0" resp. "= Bool (== Integer __inst_Eq_5 @0 0) True");
--- the Nat consumers fail E_APPLICATION_ARGUMENT_MISMATCH "no equality
--- evidence licenses the transport (§16.1.8)". The guard respelling
--- `case _ if n == 0` (kept below as a control) is accepted, so users must
--- trade the literal pattern for a guard to get the fact. Successor
--- patterns (`case k + 1`) are rejected outright per §17.3.2, so literal
--- matching contributes nothing to index reasoning over primitive Nat.
+-- Nat is different now: §28.2 gives Nat ordinary constructors, and the
+-- constructor spelling (`case Nat.Zero` / `case Nat.Succ k`) is required
+-- to refine dependent uses — pinned as spec coverage in
+-- ../spec-coverage/nat-fin-refinement/positive/nat-constructor-branch-fact
+-- and .../positive/nat-indexed-replicate. The residual Nat ask kept HERE
+-- (parts d/e) is the SPELLING gap: `case 0` at Nat should behave exactly
+-- like `case Nat.Zero` — §31.1.3 makes the literal definitionally
+-- Nat.Zero — but §17.2.1 never says a numeric literal pattern elaborates
+-- to a constructor pattern, so the literal spelling (including the
+-- `case 0` / `case _` way of writing replicate) is unspecified.
+--
+-- The guard respelling `case _ if n == 0` (control (c)) is accepted
+-- today, so users must trade the literal pattern for a guard to get the
+-- fact.
 --! mode check
 --! assertNoErrors
 module main
@@ -49,8 +54,9 @@ let viaGuard n =
       case _ if n == 0 -> zeroFact n
       case _ -> 0
 
--- (d) primitive-Nat twin: the branch fact should transport a Vec n to
--- Vec 0 and should materialize as a propositional proof.
+-- (d) Nat literal-SPELLING twin of the required constructor behavior:
+-- `case 0` should refine exactly like `case Nat.Zero` (§31.1.3 plus the
+-- §17.2.1 omission described in the header).
 data Vec (n : Nat) : Type =
     MkVec
 
@@ -63,14 +69,9 @@ let viaMatchNat n v =
       case 0 -> expects0 v
       case _ -> ()
 
+-- (e) and the literal branch should materialize the propositional proof.
 proofViaMatch : (n : Nat) -> Option ((=) n 0)
 let proofViaMatch n =
     match n
       case 0 -> Some refl
       case _ -> None
--- STATUS(a0497523): FAIL — expected 0 errors, got 4: E_UNSOLVED_IMPLICIT
--- "= Integer @0 0" at line 34; E_UNSOLVED_IMPLICIT
--- "= Bool (== Integer __inst_Eq_5 @0 0) True" at line 41;
--- E_APPLICATION_ARGUMENT_MISMATCH (actual Vec @1 / expected Vec 0) at line 63;
--- E_APPLICATION_ARGUMENT_MISMATCH (actual = Nat @0 @0 / expected = Nat @0 0)
--- at line 69. The guard control (c) is the only consumer that typechecks.

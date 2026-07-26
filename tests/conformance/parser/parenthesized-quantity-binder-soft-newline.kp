@@ -1,0 +1,13 @@
+module main
+
+-- A parenthesized quantity expression may be split from its binder name by a
+-- soft newline inside the enclosing binder. Parser lookahead must ignore that
+-- layout token while still recognizing the quantity-binder form.
+bad : (b : Bool) -> (
+    (if b then 1 else ω)
+    x : Int) -> Int
+let bad b x = 0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

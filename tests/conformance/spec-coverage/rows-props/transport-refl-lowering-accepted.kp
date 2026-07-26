@@ -8,7 +8,7 @@
 -- kappa.equality.transport-not-lowerable diagnostic.
 module main
 
-data VecB (n : Nat) : Type =
+data VecB (parametric 0 n : Nat) : Type =
     MkVecB
 
 castRefl : VecB 2 -> VecB 2

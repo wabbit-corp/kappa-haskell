@@ -139,27 +139,58 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
               else case Map.lookup lvl subst of
                 Just arg -> Just (shiftTerm (curDepth - oldDepth) 0 arg)
                 Nothing -> Nothing
-      CGlob x -> Just (CGlob x)
-      CLam ic q n b -> CLam ic q n <$> go (curDepth + 1) b
-      CPi ic q brw n a b -> CPi ic q brw n <$> go curDepth a <*> go (curDepth + 1) b
+      CLocal i universes ->
+        let lvl = curDepth - 1 - i
+         in if lvl >= oldDepth
+              then Just (CLocal i universes)
+              else case Map.lookup lvl subst of
+                Just arg -> Just (shiftTerm (curDepth - oldDepth) 0 arg)
+                Nothing -> Nothing
+      CGlobal x universes -> Just (CGlobal x universes)
+      CLamM mode ic q n b -> CLamM mode ic q n <$> go (curDepth + 1) b
+      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
+        CPiEvidenceM mode formation ic q brw n assumption origin <$> go curDepth a <*> go (curDepth + 1) b
       CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
       CSort u -> Just (CSort u)
+      CLevel u -> Just (CLevel u)
+      CUniverseLift from to evidence t ->
+        CUniverseLift from to evidence <$> go curDepth t
+      CSchemaLift family source target roles evidence certificate sourceArguments targetArguments t ->
+        CSchemaLift family source target roles evidence certificate
+          <$> traverse (go curDepth) sourceArguments
+          <*> traverse (go curDepth) targetArguments
+          <*> go curDepth t
       CLit l -> Just (CLit l)
-      CCtor cg ann as -> CCtor cg <$> traverse (go curDepth) ann <*> traverse (go curDepth) as
+      CCtorI cg universes ann arguments ->
+        CCtorI cg universes <$> traverse (go curDepth) ann
+          <*> traverse (\argument -> (\term -> argument {caTerm = term}) <$> go curDepth (caTerm argument)) arguments
       CMatch s ann alts -> CMatch <$> go curDepth s <*> traverse (go curDepth) ann <*> traverse goAlt alts
         where
           goAlt (CaseAlt pat gd b) =
             CaseAlt pat
               <$> traverse (go (curDepth + patBindersC pat)) gd
               <*> go (curDepth + patBindersC pat) b
-      CRecordT fs -> CRecordT <$> traverseField curDepth fs
+      CRecordTQ fs -> CRecordTQ <$> traverse (traverse (go curDepth)) fs
       CRecordV fs -> CRecordV <$> traverseField curDepth fs
-      CProj e f -> CProj <$> go curDepth e <*> pure f
-      CProjAt e f i -> CProjAt <$> go curDepth e <*> pure f <*> pure i
+      CProjM mode e f -> CProjM mode <$> go curDepth e <*> pure f
+      CProjAtM mode e f i -> CProjAtM mode <$> go curDepth e <*> pure f <*> pure i
       CVariantT ms -> CVariantT <$> traverse (go curDepth) ms
       CInject tag e -> CInject tag <$> go curDepth e
-      CLet q n a b c -> CLet q n <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
-      CLetRec q n a b c -> CLetRec q n <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CLetM mode q n a b c -> CLetM mode q n <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
+      CLetRecM mode q n a b c -> CLetRecM mode q n <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CLetPolyM mode q n telescope a b c ->
+        CLetPolyM mode q n telescope <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
+      CLetRecPolyM mode q n telescope a b c ->
+        CLetRecPolyM mode q n telescope <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CLetRecGroupM telescope definitions body -> do
+        let groupDepth = curDepth + length definitions
+        definitions' <- traverse
+          (\definition ->
+             (\ty rhs -> definition {clrdType = ty, clrdRhs = rhs})
+               <$> go curDepth (clrdType definition)
+               <*> go groupDepth (clrdRhs definition))
+          definitions
+        CLetRecGroupM telescope definitions' <$> go groupDepth body
       CMeta m -> Just (CMeta m)
       CDo {} -> Nothing
       CSealE ls e -> CSealE ls <$> go curDepth e
@@ -192,17 +223,30 @@ simplifyDecisionTerm = go
             alts' = [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
          in fromMaybe (CMatch s' ann alts') (reduceSimpleMatch s' alts')
       CApp ic f a -> CApp ic (go f) (go a)
-      CLam ic q n b -> CLam ic q n (go b)
-      CPi ic q brw n a b -> CPi ic q brw n (go a) (go b)
-      CCtor g ann as -> CCtor g ann (map go as)
-      CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
+      CUniverseLift from to evidence t -> CUniverseLift from to evidence (go t)
+      CSchemaLift family source target roles evidence certificate sourceArguments targetArguments t ->
+        CSchemaLift family source target roles evidence certificate
+          (map go sourceArguments) (map go targetArguments) (go t)
+      CLamM mode ic q n b -> CLamM mode ic q n (go b)
+      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
+        CPiEvidenceM mode formation ic q brw n assumption origin (go a) (go b)
+      CCtorI g universes ann arguments ->
+        CCtorI g universes (fmap go ann)
+          [argument {caTerm = go (caTerm argument)} | argument <- arguments]
+      CRecordTQ fs -> CRecordTQ (map (fmap go) fs)
       CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
-      CProj e f -> CProj (go e) f
-      CProjAt e f i -> CProjAt (go e) f i
+      CProjM mode e f -> CProjM mode (go e) f
+      CProjAtM mode e f i -> CProjAtM mode (go e) f i
       CVariantT ms -> CVariantT (map go ms)
       CInject tag e -> CInject tag (go e)
-      CLet q n a b c -> CLet q n (go a) (go b) (go c)
-      CLetRec q n a b c -> CLetRec q n (go a) (go b) (go c)
+      CLetM mode q n a b c -> CLetM mode q n (go a) (go b) (go c)
+      CLetRecM mode q n a b c -> CLetRecM mode q n (go a) (go b) (go c)
+      CLetPolyM mode q n telescope a b c -> CLetPolyM mode q n telescope (go a) (go b) (go c)
+      CLetRecPolyM mode q n telescope a b c -> CLetRecPolyM mode q n telescope (go a) (go b) (go c)
+      CLetRecGroupM telescope definitions body ->
+        CLetRecGroupM telescope
+          [definition {clrdType = go (clrdType definition), clrdRhs = go (clrdRhs definition)} | definition <- definitions]
+          (go body)
       CThunkE e -> CThunkE (go e)
       CLazyE e -> CLazyE (go e)
       CForceE e -> CForceE (go e)

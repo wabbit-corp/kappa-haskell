@@ -1,0 +1,13 @@
+--! assertNoErrors
+
+trait Show (0 A : Type) =
+    show : A -> String
+
+showWith :
+    (0 A : Type) ->
+    Show A =>
+    A ->
+    String
+
+let showWith A dict x =
+    dict.show x

@@ -1,0 +1,16 @@
+-- Nominal variance failures expose canonical declaration and parameter
+-- identities, not implementation-local aliases.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+--! assertDiagnosticFamily error kappa.universe.variance
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/nominalDeclarationIdentity main.BadWitness
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/universeParameterIndex 0
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/explicitRole irrelevant
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/inferredRole covariant
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/effectiveRole covariant
+
+module main
+
+data BadWitness.{irrelevant u} : Type0 =
+    BadWitness (parametric 0 A : Type u)

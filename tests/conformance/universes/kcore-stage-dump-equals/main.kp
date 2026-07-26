@@ -1,0 +1,10 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDump KCore equals expected.kcore
+
+id : (A : Type) -> A -> A
+let id A x = x

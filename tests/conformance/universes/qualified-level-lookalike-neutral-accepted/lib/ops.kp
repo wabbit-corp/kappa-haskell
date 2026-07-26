@@ -1,0 +1,5 @@
+module lib.ops
+
+fakeAdd : TypeLevel -> TypeLevel -> TypeLevel
+let fakeAdd u v = u
+

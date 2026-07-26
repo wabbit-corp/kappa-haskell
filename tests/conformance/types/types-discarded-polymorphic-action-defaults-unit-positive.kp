@@ -1,0 +1,16 @@
+-- A non-final action's payload is unobservable. A wholly unconstrained
+-- polymorphic payload therefore specializes to the principal droppable Unit
+-- type instead of leaking a meta into KCore/KBackendIR or spuriously rejecting
+-- a non-returning action.
+module main
+
+import std.prelude.(type Cause(..), type InterruptCause(..), type InterruptTag(..))
+
+discardedPolymorphicAction : UIO Unit
+let discardedPolymorphicAction = do
+    let f = finallyIO
+    f (__reraiseCause (Interrupt (InterruptCause Requested None))) (pure ())
+    pure ()
+
+--! mode check
+--! assertNoErrors

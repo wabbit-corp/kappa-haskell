@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+--! assertDiagnosticFamily error kappa.universe.variance
+
+data BadWitness.{irrelevant u} : Type0 =
+    BadWitness (parametric 0 A : Type u)

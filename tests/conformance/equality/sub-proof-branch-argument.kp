@@ -3,15 +3,11 @@
 --! assertNoErrors
 --! assertNoWarnings
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 consume : Nat -> Nat
 let consume n = n
 
 branchArg : Nat -> Nat -> Nat
 let branchArg x y =
-    if leInt (natToInt y) (natToInt x)
+    if y <= x
     then consume (x - y)
     else 0

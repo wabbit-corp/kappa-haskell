@@ -12,7 +12,7 @@ module main
 data Token : Type =
     Token
 
-type Cell = (1 tok : Token)
+type Cell = (1 tok : Token,)
 
 consumeCell : (1 c : Cell) -> Cell
 let consumeCell (1 c : Cell) : Cell = c

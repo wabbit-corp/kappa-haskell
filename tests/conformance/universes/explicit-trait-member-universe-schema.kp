@@ -1,0 +1,13 @@
+module explicit_trait_member_universe_schema
+
+trait HasPoly =
+    polyId.{u} : forall (A : Type u). A -> A
+
+instance HasPoly =
+    let polyId x = x
+
+answer : Int
+let answer = polyId.{0} 42
+
+--! mode check
+--! assertNoErrors

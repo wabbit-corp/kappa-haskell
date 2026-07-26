@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses certificate.kcore
+--! assertKCoreRoundTrips certificate.kcore

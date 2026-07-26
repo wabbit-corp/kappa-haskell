@@ -8,11 +8,11 @@ data Box : Type =
     Full (1 tok : Token)
 
 type Cell : Type =
-    (value : Box)
+    (value : Box,)
 
 projection cellValue (place this : Cell) : Box =
     yield this.value
 
-replace : (inout b : Box) -> UIO (1 b : Box)
-let replace (inout b : Box) : UIO (1 b : Box) =
-    pure (b = Full Token)
+replace : (inout b : Box) -> UIO (1 b : Box,)
+let replace (inout b : Box) : UIO (1 b : Box,) =
+    pure (b = Full Token,)

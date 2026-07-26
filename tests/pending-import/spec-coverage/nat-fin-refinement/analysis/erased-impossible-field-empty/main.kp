@@ -1,0 +1,24 @@
+-- Both fibers below are Nat equalities, so IsProp evidence is available
+-- for each through the required `derive IsSet Nat` of Spec 28.2. What
+-- separates them is inhabitance, not proposition-ness or erasure:
+-- IsProp alone does not contribute an exact cardinality of one (T.12.8).
+
+-- The erased field is arithmetic-refuted, so the constructor is
+-- unreachable: Empty, not a runtime singleton whose proof happens to be
+-- erased.
+data ImpossibleEvidence : Type =
+    ImpossibleEvidence
+        (@0 impossible : Nat.Zero = Nat.Succ Nat.Zero)
+
+-- Contrast case: the same shape with an inhabited fiber contributes a
+-- factor of exactly one.
+data GroundedEvidence : Type =
+    GroundedEvidence
+        (@0 grounded : Nat.Zero = Nat.Zero)
+
+--! requires capability symbolicCardinality
+--! assertNoErrors
+--! assertInhabitance SourceReachability Empty for ImpossibleEvidence
+--! assertSymbolicCardinality 0 for ImpossibleEvidence
+--! assertInhabitance SourceReachability Contractible for GroundedEvidence
+--! assertSymbolicCardinality 1 for GroundedEvidence

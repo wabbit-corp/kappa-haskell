@@ -1,0 +1,20 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §11.1.2.3A and §18.1.15: an effect-label alias fixes one complete
+-- interface instance. Selecting an operation must reuse the same declaration
+-- universe spine that classified the alias's fixed interface arguments.
+module main
+
+effect Poly.{u} (parametric 0 A : Type u) =
+    op : Unit -> A
+
+effect label high : Poly.{1} (Type 0)
+
+selected : Unit -> Eff <[high : Poly.{1} (Type 0)]> (Type 0)
+let selected = high.op

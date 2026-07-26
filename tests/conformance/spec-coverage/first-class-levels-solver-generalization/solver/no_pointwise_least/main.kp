@@ -1,0 +1,3 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelSolveClass [?u, ?v] where [omega <= max ?u ?v] NoPointwiseLeastSolution

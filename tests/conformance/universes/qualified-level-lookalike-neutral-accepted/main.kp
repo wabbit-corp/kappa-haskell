@@ -1,0 +1,15 @@
+-- §11.1.1/§11.1.2.2: a qualified user declaration is not decomposed as a
+-- standard operation, but its stable application remains an admissible neutral
+-- level. The explicit standard comparison is the only bound authority here.
+--! mode check
+--! assertNoErrors
+
+module main
+import lib.ops.(fakeAdd)
+
+type Accepted
+    (u : TypeLevel)
+    (v : TypeLevel)
+    (@0 p : fakeAdd u v < ω)
+    : Typeω =
+    Type(fakeAdd u v)

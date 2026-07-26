@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+
+useF :
+    (F : (A : Type) -> Type) ->
+    (A : Type) ->
+    F A ->
+    F A
+
+let useF F A x =
+    x
+
+resultId :
+    Result String Int ->
+    Result String Int
+
+let resultId x =
+    useF (Result String) Int x

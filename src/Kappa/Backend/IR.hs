@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | KBackendIR Phase A: a target-neutral runtime tree.
 --
@@ -15,9 +16,11 @@ module Kappa.Backend.IR
   , KBackendIR (..)
   , BackendBody (..)
   , BackendParam (..)
+  , BackendErasure (..)
+  , ErasureSite (..)
+  , ErasureProvenance (..)
   , BackendTerm (..)
   , BackendPat (..)
-  , backendPatToCorePat
   , BackendAlt (..)
   , BackendItem (..)
   , BackendCond (..)
@@ -27,17 +30,18 @@ module Kappa.Backend.IR
   , BackendCtorLayout (..)
   , BackendIRViolation (..)
   , lowerKBackendIR
+  , validateCoreCapabilities
   , validateKBackendIR
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, guard, unless, when)
 import Control.Monad.Reader
 import Control.Monad.State.Strict
-import Data.List (elemIndex, sort)
+import Data.List (elemIndex, foldl', nub, sort, zip4)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -45,21 +49,125 @@ import qualified Data.Text as T
 
 import qualified Kappa.Backend.Repr as Repr
 import Kappa.Backend.Repr (ArgConv, CtorLayoutInfo (..))
-import Kappa.Check (CheckState (..), CtorInfo (..), TraitInfo (..))
+import Kappa.Builtins
+  ( gPrel
+  , preludeModule
+  , prelIO
+  , prelInteger
+  , prelNatSucc
+  , prelNatZero
+  , prelPathInd
+  , prelRefl
+  , prelSTM
+  , prelSubst
+  , prelTypeLevel
+  , prelTypeLevelAdd
+  , prelTypeLevelFromInteger
+  , prelTypeLevelMax
+  , prelTypeLevelOmega
+  , prelTypeLevelOmegaAlias
+  , prelTypeLevelOne
+  , prelTypeLevelSucc
+  , prelTypeLevelZero
+  , traitFromInteger
+  )
+import Kappa.Check
+  ( CheckState (..)
+  , CtorInfo (..)
+  , InstanceEntry (..)
+  , LevelOperatorIdentity (..)
+  , TraitInfo (..)
+  , metaObservationMode
+  , nominalHiddenProjectionInfo
+  )
 import Kappa.Core
-import Kappa.CoreOps (spineOfTerm)
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
+import Kappa.CoreOps
+  ( authenticatedLevelAssumptionWith
+  , coreToNeutralLevelTerm
+  , declarationUniverseConstraints
+  , levelMetasOfTerm
+  , levelParamsOfTerm
+  , patBindersC
+  , shiftTerm
+  , specializeTraitMemberProjectionType
+  , specializeTraitMemberStorageType
+  , spineOfTerm
+  , substTopTermAt
+  , termAsLevel
+  , termScopedAt
+  , zonkTermWith
+  )
+import Kappa.Eval
+  ( EvalCtx (..)
+  , GlobalDef (..)
+  , Globals (..)
+  , convertible
+  , eval
+  , force
+  , quote
+  , specializeGlobalDefinitionTypePrefix
+  )
+import Kappa.Level
+  ( Assumptions
+  , SolveResult (..)
+  , abstractLocalLevelParams
+  , assumptionsConsistent
+  , assumptionsList
+  , instantiateLocalLevelParams
+  , emptyAssumptions
+  , insertAssumption
+  , levelAdd
+  , levelFields
+  , levelMax
+  , levelMetas
+  , neutralLevelTermAtom
+  , levelParams
+  , levelSucc
+  , levelVars
+  , normalizeLevel
+  , proveLevelEq
+  , proveLevelLeq
+  , renderLevel
+  , substituteLevelMetas
+  , substituteLevelParams
+  )
+import Kappa.NominalVariance
+  ( NominalCumulativitySummary (..)
+  , UniverseVariance (..)
+  , verifyNominalCumulativitySummary
+  )
+import Kappa.LevelEvidence
+  ( coreTypeIsTypeLevel
+  , scopeRecordLevelAssumption
+  , scopeRecordLevelFields
+  )
 import Kappa.Ownership
   ( BinderOwn (..)
   , UseKind (..)
+  )
+import Kappa.ObservationDeps
+  ( ObservationBinding (..)
+  , ObservationOracle (..)
+  , ParametricOrigin (..)
+  , classifierRelativeDependencies
+  , dependencyBlocksFinalizedAnalysis
+  , constructorPatternObservationSites
+  , dependenciesMode
+  , evidenceRelativeCallableDependencies
+  , intrinsicEffectConstructorType
+  , isParametricKindValue
+  , observationDependencies
+  , parametricCodomainPropagates
+  , observationCallableType
   )
 import Kappa.Pretty (renderTerm)
 
 data ParamLowerSite = ParamLowerSite
   { plsIcit :: !Icit
+  , plsMode :: !ObservationMode
   , plsQ :: !Q
   , plsBorrowed :: !Bool
-  , plsErased :: !Bool
+  , plsErasure :: !(Maybe ErasureProvenance)
   , plsDomain :: !Value
   }
   deriving stock (Show)
@@ -82,6 +190,7 @@ data KBackendIR = KBackendIR
 data BackendBody = BackendBody
   { bbOwner :: !GName
   , bbParams :: ![BackendParam]
+  , bbErasures :: ![BackendErasure]
   , bbRoot :: !BackendTerm
   }
   deriving stock (Eq, Show)
@@ -92,6 +201,37 @@ data BackendParam = BackendParam
   , bpBinder :: !(Maybe BackendBinder)
   }
   deriving stock (Eq, Show)
+
+-- | Why a source-level binder is absent from runtime KBackendIR.  Keeping
+-- these cases distinct is the §30.2.2.9 erasure-justification boundary: a
+-- quantity-zero type witness must never be reconstructed as an ordinary type
+-- code merely because both have no runtime slot.
+data ErasureProvenance
+  = ErasedOrdinaryTypeCode
+  | ErasedParametricTypeWitness !Level
+  | ErasedParametricTypeFormer
+  | ErasedProofOrTraitEvidence
+  | ErasedByQuantity
+  deriving stock (Eq, Show)
+
+data BackendErasure = BackendErasure
+  { beNode :: !BackendNodeId
+  , beSite :: !ErasureSite
+  , beIcit :: !Icit
+  , beName :: !Text
+  , beProvenance :: !ErasureProvenance
+  }
+  deriving stock (Eq, Show)
+
+data ErasureSite
+  = ErasedParameterSite
+  | ErasedLambdaSite
+  | ErasedLetSite
+  | ErasedApplicationArgumentSite
+  | ErasedRecordFieldSite
+  | ErasedConstructorFieldSite
+  | ErasedPatternSlotSite
+  deriving stock (Eq, Ord, Show)
 
 data BackendMeta = BackendMeta
   { bmNodeId :: !BackendNodeId
@@ -126,6 +266,7 @@ data BackendIRViolation = BackendIRViolation
   , bivNode :: !BackendNodeId
   , bivCode :: !Text
   , bivMessage :: !Text
+  , bivPayloadFields :: ![(Text, Text)]
   }
   deriving stock (Eq, Show)
 
@@ -164,8 +305,8 @@ data BackendPat
   = BPWild
   | BPVar !Text
   | BPLit !Literal
-  | BPCtor !GName ![BackendPat]
-  | BPTuple ![BackendPat]
+  | BPCtor !GName !Int ![(Int, BackendPat)]
+  | BPTuple !Int ![(Int, BackendPat)]
   | BPRecord ![(Text, BackendPat)] !(Maybe Text)
   | BPInject !Text !BackendPat
   | BPInjectRest ![Text]
@@ -201,6 +342,7 @@ data LowerStatic = LowerStatic
   , lsGlobals :: !(Map GName GlobalDef)
   , lsCtors :: !(Map GName CtorInfo)
   , lsTraits :: !(Map GName TraitInfo)
+  , lsBuiltinIntegerLiteralDicts :: !(Set GName)
   , lsCtx :: !EvalCtx
   }
 
@@ -208,17 +350,55 @@ data LowerState = LowerState
   { lstNextNode :: !Int
   , lstNextBinder :: !Int
   , lstLoweringViolations :: ![BackendIRViolation]
+  , lstErasures :: ![BackendErasure]
   }
 
-data ScopeSlot = ScopeSlot !(Maybe BackendBinderId) !(Maybe Value)
+-- | One term-level scope slot. A local declaration universe telescope is
+-- attached to the same de Bruijn binder as its generalized type; it is static
+-- schema identity and never contributes a runtime slot.
+data ScopeSlot = ScopeSlotData
+  !(Maybe BackendBinderId)
+  !(Maybe Value)
+  !(Maybe DeclarationUniverseTelescope)
+  !(Maybe RuntimeLocalAlias)
+
+data RuntimeLocalAlias = RuntimeLocalAlias
+  { rlaGroupBinder :: !BackendBinderId
+  , rlaField :: !Text
+  }
+
+pattern ScopeSlot :: Maybe BackendBinderId -> Maybe Value -> Maybe DeclarationUniverseTelescope -> ScopeSlot
+pattern ScopeSlot binder ty telescope <- ScopeSlotData binder ty telescope _
+  where
+    ScopeSlot binder ty telescope = ScopeSlotData binder ty telescope Nothing
+
+{-# COMPLETE ScopeSlot #-}
 
 type ScopeStack = [ScopeSlot]
 type Lower = ReaderT LowerStatic (State LowerState)
 type BinderEnv = Map BackendBinderId BackendBinder
 
+finalizedGlobalType :: EvalCtx -> GlobalDef -> Term
+finalizedGlobalType ctx definition =
+  fromMaybe (quote ctx 0 (gdType definition)) (gdCoreType definition)
+
 lowerKBackendIR :: CheckState -> KBackendIR
 lowerKBackendIR st =
-  let lowered = Map.mapWithKey (lowerBody ctx globals (csCtors st) (csTraits st)) (csCoreBodies st)
+  let builtinIntegerLiteralDicts =
+        Set.fromList
+          [ ieDict entry
+          | entry <- csInstances st
+          , ieTrait entry == gPrel traitFromInteger
+          , let GName dictionaryModule _ = ieDict entry
+          , dictionaryModule == preludeModule
+          , case ieHead entry of
+              [classifier] -> coreHeadGlobal classifier == Just prelInteger
+              _ -> False
+          ]
+      lowered =
+        Map.mapWithKey
+          (lowerBody ctx globals (csCtors st) (csTraits st) builtinIntegerLiteralDicts)
+          (csCoreBodies st)
    in KBackendIR
         { kbirBodies = Map.map fst lowered
         , kbirLoweringViolations = concatMap snd (Map.elems lowered)
@@ -226,6 +406,1380 @@ lowerKBackendIR st =
   where
     globals = csGlobals st
     ctx = EvalCtx (Globals globals) (csMetas st) False (csFacts st)
+
+coreHeadGlobal :: Term -> Maybe GName
+coreHeadGlobal = \case
+  CApp _ function _ -> coreHeadGlobal function
+  CUniverseLift _ _ _ term -> coreHeadGlobal term
+  CSchemaLift _ _ _ _ _ _ _ _ term -> coreHeadGlobal term
+  CGlobal global _ -> Just global
+  _ -> Nothing
+
+-- | Fail-closed §30.2.2.9 checkpoint over finalized typed Core. The
+-- target-neutral erasure planner is the authority for whether an occurrence
+-- is compile-time-only; running just its lowering-violation pass here catches
+-- witness-to-runtime promotion before ownership analysis or target backend
+-- selection. Other KBackendIR structural checks remain backend-stage checks.
+validateCoreCapabilities :: CheckState -> [BackendIRViolation]
+validateCoreCapabilities st =
+  validateFinalizedLevelScopes st
+    ++ validateObservationModeFlows st
+    ++ filter isCoreCapabilityViolation
+      (kbirLoweringViolations (lowerKBackendIR st))
+  where
+    isCoreCapabilityViolation violation =
+      bivCode violation
+        `elem`
+          [ "E_PARAMETRIC_TYPE_PROMOTION"
+          , "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE"
+          , "E_BACKENDIR_OBSERVATION_ANALYSIS"
+          , "E_KCORE_SCHEMA_CERTIFICATE_INVALID"
+          , "E_UNIVERSE_SCHEMA_LIFT_INVALID"
+          ]
+
+-- | Recheck observation-mode flow at the finalized KCore boundary.  Modes are
+-- structural facts on binders, fields, projections, patterns, and globals;
+-- this pass deliberately does not recover them from quantities or occurrence
+-- wrappers.  It rejects every ordinary kind-valued sink for which the input
+-- term is structurally parametric, and it checks that lambda/projection facts
+-- agree with their typed classifiers.
+validateObservationModeFlows :: CheckState -> [BackendIRViolation]
+validateObservationModeFlows st =
+  concatMap checkOwner
+    [ (owner, body)
+    | (owner@(GName moduleName _), body) <- Map.toList (csCoreBodies st)
+    , moduleName == csModule st
+    ]
+  where
+    globals = csGlobals st
+    instanceDictionaries = Set.fromList (map ieDict (csInstances st))
+    ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+    observationOracle =
+      ObservationOracle
+        { ooEvalCtx = ctx
+        , ooThisType = Nothing
+        , ooGlobalMode = \global@(GName moduleName _) ->
+            (gdObservationMode <$> Map.lookup global globals)
+              <|> (Ordinary <$ guard (moduleName == primModule))
+        , ooGlobalBody = \global -> do
+            guard (global `Set.notMember` instanceDictionaries)
+            definition <- Map.lookup global globals
+            if gdReducible definition then gdCoreBody definition else Nothing
+        , ooGlobalPrimitive = \global ->
+            maybe False (maybe False primitiveValue . gdValue)
+              (Map.lookup global globals)
+        , ooMetaMode = metaObservationMode st ctx
+        , ooInferType = \depth localBindings term ->
+            termTypeAt globals (csTraits st) ctx depth
+              [ScopeSlot Nothing (obType binding) (obUniverses binding) | binding <- localBindings]
+              term
+        , ooProjectionMode = \receiverType field ->
+            case force ctx receiverType of
+              VGlobN trait _ ->
+                ( Map.lookup trait (csTraits st) >>= \info ->
+                    Map.lookup field (tiMemberModes info)
+                      <|> (Ordinary <$ lookup field (tiSupers info))
+                )
+                  <|> (fst <$> nominalHiddenProjectionInfo st ctx 1 (CVar 0) receiverType field)
+              _ ->
+                fst <$> nominalHiddenProjectionInfo st ctx 1 (CVar 0) receiverType field
+        , ooProjectionType = \depth receiverType field ->
+            case force ctx receiverType of
+              VGlobI trait universes spine -> do
+                ( do
+                    info <- Map.lookup trait (csTraits st)
+                    guard (field `elem` tiMembers info)
+                    traitMemberType globals ctx (depth + 1) []
+                      (tiParamCount info) trait universes field (map snd spine) (CVar 0)
+                  )
+                  <|> (snd <$> nominalHiddenProjectionInfo st ctx (depth + 1) (CVar 0) receiverType field)
+              _ ->
+                snd <$> nominalHiddenProjectionInfo st ctx (depth + 1) (CVar 0) receiverType field
+        , ooProjectionTrait = \receiverType field ->
+            case force ctx receiverType of
+              VGlobN trait _ -> do
+                info <- Map.lookup trait (csTraits st)
+                guard (Map.member field (tiMemberModes info))
+                pure trait
+              _ -> Nothing
+        , ooConstructorType = \constructor universes ->
+            case Map.lookup constructor (csCtors st) of
+              Nothing -> Nothing
+              Just info -> specializeConstructorType ctx universes info
+        , ooProvisionalUniverseMetadata = False
+        , ooExpandingGlobals = Set.empty
+        }
+
+    primitiveValue value = case force ctx value of
+      VPrim {} -> True
+      VIOAction {} -> True
+      _ -> False
+
+    checkOwner (owner, body) = case Map.lookup owner globals of
+      Just def ->
+        let bodyType = observationCallableType ctx 0 (gdType def)
+            analysisFailures =
+              Set.filter dependencyBlocksFinalizedAnalysis
+                (termDependencies [] [] (Just bodyType) body)
+            analysisChecks =
+              [ BackendIRViolation owner (BackendNodeId (-1))
+                  "E_BACKENDIR_OBSERVATION_ANALYSIS"
+                  "finalized typed Core could not be analyzed by the observation-dependency calculus"
+                  [("failures", T.pack (show (Set.toAscList analysisFailures)))]
+              | not (Set.null analysisFailures)
+              ]
+         in analysisChecks
+              ++ checkLeadingResult owner (gdObservationMode def) bodyType body [] [] []
+              ++ checkTerm owner 0 [] [] (Just bodyType) body
+      _ -> []
+
+    checkLeadingResult owner ownerMode ty term scopes modes advertised =
+      case (force ctx ty, term) of
+        (VPiM expectedMode ic _ _ _ dom (Closure closureEnv cod), CLamM actualMode actualIc _ _ body)
+          | ic == actualIc ->
+              let advertisesDependency =
+                    parametricCodomainPropagates
+                      ctx
+                      (length modes)
+                      expectedMode
+                      (Closure closureEnv cod)
+               in modeMismatch owner "lambda binder" expectedMode actualMode
+                    ++ checkLeadingResult owner ownerMode
+                      (eval ctx (VRigid (length modes) [] : closureEnv) cod)
+                      body
+                      (ScopeSlot Nothing (Just dom) Nothing : scopes)
+                      (actualMode : modes)
+                      (advertisesDependency : advertised)
+        (_, value)
+          | ownerMode == Ordinary
+          , let unjustified = unjustifiedResultDependencies scopes modes advertised ty value
+          , not (Set.null unjustified) ->
+              [promotionWithDependencies owner "global result" unjustified]
+        _ -> []
+
+    checkTerm owner depth scopes modes expected term =
+      localChecks ++ case term of
+        CLamM actualMode ic _ _ body ->
+          case expected >>= piSite depth of
+            Just (expectedMode, expectedIc, dom, cod)
+              | ic == expectedIc ->
+                  modeMismatch owner "lambda binder" expectedMode actualMode
+                    ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just dom) Nothing : scopes)
+                      (actualMode : modes) (Just cod) body
+            _ -> checkTerm owner (depth + 1) (ScopeSlot Nothing Nothing Nothing : scopes) (actualMode : modes) Nothing body
+        CPiM mode _ _ _ _ dom cod ->
+          checkTerm owner depth scopes modes Nothing dom
+            ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just (evalTypeAt ctx depth dom)) Nothing : scopes)
+              (mode : modes) Nothing cod
+        CApp {} -> checkApplication owner depth scopes modes expected term
+        CUniverseLift _ _ _ inner -> checkTerm owner depth scopes modes expected inner
+        CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
+          concatMap (checkTerm owner depth scopes modes Nothing) (sourceArguments ++ targetArguments)
+            ++ checkTerm owner depth scopes modes expected inner
+        CCtorI g universes annotation arguments ->
+          constructorChecks owner depth scopes modes g universes annotation True
+            (zip [0 :: Int ..] arguments)
+        CMatch scrut ann alts ->
+          let scrutineeType =
+                (evalTypeAt ctx depth <$> ann)
+                  <|> termTypeAt globals (csTraits st) ctx depth scopes scrut
+              scrutineeMode = termMode scopes modes scrut
+           in checkTerm owner depth scopes modes Nothing scrut
+                ++ maybe [] (checkTerm owner depth scopes modes Nothing) ann
+                ++ concatMap (checkAlt owner depth scopes modes (Just scrutineeMode) scrutineeType) alts
+        CRecordTQ fields ->
+          concatMap
+            (\field -> checkTerm owner depth scopes modes Nothing (rfType field))
+            fields
+        CRecordV fields ->
+          recordFieldChecks owner depth scopes modes expected fields
+            ++ recordValueChecks owner depth scopes modes expected fields
+        CProjM _ value _ -> checkTerm owner depth scopes modes Nothing value
+        CProjAtM _ value _ _ -> checkTerm owner depth scopes modes Nothing value
+        CVariantT members -> concatMap (checkTerm owner depth scopes modes Nothing) members
+        CInject _ value -> checkTerm owner depth scopes modes Nothing value
+        CLetM mode _ _ ty rhs body ->
+          let tyV = evalTypeAt ctx depth ty
+              binderChecks = ordinaryDependencySinkAt scopes modes depth owner "let binding" mode tyV
+                (termDependencies scopes modes (Just tyV) rhs)
+           in binderChecks
+                ++ checkTerm owner depth scopes modes Nothing ty
+                ++ checkTerm owner depth scopes modes (Just tyV) rhs
+                ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes) (mode : modes) Nothing body
+        CLetRecM mode _ _ ty rhs body ->
+          let tyV = evalTypeAt ctx depth ty
+              scopes' = ScopeSlot Nothing (Just tyV) Nothing : scopes
+              modes' = mode : modes
+              binderChecks = ordinaryDependencySinkAt scopes' modes' (depth + 1) owner "recursive let binding" mode tyV
+                (termDependencies scopes' modes' (Just tyV) rhs)
+           in binderChecks
+                ++ checkTerm owner depth scopes modes Nothing ty
+                ++ checkTerm owner (depth + 1) scopes' modes' (Just tyV) rhs
+                ++ checkTerm owner (depth + 1) scopes' modes' Nothing body
+        CLetPolyM mode _ _ telescope ty rhs body ->
+          let tyV = evalTypeAt ctx depth ty
+              binderChecks = ordinaryDependencySinkAt scopes modes depth owner "universe-polymorphic let binding" mode tyV
+                (termDependencies scopes modes (Just tyV) rhs)
+              scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
+           in binderChecks
+                ++ checkTerm owner depth scopes modes Nothing ty
+                ++ checkTerm owner depth scopes modes (Just tyV) rhs
+                ++ checkTerm owner (depth + 1) scopes' (mode : modes) Nothing body
+        CLetRecPolyM mode _ _ telescope ty rhs body ->
+          let tyV = evalTypeAt ctx depth ty
+              scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
+              modes' = mode : modes
+              binderChecks = ordinaryDependencySinkAt scopes' modes' (depth + 1) owner "recursive universe-polymorphic let binding" mode tyV
+                (termDependencies scopes' modes' (Just tyV) rhs)
+           in binderChecks
+                ++ checkTerm owner depth scopes modes Nothing ty
+                ++ checkTerm owner (depth + 1) scopes' modes' (Just tyV) rhs
+                ++ checkTerm owner (depth + 1) scopes' modes' Nothing body
+        CLetRecGroupM telescope definitions body ->
+          let types = [evalTypeAt ctx depth (clrdType definition) | definition <- definitions]
+              recursiveScopes =
+                reverse [ScopeSlot Nothing (Just ty) (Just telescope) | ty <- types] ++ scopes
+              recursiveModes = reverse (map clrdMode definitions) ++ modes
+              groupDepth = depth + length definitions
+              definitionChecks = concat
+                [ ordinaryDependencySinkAt recursiveScopes recursiveModes groupDepth owner "local recursive SCC binding" (clrdMode definition) ty
+                    (termDependencies recursiveScopes recursiveModes (Just ty) (clrdRhs definition))
+                    ++ checkTerm owner depth scopes modes Nothing (clrdType definition)
+                    ++ checkTerm owner groupDepth recursiveScopes recursiveModes (Just ty) (clrdRhs definition)
+                | (definition, ty) <- zip definitions types
+                ]
+           in definitionChecks
+                ++ checkTerm owner groupDepth recursiveScopes recursiveModes Nothing body
+        CDo _ items ->
+          let returnSite = expected >>= either (const Nothing) Just . kernelDoResultSite
+              recoveryFailure =
+                [ modeViolation owner "E_BACKENDIR_RETURN_CONTRACT"
+                    ("finalized do block has an expected carrier whose result-slot observation contract cannot be recovered: "
+                      <> maybe "<missing>" (T.pack . show . force ctx) expected)
+                | isJust expected
+                , maybe False (either (const True) (const False) . kernelDoResultSite) expected
+                ]
+           in recoveryFailure ++ checkItems owner depth scopes modes returnSite items
+        CSealE _ value -> checkTerm owner depth scopes modes expected value
+        CSigT _ value -> checkTerm owner depth scopes modes Nothing value
+        CThunkE value -> checkTerm owner depth scopes modes Nothing value
+        CLazyE value -> checkTerm owner depth scopes modes Nothing value
+        CForceE value -> checkTerm owner depth scopes modes Nothing value
+        CIf cond yes no ->
+          checkTerm owner depth scopes modes Nothing cond
+            ++ checkTerm owner depth scopes modes expected yes
+            ++ checkTerm owner depth scopes modes expected no
+        CQuote _ slots -> concatMap (checkTerm owner depth scopes modes Nothing) slots
+        _ -> []
+      where
+        localChecks = case term of
+          CProjM actualMode recv field -> projectionModeChecks owner depth scopes actualMode recv field
+          CProjAtM actualMode recv field _ -> projectionModeChecks owner depth scopes actualMode recv field
+          _ -> []
+
+    piSite depth value = case force ctx value of
+      VPiM mode ic _ _ _ dom (Closure env cod) ->
+        Just (mode, ic, dom, eval ctx (VRigid depth [] : env) cod)
+      _ -> Nothing
+
+    checkApplication owner depth scopes modes _expected app =
+      case coreEtaCtorApp app of
+        Just (constructor, universes, annotation, _arity, arguments) ->
+          constructorChecks owner depth scopes modes constructor universes annotation False arguments
+        Nothing ->
+          let (headTerm, args) = spineOfTerm app
+           in case headTerm of
+                CLamM {} -> walkLambda headTerm (0 :: Int) args
+                _ ->
+                  checkTerm owner depth scopes modes Nothing headTerm
+                    ++ case termTypeAt globals (csTraits st) ctx depth scopes headTerm of
+                      Nothing -> concatMap (checkTerm owner depth scopes modes Nothing . snd) args
+                      Just headTy -> walk headTerm (0 :: Int) headTy args
+      where
+        walkLambda reduced _ [] =
+          checkTerm owner depth scopes modes _expected reduced
+        walkLambda (CLamM mode expectedIc _ _ body) argumentIndex ((ic, arg) : rest)
+          | ic == expectedIc =
+              ordinaryDependencySink owner
+                ("direct-lambda application argument " <> T.pack (show argumentIndex))
+                mode
+                (termDependencies scopes modes Nothing arg)
+                ++ checkTerm owner depth scopes modes Nothing arg
+                ++ walkLambda
+                  (substTopTermAt depth arg body)
+                  (argumentIndex + 1)
+                  rest
+        walkLambda term _ remaining =
+          checkTerm owner depth scopes modes _expected
+            (foldl' (\function (icit, argument) -> CApp icit function argument) term remaining)
+
+        walk _ _ _ [] = []
+        walk headTerm argumentIndex ty ((ic, arg) : rest) = case force ctx ty of
+          VPiM expectedMode expectedIc _ _ _ dom (Closure env cod)
+            | ic == expectedIc ->
+                let sinkChecks =
+                      ordinaryDependencySinkAt scopes modes depth owner
+                        ( "application argument " <> T.pack (show argumentIndex)
+                            <> " to " <> renderTerm headTerm
+                            <> " (" <> renderTerm arg <> ")"
+                        )
+                        expectedMode
+                        dom
+                        (termDependencies scopes modes (Just dom) arg)
+                    argumentChecks = checkTerm owner depth scopes modes (Just dom) arg
+                    resultType = eval ctx (eval ctx (rigidEnv depth) arg : env) cod
+                 in sinkChecks
+                      ++ argumentChecks
+                      ++ walk headTerm (argumentIndex + 1) resultType rest
+          _ -> concatMap (checkTerm owner depth scopes modes Nothing . snd) ((ic, arg) : rest)
+
+    projectionModeChecks owner depth scopes actualMode recv field =
+      case termTypeAt globals (csTraits st) ctx depth scopes recv >>= expectedProjectionMode field of
+        Just expectedMode -> modeMismatch owner ("projection '" <> field <> "'") expectedMode actualMode
+        Nothing -> []
+
+    expectedProjectionMode field recvTy = case force ctx recvTy of
+      VRecordTQ fields -> rfMode <$> findField field fields
+      VSigT _ inner -> expectedProjectionMode field inner
+      VGlobN trait _ -> Map.lookup trait (csTraits st) >>= \info ->
+        Map.lookup field (tiMemberModes info)
+          <|> (Ordinary <$ lookup field (tiSupers info))
+      _ -> Nothing
+
+    findField field = listToMaybe . filter ((== field) . rfName)
+
+    recordFieldChecks owner depth scopes modes expected fields = case force ctx <$> expected of
+      Just (VRecordTQ declared) -> concat
+        [ ordinaryDependencySinkAt scopes modes depth owner ("record field '" <> name <> "'") (rfMode field) (rfType field)
+            (termDependencies scopes modes (Just (rfType field)) value)
+        | (name, value) <- fields
+        , field <- maybeToList (findField name declared)
+        ]
+      Just (VGlobI traitG universes spine)
+        | Just trait <- Map.lookup traitG (csTraits st) ->
+            let traitArguments = take (tiParamCount trait) spine
+                permitted =
+                  traitParametricDependencies scopes modes depth traitG universes traitArguments
+             in concatMap (traitFieldCheck permitted trait) fields
+      _ -> []
+      where
+        traitFieldCheck permitted trait (name, value)
+          | name `notElem` tiMembers trait = []
+          | Just memberMode <- Map.lookup name (tiMemberModes trait) =
+              let dependencies = termDependencies scopes modes Nothing value
+                  unjustified = dependencies `Set.difference` permitted
+               in [ promotionWithDependencies owner ("trait dictionary field '" <> name <> "'") unjustified
+                  | memberMode == Ordinary
+                  , not (Set.null unjustified)
+                  ]
+          | otherwise =
+                  [ modeViolation owner "E_BACKENDIR_BINDER_METADATA"
+                      ("trait member has no observation metadata for dictionary field '" <> name <> "'")
+                  ]
+
+    recordValueChecks owner depth scopes modes expected fields =
+      case force ctx <$> expected of
+        Just (VRecordTQ declared) -> concat
+          [ checkTerm owner depth scopes modes (rfType <$> findField name declared) value
+          | (name, value) <- fields
+          ]
+        Just (VGlobI traitG universes spine)
+          | Just trait <- Map.lookup traitG (csTraits st) ->
+              let dictionaryTerm = CRecordV fields
+                  arguments = map snd spine
+               in concat
+                    [ let memberExpected =
+                            traitMemberStorageType globals ctx depth
+                              (tiParamCount trait) traitG universes name arguments dictionaryTerm
+                          permitted =
+                            traitParametricDependencies scopes modes depth traitG universes
+                              (take (tiParamCount trait) spine)
+                          dependencies = termDependencies scopes modes Nothing value
+                          parentOwnsPromotion =
+                            Map.lookup name (tiMemberModes trait) == Just Ordinary
+                              && not (Set.null (dependencies `Set.difference` permitted))
+                       in checkTerm owner depth scopes modes
+                            (if parentOwnsPromotion then Nothing else memberExpected)
+                            value
+                    | (name, value) <- fields
+                    ]
+        _ -> concatMap (checkTerm owner depth scopes modes Nothing . snd) fields
+
+    -- §14.3.1A makes a trait dictionary relative to its checked head:
+    -- member behavior may depend on parametric head arguments through
+    -- ordinary dictionary passing, but no unrelated parametric origin may be
+    -- smuggled into an ordinary member. Recover exactly those origins from
+    -- the trait's semantic Pi telescope and subtract only them.
+    traitParametricDependencies scopes modes depth traitG universes arguments =
+      case Map.lookup traitG globals of
+        Nothing -> Set.empty
+        Just definition ->
+          let rawType = quote ctx 0 (gdType definition)
+              specialized =
+                zonkTermWith
+                  (\_ _ -> Nothing)
+                  (substituteLevelParams universes)
+                  0
+                  rawType
+           in walkTraitParameters (eval ctx [] specialized) arguments
+      where
+        walkTraitParameters _ [] = Set.empty
+        walkTraitParameters functionType ((actualIcit, argument) : rest) =
+          case force ctx functionType of
+            VPiM parameterMode expectedIcit _ _ _ domain (Closure closureEnv codomain)
+              | actualIcit == expectedIcit ->
+                  let current =
+                        if parameterMode == Parametric
+                          then termDependencies scopes modes (Just domain) (quote ctx depth argument)
+                          else Set.empty
+                      resultType = eval ctx (argument : closureEnv) codomain
+                   in current `Set.union` walkTraitParameters resultType rest
+            _ -> Set.empty
+
+    -- Consume the semantic constructor Pi telescope in lockstep with actual
+    -- arguments.  Flattening domains up front leaves later dependent domains
+    -- filled with rigid placeholders (for example @tail : List a@), which is
+    -- neither valid typing authority nor stable under erased arguments.
+    constructorChecks owner depth scopes modes g universes annotation requireComplete indexedArguments =
+      case specializedConstructorType g universes
+        <|> intrinsicEffectConstructorType ctx depth g annotation (map snd indexedArguments) of
+        Nothing ->
+          modeViolation owner "E_BACKENDIR_CONSTRUCTOR_INTERFACE"
+            ("constructor interface is unavailable for '" <> gnameText g <> "'")
+            : concatMap (checkTerm owner depth scopes modes Nothing . caTerm . snd) indexedArguments
+        Just constructorType -> walkConstructor constructorType 0 indexedArguments
+      where
+        walkConstructor functionType position [] =
+          [ modeViolation owner "E_BACKENDIR_CONSTRUCTOR_ARITY"
+              ("constructor application for '" <> gnameText g <> "' omits semantic argument "
+                <> T.pack (show position))
+          | requireComplete
+          , VPiM {} <- [force ctx functionType]
+          ]
+        walkConstructor functionType position remaining@((index, argument) : rest)
+          | index /= position =
+              modeViolation owner "E_BACKENDIR_CONSTRUCTOR_ARITY"
+                ("constructor application for '" <> gnameText g
+                  <> "' has a semantic argument gap before position " <> T.pack (show index))
+                : concatMap (checkTerm owner depth scopes modes Nothing . caTerm . snd) remaining
+          | otherwise = case force ctx functionType of
+              VPiM mode expectedIcit _ _ _ domain (Closure closureEnv codomain)
+                | caIcit argument == expectedIcit ->
+                    let argumentTerm = caTerm argument
+                        sinkChecks = ordinaryDependencySinkAt scopes modes depth owner
+                          ("constructor argument " <> T.pack (show position))
+                          mode
+                          domain
+                          (termDependencies scopes modes (Just domain) argumentTerm)
+                        argumentChecks = checkTerm owner depth scopes modes (Just domain) argumentTerm
+                     in sinkChecks
+                          ++ argumentChecks
+                          ++ if termScopedAt depth argumentTerm
+                            then
+                              let argumentValue = eval ctx (rigidEnv depth) argumentTerm
+                                  resultType = eval ctx (argumentValue : closureEnv) codomain
+                               in walkConstructor resultType (position + 1) rest
+                            else
+                              modeViolation owner "E_BACKENDIR_CONSTRUCTOR_SCOPE"
+                                ("constructor argument " <> T.pack (show position)
+                                  <> " is outside the finalized local telescope")
+                                : concatMap (checkTerm owner depth scopes modes Nothing . caTerm . snd) rest
+              _ ->
+                modeViolation owner "E_BACKENDIR_CONSTRUCTOR_ARITY"
+                  ("constructor application for '" <> gnameText g
+                    <> "' has the wrong arity or icity at position " <> T.pack (show position))
+                  : concatMap (checkTerm owner depth scopes modes Nothing . caTerm . snd) remaining
+
+    specializedConstructorType g universes =
+      case Map.lookup g (csCtors st) >>= specializeConstructorType ctx (Just universes) of
+        Nothing -> Nothing
+        Just constructorType -> Just constructorType
+
+    ordinaryDependencySink owner site demanded dependencies
+      | demanded == Ordinary
+      , not (Set.null dependencies) = [promotionWithDependencies owner site dependencies]
+      | otherwise = []
+
+    ordinaryDependencySinkAt scopes modes currentDepth owner site demanded classifier dependencies =
+      let classifierDependencies =
+            observationDependencies observationOracle
+              (observationBindings scopes modes) Nothing
+              (quote ctx currentDepth classifier)
+          relative =
+            classifierRelativeDependencies observationOracle
+              (observationBindings scopes modes) currentDepth classifier dependencies
+          unjustified =
+            evidenceRelativeCallableDependencies ctx currentDepth classifier relative
+       in [ BackendIRViolation owner (BackendNodeId (-1)) "E_PARAMETRIC_TYPE_PROMOTION"
+              ("finalized typed Core passes a parametric witness to ordinary " <> site)
+              [ ("dependencies", T.pack (show (Set.toAscList unjustified)))
+              , ("classifier", renderTerm (quote ctx currentDepth classifier))
+              , ("classifierDependencies", T.pack (show (Set.toAscList classifierDependencies)))
+              ]
+          | demanded == Ordinary
+          , not (Set.null unjustified)
+          ]
+
+    checkAlt owner depth scopes modes expectedMode expectedType (CaseAlt pat guard body) =
+      let patSites = reverse (patternSites depth expectedType pat)
+          patModes = map fst patSites
+          scopes' = [ScopeSlot Nothing ty Nothing | (_, ty) <- patSites] ++ scopes
+          modes' = patModes ++ modes
+          depth' = depth + length patModes
+       in patternModeChecks owner depth expectedMode expectedType pat
+            ++ maybe [] (checkTerm owner depth' scopes' modes' Nothing) guard
+            ++ checkTerm owner depth' scopes' modes' Nothing body
+
+    checkItems _ _ _ _ _ [] = []
+    checkItems owner depth scopes modes returnSite (item : rest) = case item of
+      KBind _ pat action witness -> bindItem True witness pat action
+      KLet _ pat value -> bindItem False Nothing pat value
+      KLetQ pat value mElse ->
+        let valueType = termTypeAt globals (csTraits st) ctx depth scopes value
+         in checkTerm owner depth scopes modes Nothing value
+              ++ maybe
+                   []
+                   (\(elsePat, elseBody) ->
+                      checkAlt owner depth scopes modes Nothing valueType
+                        (CaseAlt elsePat Nothing elseBody))
+                   mElse
+              ++ continueWith valueType pat
+      KExpr value -> checkTerm owner depth scopes modes Nothing value ++ checkItems owner depth scopes modes returnSite rest
+      KVarItem _ initial action _ ->
+        checkTerm owner depth scopes modes Nothing initial
+          ++ checkTerm owner depth scopes modes Nothing action
+          ++ checkItems owner (depth + 1)
+            (ScopeSlot Nothing
+              (termTypeAt globals (csTraits st) ctx depth scopes action >>= kernelActionResult)
+              Nothing : scopes)
+            (Ordinary : modes) returnSite rest
+      KAssign ref _ rhs action _ -> concatMap (checkTerm owner depth scopes modes Nothing) [ref, rhs, action] ++ checkItems owner depth scopes modes returnSite rest
+      KReturn value ->
+        let resultType =
+              fmap snd returnSite
+                <|> termTypeAt globals (csTraits st) ctx depth scopes value
+            sinkChecks =
+              maybe []
+                (\classifier ->
+                  [promotion owner "do return"
+                  | hasUnjustifiedDependencies scopes modes classifier value
+                  ])
+                resultType
+         in sinkChecks
+              ++ checkTerm owner depth scopes modes resultType value
+              ++ checkItems owner depth scopes modes returnSite rest
+      KBreak _ -> checkItems owner depth scopes modes returnSite rest
+      KContinue _ -> checkItems owner depth scopes modes returnSite rest
+      KWhile _ cond body mElse -> checkCond cond ++ checkItems owner depth scopes modes returnSite body ++ maybe [] (checkItems owner depth scopes modes returnSite) mElse ++ checkItems owner depth scopes modes returnSite rest
+      KFor _ pat source body mElse ->
+        checkTerm owner depth scopes modes Nothing source
+          ++ checkItemsWithPat pat body
+          ++ maybe [] (checkItems owner depth scopes modes returnSite) mElse
+          ++ checkItems owner depth scopes modes returnSite rest
+      KIf arms mElse -> concatMap (\(cond, body) -> checkTerm owner depth scopes modes Nothing cond ++ checkItems owner depth scopes modes returnSite body) arms ++ maybe [] (checkItems owner depth scopes modes returnSite) mElse ++ checkItems owner depth scopes modes returnSite rest
+      KDefer _ action -> checkTerm owner depth scopes modes Nothing action ++ checkItems owner depth scopes modes returnSite rest
+      KUsing pat acquire release -> checkTerm owner depth scopes modes Nothing acquire ++ checkTerm owner depth scopes modes Nothing release ++ continueWith Nothing pat
+      KSubDo _ body -> checkItems owner depth scopes modes returnSite body ++ checkItems owner depth scopes modes returnSite rest
+      where
+        bindItem unwrapAction witness pat value =
+          checkTerm owner depth scopes modes Nothing value
+            ++ continueWith
+              (witnessedReadResult witness value
+                <|> (termTypeAt globals (csTraits st) ctx depth scopes value
+                      >>= \ty -> if unwrapAction then kernelActionResult ty else Just ty))
+              pat
+        kernelActionResult value = case force ctx value of
+          VGlobI global _ [(_, _errorType), (_, resultType)]
+            | global == prelIO -> Just resultType
+          VGlobI global _ [(_, resultType)]
+            | global == prelSTM -> Just resultType
+          _ -> Nothing
+        witnessedReadResult witness action = case (witness, spineOfTerm action) of
+          (Just BuiltinIORefRead {}, (CProjM Ordinary _ _, (Impl, elementType) : _))
+            | termScopedAt depth elementType -> Just (eval ctx (rigidEnv depth) elementType)
+          _ -> Nothing
+        continueWith expectedType pat =
+          let sites = reverse (patternSites depth expectedType pat)
+              ps = map fst sites
+              newScopes = [ScopeSlot Nothing ty Nothing | (_, ty) <- sites]
+           in checkItems owner (depth + length ps) (newScopes ++ scopes) (ps ++ modes) returnSite rest
+        checkItemsWithPat pat body =
+          let sites = reverse (patternSites depth Nothing pat)
+              ps = map fst sites
+              newScopes = [ScopeSlot Nothing ty Nothing | (_, ty) <- sites]
+           in checkItems owner (depth + length ps) (newScopes ++ scopes) (ps ++ modes) returnSite body
+        checkCond = \case
+          KCondPure value -> checkTerm owner depth scopes modes Nothing value
+          KCondAction value -> checkTerm owner depth scopes modes Nothing value
+
+    -- User monads and Eff/Elab blocks are desugared before KBackendIR. A
+    -- surviving CDo is therefore either one of the two kernel carriers below
+    -- or a pure-result block. Kernel carrier identity and arity are exact;
+    -- every other finalized expected type is the pure result itself.
+    kernelDoResultSite carrier = case force ctx carrier of
+      VGlobI global _ [(_, _errorType), (_, resultType)]
+        | global == prelIO -> Right (Ordinary, resultType)
+      VGlobI global _ [(_, resultType)]
+        | global == prelSTM -> Right (Ordinary, resultType)
+      VGlobI global _ _
+        | global == prelIO || global == prelSTM -> Left ()
+      _ -> Right (Ordinary, carrier)
+
+    patternModeChecks owner depth expectedMode expectedType = go expectedMode expectedType
+      where
+        go mode ty = \case
+          CPWild -> []
+          CPVarM actualMode _ -> maybe [] (\wanted -> modeMismatch owner "pattern binder" wanted actualMode) mode
+          CPLit _ -> []
+          CPCtorM _ constructor universes patterns ->
+            case Map.lookup constructor (csCtors st) of
+              Nothing ->
+                [modeViolation owner "E_BACKENDIR_CONSTRUCTOR_INTERFACE"
+                  ("constructor pattern interface is unavailable for '" <> gnameText constructor <> "'")]
+              Just info ->
+                case specializeConstructorType ctx (Just universes) info of
+                  Nothing ->
+                    [modeViolation owner "E_BACKENDIR_CONSTRUCTOR_ARITY"
+                      ("constructor pattern for '" <> gnameText constructor
+                        <> "' carries the wrong declaration-universe arity")]
+                  Just constructorType ->
+                    case ty >>= constructorPatternObservationSites
+                          ctx False depth (length (ciFields info)) constructorType of
+                      Nothing ->
+                        BackendIRViolation owner (BackendNodeId (-1))
+                          "E_BACKENDIR_CONSTRUCTOR_PATTERN_ALIGNMENT"
+                          ("constructor pattern for '" <> gnameText constructor
+                            <> "' cannot be aligned with its finalized scrutinee type")
+                          [ ("constructorType", renderTerm (quote ctx depth constructorType))
+                          , ("scrutineeType", maybe "<unavailable>" (renderTerm . quote ctx depth) ty)
+                          ]
+                          : concatMap (go Nothing Nothing) patterns
+                      Just sites -> concat
+                        [ go (Just fieldMode) (Just fieldType) pattern'
+                        | (pattern', (fieldMode, fieldType)) <- zip patterns sites
+                        ]
+          CPTuple patterns -> case ty >>= forceRecordType ctx of
+            Just fields -> concat
+              [ go (Just (rfMode field)) (Just (rfType field)) pattern'
+              | (pattern', field) <- zip patterns fields
+              ]
+            Nothing -> concatMap (go Nothing Nothing) patterns
+          CPRecordM fields rest ->
+            let declared = ty >>= forceRecordType ctx
+                fieldChecks = concat
+                  [ case declared >>= findField name of
+                      Just field -> go (Just (rfMode field)) (Just (rfType field)) pattern'
+                      Nothing -> go Nothing Nothing pattern'
+                  | (name, pattern') <- fields
+                  ]
+                restChecks = case rest of
+                  Just (actualMode, _) -> modeMismatch owner "record rest pattern" Ordinary actualMode
+                  Nothing -> []
+             in fieldChecks ++ restChecks
+          CPInject _ pattern' -> go mode Nothing pattern'
+          CPInjectRestM actualMode _ -> maybe [] (\wanted -> modeMismatch owner "variant rest pattern" wanted actualMode) mode
+          CPOr patterns _ -> concatMap (go mode ty) patterns
+          CPAsM actualMode _ pattern' ->
+            maybe [] (\wanted -> modeMismatch owner "as-pattern binder" wanted actualMode) mode
+              ++ go mode ty pattern'
+
+    patternSites depth expectedType = \case
+      CPWild -> []
+      CPVarM mode _ -> [(mode, expectedType)]
+      CPLit _ -> []
+      CPCtorM existentialModes constructor universes patterns ->
+        case Map.lookup constructor (csCtors st) of
+          Nothing -> [(mode, Nothing) | mode <- existentialModes]
+            ++ concatMap (patternSites depth Nothing) patterns
+          Just info ->
+            case specializeConstructorType ctx (Just universes) info of
+              Nothing -> [(mode, Nothing) | mode <- existentialModes]
+                ++ concatMap (patternSites depth Nothing) patterns
+              Just constructorType ->
+                let sites = do
+                      scrutineeType <- expectedType
+                      constructorPatternObservationSites
+                        ctx False depth (length (ciFields info)) constructorType scrutineeType
+                 in [(mode, Nothing) | mode <- existentialModes]
+                      ++ case sites of
+                           Just aligned -> concat
+                             [ patternSites depth (Just fieldType) pattern'
+                             | (pattern', (_, fieldType)) <- zip patterns aligned
+                             ]
+                           Nothing -> concatMap (patternSites depth Nothing) patterns
+      CPTuple patterns -> case expectedType >>= forceRecordType ctx of
+        Just fields -> concat
+          [ patternSites depth (Just (rfType field)) pattern'
+          | (pattern', field) <- zip patterns fields
+          ]
+        Nothing -> concatMap (patternSites depth Nothing) patterns
+      CPRecordM fields rest ->
+        let declared = expectedType >>= forceRecordType ctx
+            fieldSites = concat
+              [ patternSites depth (rfType <$> (declared >>= findField name)) pattern'
+              | (name, pattern') <- fields
+              ]
+            restSites = case rest of
+              Just (mode, name) | name /= "" -> [(mode, expectedType)]
+              _ -> []
+         in fieldSites ++ restSites
+      CPInject _ pattern' -> patternSites depth Nothing pattern'
+      CPInjectRestM mode _ -> [(mode, expectedType)]
+      CPOr (pattern' : _) _ -> patternSites depth expectedType pattern'
+      CPOr [] _ -> []
+      CPAsM mode _ pattern' -> (mode, expectedType) : patternSites depth expectedType pattern'
+
+    termDependencies scopes modes expected term =
+      let depth = length modes
+          bindings = observationBindings scopes modes
+          inferred = termTypeAt globals (csTraits st) ctx depth
+            scopes
+            term
+          -- Beta/zeta invariance comes from the dependency calculus'
+          -- substitution equations. Executing arbitrary finalized Core here
+          -- can unfold recursive globals and monadic actions, making this
+          -- checkpoint diverge instead of failing closed.
+          dependencies =
+            observationDependencies observationOracle bindings
+              (expected <|> inferred)
+              term
+       in dependencies
+
+    observationBindings scopes modes =
+      let localTypes = [scopeSlotType slot | slot <- scopes]
+       in [ ObservationBinding
+              { obMode = mode
+              , obOrigin =
+                  if mode == Parametric
+                    then Just (ParametricExternal index "finalized-kcore-local")
+                    else Nothing
+              , obType = fromMaybe Nothing (indexMaybeLocal index localTypes)
+              , obUniverses =
+                  scopeSlotUniverses =<< indexMaybeLocal index scopes
+              , obDefinition = Nothing
+              }
+          | (index, mode) <- zip [0 ..] modes
+          ]
+
+    termMode scopes modes term =
+      dependenciesMode (termDependencies scopes modes Nothing term)
+
+    hasUnjustifiedDependencies scopes modes classifier term =
+      let dependencies = termDependencies scopes modes (Just classifier) term
+          relative = classifierRelativeDependencies observationOracle
+            (observationBindings scopes modes) (length modes) classifier dependencies
+       in not (Set.null (evidenceRelativeCallableDependencies ctx (length modes) classifier relative))
+
+    -- A declaration may abstract a leading parametric origin only when its Pi
+    -- codomain advertises the exact SS30.2.0 propagation condition. Merely
+    -- placing a parametric binder in the leading telescope does not justify
+    -- returning its witness through an ordinary result.
+    unjustifiedResultDependencies scopes modes advertised classifier term =
+      let resultIsParametricKind =
+            isParametricKindValue ctx (length modes) classifier
+          ordinaryEvidenceTraits =
+            Set.fromList
+              [ trait
+              | (mode, slot) <- zip modes scopes
+              , mode == Ordinary
+              , Just slotType <- [scopeSlotType slot]
+              , VGlobI trait _ _ <- [force ctx slotType]
+              , Map.member trait (csTraits st)
+              ]
+          isAdvertisedBinderOrigin = \case
+            ParametricExternal index _ ->
+              not resultIsParametricKind
+                && fromMaybe False (listToMaybe (drop index advertised))
+            ParametricTraitProjection _ trait _ ->
+              not resultIsParametricKind
+                && trait `Set.member` ordinaryEvidenceTraits
+            _ -> False
+       in Set.filter (not . isAdvertisedBinderOrigin)
+            (termDependencies scopes modes (Just classifier) term)
+
+    modeMismatch owner site expected actual
+      | expected == actual = []
+      | otherwise = [modeViolation owner "E_PARAMETRIC_TYPE_PROMOTION"
+          (site <> " records " <> T.pack (show actual) <> " but its classifier requires " <> T.pack (show expected))]
+
+    promotion owner site = modeViolation owner "E_PARAMETRIC_TYPE_PROMOTION"
+      ("finalized typed Core passes a parametric witness to ordinary " <> site)
+
+    promotionWithDependencies owner site dependencies =
+      BackendIRViolation owner (BackendNodeId (-1)) "E_PARAMETRIC_TYPE_PROMOTION"
+        ("finalized typed Core passes a parametric witness to ordinary " <> site)
+        [("dependencies", T.pack (show (Set.toAscList dependencies)))]
+
+    modeViolation owner code message = BackendIRViolation owner (BackendNodeId (-1)) code message []
+
+-- | Finalized module artifacts are closed typed Core. A rigid level identity
+-- is legal only beneath the term binder that introduced its TypeLevel value;
+-- record-field identities and unresolved level metas must have been replaced
+-- by an outer ceiling or solved before this boundary. Checking this before
+-- erasure prevents malformed imported/generated artifacts from laundering an
+-- escaped identity through the backend's compile-time-only representation.
+validateFinalizedLevelScopes :: CheckState -> [BackendIRViolation]
+validateFinalizedLevelScopes st =
+  concatMap (uncurry checkGlobalTelescope) (Map.toList (csGlobals st))
+    ++ concatMap (uncurry (checkOwner False)) (Map.toList (csCoreBodies st))
+    ++ concatMap (uncurry (checkOwner True)) interfaceTerms
+  where
+    ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+    interfaceTerms = [(owner, quote ec 0 (gdType def)) | (owner, def) <- Map.toList (csGlobals st)]
+    typeLevelOrdDictionaries =
+      Set.fromList
+        [ ieDict entry
+        | entry <- csInstances st
+        , ieTrait entry == gPrel "Ord"
+        , [headTerm] <- [ieHead entry]
+        , isTypeLevelHead headTerm
+        ]
+
+    isTypeLevelHead term = case stripIdentityWrappers term of
+      CGlobal carrier [] -> carrier == prelTypeLevel
+      _ -> False
+
+    authorizedTypeLevelOrdDictionary term = case stripIdentityWrappers term of
+      CGlobal dictionary _ -> dictionary `Set.member` typeLevelOrdDictionaries
+      _ -> False
+
+    stripIdentityWrappers = \case
+      CUniverseLift _ _ _ inner -> stripIdentityWrappers inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripIdentityWrappers inner
+      term -> term
+
+    checkGlobalTelescope owner def =
+      checkTelescope owner 0 emptyAssumptions (gdUniverses def)
+
+    checkOwner interfaceArtifact owner term =
+      let expected =
+            if interfaceArtifact
+              then Nothing
+              else finalizedGlobalType ec <$> Map.lookup owner (csGlobals st)
+       in checkTermExpected expected interfaceArtifact 0 owner (ownerUniverseArity owner)
+            (ownerUniverseAssumptions owner) [] term
+
+    checkTerm interfaceArtifact depth owner universeArity assumptions localSchemas term =
+      checkTermExpected Nothing interfaceArtifact depth owner universeArity assumptions localSchemas term
+
+    checkTermExpected expected interfaceArtifact depth owner universeArity assumptions localSchemas term =
+      levelAt interfaceArtifact owner depth universeArity term
+        ++ globalAt interfaceArtifact owner depth universeArity term
+        ++ localAt interfaceArtifact owner depth universeArity localSchemas term
+        ++ liftAt owner depth universeArity assumptions term
+        ++ schemaLiftAt owner depth universeArity assumptions term
+        ++ case term of
+        CLamM _ actualIcit _ _ body -> case expected of
+          Just (CPiEvidenceM mode formation expectedIcit quantity _ _ relation _ domain codomain)
+            | actualIcit == expectedIcit ->
+                let (assumptionErrors, authenticated) =
+                      authenticateAssumption mode formation expectedIcit quantity domain relation
+                 in assumptionErrors
+                      ++ underBinderExpected authenticated (Just codomain) body
+          _ -> underBinder Nothing body
+        CPiEvidenceM mode formation icit quantity _ _ relation _ dom cod ->
+          let (assumptionErrors, authenticated) =
+                authenticateAssumption mode formation icit quantity dom relation
+           in recur dom ++ assumptionErrors ++ underBinder authenticated cod
+        CApp _ fun arg -> recur fun ++ recur arg
+        CUniverseLift _ _ _ inner -> recur inner
+        CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
+          concatMap recur sourceArguments ++ concatMap recur targetArguments ++ recur inner
+        CCtorI _ _ ann arguments -> maybe [] recur ann ++ concatMap (recur . caTerm) arguments
+        CMatch scrut ann alts ->
+          recur scrut
+            ++ maybe [] recur ann
+            ++ concatMap (checkAlt interfaceArtifact depth owner universeArity assumptions localSchemas) alts
+        CRecordTQ fields ->
+          checkRecordFields interfaceArtifact depth owner universeArity assumptions localSchemas fields
+        CRecordV fields -> concatMap (recur . snd) fields
+        CProj value _ -> recur value
+        CProjAt value _ _ -> recur value
+        CVariantT members -> concatMap recur members
+        CInject _ value -> recur value
+        CLet _ _ ty rhs body ->
+          recur ty
+            ++ checkTermExpected (Just ty) interfaceArtifact depth owner universeArity assumptions localSchemas rhs
+            ++ underBinder Nothing body
+        CLetRec _ _ ty rhs body ->
+          recur ty
+            ++ underBinderExpected Nothing (Just (shiftTerm 1 0 ty)) rhs
+            ++ underBinder Nothing body
+        CLetPolyM _ _ _ telescope ty rhs body ->
+          let innerArity = universeArity + dutParameterCount telescope
+              shiftedAssumptions = shiftOuterAssumptions (dutParameterCount telescope) assumptions
+              innerAssumptions = extendDeclarationAssumptions innerArity shiftedAssumptions ty
+           in checkTelescope owner universeArity assumptions telescope
+                ++ checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas ty
+                ++ checkTermExpected (Just ty) interfaceArtifact depth owner innerArity innerAssumptions localSchemas rhs
+                ++ checkTerm interfaceArtifact (depth + 1) owner universeArity assumptions
+                  (Just telescope : localSchemas) body
+        CLetRecPolyM _ _ _ telescope ty rhs body ->
+          let innerArity = universeArity + dutParameterCount telescope
+              shiftedAssumptions = shiftOuterAssumptions (dutParameterCount telescope) assumptions
+              innerAssumptions = extendDeclarationAssumptions innerArity shiftedAssumptions ty
+              recursiveSchemas = Just telescope : localSchemas
+           in checkTelescope owner universeArity assumptions telescope
+                ++ checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas ty
+                ++ checkTermExpected (Just (shiftTerm 1 0 ty)) interfaceArtifact (depth + 1) owner innerArity innerAssumptions recursiveSchemas rhs
+                ++ checkTerm interfaceArtifact (depth + 1) owner universeArity assumptions recursiveSchemas body
+        CLetRecGroupM telescope definitions body ->
+          let count = length definitions
+              innerArity = universeArity + dutParameterCount telescope
+              shiftedAssumptions = shiftOuterAssumptions (dutParameterCount telescope) assumptions
+              recursiveSchemas = replicate count (Just telescope) ++ localSchemas
+              checkDefinition definition =
+                let definitionAssumptions =
+                      extendDeclarationAssumptions innerArity shiftedAssumptions (clrdType definition)
+                 in checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas (clrdType definition)
+                  ++ checkTermExpected (Just (shiftTerm count 0 (clrdType definition)))
+                    interfaceArtifact (depth + count) owner innerArity definitionAssumptions
+                    recursiveSchemas (clrdRhs definition)
+           in checkTelescope owner universeArity assumptions telescope
+                ++ concatMap checkDefinition definitions
+                ++ checkTerm interfaceArtifact (depth + count) owner universeArity assumptions recursiveSchemas body
+        CDo _ items -> checkItems interfaceArtifact depth owner universeArity assumptions localSchemas items
+        CSealE _ value -> recur value
+        CSigT _ value -> recur value
+        CThunkE value -> recur value
+        CLazyE value -> recur value
+        CForceE value -> recur value
+        CIf cond yes no -> recur cond ++ recur yes ++ recur no
+        CQuote _ slots -> concatMap recur slots
+        _ -> []
+      where
+        recur = checkTerm interfaceArtifact depth owner universeArity assumptions localSchemas
+        underBinder relation =
+          checkTerm interfaceArtifact (depth + 1) owner universeArity
+            (addAssumption relation assumptions) (Nothing : localSchemas)
+        underBinderExpected relation expectedBody =
+          checkTermExpected expectedBody interfaceArtifact (depth + 1) owner universeArity
+            (addAssumption relation assumptions) (Nothing : localSchemas)
+        authenticateAssumption mode formation _icit quantity domain relation =
+          let modeValid =
+                mode == Ordinary
+                  && formation == FormationOrdinary
+                  && quantity == Q0
+              scopedRelationErrors =
+                concatMap
+                  (checkLevel interfaceArtifact owner depth universeArity)
+                  (maybe [] (\(lower, upper) -> [lower, upper]) relation)
+           in case authenticatedLevelAssumptionWith authorizedTypeLevelOrdDictionary
+                (artifactTermAsLevel depth) depth domain relation of
+                Left message ->
+                  ( scopedRelationErrors
+                      ++ [scopeViolation "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" owner LZero (T.unpack message)]
+                  , Nothing
+                  )
+                Right authenticated
+                  | isJust authenticated && not modeValid ->
+                      ( scopedRelationErrors
+                          ++ [ scopeViolation
+                                "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
+                                owner
+                                LZero
+                                "level assumptions require an ordinary-formation, ordinary-observation, quantity-0 proof binder"
+                             ]
+                      , Nothing
+                      )
+                  | otherwise -> (scopedRelationErrors, authenticated)
+
+    checkRecordFields interfaceArtifact depth owner universeArity assumptions localSchemas =
+      go Map.empty 0 assumptions
+      where
+        go _ _ _ [] = []
+        go fieldLevels fieldCount fieldAssumptions (field : rest) =
+          let fieldDepth = depth + fieldCount
+              scopedType = scopeRecordLevelFields depth fieldCount fieldLevels (rfType field)
+              scopedRelation =
+                scopeRecordLevelAssumption fieldLevels (rfLevelAssumption field)
+              (assumptionErrors, authenticated) =
+                authenticateRecordAssumption fieldDepth field scopedType scopedRelation
+              nextAssumptions = addAssumption authenticated fieldAssumptions
+              nextFields =
+                if coreTypeIsTypeLevel scopedType
+                  then Map.insert (rfName field) fieldDepth fieldLevels
+                  else fieldLevels
+           in assumptionErrors
+                ++ checkTerm interfaceArtifact fieldDepth owner universeArity fieldAssumptions
+                  (replicate fieldCount Nothing ++ localSchemas) scopedType
+                ++ go nextFields (fieldCount + 1) nextAssumptions rest
+
+        authenticateRecordAssumption fieldDepth field domain relation =
+          let modeValid =
+                rfMode field == Ordinary
+                  && rfFormation field == FormationOrdinary
+                  && rfQ field == Q0
+              scopedRelationErrors =
+                concatMap
+                  (checkLevel interfaceArtifact owner fieldDepth universeArity)
+                  (maybe [] (\(lower, upper) -> [lower, upper]) relation)
+           in case authenticatedLevelAssumptionWith authorizedTypeLevelOrdDictionary
+                (artifactTermAsLevel fieldDepth) fieldDepth domain relation of
+                Left message ->
+                  ( scopedRelationErrors
+                      ++ [scopeViolation "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" owner LZero (T.unpack message)]
+                  , Nothing
+                  )
+                Right authenticated
+                  | isJust authenticated && not modeValid ->
+                      ( scopedRelationErrors
+                          ++ [ scopeViolation
+                                "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
+                                owner
+                                LZero
+                                "record level assumptions require an ordinary-formation, ordinary-observation, quantity-0 proof field"
+                             ]
+                      , Nothing
+                      )
+                  | otherwise -> (scopedRelationErrors, authenticated)
+
+    checkAlt interfaceArtifact depth owner universeArity assumptions localSchemas (CaseAlt pat guard body) =
+      let inner = depth + patBindersC pat
+          schemas = replicate (patBindersC pat) Nothing ++ localSchemas
+       in checkPattern interfaceArtifact depth owner universeArity pat
+            ++ maybe [] (checkTerm interfaceArtifact inner owner universeArity assumptions schemas) guard
+            ++ checkTerm interfaceArtifact inner owner universeArity assumptions schemas body
+
+    checkPattern interfaceArtifact depth owner universeArity = \case
+      CPWild -> []
+      CPVarM {} -> []
+      CPLit {} -> []
+      CPCtorM _ constructor universes patterns ->
+        concatMap (checkLevel interfaceArtifact owner depth universeArity) universes
+          ++ concatMap (checkPattern interfaceArtifact depth owner universeArity) patterns
+          ++ case globalUniverseArity constructor of
+            Nothing ->
+              [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner LZero
+                ("constructor pattern interface is unavailable for " <> T.unpack (gKey constructor))]
+            Just expected
+              | expected == length universes -> []
+              | otherwise ->
+                  [scopeViolation "E_UNIVERSE_SCHEMA_ARITY_MISMATCH" owner LZero
+                    ("constructor pattern " <> T.unpack (gKey constructor) <> " expects "
+                      <> show expected <> " universe arguments, found " <> show (length universes))]
+      CPTuple patterns -> concatMap (checkPattern interfaceArtifact depth owner universeArity) patterns
+      CPRecordM fields _ -> concatMap (checkPattern interfaceArtifact depth owner universeArity . snd) fields
+      CPInject _ pattern' -> checkPattern interfaceArtifact depth owner universeArity pattern'
+      CPInjectRestM {} -> []
+      CPOr patterns _ -> concatMap (checkPattern interfaceArtifact depth owner universeArity) patterns
+      CPAsM _ _ pattern' -> checkPattern interfaceArtifact depth owner universeArity pattern'
+
+    checkItems _ _ _ _ _ _ [] = []
+    checkItems interfaceArtifact depth owner universeArity assumptions localSchemas (item : rest) = case item of
+      KBind _ pat action _ -> checkPat pat ++ recur action ++ continueUnder (patBindersC pat) rest
+      KLet _ pat value -> checkPat pat ++ recur value ++ continueUnder (patBindersC pat) rest
+      KLetQ pat value mElse ->
+        checkPat pat ++ recur value
+          ++ maybe []
+            (\(elsePat, elseBody) ->
+              let count = patBindersC elsePat
+               in checkPat elsePat
+                    ++ checkTerm interfaceArtifact (depth + count) owner universeArity assumptions
+                    (replicate count Nothing ++ localSchemas) elseBody)
+            mElse
+          ++ continueUnder (patBindersC pat) rest
+      KExpr value -> recur value ++ continue rest
+      KVarItem _ initial action _ -> recur initial ++ recur action ++ continueUnder 1 rest
+      KAssign ref _ rhs action _ -> recur ref ++ recur rhs ++ recur action ++ continue rest
+      KReturn value -> recur value ++ continue rest
+      KBreak _ -> continue rest
+      KContinue _ -> continue rest
+      KWhile _ cond body mElse ->
+        checkCond interfaceArtifact depth owner universeArity assumptions localSchemas cond
+          ++ nested body ++ maybe [] nested mElse ++ continue rest
+      KFor _ pat source body mElse -> checkPat pat ++ recur source ++ nestedUnder (patBindersC pat) body ++ maybe [] nested mElse ++ continue rest
+      KIf arms mElse -> concatMap (\(cond, body) -> recur cond ++ nested body) arms ++ maybe [] nested mElse ++ continue rest
+      KDefer _ action -> recur action ++ continue rest
+      KUsing pat acquire release -> checkPat pat ++ recur acquire ++ recur release ++ continueUnder (patBindersC pat) rest
+      KSubDo _ body -> nested body ++ continue rest
+      where
+        recur = checkTerm interfaceArtifact depth owner universeArity assumptions localSchemas
+        checkPat = checkPattern interfaceArtifact depth owner universeArity
+        continue = checkItems interfaceArtifact depth owner universeArity assumptions localSchemas
+        continueUnder count = checkItems interfaceArtifact (depth + count) owner universeArity assumptions
+          (replicate count Nothing ++ localSchemas)
+        nested = checkItems interfaceArtifact depth owner universeArity assumptions localSchemas
+        nestedUnder count = checkItems interfaceArtifact (depth + count) owner universeArity assumptions
+          (replicate count Nothing ++ localSchemas)
+
+    checkCond interfaceArtifact depth owner universeArity assumptions localSchemas = \case
+      KCondPure term -> checkTerm interfaceArtifact depth owner universeArity assumptions localSchemas term
+      KCondAction term -> checkTerm interfaceArtifact depth owner universeArity assumptions localSchemas term
+
+    addAssumption Nothing assumptions = assumptions
+    addAssumption (Just (lower, upper)) assumptions = insertAssumption lower upper assumptions
+
+    -- Imported transparent aliases are represented by a typed semantic identity
+    -- in the finalized module artifact. Reuse that authority when replaying an
+    -- explicit level-proof binder: source spelling and reducibility are not part
+    -- of the backend trust boundary.
+    artifactTermAsLevel depth term =
+      termAsLevel depth normalized <|> structuredOrNeutral normalized
+      where
+        stripped = stripIdentityWrappers term
+        normalized = quote ec depth (force ec (eval ec (rigidEnv depth) stripped))
+
+        structuredOrNeutral candidate = case spineOfTerm candidate of
+          (CGlobal operator _, arguments)
+            | operator == prelTypeLevelOmega || operator == prelTypeLevelOmegaAlias
+            , null arguments -> Just LOmega
+            | Just identity <- builtinIdentity operator <|> Map.lookup operator (csLevelOperatorAliases st) ->
+                applyIdentity identity [argument | (Expl, argument) <- arguments]
+          _ -> LNeutral . neutralLevelTermAtom <$> coreToNeutralLevelTerm depth candidate
+
+        builtinIdentity operator
+          | operator == prelTypeLevelZero = Just LevelOperatorZero
+          | operator == prelTypeLevelOne = Just LevelOperatorOne
+          | operator == prelTypeLevelFromInteger = Just LevelOperatorFromInteger
+          | operator == prelTypeLevelSucc = Just LevelOperatorSucc
+          | operator == prelTypeLevelAdd = Just LevelOperatorAdd
+          | operator == prelTypeLevelMax = Just LevelOperatorMax
+          | otherwise = Nothing
+
+        applyIdentity identity arguments = case identity of
+          LevelOperatorZero | null arguments -> Just LZero
+          LevelOperatorOne | null arguments -> Just (LFinite 1)
+          LevelOperatorSucc -> levelSucc <$> (singleArgument arguments >>= artifactTermAsLevel depth)
+          LevelOperatorAdd -> uncurry levelAdd <$> lastTwo arguments
+          LevelOperatorMax -> uncurry levelMax <$> lastTwo arguments
+          LevelOperatorFromInteger -> do
+            CLit (LitInt value) <- singleArgument arguments
+            guard (value >= 0 && value <= fromIntegral (maxBound :: Int))
+            pure (LFinite (fromIntegral value))
+          LevelOperatorLt -> Nothing
+          LevelOperatorLe -> Nothing
+
+        singleArgument [argument] = Just argument
+        singleArgument _ = Nothing
+
+        lastTwo arguments = case reverse arguments of
+          right : left : [] ->
+            (,) <$> artifactTermAsLevel depth left <*> artifactTermAsLevel depth right
+          _ -> Nothing
+
+    levelAt interfaceArtifact owner depth universeArity = \case
+      CSort level -> checkLevel interfaceArtifact owner depth universeArity level
+      CLevel level -> checkLevel interfaceArtifact owner depth universeArity level
+      _ -> []
+
+    liftAt owner depth universeArity assumptions term@CUniverseLift {} =
+      [ scopeViolation "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" owner LZero
+            (T.unpack message <> " at " <> T.unpack (renderTerm term))
+        | message <- validateUniverseLiftEvidenceUnder assumptions depth universeArity term
+        ]
+    liftAt _ _ _ _ _ = []
+
+    -- A nominal lift is runtime identity only because its independently
+    -- verified summary says so. Replay that authority at the final typed-Core
+    -- boundary before KBackendIR erases the node; neither emitter is allowed
+    -- to reconstruct this judgment from names, roles, or representation shape.
+    schemaLiftAt owner depth universeArity assumptions term = case term of
+      CSchemaLift family source target roles evidence certificate sourceArguments targetArguments inner ->
+        case Map.lookup family (csGlobals st) >>= gdNominalSummary of
+          Nothing ->
+            [schemaViolation "E_KCORE_SCHEMA_CERTIFICATE_INVALID" owner
+              ("schema lift for " <> gKey family <> " has no verified nominal interface summary")]
+          Just summary
+            | not (verifyNominalCumulativitySummary summary) ->
+                [schemaViolation "E_KCORE_SCHEMA_CERTIFICATE_INVALID" owner
+                  ("schema lift for " <> gKey family <> " cites an invalid nominal interface summary")]
+            | ncsFamilyIdentity summary /= gKey family ->
+                [schemaViolation "E_KCORE_SCHEMA_CERTIFICATE_INVALID" owner
+                  ("schema lift for " <> gKey family <> " cites a summary for " <> ncsFamilyIdentity summary)]
+            | otherwise -> certificateChecks summary ++ useChecks summary
+        where
+          familyDefinition = Map.lookup family (csGlobals st)
+          familyTelescope = gdUniverses <$> familyDefinition
+          familyConstraints =
+            maybe []
+              (\definition ->
+                declarationUniverseConstraints
+                  (dutParameterCount (gdUniverses definition))
+                  (finalizedGlobalType ec definition))
+              familyDefinition
+          certificateChecks summary =
+            [ schemaViolation "E_KCORE_SCHEMA_CERTIFICATE_INVALID" owner reason
+            | (invalid, reason) <-
+                [ (certificate /= ncsCertificateId summary, "schema lift certificate identity disagrees with the verified family summary")
+                , (not (ncsRepresentationIdentity summary), "schema lift certificate does not prove runtime representation identity")
+                , (maybe True ((/= length (ncsRoles summary)) . dutParameterCount) familyTelescope,
+                    "schema lift role arity disagrees with the family declaration telescope")
+                ]
+            , invalid
+            ]
+          useChecks summary =
+            shapeChecks summary
+              ++ constraintChecks "source" source
+              ++ constraintChecks "target" target
+              ++ concat
+                [ roleCheck role roleEvidence lower upper
+                | (role, roleEvidence, lower, upper) <- zip4 roles evidence source target
+                ]
+          shapeChecks summary =
+            [ schemaViolation "E_UNIVERSE_SCHEMA_LIFT_INVALID" owner reason
+            | (invalid, reason) <-
+                [ (roles /= ncsRoles summary, "schema lift role vector disagrees with the verified family summary")
+                , (length source /= length roles, "schema lift source universe vector has the wrong arity")
+                , (length target /= length roles, "schema lift target universe vector has the wrong arity")
+                , (length evidence /= length roles, "schema lift role-evidence vector has the wrong arity")
+                , (length sourceArguments /= ncsSaturationArity summary,
+                    "schema lift source family application is not fully saturated")
+                , (length targetArguments /= ncsSaturationArity summary,
+                    "schema lift target family application is not fully saturated")
+                ]
+            , invalid
+            ]
+          constraintChecks endpoint levels = case familyTelescope of
+            Nothing -> []
+            Just _telescope ->
+              [ schemaViolation "E_UNIVERSE_SCHEMA_LIFT_INVALID" owner
+                  ("schema lift " <> endpoint <> " instance does not satisfy the family declaration constraints")
+              | any (not . constraintHolds levels) familyConstraints
+              ]
+          constraintHolds levels constraint =
+            proveLevelLeq assumptions
+              (substituteLevelParams levels (ucLower constraint))
+              (substituteLevelParams levels (ucUpper constraint)) == Proved
+          roleCheck role roleEvidence lower upper = case (role, roleEvidence) of
+            (Invariant, SchemaInvariantEvidence)
+              | proveLevelEq assumptions lower upper == Proved -> []
+            (Irrelevant, SchemaIrrelevantEvidence) -> []
+            (Covariant, SchemaCovariantEvidence proof)
+              | null (validateUniverseLiftEvidenceUnder assumptions depth universeArity
+                  (CUniverseLift lower upper proof inner)) -> []
+            _ ->
+              [schemaViolation "E_UNIVERSE_SCHEMA_LIFT_INVALID" owner
+                "schema lift role evidence does not prove its declared role obligation"]
+      _ -> []
+
+    globalAt interfaceArtifact owner depth universeArity = \case
+      CGlobal target universes ->
+        referenceChecks target universes
+      CCtorI target universes _ _ ->
+        referenceChecks target universes
+      _ -> []
+      where
+        referenceChecks target universes =
+          concatMap (checkLevel interfaceArtifact owner depth universeArity) universes
+            ++ case globalUniverseArity target of
+            -- Runtime primitives and the synthetic @__this@ receiver are
+            -- intentionally not declarations in 'csGlobals'.  Their semantic
+            -- availability is checked by the producer that introduces them;
+            -- this boundary can enforce a universe arity only when a typed
+            -- global or constructor declaration supplies that arity.
+            Nothing -> []
+            Just expected
+              | expected == length universes -> []
+              | otherwise ->
+                  [scopeViolation "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" owner LZero
+                    ("global " <> T.unpack (gKey target) <> " expects " <> show expected
+                      <> " hidden universe arguments, found " <> show (length universes))]
+
+    localAt interfaceArtifact owner depth universeArity localSchemas = \case
+      CVar index ->
+        case drop index localSchemas of
+          Just telescope : _
+            | dutParameterCount telescope > 0 ->
+                [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner LZero
+                  "universe-polymorphic local occurrence is missing its explicit static instantiation"]
+          _ -> []
+      CLocal index universes ->
+        concatMap (checkLevel interfaceArtifact owner depth universeArity) universes
+          ++ case drop index localSchemas of
+            Just telescope : _
+              | length universes == dutParameterCount telescope -> []
+              | otherwise ->
+                  [ scopeViolation "E_UNIVERSE_SCHEMA_ARITY_MISMATCH" owner LZero
+                      ("local declaration expects " <> show (dutParameterCount telescope)
+                        <> " universe arguments, found " <> show (length universes))
+                  ]
+            Nothing : _ ->
+              [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner LZero
+                "universe-specialized local occurrence has no local declaration schema"]
+            [] ->
+              [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner LZero
+                "universe-specialized local occurrence is out of term scope"]
+      _ -> []
+
+    globalUniverseArity target =
+      (dutParameterCount . gdUniverses <$> Map.lookup target (csGlobals st))
+        <|> (dutParameterCount . ciUniverses <$> Map.lookup target (csCtors st))
+
+    ownerUniverseArity owner =
+      maybe 0 (dutParameterCount . gdUniverses) (Map.lookup owner (csGlobals st))
+
+    ownerUniverseAssumptions owner =
+      maybe emptyAssumptions
+        (\definition ->
+          foldr
+            (\constraint -> insertAssumption (ucLower constraint) (ucUpper constraint))
+            emptyAssumptions
+            ( declarationUniverseConstraints
+                (dutParameterCount (gdUniverses definition))
+                (finalizedGlobalType ec definition)
+            ))
+        (Map.lookup owner (csGlobals st))
+
+    checkLevel interfaceArtifact owner depth universeArity level
+      | badVars@(_ : _) <- filter (>= depth) (levelVars level) =
+          [scopeViolation (scopeCode interfaceArtifact) owner level ("unbound rigid level identities " <> show badVars)]
+      | badParams@(_ : _) <- filter (\parameter -> parameter < 0 || parameter >= universeArity) (levelParams level) =
+          [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner level ("unbound declaration-universe parameters " <> show badParams)]
+      | badFields@(_ : _) <- levelFields level =
+          [scopeViolation (scopeCode interfaceArtifact) owner level ("escaped record-field level identities " <> show badFields)]
+      | badMetas@(_ : _) <- levelMetas level =
+          [scopeViolation "E_UNSOLVED_METAVARIABLE" owner level ("unsolved level metavariables " <> show badMetas)]
+      | otherwise = []
+
+    checkTelescope owner outerArity outerAssumptions telescope =
+      let count = dutParameterCount telescope
+          shapeChecks =
+            [scopeViolation "E_UNIVERSE_SCHEMA_SCOPE" owner LZero
+              "declaration universe telescope has a negative parameter count"
+            | count < 0]
+          consistencyChecks =
+            [scopeViolation "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" owner LZero
+              "declaration universe telescope constraints are inconsistent"
+            | not (assumptionsConsistent outerAssumptions)]
+       in shapeChecks ++ consistencyChecks
+
+    shiftOuterAssumptions count outerAssumptions =
+      foldr
+        (\(lower, upper) -> insertAssumption
+          (abstractLocalLevelParams count lower)
+          (abstractLocalLevelParams count upper))
+        emptyAssumptions
+        (assumptionsList outerAssumptions)
+
+    extendDeclarationAssumptions arity assumptions ty =
+      foldr
+        (\constraint -> insertAssumption (ucLower constraint) (ucUpper constraint))
+        assumptions
+        (declarationUniverseConstraints arity ty)
+
+    scopeCode True = "E_UNSOLVED_METAVARIABLE"
+    scopeCode False = "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
+
+    scopeViolation code owner level reason =
+      BackendIRViolation
+        { bivBody = owner
+        , bivNode = BackendNodeId (-1)
+        , bivCode = code
+        , bivMessage =
+            "finalized typed Core declaration " <> gKey owner <> " contains " <> T.pack reason
+              <> " in universe " <> renderLevel level
+        , bivPayloadFields = []
+        }
+
+    schemaViolation code owner reason =
+      BackendIRViolation
+        { bivBody = owner
+        , bivNode = BackendNodeId (-1)
+        , bivCode = code
+        , bivMessage = "finalized typed Core declaration " <> gKey owner <> " contains " <> reason
+        , bivPayloadFields = []
+        }
 
 validateKBackendIR :: KBackendIR -> [BackendIRViolation]
 validateKBackendIR (KBackendIR bodies loweringViolations) =
@@ -353,32 +1907,49 @@ validatePattern owner meta layoutMap = \case
   BPWild -> []
   BPVar {} -> []
   BPLit {} -> []
-  BPCtor g ps ->
-    ctorArityFinding g ps
-      ++ concatMap (validatePattern owner meta layoutMap) ps
-  BPTuple ps -> concatMap (validatePattern owner meta layoutMap) ps
+  BPCtor g runtimeArity fields ->
+    ctorArityFinding g runtimeArity fields
+      ++ positionalFindings "constructor" runtimeArity fields
+      ++ concatMap (validatePattern owner meta layoutMap . snd) fields
+  BPTuple runtimeArity fields ->
+    positionalFindings "tuple" runtimeArity fields
+      ++ concatMap (validatePattern owner meta layoutMap . snd) fields
   BPRecord fs _ -> concatMap (validatePattern owner meta layoutMap . snd) fs
   BPInject _ p -> validatePattern owner meta layoutMap p
   BPInjectRest {} -> []
   BPOr ps _ -> concatMap (validatePattern owner meta layoutMap) ps
   BPAs _ p -> validatePattern owner meta layoutMap p
   where
-    ctorArityFinding g ps =
+    ctorArityFinding g runtimeArity _ =
       case Map.lookup g layoutMap of
         Just layout ->
           validateCtorLayout owner meta layout
             ++ [ violation owner meta "W_BACKENDIR_CTOR_PATTERN_FIELD_MISMATCH" $
-                  "constructor pattern has "
-                    <> show (length ps)
-                    <> " runtime field pattern(s), but layout records "
+                  "constructor pattern records "
+                    <> show runtimeArity
+                    <> " runtime field(s), but layout records "
                     <> show (bclRuntimeFields layout)
                     <> " runtime field(s)"
-               | length ps /= bclRuntimeFields layout
+               | runtimeArity /= bclRuntimeFields layout
                ]
         Nothing ->
           [ violation owner meta "W_BACKENDIR_CTOR_PATTERN_LAYOUT_MISSING" $
               "constructor pattern has no matching layout metadata entry for " <> T.unpack (gKey g)
           ]
+    positionalFindings shape runtimeArity fields =
+      [ violation owner meta "W_BACKENDIR_PATTERN_FIELD_INDEX_INVALID" $
+          shape <> " pattern runtime field index " <> show index
+            <> " is outside arity " <> show runtimeArity
+      | (index, _) <- fields
+      , index < 0 || index >= runtimeArity
+      ]
+        ++ [ violation owner meta "W_BACKENDIR_PATTERN_FIELD_INDEX_DUPLICATE" $
+               shape <> " pattern repeats runtime field index " <> show index
+           | index <- duplicates (map fst fields)
+           ]
+    duplicates indices =
+      Map.keys
+        (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(index, 1 :: Int) | index <- indices]))
 
 validateBranchDropsItemMeta :: GName -> BackendMeta -> [BackendIRViolation]
 validateBranchDropsItemMeta owner meta
@@ -614,8 +2185,8 @@ addMaybeBinders bs env = foldr addMaybeBinder env bs
 
 duplicateNodeFindings :: GName -> [BackendMeta] -> [BackendIRViolation]
 duplicateNodeFindings owner metas =
-  [ BackendIRViolation owner (BackendNodeId n) (T.pack "W_BACKENDIR_DUPLICATE_NODE_ID") $
-      T.pack ("backend node id is not unique within body: " <> show n)
+  [ BackendIRViolation owner (BackendNodeId n) (T.pack "W_BACKENDIR_DUPLICATE_NODE_ID")
+      (T.pack ("backend node id is not unique within body: " <> show n)) []
   | (n, count) <- Map.toList counts
   , count > (1 :: Int)
   ]
@@ -653,7 +2224,7 @@ duplicateUseFindings owner meta uses =
 
 violation :: GName -> BackendMeta -> String -> String -> BackendIRViolation
 violation owner meta code msg =
-  BackendIRViolation owner (bmNodeId meta) (T.pack code) (T.pack msg)
+  BackendIRViolation owner (bmNodeId meta) (T.pack code) (T.pack msg) []
 
 collectMetas :: BackendTerm -> [BackendMeta]
 collectMetas t =
@@ -1448,10 +3019,11 @@ backendMeta = \case
   BForce meta _ -> meta
   BIf meta _ _ _ -> meta
 
-lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName CtorInfo -> Map GName TraitInfo -> GName -> Term -> (BackendBody, [BackendIRViolation])
-lowerBody ctx globals ctors traits g body =
-  let (body0, st') = runState (runReaderT go static) (LowerState 0 0 [])
-      body' = annotateBackendBodyOwnership body0
+lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName CtorInfo -> Map GName TraitInfo -> Set GName -> GName -> Term -> (BackendBody, [BackendIRViolation])
+lowerBody ctx globals ctors traits builtinIntegerLiteralDicts g body =
+  let (body0, st') = runState (runReaderT go static) (LowerState 0 0 [] [])
+      bodyWithErasures = body0 {bbErasures = bbErasures body0 ++ reverse (lstErasures st')}
+      body' = annotateBackendBodyOwnership bodyWithErasures
    in (body', reverse (lstLoweringViolations st'))
   where
     static =
@@ -1460,18 +3032,19 @@ lowerBody ctx globals ctors traits g body =
         , lsGlobals = globals
         , lsCtors = ctors
         , lsTraits = traits
+        , lsBuiltinIntegerLiteralDicts = builtinIntegerLiteralDicts
         , lsCtx = ctx
         }
     paramSites = maybe [] (paramLowerSites ctx . gdType) (Map.lookup g globals)
     go = do
-      (params, scopes, root0) <- lowerLeadingParams paramSites [] [] body
+      (params, erasures, scopes, root0) <- lowerLeadingParams paramSites [] [] [] body
       if bodyRuntimeErased g root0
         then do
           meta <- metaAt
-          pure BackendBody {bbOwner = g, bbParams = [], bbRoot = BUnit meta}
+          pure BackendBody {bbOwner = g, bbParams = [], bbErasures = erasures, bbRoot = BUnit meta}
         else do
           root <- lowerTermExpected (bodyResultExpected (length scopes)) root0 (length scopes) scopes
-          pure BackendBody {bbOwner = g, bbParams = params, bbRoot = root}
+          pure BackendBody {bbOwner = g, bbParams = params, bbErasures = erasures, bbRoot = root}
 
     bodyRuntimeErased owner root =
       Repr.resultIsProofBodyGlobal globals ctx owner
@@ -1488,8 +3061,7 @@ globalResultIsKind ctx = go 0
       case force ctx ty of
         VPi _ _ _ _ _ (Closure env cod) ->
           go (lvl + 1) (eval ctx (VRigid lvl [] : env) cod)
-        VSort {} -> True
-        _ -> False
+        result -> Repr.valueDomainIsKind ctx lvl result
 
 resultTypeAfterParams :: EvalCtx -> Int -> Value -> Maybe Value
 resultTypeAfterParams ctx count = go 0 count
@@ -1506,20 +3078,33 @@ paramLowerSites ctx = go 0
   where
     go lvl ty =
       case force ctx ty of
-        VPi ic q borrowed _ dom (Closure env cod) ->
+        VPiM mode ic q borrowed _ dom (Closure env cod) ->
           let x = VRigid lvl []
               domV = force ctx dom
               codV = eval ctx (x : env) cod
               site =
                 ParamLowerSite
                   { plsIcit = ic
+                  , plsMode = mode
                   , plsQ = q
                   , plsBorrowed = borrowed
-                  , plsErased = Repr.runtimeErasedParam ctx lvl q domV
+                  , plsErasure = erasureProvenanceForDomain ctx lvl mode q domV
                   , plsDomain = domV
                   }
            in site : go (lvl + 1) codV
         _ -> []
+
+
+erasureProvenanceForDomain :: EvalCtx -> Int -> ObservationMode -> Q -> Value -> Maybe ErasureProvenance
+erasureProvenanceForDomain ctx lvl mode q dom
+  | Repr.valueDomainIsKind ctx lvl dom = case mode of
+      Ordinary -> Just ErasedOrdinaryTypeCode
+      Parametric -> case force ctx dom of
+        VSort rho -> Just (ErasedParametricTypeWitness rho)
+        _ -> Just ErasedParametricTypeFormer
+  | Repr.resultIsProofValue ctx lvl dom = Just ErasedProofOrTraitEvidence
+  | q == Q0 = Just ErasedByQuantity
+  | otherwise = Nothing
 
 qDroppable :: Q -> Bool
 qDroppable = \case
@@ -1529,17 +3114,27 @@ qDroppable = \case
   Q1 -> False
   QGe1 -> False
 
-lowerLeadingParams :: [ParamLowerSite] -> [BackendParam] -> ScopeStack -> Term -> Lower ([BackendParam], ScopeStack, Term)
-lowerLeadingParams sites params scopes = \case
-  CLam ic q nm body -> do
-    let (declQ, borrowed, erased, mTy, sites') = case takeMatchingParam ic sites of
-          Just (site, rest) -> (plsQ site, plsBorrowed site, plsErased site, Just (plsDomain site), rest)
-          Nothing -> (q, False, q == Q0, Nothing, sites)
+lowerLeadingParams :: [ParamLowerSite] -> [BackendParam] -> [BackendErasure] -> ScopeStack -> Term -> Lower ([BackendParam], [BackendErasure], ScopeStack, Term)
+lowerLeadingParams sites params erasures scopes = \case
+  CLamM mode ic q nm body -> do
+    let (declMode, declQ, borrowed, provenance, mTy, sites') = case takeMatchingParam ic sites of
+          Just (site, rest) -> (plsMode site, plsQ site, plsBorrowed site, plsErasure site, Just (plsDomain site), rest)
+          Nothing -> (mode, q, False, if q == Q0 then Just ErasedByQuantity else Nothing, Nothing, sites)
+        erased = isJust provenance
+    when (declMode /= mode) $ do
+      mismatchMeta <- metaAt
+      recordLoweringViolation mismatchMeta "E_PARAMETRIC_TYPE_PROMOTION"
+        ("lambda observation mode disagrees with its declared parameter: " <> T.pack (show mode)
+          <> " vs " <> T.pack (show declMode))
+    whenJust provenance $ \reason -> do
+      erasureMeta <- metaAt
+      recordErasureAt erasureMeta ErasedParameterSite ic nm reason
     mb <- if erased then pure Nothing else binderAtWith declQ borrowed (T.pack ("parameter " <> T.unpack nm))
-    let scopes' = ScopeSlot (mbId mb) mTy : scopes
+    let scopes' = ScopeSlot (mbId mb) mTy Nothing : scopes
         params' = params ++ [BackendParam ic nm mb | not erased]
-    lowerLeadingParams sites' params' scopes' body
-  t -> pure (params, scopes, t)
+        erasures' = erasures
+    lowerLeadingParams sites' params' erasures' scopes' body
+  t -> pure (params, erasures, scopes, t)
   where
     mbId = fmap bbBinderId
     takeMatchingParam _ [] = Nothing
@@ -1547,6 +3142,9 @@ lowerLeadingParams sites params scopes = \case
       | ic == plsIcit site = Just (site, rest)
       | otherwise =
           second (site :) <$> takeMatchingParam ic rest
+
+    whenJust Nothing _ = pure ()
+    whenJust (Just value) action = action value
 
 second :: (b -> c) -> (a, b) -> (a, c)
 second f (a, b) = (a, f b)
@@ -1556,14 +3154,93 @@ lowerTerm = lowerTermExpected Nothing
 
 lowerTermExpected :: Maybe Value -> Term -> Int -> ScopeStack -> Lower BackendTerm
 lowerTermExpected expected term depth scopes = case term of
+  CUniverseLift _ _ _ inner -> do
+    owner <- asks lsOwner
+    globals <- asks lsGlobals
+    ctx <- asks lsCtx
+    let ownerUniverses = maybe emptyDeclarationUniverseTelescope gdUniverses (Map.lookup owner globals)
+        universeArity = dutParameterCount ownerUniverses
+        ownerConstraints =
+          maybe []
+            (declarationUniverseConstraints universeArity . finalizedGlobalType ctx)
+            (Map.lookup owner globals)
+        assumptions =
+          foldr
+            (\constraint -> insertAssumption (ucLower constraint) (ucUpper constraint))
+            emptyAssumptions
+            ownerConstraints
+    forM_ (validateUniverseLiftEvidenceUnder assumptions depth universeArity term) $ \message -> do
+      meta <- metaAt
+      loweringViolation meta "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" message
+    lowerTermExpected expected inner depth scopes
+  CSchemaLift family source target _ _ _ sourceArguments targetArguments inner -> do
+    owner <- asks lsOwner
+    globals <- asks lsGlobals
+    traits <- asks lsTraits
+    ctx <- asks lsCtx
+    meta <- metaAt
+    let ownerUniverses = maybe emptyDeclarationUniverseTelescope gdUniverses (Map.lookup owner globals)
+        universeArity = dutParameterCount ownerUniverses
+        ownerConstraints =
+          maybe []
+            (declarationUniverseConstraints universeArity . finalizedGlobalType ctx)
+            (Map.lookup owner globals)
+        assumptions =
+          foldr
+            (\constraint -> insertAssumption (ucLower constraint) (ucUpper constraint))
+            emptyAssumptions
+            ownerConstraints
+        actualSource = termTypeAt globals traits ctx depth scopes inner
+        sourceErrors =
+          schemaLiftInstanceErrors ctx depth assumptions "source" family source sourceArguments actualSource
+        targetErrors =
+          case expected of
+            Nothing ->
+              ["schema lift target has no typed expectation at the erasure boundary"]
+            Just targetType ->
+              schemaLiftInstanceErrors
+                ctx depth assumptions "target" family target targetArguments (Just targetType)
+    forM_ (sourceErrors ++ targetErrors) $ \message ->
+      recordLoweringViolation meta "E_UNIVERSE_SCHEMA_LIFT_INVALID" message
+    lowerTermExpected expected inner depth scopes
   CVar i -> do
     meta <- metaAt
-    let runtimeIdx = length [() | ScopeSlot (Just _) _ <- take i scopes]
+    let runtimeIdx = length [() | ScopeSlot (Just _) _ _ <- take i scopes]
     case drop i scopes of
-      ScopeSlot (Just _) _ : _ -> pure (BVar meta Nothing runtimeIdx)
-      ScopeSlot Nothing _ : _ -> erasedRuntimeAt meta "erased variable occurrence reached a runtime BackendIR value position"
+      ScopeSlotData _ _ telescope (Just alias) : _ -> do
+        when (maybe False ((> 0) . dutParameterCount) telescope) $
+          recordLoweringViolation meta "E_UNIVERSE_SCHEMA_SCOPE"
+            "a universe-polymorphic local recursive member was referenced without an explicit universe instantiation"
+        lowerRuntimeLocalAlias meta scopes alias
+      ScopeSlot (Just _) _ _ : _ -> pure (BVar meta Nothing runtimeIdx)
+      ScopeSlot Nothing _ _ : _ -> erasedRuntimeAt meta "erased variable occurrence reached a runtime BackendIR value position"
       _ -> erasedRuntimeAt meta "out-of-scope variable occurrence reached a runtime BackendIR value position"
-  CGlob g -> do
+  CLocal i universes -> do
+    meta <- metaAt
+    let runtimeIdx = length [() | ScopeSlot (Just _) _ _ <- take i scopes]
+    case drop i scopes of
+      ScopeSlotData _ _ (Just telescope) (Just alias) : _ -> do
+        when (length universes /= dutParameterCount telescope) $
+          recordLoweringViolation meta "E_UNIVERSE_SCHEMA_ARITY_MISMATCH"
+            ( "local declaration expects " <> T.pack (show (dutParameterCount telescope))
+                <> " universe arguments, found " <> T.pack (show (length universes))
+            )
+        lowerRuntimeLocalAlias meta scopes alias
+      ScopeSlot (Just _) _ (Just telescope) : _ -> do
+        when (length universes /= dutParameterCount telescope) $
+          recordLoweringViolation meta "E_UNIVERSE_SCHEMA_ARITY_MISMATCH"
+            ( "local declaration expects " <> T.pack (show (dutParameterCount telescope))
+                <> " universe arguments, found " <> T.pack (show (length universes))
+            )
+        pure (BVar meta Nothing runtimeIdx)
+      ScopeSlot (Just _) _ Nothing : _ -> do
+        recordLoweringViolation meta "E_UNIVERSE_SCHEMA_SCOPE"
+          "universe-specialized occurrence refers to a local without a universe schema"
+        pure (BVar meta Nothing runtimeIdx)
+      ScopeSlot Nothing _ _ : _ ->
+        erasedRuntimeAt meta "erased universe-polymorphic local reached a runtime BackendIR value position"
+      _ -> erasedRuntimeAt meta "out-of-scope universe-polymorphic local reached a runtime BackendIR value position"
+  CGlobal g _ -> do
     meta <- metaAt
     globals <- asks lsGlobals
     ctx <- asks lsCtx
@@ -1571,30 +3248,41 @@ lowerTermExpected expected term depth scopes = case term of
       then erasedRuntimeAt meta ("erased global reached a runtime BackendIR value position: " <> gKey g)
       else pure (BGlob meta g)
   CLit l -> BLit <$> metaAt <*> pure l
-  CLam ic q nm body -> do
+  CLamM mode ic q nm body -> do
     meta <- metaAt
     ctx <- asks lsCtx
     let mSite = lambdaExpectedSite ctx depth ic expected
-        (declQ, borrowed, erased, mDom, mCod) = case mSite of
+        (declMode, declQ, borrowed, erased, mDom, mCod) = case mSite of
           Just site -> site
-          Nothing -> (q, False, q == Q0, Nothing, Nothing)
+          Nothing -> (mode, q, False, q == Q0, Nothing, Nothing)
+    when (declMode /= mode) $
+      recordLoweringViolation meta "E_PARAMETRIC_TYPE_PROMOTION"
+        ("lambda observation mode disagrees with its expected classifier: " <> T.pack (show mode)
+          <> " vs " <> T.pack (show declMode))
     if erased
-      then lowerTermExpected mCod body (depth + 1) (ScopeSlot Nothing mDom : scopes)
+      then do
+        erasureMeta <- metaAt
+        let provenance = mDom >>= erasureProvenanceForDomain ctx depth declMode declQ
+        recordErasureAt erasureMeta ErasedLambdaSite ic nm (fromMaybe ErasedByQuantity provenance)
+        lowerTermExpected mCod body (depth + 1) (ScopeSlot Nothing mDom Nothing : scopes)
       else do
         mb <- binderAtWith declQ borrowed (T.pack ("lambda " <> T.unpack nm))
-        body' <- lowerTermExpected mCod body (depth + 1) (ScopeSlot (fmap bbBinderId mb) mDom : scopes)
+        body' <- lowerTermExpected mCod body (depth + 1) (ScopeSlot (fmap bbBinderId mb) mDom Nothing : scopes)
         pure (BLam meta mb ic declQ nm body')
-  CApp {} -> lowerApp term depth scopes
+  CApp {} -> lowerApp expected term depth scopes
   CSort {} -> metaAt >>= \meta -> erasedRuntimeAt meta "sort/type term reached a runtime BackendIR value position"
-  CPi {} -> metaAt >>= \meta -> erasedRuntimeAt meta "function type reached a runtime BackendIR value position"
-  CRecordT {} -> metaAt >>= \meta -> erasedRuntimeAt meta "record type reached a runtime BackendIR value position"
+  CLevel {} -> metaAt >>= \meta -> erasedRuntimeAt meta "declaration universe identity reached a runtime BackendIR value position"
+  CPiEvidenceM {} -> metaAt >>= \meta -> erasedRuntimeAt meta "function type reached a runtime BackendIR value position"
+  CRecordTQ {} -> metaAt >>= \meta -> erasedRuntimeAt meta "record type reached a runtime BackendIR value position"
   CVariantT {} -> metaAt >>= \meta -> erasedRuntimeAt meta "variant type reached a runtime BackendIR value position"
   CSigT {} -> metaAt >>= \meta -> erasedRuntimeAt meta "signature type reached a runtime BackendIR value position"
   CMeta {} -> metaAt >>= \meta -> erasedRuntimeAt meta "unsolved compile-time meta reached a runtime BackendIR value position"
   CQuote {} -> metaAt >>= \meta -> erasedRuntimeAt meta "quoted syntax/proof term reached a runtime BackendIR value position"
-  CCtor g ann args -> do
+  CCtorI g _universes ann arguments -> do
     meta <- metaAt
-    lowerCtorTerm meta g ann args depth scopes
+    lowerCtorTerm meta g ann
+      [caTerm argument | argument <- arguments, caPayload argument]
+      depth scopes
   CMatch s _ann alts -> do
     meta <- metaAt
     ctors <- asks lsCtors
@@ -1618,13 +3306,17 @@ lowerTermExpected expected term depth scopes = case term of
       fmap catMaybes $
         forM fs $ \(name, v) ->
           if recordFieldErased mRuntimeFields globals traits ctx depth scopes name v
-            then pure Nothing
+            then do
+              erasureMeta <- metaAt
+              recordErasureAt erasureMeta ErasedRecordFieldSite Expl name
+                (fromMaybe ErasedOrdinaryTypeCode (erasureProvenanceForTerm globals ctx v))
+              pure Nothing
             else do
               v' <- lowerTerm v depth scopes
               pure (Just (name, v'))
     pure (BRecord meta fs')
-  CProj e f -> BProj <$> metaAt <*> lowerTerm e depth scopes <*> pure f <*> pure Nothing
-  CProjAt e f _i -> do
+  CProjM _ e f -> BProj <$> metaAt <*> lowerTerm e depth scopes <*> pure f <*> pure Nothing
+  CProjAtM _ e f _i -> do
     meta <- metaAt
     globals <- asks lsGlobals
     traits <- asks lsTraits
@@ -1632,31 +3324,76 @@ lowerTermExpected expected term depth scopes = case term of
     e' <- lowerTerm e depth scopes
     pure (BProj meta e' f (runtimeRecordFieldIndex globals traits ctx depth scopes e f))
   CInject tag e -> BInject <$> metaAt <*> pure tag <*> lowerTerm e depth scopes
-  CLet q nm _ty rhs body -> do
+  CLetM mode q nm _ty rhs body -> do
     ctx <- asks lsCtx
     let tyV = evalTypeAt ctx depth _ty
         erasedByType = Repr.runtimeErasedParam ctx depth q tyV
     if erasedByType
-      then lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) : scopes)
+      then do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes)
       else do
         meta <- metaAt
         mb <- binderAtWith q False (T.pack ("let " <> T.unpack nm))
         rhs' <- lowerTermExpected (Just tyV) rhs depth scopes
-        body' <- lowerTerm body (depth + 1) (ScopeSlot (fmap bbBinderId mb) (Just tyV) : scopes)
+        body' <- lowerTerm body (depth + 1) (ScopeSlot (fmap bbBinderId mb) (Just tyV) Nothing : scopes)
         pure (BLet meta mb q nm rhs' body')
-  CLetRec q nm _ty rhs body -> do
+  CLetRecM mode q nm _ty rhs body -> do
     ctx <- asks lsCtx
     let tyV = evalTypeAt ctx depth _ty
         erasedByType = Repr.runtimeErasedParam ctx depth q tyV
     if erasedByType
-      then lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) : scopes)
+      then do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes)
       else do
         meta <- metaAt
         mb <- binderAtWith q False (T.pack ("letrec " <> T.unpack nm))
-        let scopes' = ScopeSlot (fmap bbBinderId mb) (Just tyV) : scopes
+        let scopes' = ScopeSlot (fmap bbBinderId mb) (Just tyV) Nothing : scopes
         rhs' <- lowerTermExpected (Just tyV) rhs (depth + 1) scopes'
         body' <- lowerTerm body (depth + 1) scopes'
         pure (BLetRec meta mb q nm rhs' body')
+  CLetPolyM mode q nm telescope _ty rhs body -> do
+    ctx <- asks lsCtx
+    let tyV = evalTypeAt ctx depth _ty
+        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    if erasedByType
+      then do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) (Just telescope) : scopes)
+      else do
+        meta <- metaAt
+        mb <- binderAtWith q False (T.pack ("let " <> T.unpack nm))
+        rhs' <- lowerTermExpected (Just tyV) rhs depth scopes
+        body' <- lowerTerm body (depth + 1)
+          (ScopeSlot (fmap bbBinderId mb) (Just tyV) (Just telescope) : scopes)
+        pure (BLet meta mb q nm rhs' body')
+  CLetRecPolyM mode q nm telescope _ty rhs body -> do
+    ctx <- asks lsCtx
+    let tyV = evalTypeAt ctx depth _ty
+        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    if erasedByType
+      then do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        let scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
+        lowerTerm body (depth + 1) scopes'
+      else do
+        meta <- metaAt
+        mb <- binderAtWith q False (T.pack ("letrec " <> T.unpack nm))
+        let scopes' = ScopeSlot (fmap bbBinderId mb) (Just tyV) (Just telescope) : scopes
+        rhs' <- lowerTermExpected (Just tyV) rhs (depth + 1) scopes'
+        body' <- lowerTerm body (depth + 1) scopes'
+        pure (BLetRec meta mb q nm rhs' body')
+  CLetRecGroupM telescope definitions body ->
+    lowerLocalRecursiveGroup telescope definitions body depth scopes
   CDo lbl items -> BDo <$> metaAt <*> pure lbl <*> lowerItems items depth scopes
   CSealE labs e -> BSeal <$> metaAt <*> pure labs <*> lowerTerm e depth scopes
   CThunkE e -> BThunk <$> metaAt <*> lowerTerm e depth scopes
@@ -1668,48 +3405,243 @@ lowerTermExpected expected term depth scopes = case term of
       <*> lowerTerm t depth scopes
       <*> lowerTerm e depth scopes
 
-lowerApp :: Term -> Int -> ScopeStack -> Lower BackendTerm
-lowerApp term depth scopes = do
+lowerRuntimeLocalAlias :: BackendMeta -> ScopeStack -> RuntimeLocalAlias -> Lower BackendTerm
+lowerRuntimeLocalAlias meta scopes RuntimeLocalAlias {rlaGroupBinder, rlaField} =
+  case runtimeIndexForBinder rlaGroupBinder scopes of
+    Just runtimeIndex -> do
+      variableMeta <- metaAt
+      pure (BProj meta (BVar variableMeta Nothing runtimeIndex) rlaField Nothing)
+    Nothing ->
+      erasedRuntimeAt meta "local recursive member refers to a missing runtime SCC environment binder"
+
+runtimeIndexForBinder :: BackendBinderId -> ScopeStack -> Maybe Int
+runtimeIndexForBinder target = go 0
+  where
+    go _ [] = Nothing
+    go runtimeIndex (ScopeSlot (Just binder) _ _ : rest)
+      | binder == target = Just runtimeIndex
+      | otherwise = go (runtimeIndex + 1) rest
+    go runtimeIndex (_ : rest) = go runtimeIndex rest
+
+lowerLocalRecursiveGroup
+  :: DeclarationUniverseTelescope
+  -> [CoreLocalRecDef]
+  -> Term
+  -> Int
+  -> ScopeStack
+  -> Lower BackendTerm
+lowerLocalRecursiveGroup telescope definitions body depth scopes = do
+  ctx <- asks lsCtx
+  let typedDefinitions =
+        [ (definition, evalTypeAt ctx depth (clrdType definition))
+        | definition <- definitions
+        ]
+      runtimeDefinitions =
+        [ (definition, ty)
+        | (definition, ty) <- typedDefinitions
+        , not (Repr.runtimeErasedParam ctx depth (clrdQuantity definition) ty)
+        ]
+      runtimeNames = Set.fromList [clrdName definition | (definition, _) <- runtimeDefinitions]
+      groupDepth = depth + length definitions
+  case runtimeDefinitions of
+    [] -> do
+      let groupScopes =
+            reverse
+              [ ScopeSlotData Nothing (Just ty) (Just telescope) Nothing
+              | (_, ty) <- typedDefinitions
+              ]
+              ++ scopes
+      lowerTerm body groupDepth groupScopes
+    _ -> do
+      meta <- metaAt
+      groupBinder <- binderAtWith QW False "local recursive SCC environment"
+      case groupBinder of
+        Nothing -> do
+          recordLoweringViolation meta "E_BACKENDIR_BINDER_METADATA"
+            "a runtime local recursive SCC did not receive a backend binder identity"
+          lowerTerm body groupDepth
+            (reverse [ScopeSlot Nothing (Just ty) (Just telescope) | (_, ty) <- typedDefinitions] ++ scopes)
+        Just binder -> do
+          let binderId = bbBinderId binder
+              sourceSlots =
+                [ ScopeSlotData
+                    (if index == 0 then Just binderId else Nothing)
+                    (Just ty)
+                    (Just telescope)
+                    ( if clrdName definition `Set.member` runtimeNames
+                        then Just (RuntimeLocalAlias binderId (clrdName definition))
+                        else Nothing
+                    )
+                | (index, (definition, ty)) <- zip [0 :: Int ..] (reverse typedDefinitions)
+                ]
+              groupScopes = sourceSlots ++ scopes
+          fields <- forM runtimeDefinitions $ \(definition, ty) -> do
+            rhs <- lowerTermExpected (Just ty) (clrdRhs definition) groupDepth groupScopes
+            pure (clrdName definition, rhs)
+          recordMeta <- metaAt
+          body' <- lowerTerm body groupDepth groupScopes
+          pure (BLetRec meta (Just binder) QW "__local_recursive_scc" (BRecord recordMeta fields) body')
+
+lowerApp :: Maybe Value -> Term -> Int -> ScopeStack -> Lower BackendTerm
+lowerApp expected term depth scopes = do
   meta <- metaAt
   globals <- asks lsGlobals
   traits <- asks lsTraits
+  builtinIntegerLiteralDicts <- asks lsBuiltinIntegerLiteralDicts
   ctx <- asks lsCtx
-  case coreEtaCtorApp term of
-    Just (g, ann, _k, picks) -> do
-      lowerCtorTerm meta g ann (map snd picks) depth scopes
-    Nothing -> do
-      let (hd, args) = spineOfTerm term
-          k = length args
-          actualIcs = map fst args
-          expectedArgs = appExpectedArgTypes globals traits ctx depth scopes term
-          localPlan = case hd of
-            CGlob {} -> Nothing
-            _ ->
-              termTypeAt globals traits ctx depth scopes hd >>= \ty ->
-                Repr.argPlanSelectForArgsAt ctx depth ty actualIcs
-          flags = case hd of
-            CGlob g -> Repr.erasedSpinePositionsForArgs globals ctx g actualIcs
-            _ -> maybe (replicate k False) (map fst) localPlan
-          convs = case hd of
-            CGlob g -> fromMaybe (replicate k Nothing) (Repr.argConvSelectGlobalForArgs ctx g actualIcs)
-            _ -> maybe (replicate k Nothing) (map snd) localPlan
-          kept =
-            [ (ic, conv, expectedArg, a)
-            | (((ic, a), (erased, conv)), expectedArg) <-
-                zip (zip args (zip (flags ++ repeat False) (convs ++ repeat Nothing))) (expectedArgs ++ repeat Nothing)
-            , not erased
-            ]
-      hd' <- lowerTerm hd depth scopes
-      args' <-
-        forM kept $ \(ic, conv, expectedArg, a) -> do
-          a' <- lowerTermExpected expectedArg a depth scopes
-          pure (ic, conv, a')
-      pure (BApp meta hd' (filter (not . implicitErasedUnitArg) args'))
+  case selectedBuiltinIntegerLiteral builtinIntegerLiteralDicts term of
+    Just literal -> pure (BLit meta (LitInt literal))
+    Nothing -> case coreEtaCtorApp term of
+      Just (g, _universes, ann, _k, picks) -> do
+        lowerCtorTerm meta g ann
+          [caTerm argument | (_, argument) <- picks, caPayload argument]
+          depth
+          scopes
+      Nothing -> do
+        let (hd, args) = spineOfTerm term
+            k = length args
+            actualIcs = map fst args
+            expectedSites = appExpectedArgSites globals traits ctx depth scopes term
+            localPlan = case hd of
+              CGlob {} -> Nothing
+              _ ->
+                termTypeAt globals traits ctx depth scopes hd >>= \ty ->
+                  Repr.argPlanSelectForArgsAt ctx depth ty actualIcs
+            flags = case hd of
+              CGlob g -> Repr.erasedSpinePositionsForArgs globals ctx g actualIcs
+              _ -> maybe (replicate k False) (map fst) localPlan
+            convs = case hd of
+              CGlob g -> fromMaybe (replicate k Nothing) (Repr.argConvSelectGlobalForArgs ctx g actualIcs)
+              _ -> maybe (replicate k Nothing) (map snd) localPlan
+            aligned =
+              [ (index, ic, erased, conv, expectedArg, a)
+              | (index, (((ic, a), (erased, conv)), expectedArg)) <-
+                  zip [0 :: Int ..] $
+                  zip (zip args (zip (flags ++ repeat False) (convs ++ repeat Nothing))) (expectedSites ++ repeat Nothing)
+              ]
+            kept =
+              [ (ic, conv, expectedArg, a)
+              | (_, ic, erased, conv, expectedArg, a) <- aligned
+              , not erased
+              ]
+            lowerGeneric = do
+              forM_ aligned $ \(index, ic, erased, _, expectedSite, arg) ->
+                when erased $ do
+                  erasureMeta <- metaAt
+                  let provenance =
+                        (expectedSite >>= \(mode, expectedArg) -> erasureProvenanceForDomain ctx depth mode Q0 expectedArg)
+                          <|> erasureProvenanceForTerm globals ctx arg
+                  recordErasureAt erasureMeta ErasedApplicationArgumentSite ic
+                    ("argument" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
+              hd' <- lowerTerm hd depth scopes
+              args' <-
+                forM kept $ \(ic, conv, expectedSite, a) -> do
+                  a' <- lowerTermExpected (snd <$> expectedSite) a depth scopes
+                  pure (ic, conv, a')
+              pure (BApp meta hd' (filter (not . implicitErasedUnitArg) args'))
+        case runtimeTransportApplication term of
+          Nothing -> lowerGeneric
+          Just transport ->
+            let proofErased =
+                  case [erased | (index, _, erased, _, _, _) <- aligned, index == rtaProofIndex transport] of
+                    erased : _ -> erased
+                    [] -> True
+             in if proofErased
+                  then lowerGeneric
+                  else if proofIsDefinitionallyRefl ctx depth (rtaProof transport)
+                    then lowerTermExpected expected (rtaReduced transport) depth scopes
+                    else do
+                      recordLoweringViolationWith meta
+                        "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE"
+                        ( "runtime-relevant " <> rtaEliminator transport
+                            <> " uses an abstract equality proof with no computational path lowering rule"
+                        )
+                        [ ("eliminator", rtaEliminator transport)
+                        , ("equalityProofArgument", renderTerm (rtaProof transport))
+                        , ("proofArgumentRuntimeRelevant", "true")
+                        , ("resultRuntimeRelevant", "true")
+                        , ("reason", "proof is not definitionally refl and no computational path implementation is active")
+                        , ("transportOrigin", "explicit eliminator application in finalized KCore")
+                        , ("activeLanguageProfile", "kappa-v1")
+                        , ("computationalPathFeatureGate", "none")
+                        ]
+                      -- The diagnostic prevents KBackendIR publication. Lowering
+                      -- the representation-identical payload keeps recovery
+                      -- total without pretending that abstract transport is
+                      -- executable.
+                      lowerTermExpected expected (rtaReduced transport) depth scopes
   where
     implicitErasedUnitArg (Impl, _, BUnit {}) = True
     implicitErasedUnitArg _ = False
 
+selectedBuiltinIntegerLiteral :: Set GName -> Term -> Maybe Integer
+selectedBuiltinIntegerLiteral dictionaries term =
+  case spineOfTerm term of
+    (CProjM Ordinary dictionary "fromInteger", [(Expl, CLit (LitInt literal))])
+      | Just selectedDictionary <- coreHeadGlobal dictionary
+      , selectedDictionary `Set.member` dictionaries ->
+          Just literal
+    _ -> Nothing
+
+data RuntimeTransportApplication = RuntimeTransportApplication
+  { rtaEliminator :: !Text
+  , rtaProofIndex :: !Int
+  , rtaProof :: !Term
+  , rtaReduced :: !Term
+  }
+
+-- | Recognize only the resolved standard eliminator identities. The argument
+-- positions are part of their checked §11.4.1 source declarations; surface
+-- spelling and arbitrary functions named @subst@/@pathInd@ are irrelevant.
+runtimeTransportApplication :: Term -> Maybe RuntimeTransportApplication
+runtimeTransportApplication term =
+  let (headTerm, arguments) = spineOfTerm term
+      applyRest consumed base =
+        foldl (\function (icit, argument) -> CApp icit function argument)
+          base (drop consumed arguments)
+      terms = map snd arguments
+   in case headTerm of
+        CGlobal eliminator _
+          | eliminator == prelSubst
+          , length arguments >= 6 ->
+              Just RuntimeTransportApplication
+                { rtaEliminator = "subst"
+                , rtaProofIndex = 4
+                , rtaProof = terms !! 4
+                , rtaReduced = applyRest 6 (terms !! 5)
+                }
+          | eliminator == prelPathInd
+          , length arguments >= 6 ->
+              Just RuntimeTransportApplication
+                { rtaEliminator = "pathInd"
+                , rtaProofIndex = 5
+                , rtaProof = terms !! 5
+                , rtaReduced = applyRest 6 (terms !! 3)
+                }
+        _ -> Nothing
+
+proofIsDefinitionallyRefl :: EvalCtx -> Int -> Term -> Bool
+proofIsDefinitionallyRefl ctx depth proof =
+  case force ctx (eval ctx (rigidEnv depth) proof) of
+    VCtor constructor _ -> constructor == prelRefl
+    _ -> False
+
 lowerCtorTerm :: BackendMeta -> GName -> Maybe Term -> [Term] -> Int -> ScopeStack -> Lower BackendTerm
+lowerCtorTerm meta g _ [] _ _
+  | g == prelNatZero =
+      pure (BLit meta (LitInt 0))
+lowerCtorTerm _ g _ [predecessor] depth scopes
+  | g == prelNatSucc =
+      -- The source/KCore constructor remains authoritative. Runtime IR uses
+      -- the exact natural representation and therefore computes Succ with
+      -- the resolved integer primitive rather than allocating a unary cell.
+      lowerTerm
+        ( CApp Expl
+            (CApp Expl (CGlob (gPrel "addInt")) predecessor)
+            (CLit (LitInt 1))
+        )
+        depth
+        scopes
 lowerCtorTerm meta g ann args depth scopes = do
   ctx <- asks lsCtx
   ctors <- asks lsCtors
@@ -1720,20 +3652,33 @@ lowerCtorTerm meta g ann args depth scopes = do
           Just ci -> explicitCtorFieldRuntimeFacts ctx (length (ciFields ci)) (eval ctx [] (ciType ci))
       coreFacts =
         case mCi of
-          Nothing -> []
+          Nothing ->
+            case ann of
+              Just constructorType
+                | termScopedAt depth constructorType ->
+                    coreCtorPayloadRuntimeFactsAt depth ctx (evalTypeAt ctx depth constructorType)
+              _ -> []
           Just ci -> coreCtorPayloadRuntimeFacts ctx (eval ctx [] (ciType ci))
       sourceShape = maybe False (\ci -> length args == length (ciFields ci)) mCi
       coreShape = not (null coreFacts) && length args == length coreFacts
-      kept =
-        if coreShape
-          then [(fieldTy, arg) | (arg, (True, fieldTy)) <- zip args coreFacts]
-          else
-            if sourceShape
-              then [(fieldTy, arg) | (arg, (True, fieldTy)) <- zip args sourceFacts]
-              else [(Nothing, arg) | arg <- args]
-      annInfo = Repr.ctorLayoutOf ctx ann
+      selectedFacts
+        | coreShape = coreFacts
+        | sourceShape = sourceFacts
+        | otherwise = replicate (length args) (True, Nothing, Nothing)
+      aligned = zip3 [0 :: Int ..] args selectedFacts
+      kept = [(fieldTy, arg) | (_, arg, (True, fieldTy, _)) <- aligned]
+      annInfo = Repr.ctorLayoutOfAt ctx depth ann
       ctorInfo = Repr.ctorLayoutOf ctx (ciType <$> mCi)
       info = selectCtorLayoutInfo (length kept) annInfo ctorInfo
+  globals <- asks lsGlobals
+  forM_ aligned $ \(index, arg, (runtime, fieldTy, recordedProvenance)) ->
+    unless runtime $ do
+      erasureMeta <- metaAt
+      let provenance =
+            erasureProvenanceForTerm globals ctx arg
+              <|> recordedProvenance
+      recordErasureAt erasureMeta ErasedConstructorFieldSite Expl
+        ("field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
   args' <- forM kept $ \(expectedField, arg) ->
     lowerTermExpected expectedField arg depth scopes
   pure (BCtor meta (BackendCtorLayout g info (length args')) args')
@@ -1769,15 +3714,35 @@ sourceArgErased globals ctx = \case
 sourceTermErased :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> Bool
 sourceTermErased globals traits ctx depth scopes = \case
   CVar i -> case drop i scopes of
-    ScopeSlot Nothing _ : _ -> True
+    ScopeSlot Nothing _ _ : _ -> True
+    _ -> False
+  CLocal i _ -> case drop i scopes of
+    ScopeSlot Nothing _ _ : _ -> True
     _ -> False
   CSealE _ e -> sourceTermErased globals traits ctx depth scopes e
   CLam _ q _ body ->
     let mb = if q == Q0 then Nothing else Just (BackendBinderId (-1))
-     in sourceTermErased globals traits ctx (depth + 1) (ScopeSlot mb Nothing : scopes) body
+     in sourceTermErased globals traits ctx (depth + 1) (ScopeSlot mb Nothing Nothing : scopes) body
   CLet _ _ _ rhs body ->
     sourceTermErased globals traits ctx depth scopes rhs
-      && sourceTermErased globals traits ctx (depth + 1) (ScopeSlot Nothing Nothing : scopes) body
+      && sourceTermErased globals traits ctx (depth + 1) (ScopeSlot Nothing Nothing Nothing : scopes) body
+  CLetPolyM _ _ _ telescope _ rhs body ->
+    sourceTermErased globals traits ctx depth scopes rhs
+      && sourceTermErased globals traits ctx (depth + 1)
+        (ScopeSlot Nothing Nothing (Just telescope) : scopes) body
+  CLetRecPolyM _ _ _ telescope _ rhs body ->
+    let scopes' = ScopeSlot Nothing Nothing (Just telescope) : scopes
+     in sourceTermErased globals traits ctx (depth + 1) scopes' rhs
+          && sourceTermErased globals traits ctx (depth + 1) scopes' body
+  CLetRecGroupM telescope definitions body ->
+    let count = length definitions
+        slots =
+          reverse
+            [ScopeSlot Nothing (Just (evalTypeAt ctx depth (clrdType definition))) (Just telescope) | definition <- definitions]
+              ++ scopes
+        groupDepth = depth + count
+     in all (\definition -> sourceTermErased globals traits ctx groupDepth slots (clrdRhs definition)) definitions
+          && sourceTermErased globals traits ctx groupDepth slots body
   t@CApp {} ->
     sourceArgErased globals ctx t
       || sourceProofApplicationErased globals traits ctx depth scopes t
@@ -1813,21 +3778,37 @@ sourceProofApplicationErased globals traits ctx depth scopes term =
       CSealE _ e -> sourceProofHeadErased e
       _ -> False
 
+erasureProvenanceForTerm :: Map GName GlobalDef -> EvalCtx -> Term -> Maybe ErasureProvenance
+erasureProvenanceForTerm globals ctx = \case
+  CGlobal g _
+    | Just def <- Map.lookup g globals
+    , gdObservationMode def == Parametric -> case force ctx (gdType def) of
+        VSort level -> Just (ErasedParametricTypeWitness level)
+        _ -> Just ErasedParametricTypeFormer
+  CProjM Parametric _ _ -> Just ErasedParametricTypeFormer
+  CProjAtM Parametric _ _ _ -> Just ErasedParametricTypeFormer
+  CSort _ -> Just ErasedOrdinaryTypeCode
+  term
+    | (CGlob headG, _) <- spineOfTerm term
+    , Repr.resultIsProofBodyGlobal globals ctx headG -> Just ErasedProofOrTraitEvidence
+  _ -> Nothing
+
 globalRuntimeErased :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
 globalRuntimeErased globals ctx g =
   Repr.resultIsProofGlobal globals ctx g
     || maybe False (globalResultIsKind ctx . gdType) (Map.lookup g globals)
 
-lambdaExpectedSite :: EvalCtx -> Int -> Icit -> Maybe Value -> Maybe (Q, Bool, Bool, Maybe Value, Maybe Value)
+lambdaExpectedSite :: EvalCtx -> Int -> Icit -> Maybe Value -> Maybe (ObservationMode, Q, Bool, Bool, Maybe Value, Maybe Value)
 lambdaExpectedSite ctx depth actualIc expected = do
   ty <- expected
   case force ctx ty of
-    VPi ic q borrowed _ dom (Closure env cod)
+    VPiM mode ic q borrowed _ dom (Closure env cod)
       | ic == actualIc ->
           let domV = force ctx dom
               codV = eval ctx (VRigid depth [] : env) cod
            in Just
-                ( q
+                ( mode
+                , q
                 , borrowed
                 , Repr.runtimeErasedParam ctx depth q domV
                 , Just domV
@@ -1856,14 +3837,34 @@ typeKindValue ctx lvl v =
 termTypeAt :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> Maybe Value
 termTypeAt globals traits ctx depth scopes = go
   where
-    go = \case
-      CGlob g -> gdType <$> Map.lookup g globals <|> Repr.argConvGlobalType ctx g
+    go term
+      | Just (_, _, Just constructorType, _, pickedArguments) <- coreEtaCtorApp term =
+          applyArgs
+            (evalTypeAt ctx depth constructorType)
+            [(caIcit argument, caTerm argument) | (_, argument) <- pickedArguments]
+      | otherwise = goRegular term
+
+    goRegular = \case
+      CGlobal g universes ->
+        (Map.lookup g globals >>= specializeGlobalDefinitionType ctx universes)
+          <|> Repr.argConvGlobalType ctx g
       CVar i -> scopeSlotType =<< indexMaybeLocal i scopes
+      CLocal i universes -> do
+        slot <- indexMaybeLocal i scopes
+        ty <- scopeSlotType slot
+        telescope <- scopeSlotUniverses slot
+        if length universes == dutParameterCount telescope
+          then Just (specializeLocalType telescope universes ty)
+          else Nothing
       CProj e field -> projectionFieldType globals traits ctx depth scopes e field =<< go e
       CProjAt e field _ -> projectionFieldType globals traits ctx depth scopes e field =<< go e
       CSealE _ e -> go e
       CIf _ t f -> sameType (go t) (go f)
       CMatch _ ann _ -> evalTypeAt ctx depth <$> ann
+      CCtorI _ _ (Just constructorType) arguments ->
+        applyArgs
+          (evalTypeAt ctx depth constructorType)
+          [(caIcit argument, caTerm argument) | argument <- arguments]
       t@CApp {} ->
         let (h, args) = spineOfTerm t
          in go h >>= \ty -> applyArgs ty args
@@ -1879,13 +3880,20 @@ termTypeAt globals traits ctx depth scopes = go
         _ -> Nothing
 
     sameType (Just a) (Just b)
-      | renderTerm (quote ctx depth (force ctx a))
-          == renderTerm (quote ctx depth (force ctx b)) =
+      | convertible ctx depth (force ctx a) (force ctx b) =
           Just a
     sameType _ _ = Nothing
 
-appExpectedArgTypes :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> [Maybe Value]
-appExpectedArgTypes globals traits ctx depth scopes appTerm =
+    specializeLocalType telescope universes generalizedType =
+      let raw = quote (ctx {ecFacts = Map.empty}) depth generalizedType
+          specialized =
+            zonkTermWith (\_ _ -> Nothing)
+              (instantiateLocalLevelParams (dutParameterCount telescope) universes)
+              0 raw
+       in eval ctx (rigidEnv depth) specialized
+
+appExpectedArgSites :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> [Maybe (ObservationMode, Value)]
+appExpectedArgSites globals traits ctx depth scopes appTerm =
   case spineOfTerm appTerm of
     (hd, args) ->
       case termTypeAt globals traits ctx depth scopes hd of
@@ -1895,45 +3903,103 @@ appExpectedArgTypes globals traits ctx depth scopes appTerm =
     walk _ [] = []
     walk ty ((ic, arg) : rest) =
       case force ctx ty of
-        VPi pic _ _ _ dom (Closure env cod)
+        VPiM mode pic _ _ _ dom (Closure env cod)
           | ic == pic ->
               let argV = eval ctx (rigidEnv depth) arg
-               in Just dom : walk (eval ctx (argV : env) cod) rest
+               in Just (mode, dom) : walk (eval ctx (argV : env) cod) rest
         _ -> replicate (1 + length rest) Nothing
 
 projectionFieldType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> Text -> Value -> Maybe Value
 projectionFieldType globals traits ctx depth scopes recvTerm field recvTy =
   case force ctx recvTy of
     VRecordT fs -> lookup field fs
-    VGlobN traitG spine
+    VSigT _ inner -> projectionFieldType globals traits ctx depth scopes recvTerm field inner
+    VGlobI traitG universes spine
       | Just ti <- Map.lookup traitG traits ->
-          traitProjectionType globals traits ctx depth scopes traitG (map snd spine) recvTerm field ti
+          traitProjectionType globals traits ctx depth scopes traitG universes (map snd spine) recvTerm field ti
     _ -> Nothing
 
-traitProjectionType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> GName -> [Value] -> Term -> Text -> TraitInfo -> Maybe Value
-traitProjectionType globals _traits ctx depth scopes traitG args recvTerm field ti
+traitProjectionType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> GName -> [Level] -> [Value] -> Term -> Text -> TraitInfo -> Maybe Value
+traitProjectionType globals _traits ctx depth scopes traitG universes args recvTerm field ti
   | field `elem` tiMembers ti =
-      traitMemberType globals ctx depth scopes traitG field args recvTerm
+      traitMemberType globals ctx depth scopes (tiParamCount ti) traitG universes field args recvTerm
   | Just supClosed <- lookup field (tiSupers ti) =
       traitSuperType ctx args supClosed
   | otherwise =
       Nothing
-traitMemberType :: Map GName GlobalDef -> EvalCtx -> Int -> ScopeStack -> GName -> Text -> [Value] -> Term -> Maybe Value
-traitMemberType globals ctx depth _scopes traitG member args dictTm = do
+traitMemberType :: Map GName GlobalDef -> EvalCtx -> Int -> ScopeStack -> Int -> GName -> [Level] -> Text -> [Value] -> Term -> Maybe Value
+traitMemberType globals ctx depth _scopes parameterCount traitG universes member args dictTm = do
   gd <- Map.lookup (traitMemberGlobal traitG member) globals
-  peel (gdType gd) args
-  where
-    peel ty [] =
-      case force ctx ty of
-        VPi Impl _ _ _ _ (Closure env cod) ->
-          let dictV = eval ctx (rigidEnv depth) dictTm
-           in Just (eval ctx (dictV : env) cod)
-        t -> Just t
-    peel ty (a : as) =
-      case force ctx ty of
-        VPi Impl _ _ _ _ (Closure env cod) ->
-          peel (eval ctx (a : env) cod) as
-        t -> Just t
+  memberType <- specializeGlobalDefinitionTypePrefix ctx universes gd
+  let memberTypeTerm = quote ctx depth memberType
+      argumentTerms = map (quote ctx depth) args
+  projectedTypeTerm <-
+    specializeTraitMemberProjectionType
+      depth
+      parameterCount
+      argumentTerms
+      dictTm
+      memberTypeTerm
+  pure (eval ctx (rigidEnv depth) projectedTypeTerm)
+
+traitMemberStorageType
+  :: Map GName GlobalDef
+  -> EvalCtx
+  -> Int
+  -> Int
+  -> GName
+  -> [Level]
+  -> Text
+  -> [Value]
+  -> Term
+  -> Maybe Value
+traitMemberStorageType globals ctx depth parameterCount traitG universes member args dictTm = do
+  gd <- Map.lookup (traitMemberGlobal traitG member) globals
+  memberType <- specializeGlobalDefinitionTypePrefix ctx universes gd
+  storageType <-
+    specializeTraitMemberStorageType
+      depth
+      parameterCount
+      (map (quote ctx depth) args)
+      dictTm
+      (quote ctx depth memberType)
+  pure (eval ctx (rigidEnv depth) storageType)
+
+specializeGlobalDefinitionType :: EvalCtx -> [Level] -> GlobalDef -> Maybe Value
+specializeGlobalDefinitionType ctx universes definition
+  | length universes /= dutParameterCount (gdUniverses definition) = Nothing
+  | null universes = Just (gdType definition)
+  | otherwise =
+      let raw = quote (ctx {ecFacts = Map.empty}) 0 (gdType definition)
+          specialized = zonkTermWith (\_ _ -> Nothing) (substituteLevelParams universes) 0 raw
+       in Just (eval ctx [] specialized)
+
+specializeConstructorType :: EvalCtx -> Maybe [Level] -> CtorInfo -> Maybe Value
+specializeConstructorType ctx selectedUniverses info =
+  case selectedUniverses of
+    Nothing -> Just (eval ctx [] (ciType info))
+    Just universes ->
+      let telescope = ciUniverses info
+          rawType = ciType info
+          provisionalMetas = nub (levelMetasOfTerm rawType)
+          provisionalParameterArity = case levelParamsOfTerm rawType of
+            [] -> 0
+            parameters -> 1 + maximum parameters
+          specialize substitution =
+            Just (eval ctx [] (zonkTermWith (\_ _ -> Nothing) substitution 0 rawType))
+       in if dutParameterCount telescope > 0
+            then
+              if length universes == dutParameterCount telescope
+                then specialize (substituteLevelParams universes)
+                else Nothing
+            else
+              if not (null provisionalMetas) && length universes == length provisionalMetas
+                then specialize
+                  (substituteLevelMetas (Map.fromList (zip provisionalMetas universes)))
+                else if null provisionalMetas && length universes == provisionalParameterArity
+                  then specialize (substituteLevelParams universes)
+                  else Nothing
+
 traitSuperType :: EvalCtx -> [Value] -> Term -> Maybe Value
 traitSuperType ctx args superClosed =
   applyExpl (eval ctx [] superClosed) args
@@ -1964,11 +4030,11 @@ runtimeRecordFieldNamesOfType globals traits ctx depth ty =
 runtimeRecordFieldOrderOfType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> Value -> Maybe [Text]
 runtimeRecordFieldOrderOfType globals traits ctx depth ty =
   case force ctx ty of
-    VRecordT fs ->
+    VRecordTQ fs ->
       Just
-        [ name
-        | (name, fieldTy) <- fs
-        , not (Repr.runtimeErasedParam ctx depth QW fieldTy)
+        [ rfName field
+        | field <- fs
+        , not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
         ]
     VGlobN traitG _
       | Just ti <- Map.lookup traitG traits ->
@@ -1981,6 +4047,7 @@ traitRuntimeFieldOrder globals ctx traitG ti =
     map fst (tiSupers ti)
       ++ [ member
          | member <- tiMembers ti
+         , Map.lookup member (tiMemberQs ti) /= Just Q0
          , not (globalRuntimeErased globals ctx (traitMemberGlobal traitG member))
          ]
 
@@ -1988,7 +4055,10 @@ traitMemberGlobal :: GName -> Text -> GName
 traitMemberGlobal (GName m t) member = GName m (t <> "." <> member)
 
 scopeSlotType :: ScopeSlot -> Maybe Value
-scopeSlotType (ScopeSlot _ ty) = ty
+scopeSlotType (ScopeSlot _ ty _) = ty
+
+scopeSlotUniverses :: ScopeSlot -> Maybe DeclarationUniverseTelescope
+scopeSlotUniverses (ScopeSlot _ _ telescope) = telescope
 
 evalTypeAt :: EvalCtx -> Int -> Term -> Value
 evalTypeAt ctx depth = eval ctx (rigidEnv depth)
@@ -1996,26 +4066,94 @@ evalTypeAt ctx depth = eval ctx (rigidEnv depth)
 rigidEnv :: Int -> [Value]
 rigidEnv depth = [VRigid (depth - 1 - i) [] | i <- [0 .. depth - 1]]
 
-coreEtaCtorApp :: Term -> Maybe (GName, Maybe Term, Int, [(Int, Term)])
+-- | A schema lift is erased only after the payload's inferred type and the
+-- contextual target type agree with the fully saturated family instances
+-- recorded on the lift node. Arity alone is not alignment: ordinary family
+-- arguments are compared definitionally and universe parameters under the
+-- declaration's authenticated assumptions.
+schemaLiftInstanceErrors
+  :: EvalCtx
+  -> Int
+  -> Assumptions
+  -> Text
+  -> GName
+  -> [Level]
+  -> [Term]
+  -> Maybe Value
+  -> [Text]
+schemaLiftInstanceErrors ctx depth assumptions endpoint family recordedLevels recordedArguments = \case
+  Nothing ->
+    ["schema lift " <> endpoint <> " family instance cannot be inferred at the erasure boundary"]
+  Just instanceType ->
+    let normalized = stripIdentity (quote ctx depth (force ctx instanceType))
+        (headTerm, actualSpine) = spineOfTerm normalized
+        actualArguments = map snd actualSpine
+     in case stripIdentity headTerm of
+          CGlobal actualFamily actualLevels ->
+            [ "schema lift " <> endpoint <> " type has family "
+                <> gKey actualFamily <> ", expected " <> gKey family
+            | actualFamily /= family
+            ]
+              ++ [ "schema lift " <> endpoint <> " universe instance has the wrong arity"
+                 | length actualLevels /= length recordedLevels
+                 ]
+              ++ [ "schema lift " <> endpoint <> " universe argument "
+                    <> T.pack (show index) <> " disagrees with the recorded instance"
+                 | (index, (actual, recorded)) <- zip [0 :: Int ..] (zip actualLevels recordedLevels)
+                 , proveLevelEq assumptions actual recorded /= Proved
+                 ]
+              ++ [ "schema lift " <> endpoint <> " ordinary family application has the wrong arity"
+                 | length actualArguments /= length recordedArguments
+                 ]
+              ++ [ "schema lift " <> endpoint <> " ordinary argument "
+                    <> T.pack (show index) <> " disagrees with the recorded family application"
+                 | (index, (actual, recorded)) <- zip [0 :: Int ..] (zip actualArguments recordedArguments)
+                 , not
+                     ( convertible
+                         ctx
+                         depth
+                         (force ctx (eval ctx (rigidEnv depth) actual))
+                         (force ctx (eval ctx (rigidEnv depth) recorded))
+                     )
+                 ]
+          _ ->
+            ["schema lift " <> endpoint <> " type is not an application of its recorded nominal family"]
+  where
+    stripIdentity = \case
+      CUniverseLift _ _ _ inner -> stripIdentity inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripIdentity inner
+      term -> term
+
+coreEtaCtorApp :: Term -> Maybe (GName, [Level], Maybe Term, Int, [(Int, ConstructorArg)])
 coreEtaCtorApp term =
   case spineOfTerm term of
     (hd, sargs)
-      | (k, body) <- coreFuncArity hd
+      | (binders, body) <- coreFuncBinders hd
+      , let k = length binders
+      , let supplied = length sargs
       , k >= 1
-      , k == length sargs
-      , CCtor g ann fieldVars <- body ->
-          (\picks -> (g, ann, k, picks)) <$> traverse (pick (map snd sargs) k) fieldVars
+      , supplied <= k
+      , all ((== Q0) . snd) (drop supplied binders)
+      , CCtorI g universes ann constructorArgs <- body ->
+          (\picks -> (g, universes, ann, k, concat picks))
+            <$> traverse (pick (map snd sargs) k) (zip [0 :: Int ..] constructorArgs)
     _ -> Nothing
   where
-    pick args k = \case
-      CVar j | j >= 0, j < k -> Just (k - 1 - j, args !! (k - 1 - j))
+    pick args k (argumentIndex, argument) = case caTerm argument of
+      CVar j
+        | j >= 0
+        , j < k
+        , let binderIndex = k - 1 - j
+        , binderIndex < length args ->
+            Just [(argumentIndex, argument {caTerm = args !! binderIndex})]
+        | not (caPayload argument) -> Just []
       _ -> Nothing
 
-coreFuncArity :: Term -> (Int, Term)
-coreFuncArity = go 0
+coreFuncBinders :: Term -> ([(Icit, Q)], Term)
+coreFuncBinders = go []
   where
-    go !n (CLam _ _ _ b) = go (n + 1) b
-    go !n t = (n, t)
+    go !binders (CLam ic q _ b) = go ((ic, q) : binders) b
+    go !binders t = (reverse binders, t)
 
 lowerAlt :: Maybe Value -> CaseAlt -> Int -> ScopeStack -> Lower BackendAlt
 lowerAlt expected (CaseAlt pat guard body) depth scopes = do
@@ -2060,7 +4198,8 @@ lowerItem item depth scopes = case item of
     scrut' <- lowerTerm scrut depth scopes
     (pat', binders, patScopes, totalSlots) <- lowerPattern depth expected QW False (T.pack "let? pattern") pat
     else' <- forM mElse $ \(ep, et) -> do
-      (ep', ebinders, eScopes, eSlots) <- lowerPattern depth Nothing QW False (T.pack "let? else pattern") ep
+      (ep', ebinders, eScopes, eSlots) <-
+        lowerPattern depth expected QW False (T.pack "let? else pattern") ep
       et' <- lowerTerm et (depth + eSlots) (eScopes ++ scopes)
       pure (ep', ebinders, et')
     pure (BKLetQ meta pat' binders scrut' else', depth + totalSlots, patScopes ++ scopes)
@@ -2149,40 +4288,58 @@ lowerPatShape depth expected = \case
   CPVar n -> pure (BPVar n, [True])
   CPLit l -> pure (BPLit l, [])
   CPCtor g nEx ps -> do
-    fieldFacts <- ctorExplicitRuntimePatternFacts g (length ps)
-    lowered <- forM (zip ps (map snd fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
+    (runtimeArity, fieldFacts) <- ctorExplicitRuntimePatternFacts g (length ps)
+    forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
+      unless runtime $ do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedPatternSlotSite Expl
+          ("constructor-field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
+    lowered <- forM (zip ps (map (\(_, _, ty, _) -> ty) fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
       lowerPatShape depth fieldTy p
-    let mask = map fst fieldFacts ++ repeat True
-        fields = zip3 mask (map fst lowered) (map snd lowered)
-        pats' = [p' | (True, p', _) <- fields]
+    let placements = map (\(runtime, physicalIndex, _, _) -> (runtime, physicalIndex)) fieldFacts
+          ++ [(True, Just index) | index <- [runtimeArity ..]]
+        fields = zip3 placements (map fst lowered) (map snd lowered)
+        pats' = [(physicalIndex, p') | ((True, Just physicalIndex), p', _) <- fields]
         slots =
           replicate nEx False
             ++ concat
               [ if keep then patSlots else map (const False) patSlots
-              | (keep, _, patSlots) <- fields
+              | ((keep, _), _, patSlots) <- fields
               ]
-    pure (BPCtor g pats', slots)
+    pure (BPCtor g runtimeArity pats', slots)
   CPTuple ps -> do
     ctx <- asks lsCtx
-    let fieldFacts = positionalRecordPatternFacts ctx depth expected (length ps)
-    lowered <- forM (zip ps (map snd fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
+    let (runtimeArity, fieldFacts) = positionalRecordPatternFacts ctx depth expected (length ps)
+    forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
+      unless runtime $ do
+        erasureMeta <- metaAt
+        recordErasureAt erasureMeta ErasedPatternSlotSite Expl
+          ("tuple-field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
+    lowered <- forM (zip ps (map (\(_, _, ty, _) -> ty) fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
       lowerPatShape depth fieldTy p
-    let fields = zip3 (map fst fieldFacts ++ repeat True) (map fst lowered) (map snd lowered)
-        pats' = [p' | (True, p', _) <- fields]
+    let placements = map (\(runtime, physicalIndex, _, _) -> (runtime, physicalIndex)) fieldFacts
+          ++ [(True, Just index) | index <- [runtimeArity ..]]
+        fields = zip3 placements (map fst lowered) (map snd lowered)
+        pats' = [(physicalIndex, p') | ((True, Just physicalIndex), p', _) <- fields]
         slots =
           concat
             [ if keep then patSlots else map (const False) patSlots
-            | (keep, _, patSlots) <- fields
+            | ((keep, _), _, patSlots) <- fields
             ]
-    pure (BPTuple pats', slots)
+    pure (BPTuple runtimeArity pats', slots)
   CPRecord fs rest ->
     do
       ctx <- asks lsCtx
       let fieldFacts = namedRecordPatternFacts ctx depth expected
+      forM_ fieldFacts $ \(name, runtime, _, provenance) ->
+        unless runtime $ do
+          erasureMeta <- metaAt
+          recordErasureAt erasureMeta ErasedPatternSlotSite Expl name
+            (fromMaybe ErasedByQuantity provenance)
       lowered <- forM fs $ \(name, p) -> do
-        let fieldTy = fromMaybe Nothing (lookup name [(n, ty) | (n, _, ty) <- fieldFacts])
+        let fieldTy = fromMaybe Nothing (lookup name [(n, ty) | (n, _, ty, _) <- fieldFacts])
         loweredPat <- lowerPatShape depth fieldTy p
-        pure (name, maybe True id (lookup name [(n, keep) | (n, keep, _) <- fieldFacts]), loweredPat)
+        pure (name, maybe True id (lookup name [(n, keep) | (n, keep, _, _) <- fieldFacts]), loweredPat)
       let
         restSlot = case rest of
           Just nm | not (T.null nm) -> [True]
@@ -2210,75 +4367,129 @@ lowerPatShape depth expected = \case
     let runtimePerms = adjustRuntimePerms (map snd lowered) perms
     pure (BPOr (map fst lowered) runtimePerms, maybe [] snd (listToMaybe lowered))
 
-ctorExplicitRuntimePatternFacts :: GName -> Int -> Lower [(Bool, Maybe Value)]
+ctorExplicitRuntimePatternFacts :: GName -> Int -> Lower (Int, [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)])
 ctorExplicitRuntimePatternFacts g patCount = do
   ctors <- asks lsCtors
   ctx <- asks lsCtx
   pure $
     case Map.lookup g ctors of
-      Nothing -> replicate patCount (True, Nothing)
+      Nothing ->
+        (patCount, [(True, Just index, Nothing, Nothing) | index <- [0 .. patCount - 1]])
       Just ci ->
-        take patCount $
-          explicitCtorFieldRuntimeFacts ctx (length (ciFields ci)) (eval ctx [] (ciType ci))
-            ++ repeat (True, Nothing)
+        let constructorType = eval ctx [] (ciType ci)
+            runtimeArity =
+              length [() | (runtime, _, _) <- coreCtorPayloadRuntimeFacts ctx constructorType, runtime]
+            facts =
+              take patCount $
+                explicitCtorFieldRuntimePlacements ctx (length (ciFields ci)) constructorType
+                  ++ [(True, Just index, Nothing, Nothing) | index <- [runtimeArity ..]]
+         in (runtimeArity, facts)
 
-explicitCtorFieldRuntimeFacts :: EvalCtx -> Int -> Value -> [(Bool, Maybe Value)]
-explicitCtorFieldRuntimeFacts ctx fieldCount ty =
-  let explicitMask = collect 0 ty
-      fieldMask = drop (max 0 (length explicitMask - fieldCount)) explicitMask
-   in fieldMask
+constructorObservationSites :: EvalCtx -> Value -> [(ObservationMode, Value)]
+constructorObservationSites ctx = collect 0
   where
-    collect lvl v =
+    collect lvl value = case force ctx value of
+      VPiM mode _ _ _ _ dom (Closure env cod) ->
+        (mode, dom) : collect (lvl + 1) (eval ctx (VRigid lvl [] : env) cod)
+      _ -> []
+
+explicitCtorFieldRuntimeFacts :: EvalCtx -> Int -> Value -> [(Bool, Maybe Value, Maybe ErasureProvenance)]
+explicitCtorFieldRuntimeFacts ctx fieldCount ty =
+  [ (runtime, fieldTy, provenance)
+  | (runtime, _, fieldTy, provenance) <-
+      explicitCtorFieldRuntimePlacements ctx fieldCount ty
+  ]
+
+explicitCtorFieldRuntimePlacements
+  :: EvalCtx
+  -> Int
+  -> Value
+  -> [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)]
+explicitCtorFieldRuntimePlacements ctx fieldCount ty =
+  let explicitMask = collect 0 0 ty
+   in drop (max 0 (length explicitMask - fieldCount)) explicitMask
+  where
+    collect lvl runtimeIndex v =
       case force ctx v of
-        VPi ic q _ _ dom (Closure env cod) ->
+        VPiM mode ic q _ _ dom (Closure env cod) ->
           let x = VRigid lvl []
-              rest = collect (lvl + 1) (eval ctx (x : env) cod)
+              runtime = Repr.runtimeConstructorField ctx lvl ic q dom
+              physicalIndex = if runtime then Just runtimeIndex else Nothing
+              nextRuntimeIndex = if runtime then runtimeIndex + 1 else runtimeIndex
+              rest = collect (lvl + 1) nextRuntimeIndex (eval ctx (x : env) cod)
            in if ic == Expl
-                then (Repr.runtimeConstructorField ctx lvl ic q dom, Just dom) : rest
+                then
+                  (runtime, physicalIndex, Just dom, if runtime then Nothing else erasureProvenanceForDomain ctx lvl mode q dom) : rest
                 else rest
         _ -> []
 
-coreCtorPayloadRuntimeFacts :: EvalCtx -> Value -> [(Bool, Maybe Value)]
-coreCtorPayloadRuntimeFacts ctx = collect 0
+coreCtorPayloadRuntimeFacts :: EvalCtx -> Value -> [(Bool, Maybe Value, Maybe ErasureProvenance)]
+coreCtorPayloadRuntimeFacts = coreCtorPayloadRuntimeFactsAt 0
+
+coreCtorPayloadRuntimeFactsAt :: Int -> EvalCtx -> Value -> [(Bool, Maybe Value, Maybe ErasureProvenance)]
+coreCtorPayloadRuntimeFactsAt baseLevel ctx = collect 0
   where
     collect lvl v =
       case force ctx v of
-        VPi ic q _ _ dom (Closure env cod) ->
-          let x = VRigid lvl []
-              runtime = Repr.runtimeConstructorField ctx lvl ic q dom
+        VPiM mode ic q _ _ dom (Closure env cod) ->
+          let absoluteLevel = baseLevel + lvl
+              x = VRigid absoluteLevel []
+              runtime = Repr.runtimeConstructorField ctx absoluteLevel ic q dom
               keepInCore = ic == Expl || runtime
               rest = collect (lvl + 1) (eval ctx (x : env) cod)
            in if keepInCore
-                then (runtime, Just dom) : rest
+                then (runtime, Just dom, if runtime then Nothing else erasureProvenanceForDomain ctx absoluteLevel mode q dom) : rest
                 else rest
         _ -> []
 
-positionalRecordPatternFacts :: EvalCtx -> Int -> Maybe Value -> Int -> [(Bool, Maybe Value)]
+positionalRecordPatternFacts
+  :: EvalCtx
+  -> Int
+  -> Maybe Value
+  -> Int
+  -> (Int, [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)])
 positionalRecordPatternFacts ctx depth expected patCount =
-  take patCount $
-    case expected of
+  case expected of
       Just ty ->
         case forceRecordType ctx ty of
           Just fs ->
-            [ (not (Repr.runtimeErasedParam ctx depth QW fieldTy), Just fieldTy)
-            | (_, fieldTy) <- fs
-            ]
-          Nothing -> repeat (True, Nothing)
-      Nothing -> repeat (True, Nothing)
+            let (_, runtimeArity, facts) =
+                  foldl'
+                    (\(sourceIndex, runtimeIndex, accumulated) field ->
+                      let runtime = not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
+                          physicalIndex = if runtime then Just runtimeIndex else Nothing
+                          nextRuntimeIndex = if runtime then runtimeIndex + 1 else runtimeIndex
+                          fact =
+                            ( runtime
+                            , physicalIndex
+                            , Just (rfType field)
+                            , if runtime then Nothing else erasureProvenanceForDomain ctx depth (rfMode field) (rfQ field) (rfType field)
+                            )
+                       in (sourceIndex + 1, nextRuntimeIndex, accumulated ++ [fact]))
+                    (0 :: Int, 0 :: Int, [])
+                    fs
+             in (runtimeArity, take patCount facts)
+          Nothing -> fallback
+      Nothing -> fallback
+  where
+    fallback =
+      (patCount, [(True, Just index, Nothing, Nothing) | index <- [0 .. patCount - 1]])
 
-namedRecordPatternFacts :: EvalCtx -> Int -> Maybe Value -> [(Text, Bool, Maybe Value)]
+namedRecordPatternFacts :: EvalCtx -> Int -> Maybe Value -> [(Text, Bool, Maybe Value, Maybe ErasureProvenance)]
 namedRecordPatternFacts ctx depth expected =
   case expected >>= forceRecordType ctx of
     Just fs ->
-      [ (name, not (Repr.runtimeErasedParam ctx depth QW fieldTy), Just fieldTy)
-      | (name, fieldTy) <- fs
+      [ let runtime = not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
+         in (rfName field, runtime, Just (rfType field), if runtime then Nothing else erasureProvenanceForDomain ctx depth (rfMode field) (rfQ field) (rfType field))
+      | field <- fs
       ]
     Nothing -> []
 
-forceRecordType :: EvalCtx -> Value -> Maybe [(Text, Value)]
+forceRecordType :: EvalCtx -> Value -> Maybe [RecordField Value]
 forceRecordType ctx ty =
   case force ctx ty of
-    VRecordT fs -> Just fs
+    VRecordTQ fs -> Just fs
+    VSigT _ inner -> forceRecordType ctx inner
     _ -> Nothing
 
 adjustRuntimePerms :: [[Bool]] -> [[Int]] -> [[Int]]
@@ -2307,16 +4518,35 @@ metaAt = do
   nid <- freshNode
   pure (BackendMeta nid [])
 
+recordErasureAt :: BackendMeta -> ErasureSite -> Icit -> Text -> ErasureProvenance -> Lower ()
+recordErasureAt meta site ic name provenance =
+  modify' $ \st ->
+    st
+      { lstErasures =
+          BackendErasure (bmNodeId meta) site ic name provenance : lstErasures st
+      }
+
 erasedRuntimeAt :: BackendMeta -> Text -> Lower BackendTerm
-erasedRuntimeAt meta msg = do
+erasedRuntimeAt meta = loweringViolation meta "E_BACKENDIR_ERASED_RUNTIME_TERM"
+
+loweringViolation :: BackendMeta -> Text -> Text -> Lower BackendTerm
+loweringViolation meta code msg = do
+  recordLoweringViolation meta code msg
+  pure (BUnit meta)
+
+recordLoweringViolation :: BackendMeta -> Text -> Text -> Lower ()
+recordLoweringViolation meta code msg =
+  recordLoweringViolationWith meta code msg []
+
+recordLoweringViolationWith :: BackendMeta -> Text -> Text -> [(Text, Text)] -> Lower ()
+recordLoweringViolationWith meta code msg payloadFields = do
   owner <- asks lsOwner
   modify' $ \st ->
     st
       { lstLoweringViolations =
-          BackendIRViolation owner (bmNodeId meta) (T.pack "E_BACKENDIR_ERASED_RUNTIME_TERM") msg
+          BackendIRViolation owner (bmNodeId meta) code msg payloadFields
             : lstLoweringViolations st
       }
-  pure (BUnit meta)
 
 freshNode :: Lower BackendNodeId
 freshNode = do
@@ -2344,10 +4574,10 @@ binderAtWith q borrowed origin = do
     )
 
 binderSlotUnknown :: Maybe BackendBinder -> ScopeSlot
-binderSlotUnknown mb = ScopeSlot (fmap bbBinderId mb) Nothing
+binderSlotUnknown mb = ScopeSlot (fmap bbBinderId mb) Nothing Nothing
 
 binderSlotFromMaybe :: Maybe BackendBinder -> ScopeSlot
-binderSlotFromMaybe mb = ScopeSlot (fmap bbBinderId mb) Nothing
+binderSlotFromMaybe mb = ScopeSlot (fmap bbBinderId mb) Nothing Nothing
 
 patLayouts :: EvalCtx -> Map GName CtorInfo -> CorePat -> [(GName, BackendCtorLayout)]
 patLayouts ctx ctors = \case
@@ -2364,16 +4594,3 @@ patLayouts ctx ctors = \case
   CPVar _ -> []
   CPLit _ -> []
   CPInjectRest _ -> []
-
-backendPatToCorePat :: BackendPat -> CorePat
-backendPatToCorePat = \case
-  BPWild -> CPWild
-  BPVar n -> CPVar n
-  BPLit l -> CPLit l
-  BPCtor g ps -> CPCtor g 0 (map backendPatToCorePat ps)
-  BPTuple ps -> CPTuple (map backendPatToCorePat ps)
-  BPRecord fs rest -> CPRecord [(name, backendPatToCorePat p) | (name, p) <- fs] rest
-  BPInject tag p -> CPInject tag (backendPatToCorePat p)
-  BPInjectRest tags -> CPInjectRest tags
-  BPOr ps perms -> CPOr (map backendPatToCorePat ps) perms
-  BPAs name p -> CPAs name (backendPatToCorePat p)

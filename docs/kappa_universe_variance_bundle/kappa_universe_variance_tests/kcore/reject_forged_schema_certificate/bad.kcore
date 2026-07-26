@@ -1,0 +1,25 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  schema-certificate @schema:variance.demo.Consumer#2100 for @variance.demo.Consumer#3100
+    [checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {
+      roles = [irrelevant];
+      clauseKinds = [sort_declaration, point_constructor];
+      monotoneWitnesses = [];
+    }
+
+  data @variance.demo.Consumer#3100 .{irrelevant ^u#0} : Type succ(^u#0)
+    certificate @schema:variance.demo.Consumer#2100 {
+      constructor @variance.demo.Consumer.Consumer#3101 :
+        ((ordinary ordinary omega explicit value %run#2 :
+          ((ordinary ordinary 0 explicit value %A#0 : Type ^u#0) ->
+            ((ordinary ordinary omega explicit value %x#1 : %A#0) -> @std.Int#10))) ->
+          @variance.demo.Consumer#3100.{^u#0});
+    }
+}

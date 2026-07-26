@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_LIFT_INVALID
+--! assertDiagnosticFamily error kappa.universe.schema-lift
+
+data SomeCode.{covariant u} : Type (succ u) =
+    SomeCode (ordinary 0 A : Type u)
+
+down : SomeCode.{3} -> SomeCode.{0}
+let down x = x

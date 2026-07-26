@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | Perceus RC Stage S1.1 — the ownership side-table with last-use analysis.
 --
 -- This module is the analysis half of the Perceus reference-counting arc
@@ -74,13 +76,17 @@ module Kappa.Ownership
     -- * The per-definition side-table
   , OwnInfo (..)
   , emptyOwnInfo
+  , OwnershipCtorType (..)
     -- * The annotation pass
   , annotateOwnership
+  , annotateOwnershipWithUniverses
     -- * S1.4 §3a whole-program usage refinement
   , refineOwnership
+  , refineOwnershipWithUniverses
     -- * S1.2 cross-check against the declared quantities
   , crossCheckOwnInfo
   , crossCheckBodies
+  , crossCheckBodiesWithUniverses
     -- * S1.5 backend owned/borrowed accessor (call-site classification assert)
   , argConvFindings
   , argConvBodies
@@ -88,7 +94,7 @@ module Kappa.Ownership
   , renderOwnInfo
   ) where
 
-import Data.List (sortOn)
+import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -100,18 +106,25 @@ import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal,
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
+  , ConstructorArg (..)
+  , ConstructorValueArg (..)
+  , CoreLocalRecDef (..)
   , CorePat (..)
+  , DeclarationUniverseTelescope (..)
   , GName (..)
   , Icit (..)
   , KCond (..)
   , KItem (..)
+  , Level (..)
   , Q (..)
+  , RecordField (..)
   , Term (..)
   , Value (..)
   , gKey
   )
-import Kappa.CoreOps (patBindersC, spineOfTerm)
+import Kappa.CoreOps (patBindersC, spineOfTerm, zonkTermWith)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, evalApp, force, quote)
+import Kappa.Level (substituteLevelParams)
 import Kappa.Pretty (renderTerm)
 
 -- | A stable identity for a binder within a definition's elaborated Core.
@@ -143,6 +156,18 @@ data UseSite = UseSite
   -- ^ Owner-local ordinal assigned by the ownership analysis walk.
   }
   deriving stock (Eq, Ord, Show)
+
+-- | Constructor type information needed by the legacy ownership audit. The
+-- declaration universe telescope is part of the type's identity: dropping it
+-- and comparing a raw @LParam@ result against a specialized scrutinee loses
+-- field-domain substitutions for universe-polymorphic constructors.
+data OwnershipCtorType = OwnershipCtorType
+  { octUniverses :: !DeclarationUniverseTelescope
+  , octType :: !Term
+  }
+  deriving stock (Eq, Show)
+
+type OwnershipCtorTypes = Map GName OwnershipCtorType
 
 -- | Stable identity for an observe-only branch-dead drop site in one owner.
 newtype BranchSite = BranchSite Int
@@ -265,8 +290,15 @@ qDroppable = \case
 -- owned\/borrowed parameter convention (avoiding a second side table, per
 -- PERCEUS-S1-PLAN A3).
 annotateOwnership :: EvalCtx -> Map GName Term -> Map GName Term -> Map GName OwnInfo
-annotateOwnership ctx ctorTypes =
+annotateOwnership ctx = annotateOwnershipWithUniverses ctx . monomorphicCtorTypes
+
+annotateOwnershipWithUniverses :: EvalCtx -> OwnershipCtorTypes -> Map GName Term -> Map GName OwnInfo
+annotateOwnershipWithUniverses ctx ctorTypes =
   Map.mapWithKey (\g body -> analyzeBody ctx ctorTypes (paramTelescope ctx g) g body)
+
+monomorphicCtorTypes :: Map GName Term -> OwnershipCtorTypes
+monomorphicCtorTypes =
+  Map.map (OwnershipCtorType (DeclarationUniverseTelescope 0 False))
 
 -- | The leading parameter telescope of a global's declared type, as a list of
 -- parameter sites in binder order (the owned\/borrowed convention §12.3 plus
@@ -362,7 +394,7 @@ freshBranchSite acc =
 -- association the cross-check consumes. @tele@ is the owner's declared parameter
 -- telescope ('paramTelescope'), consumed by the body's leading 'CLam's to pick
 -- up the owned\/borrowed convention and parameter types from the type.
-analyzeBodyFull :: EvalCtx -> Map GName Term -> [ParamSite] -> GName -> Term -> (OwnInfo, Map BinderId [UseKind], Map BinderId [UseKind])
+analyzeBodyFull :: EvalCtx -> OwnershipCtorTypes -> [ParamSite] -> GName -> Term -> (OwnInfo, Map BinderId [UseKind], Map BinderId [UseKind])
 analyzeBodyFull ctx ctorTypes tele owner body =
   let (acc, _live) = walk ctx ctorTypes tele owner 0 [] UseConsumes body Set.empty emptyAcc
    in ( OwnInfo
@@ -377,7 +409,7 @@ analyzeBodyFull ctx ctorTypes tele owner body =
       )
 
 -- | Analyze one top-level body into its 'OwnInfo'.
-analyzeBody :: EvalCtx -> Map GName Term -> [ParamSite] -> GName -> Term -> OwnInfo
+analyzeBody :: EvalCtx -> OwnershipCtorTypes -> [ParamSite] -> GName -> Term -> OwnInfo
 analyzeBody ctx ctorTypes tele owner body =
   let (oi, _, _) = analyzeBodyFull ctx ctorTypes tele owner body
    in oi
@@ -494,7 +526,7 @@ closeBids deps seeds = go seeds (Set.toList seeds)
       let next = Map.findWithDefault Set.empty bid deps `Set.difference` seen
        in go (seen `Set.union` next) (Set.toList next ++ rest)
 
-rhsBorrowDeps :: EvalCtx -> Map GName Term -> Int -> [Scope] -> Map BinderId (Set BinderId) -> Term -> Set BinderId
+rhsBorrowDeps :: EvalCtx -> OwnershipCtorTypes -> Int -> [Scope] -> Map BinderId (Set BinderId) -> Term -> Set BinderId
 rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
   closeBids deps (borrowedResultDeps depth (map liftScope scopes) term0)
   where
@@ -529,8 +561,8 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
 
     borrowedResultDeps d scs = \case
       CVar i -> maybe Set.empty resultDepsOf (scopeAt d scs i)
-      CProj e _ -> termFreeDeps d scs e
-      CProjAt e _ _ -> termFreeDeps d scs e
+      CProjM _ e _ -> termFreeDeps d scs e
+      CProjAtM _ e _ _ -> termFreeDeps d scs e
       CSealE _ e -> borrowedResultDeps d scs e
       t@CApp {} -> termFreeDeps d scs t
       CIf c t e ->
@@ -553,21 +585,21 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
          in termReadDeps d scs UseConsumes s
               `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
               `Set.union` Set.unions (map armDeps alts)
-      CLet _ _ ty rhs b ->
+      CLetM _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             rhsReads = termReadDeps d scs UseConsumes rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in rhsReads `Set.union` borrowedResultDeps (d + 1) (sc : scs) b
-      CLetRec _ _ ty rhs b ->
+      CLetRecM _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             rhsReads = termReadDeps (d + 1) (sc0 : scs) UseConsumes rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in rhsReads `Set.union` borrowedResultDeps (d + 1) (sc : scs) b
-      CLam _ _ _ b ->
+      CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in termFreeDeps (d + 1) (sc : scs) b
-      CPi _ _ _ _ dom cod ->
+      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
       CThunkE e -> termFreeDeps d scs e
@@ -580,17 +612,17 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
     freeDeps d scs = \case
       CVar i -> maybe Set.empty freeDepsOf (scopeAt d scs i)
       CApp _ f x -> freeDeps d scs f `Set.union` freeDeps d scs x
-      CLam _ _ _ b ->
+      CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in freeDeps (d + 1) (sc : scs) b
-      CPi _ _ _ _ dom cod ->
+      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in freeDeps d scs dom `Set.union` freeDeps (d + 1) (sc : scs) cod
-      CLet _ _ ty rhs b ->
+      CLetM _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in freeDeps d scs rhs `Set.union` freeDeps (d + 1) (sc : scs) b
-      CLetRec _ _ ty rhs b ->
+      CLetRecM _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
@@ -609,12 +641,15 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
                in maybe Set.empty (freeDeps d' scs') mg `Set.union` freeDeps d' scs' b
          in freeDeps d scs s `Set.union` maybe Set.empty (freeDeps d scs) ann `Set.union` Set.unions (map freeAlt alts)
       CIf c t e -> freeDeps d scs c `Set.union` freeDeps d scs t `Set.union` freeDeps d scs e
-      CCtor _ ann args -> maybe Set.empty (freeDeps d scs) ann `Set.union` Set.unions (map (freeDeps d scs) args)
-      CRecordT fs -> Set.unions (map (freeDeps d scs . snd) fs)
+      CCtorI _ _ ann arguments ->
+        maybe Set.empty (freeDeps d scs) ann
+          `Set.union` Set.unions
+            [freeDeps d scs (caTerm argument) | argument <- arguments, caPayload argument]
+      CRecordTQ fs -> Set.unions (map (freeDeps d scs . rfType) fs)
       CRecordV fs -> Set.unions (map (freeDeps d scs . snd) fs)
       CVariantT ms -> Set.unions (map (freeDeps d scs) ms)
-      CProj e _ -> freeDeps d scs e
-      CProjAt e _ _ -> freeDeps d scs e
+      CProjM _ e _ -> freeDeps d scs e
+      CProjAtM _ e _ _ -> freeDeps d scs e
       CInject _ e -> freeDeps d scs e
       CSealE _ e -> freeDeps d scs e
       CSigT _ e -> freeDeps d scs e
@@ -636,16 +671,21 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
                 | ((_, arg), argUse) <- zip args argConsumes
                 ]
          in termReadDeps d scs UseConsumes hd `Set.union` argDeps
-      CProj e _ -> termFreeDeps d scs e
-      CProjAt e _ _ -> termFreeDeps d scs e
+      CProjM _ e _ -> termFreeDeps d scs e
+      CProjAtM _ e _ _ -> termFreeDeps d scs e
       CSealE _ e -> termReadDeps d scs uc e
       CSigT _ e -> termReadDeps d scs uc e
       CThunkE e -> termReadDeps d scs UseConsumes e
       CLazyE e -> termReadDeps d scs UseConsumes e
       CForceE e -> termReadDeps d scs UseConsumes e
       CInject _ e -> termReadDeps d scs UseConsumes e
-      CCtor _ ann args -> maybe Set.empty (termReadDeps d scs UseErased) ann `Set.union` Set.unions (map (termReadDeps d scs UseConsumes) args)
-      CRecordT fs -> Set.unions (map (termReadDeps d scs UseErased . snd) fs)
+      CCtorI _ _ ann arguments ->
+        maybe Set.empty (termReadDeps d scs UseErased) ann
+          `Set.union` Set.unions
+            [ termReadDeps d scs (if caPayload argument then UseConsumes else UseErased) (caTerm argument)
+            | argument <- arguments
+            ]
+      CRecordTQ fs -> Set.unions (map (termReadDeps d scs UseErased . rfType) fs)
       CRecordV fs -> Set.unions (map (termReadDeps d scs UseConsumes . snd) fs)
       CVariantT ms -> Set.unions (map (termReadDeps d scs UseErased) ms)
       CIf c t e -> termReadDeps d scs UseConsumes c `Set.union` termReadDeps d scs uc t `Set.union` termReadDeps d scs uc e
@@ -665,19 +705,19 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
          in termReadDeps d scs UseConsumes s
               `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
               `Set.union` Set.unions (map readAlt alts)
-      CLet _ _ ty rhs b ->
+      CLetM _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in termReadDeps d scs UseConsumes rhs `Set.union` termReadDeps (d + 1) (sc : scs) uc b
-      CLetRec _ _ ty rhs b ->
+      CLetRecM _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in termReadDeps (d + 1) (sc : scs) UseConsumes rhs `Set.union` termReadDeps (d + 1) (sc : scs) uc b
-      CLam _ _ _ b ->
+      CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in termReadDeps (d + 1) (sc : scs) uc b
-      CPi _ _ _ _ dom cod ->
+      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
       CQuote _ slots -> Set.unions (map (termReadDeps d scs UseErased) slots)
@@ -773,7 +813,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
 -- unioned with what flows in from @liveOut@ where appropriate.
 walk
   :: EvalCtx
-  -> Map GName Term
+  -> OwnershipCtorTypes
   -> [ParamSite]
   -> GName
   -> Int
@@ -785,6 +825,11 @@ walk
   -> (Acc, Set Int)
 walk _ctx _ctorTypes _tele _owner _depth _scopes UseErased _term liveOut acc = (acc, liveOut)
 walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case term of
+  CUniverseLift _ _ _ inner ->
+    walk ctx ctorTypes tele owner depth scopes useConsumes inner liveOut acc
+  CSchemaLift _ _ _ _ _ _ _ _ inner ->
+    walk ctx ctorTypes tele owner depth scopes useConsumes inner liveOut acc
+
   CVar i ->
     -- An occurrence of binder at level @lvl@. It is a LAST use on this path iff
     -- the same binder is not already live downstream (@lvl `notElem` liveOut@).
@@ -807,23 +852,54 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
           -- an untracked (type-level) or out-of-body binder: no runtime use.
           _ -> (acc, liveOut)
 
-  -- Binders ----------------------------------------------------------------
-  CLam _ q _nm b ->
-    -- A lambda parameter is a real runtime binder. The borrow marker (and the
-    -- authoritative declared quantity) for a TOP-LEVEL parameter lives on the
-    -- enclosing 'CPi', not the 'CLam' (which has no borrow field), so we pull it
-    -- from the next telescope entry; once the telescope is exhausted (a nested
-    -- or non-top-level lambda) we fall back to the 'CLam' quantity, owned.
-    let (declQ, borrowed, mTy, tele') = case tele of
-          ParamSite _ tq tb _ domV : trest -> (tq, tb, Just domV, trest)
-          [] -> (q, False, Nothing, [])
-        (bid, accBid) = freshBinderId owner acc
-        sc = Scope depth (Just bid) borrowed mTy
-        acc0 = addBinder bid declQ borrowed accBid
-        (acc1, liveB) = walk ctx ctorTypes tele' owner (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
-     in (acc1, dropLevel depth liveB)
+  CLocal i _ ->
+    let lvl = depth - 1 - i
+     in case lookupLevel lvl scopes of
+          Just sc
+            | Just bid <- scId sc ->
+                let (us, acc0) = freshUseSite owner acc
+                    kind
+                      | scBorrowed sc = Borrowed
+                      | lvl `Set.member` liveOut = NonLast
+                      | otherwise = LastUse
+                 in (addUse useConsumes us bid kind acc0, Set.insert lvl liveOut)
+          _ -> (acc, liveOut)
 
-  CPi _ _q _borrowed _nm dom cod ->
+  -- Binders ----------------------------------------------------------------
+  CLamM _ _ q _nm b ->
+    -- The top-level Pi telescope is authoritative for both ownership and
+    -- runtime erasure. Kind/proof/Q0 parameters still occupy a Core de Bruijn
+    -- slot, but they do not mint an ownership binder or occurrence identity.
+    let site = case tele of
+          p : _ -> Just p
+          [] -> Nothing
+        tele' = case tele of
+          _ : rest -> rest
+          [] -> []
+        erased = case site of
+          Just p -> runtimeErasedParam ctx (psLevel p) (psQ p) (psDomainValue p)
+          Nothing -> q == Q0
+     in if erased
+          then
+            let (declQ, mTy) = case site of
+                  Just p -> (psQ p, Just (psDomainValue p))
+                  Nothing -> (q, Nothing)
+                (bid, accBid) = freshBinderId owner acc
+                acc0 = addBinder bid declQ False accBid
+                sc = Scope depth Nothing False mTy
+                (acc1, liveB) = walk ctx ctorTypes tele' owner (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
+             in (acc1, dropLevel depth liveB)
+          else
+            let (declQ, borrowed, mTy) = case site of
+                  Just p -> (psQ p, psBorrowed p, Just (psDomainValue p))
+                  Nothing -> (q, False, Nothing)
+                (bid, accBid) = freshBinderId owner acc
+                sc = Scope depth (Just bid) borrowed mTy
+                acc0 = addBinder bid declQ borrowed accBid
+                (acc1, liveB) = walk ctx ctorTypes tele' owner (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
+             in (acc1, dropLevel depth liveB)
+
+  CPiEvidenceM _ _ _ _q _borrowed _nm _ _ dom cod ->
     -- A Pi is a TYPE; its binder carries no runtime value. We descend (a
     -- dependent type can mention runtime binders in erased positions, and a
     -- type-valued top-level body is a bare 'CPi'), pushing an UNTRACKED scope so
@@ -834,7 +910,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
         (acc2, liveCod) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) UseErased cod liveDom acc1
      in (acc2, dropLevel depth liveCod)
 
-  CLet q _nm _ty rhs b ->
+  CLetM _ q _nm _ty rhs b ->
     -- Sequential: the rhs runs, binds the name, then the body. Liveness flows
     -- backward — the body's live-out (minus the new binder) is the rhs's
     -- live-out. The binder's last-use is decided inside the body.
@@ -849,7 +925,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
         (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
      in (acc2, liveRhs)
 
-  CLetRec q _nm _ty rhs b ->
+  CLetRecM _ q _nm _ty rhs b ->
     -- Recursive local let: the binder is in scope in BOTH its rhs and its body.
     let tyV = evalTypeAt ctx depth _ty
         rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
@@ -859,6 +935,51 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
         (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
         (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
      in (acc2, dropLevel depth liveRhs)
+
+  CLetPolyM _ q _nm _ _ty rhs b ->
+    let tyV = evalTypeAt ctx depth _ty
+        rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
+        (bid, accBid) = freshBinderId owner acc
+        deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
+        acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
+        sc = Scope depth (Just bid) False (Just tyV)
+        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+        liveBody' = dropLevel depth liveBody
+        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
+     in (acc2, liveRhs)
+
+  CLetRecPolyM _ q _nm _ _ty rhs b ->
+    let tyV = evalTypeAt ctx depth _ty
+        rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
+        (bid, accBid) = freshBinderId owner acc
+        acc0 = addBinder bid q False accBid
+        sc = Scope depth (Just bid) False (Just tyV)
+        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
+     in (acc2, dropLevel depth liveRhs)
+
+  CLetRecGroupM _ definitions b ->
+    let groupDepth = depth + length definitions
+        allocate [] current = ([], current)
+        allocate (definition : rest) current =
+          let tyV = evalTypeAt ctx depth (clrdType definition)
+              (bid, current1) = freshBinderId owner current
+              current2 = addBinder bid (clrdQuantity definition) False current1
+              (allocatedRest, current3) = allocate rest current2
+           in ((definition, bid, tyV) : allocatedRest, current3)
+        (allocated, acc0) = allocate definitions acc
+        groupScopes =
+          reverse
+            [Scope (depth + index) (Just bid) False (Just tyV) | (index, (_, bid, tyV)) <- zip [0 ..] allocated]
+              ++ scopes
+        (acc1, liveBody) = walk ctx ctorTypes [] owner groupDepth groupScopes useConsumes b liveOut acc0
+        walkDefinition (current, live) (definition, _, tyV) =
+          let rhsTele = paramConvTelescopeFromValueAt ctx groupDepth tyV
+           in walk ctx ctorTypes rhsTele owner groupDepth groupScopes UseConsumes
+                (clrdRhs definition) live current
+        (acc2, liveGroup) = foldl walkDefinition (acc1, liveBody) allocated
+        liveOuter = foldr dropLevel liveGroup [depth .. groupDepth - 1]
+     in (acc2, liveOuter)
 
   -- Branching: each arm is its own completion path -------------------------
   CMatch s ann alts ->
@@ -899,11 +1020,18 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
         (accHead, liveHead) = walk ctx ctorTypes [] owner depth scopes UseConsumes hd liveArgs accArgs
      in (accHead, liveHead)
 
-  CCtor _ _ann args ->
-    seqChildren ctx ctorTypes owner depth scopes UseConsumes args liveOut acc
+  CCtorI _ _ _ann arguments ->
+    foldr
+      ( \argument (nextAcc, nextLive) ->
+          walk ctx ctorTypes [] owner depth scopes
+            (if caPayload argument then UseConsumes else UseErased)
+            (caTerm argument) nextLive nextAcc
+      )
+      (acc, liveOut)
+      arguments
 
-  CRecordT fs ->
-    seqChildren ctx ctorTypes owner depth scopes UseErased (map snd fs) liveOut acc
+  CRecordTQ fs ->
+    seqChildren ctx ctorTypes owner depth scopes UseErased (map rfType fs) liveOut acc
   CRecordV fs ->
     seqChildren ctx ctorTypes owner depth scopes UseConsumes (map snd fs) liveOut acc
   CVariantT ms ->
@@ -912,8 +1040,8 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
     seqChildren ctx ctorTypes owner depth scopes UseErased slots liveOut acc
 
   -- Single-child nodes -----------------------------------------------------
-  CProj e _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
-  CProjAt e _ _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
+  CProjM _ e _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
+  CProjAtM _ e _ _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
   CInject _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
   CSealE _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
   CSigT _ e -> descend1 ctx ctorTypes owner depth scopes UseErased e liveOut acc
@@ -922,21 +1050,22 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
   CForceE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
 
   -- Leaves and do-kernel ---------------------------------------------------
-  CGlob _ -> (acc, liveOut)
+  CGlobal _ _ -> (acc, liveOut)
   CSort _ -> (acc, liveOut)
+  CLevel _ -> (acc, liveOut)
   CLit _ -> (acc, liveOut)
   CMeta _ -> (acc, liveOut)
   CDo _ items -> walkDoItems ctx ctorTypes owner depth scopes items liveOut acc
 
 -- | Walk a single child.
-descend1 :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Term -> Set Int -> Acc -> (Acc, Set Int)
+descend1 :: EvalCtx -> OwnershipCtorTypes -> GName -> Int -> [Scope] -> UseConsumes -> Term -> Set Int -> Acc -> (Acc, Set Int)
 descend1 ctx ctorTypes owner depth scopes uc e liveOut acc =
   walk ctx ctorTypes [] owner depth scopes uc e liveOut acc
 
 -- | Walk a sequence of children in left-to-right evaluation order, threading
 -- liveness backward through them.
 seqChildren
-  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> [Term] -> Set Int -> Acc -> (Acc, Set Int)
+  :: EvalCtx -> OwnershipCtorTypes -> GName -> Int -> [Scope] -> UseConsumes -> [Term] -> Set Int -> Acc -> (Acc, Set Int)
 seqChildren ctx ctorTypes owner depth scopes uc children liveOut acc =
   -- process right-to-left so a later child's liveness flows into the earlier
   -- child's live-out (an earlier occurrence is NonLast if a later one exists).
@@ -960,7 +1089,7 @@ bindPatternScopes owner depth q borrowed slotTypes acc0 n =
 -- | Walk a §18.8 do-kernel. The sequencing is backward for liveness, but binder
 -- scopes are introduced forward: a binding item is in scope for the remaining
 -- items, not for the item action that creates it.
-walkDoItems :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> [KItem] -> Set Int -> Acc -> (Acc, Set Int)
+walkDoItems :: EvalCtx -> OwnershipCtorTypes -> GName -> Int -> [Scope] -> [KItem] -> Set Int -> Acc -> (Acc, Set Int)
 walkDoItems ctx ctorTypes owner depth scopes items liveOut acc = go depth scopes items liveOut acc
   where
     go _ _ [] lo a = (a, lo)
@@ -1103,7 +1232,7 @@ data AltLive = AltLive
   }
 
 walkAlts
-  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
+  :: EvalCtx -> OwnershipCtorTypes -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
 walkAlts _ctx _ctorTypes _owner _depth _scopes _useConsumes _mScrutTy [] _liveOut acc _ai = (acc, Set.empty)
 walkAlts ctx ctorTypes owner depth scopes useConsumes mScrutTy alts liveOut acc _ai0 =
   let (accWalk, armLives) = go alts acc
@@ -1155,7 +1284,7 @@ walkAlts ctx ctorTypes owner depth scopes useConsumes mScrutTy alts liveOut acc 
 -- assertions therefore apply to 'CLam'\/'CLet'\/'CPi' binders, which DO carry
 -- their 'Q'; pattern binders carry no linearity claim to validate.)
 walkAlt
-  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Set Int -> Acc -> (Acc, AltLive)
+  :: EvalCtx -> OwnershipCtorTypes -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Set Int -> Acc -> (Acc, AltLive)
 walkAlt ctx ctorTypes owner depth scopes useConsumes mScrutTy (CaseAlt pat mguard body) liveOut guardFailLive acc =
   let n = patBindersC pat
       slotTypes = reverse (patBindingTypes ctx ctorTypes depth pat (evalTypeAt ctx depth <$> mScrutTy))
@@ -1201,41 +1330,50 @@ consumingLastUseAssocDelta before after =
 -- unknown shapes yield 'Nothing' and keep the all-shared fallback. The common
 -- S2.3b higher-order case is a constructor or record field whose annotated
 -- scrutinee type exposes the field's function type.
-patBindingTypes :: EvalCtx -> Map GName Term -> Int -> CorePat -> Maybe Value -> [Maybe Value]
+patBindingTypes :: EvalCtx -> OwnershipCtorTypes -> Int -> CorePat -> Maybe Value -> [Maybe Value]
 patBindingTypes ctx ctorTypes depth pat mTy =
   case pat of
     CPWild -> []
     CPLit _ -> []
-    CPVar _ -> [mTy]
-    CPAs _ p -> mTy : patBindingTypes ctx ctorTypes depth p mTy
-    CPCtor g nEx ps ->
-      let fields = ctorFieldDomains ctx ctorTypes depth g (length ps) mTy
+    CPVarM _ _ -> [mTy]
+    CPAsM _ _ p -> mTy : patBindingTypes ctx ctorTypes depth p mTy
+    CPCtorM existentialModes g universes ps ->
+      let nEx = length existentialModes
+          fields = ctorFieldDomains ctx ctorTypes depth g universes (length ps) mTy
        in replicate nEx Nothing
             ++ concat [patBindingTypes ctx ctorTypes depth p (indexMaybe i fields >>= id) | (i, p) <- zip [0 ..] ps]
     CPTuple ps ->
       concat [patBindingTypes ctx ctorTypes depth p (tupleFieldType ctx i =<< mTy) | (i, p) <- zip [0 ..] ps]
-    CPRecord fs mrest ->
+    CPRecordM fs mrest ->
       concat [patBindingTypes ctx ctorTypes depth p (recordFieldType ctx n =<< mTy) | (n, p) <- fs]
         ++ case mrest of
-          Just nm | not (T.null nm) -> [Nothing]
+          Just (_, nm) | not (T.null nm) -> [Nothing]
           _ -> []
     CPInject tag p -> patBindingTypes ctx ctorTypes depth p (variantMemberType ctx depth tag =<< mTy)
-    CPInjectRest _ -> [mTy]
+    CPInjectRestM _ _ -> [mTy]
     CPOr ps _ ->
       case ps of
         p : _ -> patBindingTypes ctx ctorTypes depth p mTy
         [] -> []
 
-ctorFieldDomains :: EvalCtx -> Map GName Term -> Int -> GName -> Int -> Maybe Value -> [Maybe Value]
-ctorFieldDomains ctx ctorTypes depth g arity mScrutTy =
+ctorFieldDomains :: EvalCtx -> OwnershipCtorTypes -> Int -> GName -> [Level] -> Int -> Maybe Value -> [Maybe Value]
+ctorFieldDomains ctx ctorTypes depth g universes arity mScrutTy =
   let (sites, resultTy) =
         case Map.lookup g ctorTypes of
-          Nothing -> ([], VSort 0)
-          Just ty -> paramConvTelescopeWithResult ctx (eval ctx [] ty)
+          Nothing -> ([], VSort LZero)
+          Just constructorType ->
+            let specialized = specializeCtorForOccurrence constructorType universes
+             in paramConvTelescopeWithResult ctx (eval ctx [] specialized)
       fields = drop (max 0 (length sites - arity)) sites
    in case maybe (Just Map.empty) (ctorResultSubst ctx depth resultTy) mScrutTy of
         Nothing -> replicate arity Nothing
         Just subst -> map (Just . substValue ctx subst . psDomainValue) fields
+
+specializeCtorForOccurrence :: OwnershipCtorType -> [Level] -> Term
+specializeCtorForOccurrence OwnershipCtorType {..} universes
+  | length universes == dutParameterCount octUniverses =
+      zonkTermWith (\_ _ -> Nothing) (substituteLevelParams universes) 0 octType
+  | otherwise = octType
 
 ctorResultSubst :: EvalCtx -> Int -> Value -> Value -> Maybe (Map Int Value)
 ctorResultSubst ctx depth resultTy scrutTy =
@@ -1252,15 +1390,15 @@ ctorResultSubst ctx depth resultTy scrutTy =
         (VFlex m psp, VFlex m' asp)
           | m == m', length psp == length asp -> matchSpines subst psp asp
           | m == m' -> Nothing
-        (VGlobN g psp, VGlobN g' asp)
-          | g == g', length psp == length asp -> matchSpines subst psp asp
+        (VGlobal g pus psp, VGlobal g' aus asp)
+          | g == g', pus == aus, length psp == length asp -> matchSpines subst psp asp
           | g == g' -> Nothing
           | otherwise -> Nothing
         (VCtor g pas, VCtor g' aas)
           | g == g', length pas == length aas -> matchValues subst pas aas
           | otherwise -> Nothing
-        (VRecordT pfs, VRecordT afs)
-          | map fst pfs == map fst afs -> matchValues subst (map snd pfs) (map snd afs)
+        (VRecordTQ pfs, VRecordTQ afs)
+          | map rfName pfs == map rfName afs -> matchValues subst (map rfType pfs) (map rfType afs)
           | otherwise -> Nothing
         (VVariantT pms, VVariantT ams)
           | length pms == length ams -> matchValues subst pms ams
@@ -1310,6 +1448,7 @@ ctorResultSubst ctx depth resultTy scrutTy =
       VFlex {} -> True
       VMatchN {} -> True
       VProjN {} -> True
+      VAppN {} -> True
       VIfN {} -> True
       VMVar {} -> True
       VRef {} -> True
@@ -1333,16 +1472,21 @@ substValue ctx subst = go
                 Just base -> evalApp ctx base sp'
                 Nothing -> VRigid lvl sp'
         VFlex m sp -> VFlex m [(ic, go a) | (ic, a) <- sp]
-        VGlobN g sp -> VGlobN g [(ic, go a) | (ic, a) <- sp]
-        VLam ic q n clo -> VLam ic q n (substClosure clo)
-        VPi ic q borrowed n dom clo -> VPi ic q borrowed n (go dom) (substClosure clo)
-        VCtor g args -> VCtor g (map go args)
-        VRecordT fs -> VRecordT [(n, go t) | (n, t) <- fs]
+        VGlobal g universes sp -> VGlobal g universes [(ic, go a) | (ic, a) <- sp]
+        VLamM mode ic q n clo -> VLamM mode ic q n (substClosure clo)
+        VPiEvidenceM mode formation ic q borrowed n assumption origin dom clo ->
+          VPiEvidenceM mode formation ic q borrowed n assumption origin (go dom) (substClosure clo)
+        VCtorI g universes arguments ->
+          VCtorI g universes
+            [argument {cvaValue = go (cvaValue argument)} | argument <- arguments]
+        VRecordTQ fs -> VRecordTQ (map (fmap go) fs)
         VRecordV fs -> VRecordV [(n, go x) | (n, x) <- fs]
         VVariantT ms -> VVariantT (map go ms)
         VInject tag x -> VInject tag (go x)
-        VMatchN scrut alts env -> VMatchN (go scrut) alts (map go env)
-        VProjN x field -> VProjN (go x) field
+        VMatchN scrut annotation alts env ->
+          VMatchN (go scrut) (go <$> annotation) alts (map go env)
+        VProjN mode x field -> VProjN mode (go x) field
+        VAppN ic f a -> VAppN ic (go f) (go a)
         VSealV ls x -> VSealV ls (go x)
         VSigT ls x -> VSigT ls (go x)
         VDoV lbl items env -> VDoV lbl items (map go env)
@@ -1352,6 +1496,7 @@ substValue ctx subst = go
         VPrim p args -> VPrim p (map go args)
         VQuote qs slots -> VQuote qs (map go slots)
         VSort {} -> v
+        VLevel {} -> v
         VLit {} -> v
         VRef {} -> v
         VArr {} -> v
@@ -1367,13 +1512,13 @@ substValue ctx subst = go
 recordFieldType :: EvalCtx -> Text -> Value -> Maybe Value
 recordFieldType ctx name v =
   case force ctx v of
-    VRecordT fs -> lookup name fs
+    VRecordTQ fs -> rfType <$> find ((== name) . rfName) fs
     _ -> Nothing
 
 tupleFieldType :: EvalCtx -> Int -> Value -> Maybe Value
 tupleFieldType ctx i v =
   case force ctx v of
-    VRecordT fs -> snd <$> indexMaybe i fs
+    VRecordTQ fs -> rfType <$> indexMaybe i fs
     _ -> Nothing
 
 variantMemberType :: EvalCtx -> Int -> Text -> Value -> Maybe Value
@@ -1396,9 +1541,9 @@ deepForceValue ctx = go (32 :: Int)
     go 0 v = v
     go fuel v =
       case force ctx v of
-        VGlobN g sp -> VGlobN g [(ic, go (fuel - 1) a) | (ic, a) <- sp]
+        VGlobal g universes sp -> VGlobal g universes [(ic, go (fuel - 1) a) | (ic, a) <- sp]
         VCtor g as -> VCtor g (map (go (fuel - 1)) as)
-        VRecordT fs -> VRecordT [(n, go (fuel - 1) t) | (n, t) <- fs]
+        VRecordTQ fs -> VRecordTQ (map (fmap (go (fuel - 1))) fs)
         VVariantT ms -> VVariantT (map (go (fuel - 1)) ms)
         v' -> v'
 
@@ -1436,7 +1581,7 @@ scopeTypeAt scopes lvl = lookupLevel lvl scopes >>= scType
 callArgConsumes :: EvalCtx -> Int -> (Int -> Maybe Value) -> Term -> [(Icit, Term)] -> [UseConsumes]
 callArgConsumes ctx depth localType hd args =
   case hd of
-    CGlob g -> classifyCallArgs ctx GlobalCall (argConvSelectGlobal ctx g) (paramConvTelescope ctx g) args
+    CGlobal g _ -> classifyCallArgs ctx GlobalCall (argConvSelectGlobal ctx g) (paramConvTelescope ctx g) args
     _ ->
       case termTypeAt ctx depth localType hd of
         Just ty -> classifyCallArgs ctx LocalCall Nothing (paramConvTelescopeFromValueAt ctx depth ty) args
@@ -1451,10 +1596,10 @@ termTypeAt :: EvalCtx -> Int -> (Int -> Maybe Value) -> Term -> Maybe Value
 termTypeAt ctx depth localType = go
   where
     go = \case
-      CGlob g -> argConvGlobalType ctx g
+      CGlobal g _ -> argConvGlobalType ctx g
       CVar i -> localType (depth - 1 - i)
-      CProj e field -> recordFieldType ctx field =<< go e
-      CProjAt e field _ -> recordFieldType ctx field =<< go e
+      CProjM _ e field -> recordFieldType ctx field =<< go e
+      CProjAtM _ e field _ -> recordFieldType ctx field =<< go e
       CSealE _ e -> go e
       CMatch _ ann _ -> evalTypeAt ctx depth <$> ann
       CIf _ t f -> sameType (go t) (go f)
@@ -1466,7 +1611,7 @@ termTypeAt ctx depth localType = go
     applyArgs ty [] = Just ty
     applyArgs ty ((ic, arg) : rest) =
       case force ctx ty of
-        VPi pic _ _ _ _ (Closure env cod)
+        VPiEvidenceM _ _ pic _ _ _ _ _ _ (Closure env cod)
           | ic == pic ->
               let argV = eval ctx (rigidEnv depth) arg
                in applyArgs (eval ctx (argV : env) cod) rest
@@ -1501,7 +1646,7 @@ paramConvTelescopeWithResultAt ctx = go
   where
     go lvl ty =
       case force ctx ty of
-        VPi ic q borrowed _ dom (Closure env cod) ->
+        VPiEvidenceM _ _ ic q borrowed _ _ _ dom (Closure env cod) ->
           let x = VRigid lvl []
               domV = force ctx dom
               codV = eval ctx (x : env) cod
@@ -1607,7 +1752,11 @@ argConvConsumes = \case
 -- declared quantity already says everything).
 refineOwnership
   :: EvalCtx -> Map GName Term -> Map GName Term -> Map GName OwnInfo -> Map GName OwnInfo
-refineOwnership ctx ctorTypes bodies =
+refineOwnership ctx = refineOwnershipWithUniverses ctx . monomorphicCtorTypes
+
+refineOwnershipWithUniverses
+  :: EvalCtx -> OwnershipCtorTypes -> Map GName Term -> Map GName OwnInfo -> Map GName OwnInfo
+refineOwnershipWithUniverses ctx ctorTypes bodies =
   Map.mapWithKey refineOne
   where
     refineOne g oi =
@@ -1688,7 +1837,7 @@ type CountScope = (Int, Maybe BinderId, Bool, Maybe Value)
 -- than last-use, so the two stay independent (a bug in one cannot silently mask
 -- the other). It returns intervals for value binders only; an untracked
 -- (type-level) binder records none.
-usageIntervals :: EvalCtx -> Map GName Term -> GName -> Term -> Map BinderId (Int, Maybe Int)
+usageIntervals :: EvalCtx -> OwnershipCtorTypes -> GName -> Term -> Map BinderId (Int, Maybe Int)
 usageIntervals ctx ctorTypes owner body =
   let (_uses, sub, _next) = count (paramTelescope ctx owner) 0 [] UseConsumes body 0
    in sub
@@ -1705,6 +1854,9 @@ usageIntervals ctx ctorTypes owner body =
       -> (Map BinderId (Int, Maybe Int), Map BinderId (Int, Maybe Int), Int)
     count _tele _depth _scopes UseErased _term next = (Map.empty, Map.empty, next)
     count tele depth scopes uc term next = case term of
+      CUniverseLift _ _ _ inner -> count tele depth scopes uc inner next
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> count tele depth scopes uc inner next
+
       CVar i ->
         let lvl = depth - 1 - i
          in case resolve lvl scopes of
@@ -1712,20 +1864,42 @@ usageIntervals ctx ctorTypes owner body =
                 | not borrowed, useRuntimeUseBool uc -> (Map.singleton bid (1, Just 1), Map.empty, next)
               _ -> (Map.empty, Map.empty, next)
 
-      CLam _ _ _ b ->
-        let (bid, next1) = fresh next
-            (borrowed, mTy, tele') = case tele of
-              ParamSite _ _ tb _ domV : trest -> (tb, Just domV, trest)
-              [] -> (False, Nothing, [])
-            (uses, sub, next2) = count tele' (depth + 1) ((depth, Just bid, borrowed, mTy) : scopes) UseConsumes b next1
-         in (Map.delete bid uses, recordSelf bid uses sub, next2)
+      CLocal i _ ->
+        let lvl = depth - 1 - i
+         in case resolve lvl scopes of
+              Just (Just bid, borrowed)
+                | not borrowed, useRuntimeUseBool uc -> (Map.singleton bid (1, Just 1), Map.empty, next)
+              _ -> (Map.empty, Map.empty, next)
 
-      CPi _ _ _ _ dom cod ->
+      CLamM _ _ q _ b ->
+        let site = case tele of
+              p : _ -> Just p
+              [] -> Nothing
+            tele' = case tele of
+              _ : rest -> rest
+              [] -> []
+            erased = case site of
+              Just p -> runtimeErasedParam ctx (psLevel p) (psQ p) (psDomainValue p)
+              Nothing -> q == Q0
+         in if erased
+              then
+                let (bid, next1) = fresh next
+                    (uses, sub, next2) = count tele' (depth + 1) ((depth, Nothing, False, psDomainValue <$> site) : scopes) UseConsumes b next1
+                 in (uses, recordSelf bid Map.empty sub, next2)
+              else
+                let (bid, next1) = fresh next
+                    (borrowed, mTy) = case site of
+                      Just p -> (psBorrowed p, Just (psDomainValue p))
+                      Nothing -> (False, Nothing)
+                    (uses, sub, next2) = count tele' (depth + 1) ((depth, Just bid, borrowed, mTy) : scopes) UseConsumes b next1
+                 in (Map.delete bid uses, recordSelf bid uses sub, next2)
+
+      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
         let (uDom, sDom, next1) = count [] depth scopes UseErased dom next
             (uCod, sCod, next2) = count [] (depth + 1) ((depth, Nothing, False, Nothing) : scopes) UseErased cod next1
          in (addUses uDom uCod, Map.union sDom sCod, next2)
 
-      CLet _ _ ty rhs b ->
+      CLetM _ _ _ ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
             rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
             (bid, next1) = fresh next
@@ -1734,7 +1908,7 @@ usageIntervals ctx ctorTypes owner body =
             (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
          in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
 
-      CLetRec _ _ ty rhs b ->
+      CLetRecM _ _ _ ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
             rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
             (bid, next1) = fresh next
@@ -1743,6 +1917,50 @@ usageIntervals ctx ctorTypes owner body =
             (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
             combined = addUses uRhs uB
          in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
+
+      CLetPolyM _ _ _ _ ty rhs b ->
+        let tyV = evalTypeAt ctx depth ty
+            rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
+            (bid, next1) = fresh next
+            (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
+            body' = Map.delete bid uB
+            (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
+         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
+
+      CLetRecPolyM _ _ _ _ ty rhs b ->
+        let tyV = evalTypeAt ctx depth ty
+            rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
+            (bid, next1) = fresh next
+            scopes' = (depth, Just bid, False, Just tyV) : scopes
+            (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
+            (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
+            combined = addUses uRhs uB
+         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
+
+      CLetRecGroupM _ definitions b ->
+        let groupDepth = depth + length definitions
+            allocate [] current = ([], current)
+            allocate (definition : rest) current =
+              let (bid, current1) = fresh current
+                  tyV = evalTypeAt ctx depth (clrdType definition)
+                  (allocatedRest, current2) = allocate rest current1
+               in ((definition, bid, tyV) : allocatedRest, current2)
+            (allocated, next1) = allocate definitions next
+            groupScopes =
+              reverse
+                [(depth + index, Just bid, False, Just tyV) | (index, (_, bid, tyV)) <- zip [0 ..] allocated]
+                ++ scopes
+            (bodyUses, bodySub, next2) = count [] groupDepth groupScopes UseConsumes b next1
+            countDefinition (uses, sub, current) (definition, _, tyV) =
+              let rhsTele = paramConvTelescopeFromValueAt ctx groupDepth tyV
+                  (rhsUses, rhsSub, current') =
+                    count rhsTele groupDepth groupScopes UseConsumes (clrdRhs definition) current
+               in (addUses rhsUses uses, Map.union rhsSub sub, current')
+            (combined, combinedSub, next3) = foldl countDefinition (bodyUses, bodySub, next2) allocated
+            binderIds = [bid | (_, bid, _) <- allocated]
+            external = foldr Map.delete combined binderIds
+            recorded = foldr (\bid sub -> recordSelf bid combined sub) combinedSub binderIds
+         in (external, recorded, next3)
 
       CMatch s ann alts ->
         let (uAlts, sAlts, next1) = countAlts depth scopes ann alts next
@@ -1762,14 +1980,19 @@ usageIntervals ctx ctorTypes owner body =
             (uArgs, sArgs, nextArgs) = countSeqR depth scopes argTerms next
             (uHead, sHead, nextHead) = count [] depth scopes UseConsumes hd nextArgs
          in (addUses uHead uArgs, Map.union sHead sArgs, nextHead)
-      CCtor _ _ args -> countSeqR depth scopes [(x, UseConsumes) | x <- args] next
-      CRecordT fs -> countSeqR depth scopes [(x, UseErased) | x <- map snd fs] next
+      CCtorI _ _ _ arguments ->
+        countSeqR depth scopes
+          [ (caTerm argument, if caPayload argument then UseConsumes else UseErased)
+          | argument <- arguments
+          ]
+          next
+      CRecordTQ fs -> countSeqR depth scopes [(rfType field, UseErased) | field <- fs] next
       CRecordV fs -> countSeqR depth scopes [(x, UseConsumes) | x <- map snd fs] next
       CVariantT ms -> countSeqR depth scopes [(x, UseErased) | x <- ms] next
       CQuote _ slots -> countSeqR depth scopes [(x, UseErased) | x <- slots] next
 
-      CProj e _ -> count [] depth scopes UseReads e next
-      CProjAt e _ _ -> count [] depth scopes UseReads e next
+      CProjM _ e _ -> count [] depth scopes UseReads e next
+      CProjAtM _ e _ _ -> count [] depth scopes UseReads e next
       CInject _ e -> count [] depth scopes UseConsumes e next
       CSealE _ e -> count [] depth scopes UseConsumes e next
       CSigT _ e -> count [] depth scopes UseErased e next
@@ -1777,8 +2000,9 @@ usageIntervals ctx ctorTypes owner body =
       CLazyE e -> count [] depth scopes UseConsumes e next
       CForceE e -> count [] depth scopes UseConsumes e next
 
-      CGlob _ -> (Map.empty, Map.empty, next)
+      CGlobal _ _ -> (Map.empty, Map.empty, next)
       CSort _ -> (Map.empty, Map.empty, next)
+      CLevel _ -> (Map.empty, Map.empty, next)
       CLit _ -> (Map.empty, Map.empty, next)
       CMeta _ -> (Map.empty, Map.empty, next)
       CDo _ items -> countDoItems depth scopes items next
@@ -2022,7 +2246,7 @@ joinUses a b =
 -- fixtures). See 'crossCheckBodies'.
 crossCheckOwnInfo
   :: EvalCtx
-  -> Map GName Term
+  -> OwnershipCtorTypes
   -> GName
   -> Term
   -> OwnInfo
@@ -2067,7 +2291,15 @@ crossCheckBodies
   -> Map GName Term
   -> Map GName OwnInfo
   -> [String]
-crossCheckBodies ctx ctorTypes bodies own =
+crossCheckBodies ctx = crossCheckBodiesWithUniverses ctx . monomorphicCtorTypes
+
+crossCheckBodiesWithUniverses
+  :: EvalCtx
+  -> OwnershipCtorTypes
+  -> Map GName Term
+  -> Map GName OwnInfo
+  -> [String]
+crossCheckBodiesWithUniverses ctx ctorTypes bodies own =
   concatMap one (Map.toList bodies)
   where
     one (g, body) =
@@ -2226,25 +2458,32 @@ argConvFindings ctx owner = goTerm
     -- partial argument list, then recurse only into the arguments (and a
     -- non-global head), never back into the spine's inner 'CApp's.
     goTerm t = case t of
+      CUniverseLift _ _ _ inner -> goTerm inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> goTerm inner
       CApp {} ->
         let (hd, args) = spineOfTerm t
             here = case hd of
-              CGlob g -> checkCall g args
+              CGlobal g _ -> checkCall g args
               _ -> goTerm hd
          in here ++ concatMap (goTerm . snd) args
-      CLam _ _ _ b -> goTerm b
-      CPi _ _ _ _ a b -> goTerm a ++ goTerm b
-      CCtor _ _ as -> concatMap goTerm as
+      CLamM _ _ _ _ b -> goTerm b
+      CPiEvidenceM _ _ _ _ _ _ _ _ a b -> goTerm a ++ goTerm b
+      CCtorI _ _ _ arguments ->
+        concatMap (goTerm . caTerm) [argument | argument <- arguments, caPayload argument]
       CMatch s _ alts ->
         goTerm s ++ concatMap (\(CaseAlt _ gd b) -> maybe [] goTerm gd ++ goTerm b) alts
-      CRecordT fs -> concatMap (goTerm . snd) fs
+      CRecordTQ fs -> concatMap (goTerm . rfType) fs
       CRecordV fs -> concatMap (goTerm . snd) fs
-      CProj e _ -> goTerm e
-      CProjAt e _ _ -> goTerm e
+      CProjM _ e _ -> goTerm e
+      CProjAtM _ e _ _ -> goTerm e
       CVariantT ms -> concatMap goTerm ms
       CInject _ e -> goTerm e
-      CLet _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
-      CLetRec _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetM _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetRecM _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetPolyM _ _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetRecPolyM _ _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetRecGroupM _ definitions b ->
+        concatMap (\definition -> goTerm (clrdType definition) ++ goTerm (clrdRhs definition)) definitions ++ goTerm b
       CSealE _ e -> goTerm e
       CSigT _ e -> goTerm e
       CThunkE e -> goTerm e
@@ -2254,8 +2493,10 @@ argConvFindings ctx owner = goTerm
       CQuote _ slots -> concatMap goTerm slots
       -- leaves
       CVar _ -> []
-      CGlob _ -> []
+      CLocal _ _ -> []
+      CGlobal _ _ -> []
       CSort _ -> []
+      CLevel _ -> []
       CLit _ -> []
       CMeta _ -> []
       CDo _ items -> concatMap goKItem items

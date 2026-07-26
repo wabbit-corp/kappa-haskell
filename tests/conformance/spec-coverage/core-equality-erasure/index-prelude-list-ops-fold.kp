@@ -1,0 +1,63 @@
+-- §15.1/§15.3 + §31.1.1: prelude List operations are conversion-reducible
+-- structural recursions, so they compute inside data-family indices
+-- (§10.1.3) on literal spines: `listAppend` folds in both directions
+-- against the spine it denotes, and `listLength` (recursion through
+-- addInt) folds to a literal Integer index (§31.1.3). Symbolic reduction
+-- follows the defining equations: `listAppend Nil ns` reduces to `ns` for
+-- open `ns` (first equation), while `listAppend ns Nil` is stuck on the
+-- neutral head — the right identity is propositional, not definitional.
+-- NORMATIVE READING of the negative below: §15.8.4 monoid normalization
+-- fires only "whenever the referenced operations and required provider
+-- evidence are available", and §15.8.2 only requires validated
+-- proof-normalization provider artifacts for the standard NUMERIC law
+-- bundles of §28.2.2. No provider artifact is required (or supplied) for
+-- the general container `Monoid (List a)` bundle, so §15.8 returns
+-- Unknown here, §16.1.8 finds no transport plan, and the coercion is
+-- kappa.type.mismatch. Contrast: the same right-identity shape over
+-- prelude Nat IS accepted via the required CommutativeAdditiveMonoid Nat
+-- provider (pinned by tests/pending-import/spec-coverage/
+-- nat-fin-refinement/positive/nat-additive-identity-channels). If a
+-- List-monoid provider is ever shipped, symNilR must flip.
+--! mode check
+
+module main
+
+data TBL (ns : List Nat) : Type =
+    MkT
+
+data PI (n : Integer) : Type =
+    MkPI
+
+-- POSITIVE: listAppend on literal spines folds in an index.
+t1 : TBL (listAppend (3 :: Nil) (5 :: Nil))
+let t1 = MkT
+
+t1AsLit : TBL (3 :: 5 :: Nil)
+let t1AsLit = t1
+
+-- POSITIVE: other direction — a literal spine converts to an append
+-- expression denoting it.
+t2Lit : TBL (1 :: 2 :: 3 :: Nil)
+let t2Lit = MkT
+
+t2AsApp : TBL (listAppend (1 :: Nil) (2 :: 3 :: Nil))
+let t2AsApp = t2Lit
+
+-- POSITIVE: listLength on a literal spine folds in an Integer index.
+l2 : PI (listLength (7 :: 8 :: Nil))
+let l2 = MkPI
+
+l2AsLit : PI 2
+let l2AsLit = l2
+
+-- POSITIVE: symbolic left-Nil append reduces definitionally for open ns.
+symNilL : forall (ns : List Nat). TBL (listAppend Nil ns) -> TBL ns
+let symNilL x = x
+
+-- NEGATIVE: right-Nil append is stuck (recursion is on the first
+-- argument); the right identity is propositional, not definitional.
+symNilR : forall (ns : List Nat). TBL (listAppend ns Nil) -> TBL ns
+let symNilR x = x    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1

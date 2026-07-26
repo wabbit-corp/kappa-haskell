@@ -4,7 +4,7 @@ type Poly : Type =
     (0 A : Type) -> A -> A
 
 type Box : Type =
-    (f : Poly)
+    (f : Poly,)
 
 boxId :
     Box -> Box

@@ -1,0 +1,47 @@
+-- NOTE: refinedExt is declared with forall binders (Spec 28.2); the
+-- explicit endpoint applications below track the open forall-explicitness
+-- question (OQ-1) and must be revisited with it.
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+-- Route one: literal synthesis. The Spec 16.1.9 insertion produces the
+-- IsProp evidence and the predicate proof through the Spec 15.8 solver.
+viaSynthesis :
+    NatBetween 2 30
+
+let viaSynthesis =
+    3
+
+-- Route two: explicit constructor application with a user-written proof
+-- term. `contains (2 .. 30) 3` is closed and normalizes to True, so `refl`
+-- checks at the instantiated fiber, and the IsProp field is summoned
+-- explicitly. The stored proof term therefore differs from route one's
+-- solver-produced evidence.
+viaExplicitProof :
+    NatBetween 2 30
+
+let viaExplicitProof =
+    Refined.Refined 3 @(summon (IsProp ((contains (2 .. 30) 3) = True))) @refl
+
+-- Differing proof terms of one IsProp fiber MUST NOT be reported as
+-- incoherent (T.12.6; Spec 13.2.9 requires a deterministic canonical
+-- choice among proof-producing paths). The two values are provably equal
+-- and compare equal, because equality and Eq for Refined use only the
+-- base value (Spec 28.2).
+proofRoutesAgree :
+    viaSynthesis = viaExplicitProof
+
+let proofRoutesAgree =
+    refinedExt viaSynthesis viaExplicitProof refl
+
+comparesProofInsensitively :
+    Bool
+
+let comparesProofInsensitively =
+    viaSynthesis == viaExplicitProof
+
+--! assertNoErrors
+--! assertEval comparesProofInsensitively True

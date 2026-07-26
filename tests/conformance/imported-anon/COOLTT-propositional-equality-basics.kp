@@ -18,44 +18,44 @@
 reflNat : 5 = 5
 let reflNat = refl
 
-reflPoly : forall {A : Type} (a : A) -> a = a
+reflPoly : forall (A : Type). (a : A) -> a = a
 let reflPoly _ = refl
 
 -- POSITIVE: symmetry (derived from the J eliminator).
-symm : forall {A : Type} {a b : A} -> a = b -> b = a
+symm : forall (A : Type) (a b : A). a = b -> b = a
 let symm refl = refl
 
 -- POSITIVE: transitivity.
-trans : forall {A : Type} {a b c : A} -> a = b -> b = c -> a = c
+trans : forall (A : Type) (a b c : A). a = b -> b = c -> a = c
 let trans refl q = q
 
 -- POSITIVE: congruence (ap / cong).
-cong : forall {A B : Type} {a b : A} -> (f : A -> B) -> a = b -> f a = f b
+cong : forall (A B : Type) (a b : A). (f : A -> B) -> a = b -> f a = f b
 let cong _ refl = refl
 
 -- POSITIVE: congruence with a specific function.
-succCong : forall {n m : Nat} -> n = m -> suc n = suc m
+succCong : forall (n m : Nat). n = m -> suc n = suc m
 let succCong = cong suc
 
 -- POSITIVE: function extensionality.
 -- If two functions agree on all inputs, they are equal.
-funext : forall {A B : Type} {f g : A -> B} ->
-         (forall (x : A) -> f x = g x) ->
+funext : forall (A B : Type) (f g : A -> B).
+         ((x : A) -> f x = g x) ->
          f = g
 let funext h = ?funextHole    --!! kappa.hole.unsolved
 
 -- POSITIVE: equational reasoning (multi-step transitivity).
 -- a = b = c is proven by chaining equalities.
-chainedEq : forall {a b c d : Nat} -> a = b -> b = c -> c = d -> a = d
+chainedEq : forall (a b c d : Nat). a = b -> b = c -> c = d -> a = d
 let chainedEq p q r = trans p (trans q r)
 
 -- POSITIVE: equality is used in a type position.
 -- `transport p x` moves `x : P a` to `P b` along `p : a = b`.
-transport : forall {A : Type} {a b : A} -> (P : A -> Type) -> a = b -> P a -> P b
+transport : forall (A : Type) (a b : A). (P : A -> Type) -> a = b -> P a -> P b
 let transport _ refl x = x
 
 -- POSITIVE: substitutivity in a type position.
-subst : forall {A : Type} {a b : A} -> (P : A -> Type) -> a = b -> P a -> P b
+subst : forall (A : Type) (a b : A). (P : A -> Type) -> a = b -> P a -> P b
 let subst P refl x = x
 
 -- NEGATIVE: reflexivity at the wrong type — different values are not equal.

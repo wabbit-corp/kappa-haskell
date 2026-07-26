@@ -1,0 +1,31 @@
+-- §18.2 delegates a non-final expression item's ignored payload to the
+-- structural §12.2.6 droppability judgment. This must use the checked action
+-- result type: the surface call itself contains no binder whose usage could
+-- otherwise expose the quantity-1 field.
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Full (1 tok : Token)
+
+makeFull : UIO Cell
+let makeFull = pure (Full Token)
+
+makeInt : UIO Int
+let makeInt = pure 7
+
+ok : UIO Unit
+let ok = do
+    makeInt
+    pure ()
+
+bad : UIO Unit
+let bad = do
+    makeFull --!! E_QTT_LINEAR_DROP
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

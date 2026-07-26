@@ -1,0 +1,24 @@
+data Indexed (n : Nat) : Type =
+    Indexed
+
+commuteIndex :
+    (m : Nat) ->
+    (n : Nat) ->
+    Indexed (natAdd m n) ->
+    Indexed (natAdd n m)
+
+let commuteIndex m n value =
+    value
+
+associateIndex :
+    (a : Nat) ->
+    (b : Nat) ->
+    (c : Nat) ->
+    Indexed (natAdd (natAdd a b) c) ->
+    Indexed (natAdd a (natAdd b c))
+
+let associateIndex a b c value =
+    value
+
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

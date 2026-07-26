@@ -1,0 +1,13 @@
+-- Spec §§30.2.1A/30.2.4A: an open cumulative lift in a declaration body is
+-- justified by the declaration's normalized constraint block. Canonical
+-- KCoreText must serialize that authority as constraint evidence and replay it.
+module main
+
+widen.{u,v} : Type u -> Type v
+let widen.{u,v} A = A
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

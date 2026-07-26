@@ -350,7 +350,12 @@ rData :: FixityEnv -> DataDecl -> RW DataDecl
 rData env (DataDecl n ps k cs) =
   DataDecl n <$> mapM (rBinder env) ps <*> mapM (rExpr env) k <*> mapM rCtor cs
   where
-    rCtor (CtorDecl cn bs g sp) = CtorDecl cn <$> mapM (rBinder env) bs <*> mapM (rExpr env) g <*> pure sp
+    rCtor (CtorDecl cn universes bs g sp) =
+      CtorDecl cn
+        <$> traverse (\u -> UniverseInstantiation <$> mapM (rExpr env) (uiLevels u) <*> pure (uiSpan u)) universes
+        <*> mapM (rBinder env) bs
+        <*> mapM (rExpr env) g
+        <*> pure sp
 
 rTrait :: FixityEnv -> TraitDecl -> RW TraitDecl
 rTrait env (TraitDecl sups n ps ms) =
@@ -360,8 +365,8 @@ rTrait env (TraitDecl sups n ps ms) =
     rMember (TraitDefault d sp) = TraitDefault <$> rLetDef env d <*> pure sp
 
 rInstance :: FixityEnv -> InstanceDecl -> RW InstanceDecl
-rInstance env (InstanceDecl prems hd ms) =
-  InstanceDecl <$> mapM (rExpr env) prems <*> rExpr env hd <*> mapM (rDecl env) ms
+rInstance env (InstanceDecl schema prems hd ms) =
+  InstanceDecl schema <$> mapM (rExpr env) prems <*> rExpr env hd <*> mapM (rDecl env) ms
 
 rEffect :: FixityEnv -> EffectDecl -> RW EffectDecl
 rEffect env (EffectDecl n ps ops lbl lty) =
@@ -407,7 +412,7 @@ rExpr env = go
       e@EUnit {} -> pure e
       ETuple es sp -> ETuple <$> mapM go es <*> pure sp
       ERecordLit items sp ->
-        ERecordLit <$> mapM (\(RecItem i n v) -> RecItem i n <$> mapM go v) items <*> pure sp
+        ERecordLit <$> mapM (\it -> (\v -> it {riValue = v}) <$> mapM go (riValue it)) items <*> pure sp
       ERecordType fs t sp ->
         ERecordType
           <$> mapM (\f -> (\ty -> f {rtfType = ty}) <$> go (rtfType f)) fs
@@ -416,6 +421,8 @@ rExpr env = go
       EApp f args -> EApp <$> go f <*> mapM goArg args
       EDot e m -> EDot <$> go e <*> pure m
       EQDot e m -> EQDot <$> go e <*> pure m
+      EUniverseInstantiation e levels sp ->
+        EUniverseInstantiation <$> go e <*> mapM go levels <*> pure sp
       ERecordPatch e items sp -> ERecordPatch <$> go e <*> mapM goPatch items <*> pure sp
       EReceiverSection ms args sp -> EReceiverSection ms <$> mapM goArg args <*> pure sp
       -- §5.5.1.1: `(e op)` is unary postfix application when a matching

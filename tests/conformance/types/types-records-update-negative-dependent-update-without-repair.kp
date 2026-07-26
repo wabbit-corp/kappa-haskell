@@ -3,7 +3,7 @@ module main
 data Byte : Type =
     Byte
 
-data Array n a : Type =
+data Array (n : Nat) (a : Type) : Type =
     Array
 
 type SizedBuffer = (len : Nat, buffer : Array this.len Byte, checksum : Nat)

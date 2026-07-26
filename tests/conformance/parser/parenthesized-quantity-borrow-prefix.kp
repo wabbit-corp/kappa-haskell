@@ -1,0 +1,12 @@
+module main
+
+plain : ((1) & x : Int) -> Int
+let plain ((1) & x : Int) = 0
+
+scoped : (0 s : Region) -> ((1) &[s] x : Int) -> Int
+let scoped (0 s : Region) ((1) &[s] x : Int) = 0
+
+--! mode check
+--! assertNoErrors
+--! assertParameterQuantities plain <quantity-expression>&
+--! assertParameterQuantities scoped 0 <quantity-expression>&[s]

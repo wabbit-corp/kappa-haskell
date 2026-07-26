@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+data Phantom
+    (A : Type)
+    : Type =
+    Phantom
+
+-- The high-level parameter is phantom; the result classifier is minimized.
+type SmallPhantom : Type0 =
+    Phantom Type3

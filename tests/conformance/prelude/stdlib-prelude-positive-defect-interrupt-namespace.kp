@@ -3,25 +3,25 @@
 
 -- §28.2 constructor namespace: the §28.2 spec lists the qualified ctor paths
 -- `InterruptCause.InterruptCause` and the `DefectTag` constructors. They must
--- resolve under their type's namespace (and the bare ctor names too), and the
+-- resolve under their type's namespace, and the
 -- `and`/`or`/`force` terms must be nameable as ordinary values.
 
 module main
 
 -- Qualified ctor namespace forms resolve to the right ctor.
 icQual : InterruptCause
-let icQual = InterruptCause.InterruptCause Requested None
+let icQual = InterruptCause.InterruptCause InterruptTag.Requested None
 
 tagQual : DefectTag
 let tagQual = DefectTag.OtherDefect
 
 -- All nine DefectTag constructors exist (§28.2 constructor namespace).
 allTags : List DefectTag
-let allTags = (Panic :: AssertionFailed :: ArithmeticFault :: StackOverflow :: OutOfMemory :: HostFailure :: ForeignContractViolation :: UnhandledChildFailure :: OtherDefect :: Nil)
+let allTags = (DefectTag.Panic :: DefectTag.AssertionFailed :: DefectTag.ArithmeticFault :: DefectTag.StackOverflow :: DefectTag.OutOfMemory :: DefectTag.HostFailure :: DefectTag.ForeignContractViolation :: DefectTag.UnhandledChildFailure :: DefectTag.OtherDefect :: Nil)
 
 -- DefectInfo carries (DefectTag, Option String); None message is well-typed.
 diNoMsg : DefectInfo
-let diNoMsg = DefectInfo Panic None
+let diNoMsg = DefectInfo DefectTag.Panic None
 
 -- `and`/`or` are first-class `List Bool` folds (nameable, not just (&&)/(||)).
 andVal : List Bool -> Bool

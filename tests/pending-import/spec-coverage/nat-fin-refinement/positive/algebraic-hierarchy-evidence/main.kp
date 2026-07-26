@@ -1,0 +1,71 @@
+-- Spec 28.2.2 splits the algebraic hierarchy: CommutativeAdditiveMonoid
+-- refines AdditiveMonoid with addCommutative,
+-- AdditivelyNoncommutativeSemiring bundles the annihilator and
+-- distributivity laws, and Semiring is the pair of those supertraits
+-- with NO members of its own. Spec 28.2.3 mandates the instances probed
+-- here; they are exactly the provider evidence Spec 15.8.2/15.8.4
+-- consume for commutative-monoid normalization of Nat/Integer/Int
+-- indices, so their presence is load-bearing for the transport suites
+-- elsewhere in this bundle.
+
+needCommutativeAdditive :
+    forall (a : Type).
+    (@evidence : CommutativeAdditiveMonoid a) ->
+    a ->
+    a
+
+let needCommutativeAdditive x = x
+
+natCommutativeAdditive : Nat -> Nat
+let natCommutativeAdditive x = needCommutativeAdditive x
+
+integerCommutativeAdditive : Integer -> Integer
+let integerCommutativeAdditive x = needCommutativeAdditive x
+
+intCommutativeAdditive : Int -> Int
+let intCommutativeAdditive x = needCommutativeAdditive x
+
+rationalCommutativeAdditive : Rational -> Rational
+let rationalCommutativeAdditive x = needCommutativeAdditive x
+
+needNoncommutativeSemiring :
+    forall (a : Type).
+    (@evidence : AdditivelyNoncommutativeSemiring a) ->
+    a ->
+    a
+
+let needNoncommutativeSemiring x = x
+
+natNoncommutativeSemiring : Nat -> Nat
+let natNoncommutativeSemiring x = needNoncommutativeSemiring x
+
+integerNoncommutativeSemiring : Integer -> Integer
+let integerNoncommutativeSemiring x = needNoncommutativeSemiring x
+
+intNoncommutativeSemiring : Int -> Int
+let intNoncommutativeSemiring x = needNoncommutativeSemiring x
+
+rationalNoncommutativeSemiring : Rational -> Rational
+let rationalNoncommutativeSemiring x = needNoncommutativeSemiring x
+
+-- Semiring itself now has no members: a Semiring premise is spent
+-- entirely through its two supertraits (Spec 14.1.4 projection), and
+-- the additive commutativity law arrives from the
+-- CommutativeAdditiveMonoid side.
+semiringAddCommutes :
+    forall (a : Type).
+    (@evidence : Semiring a) ->
+    (x : a) ->
+    (y : a) ->
+    add x y = add y x
+
+let semiringAddCommutes @evidence x y =
+    addCommutative @x @y
+
+-- Note (Spec 28.2.2): neither Semiring nor Ring permits reordering
+-- MULTIPLICATIVE factors — that requires a separate checked
+-- commutative-multiplication bundle, and v1 does not infer it from
+-- trait names. The negative probe lives in
+-- negative/noncommutative-provider-no-commutation.
+
+--! assertNoErrors

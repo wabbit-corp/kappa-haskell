@@ -1,0 +1,8 @@
+-- A declaration-generalized type witness may not escape through the body's
+-- ordinary result. The candidate must be rechecked with A rigid and rejected,
+-- rather than changing the declaration's observation mode after abstraction.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_GENERALIZATION_PARAMETRIC_ESCAPE
+
+let bad = \A -> A

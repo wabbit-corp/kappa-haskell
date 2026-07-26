@@ -1,0 +1,11 @@
+missingProof :
+    (@0 proposition : IsProp Void) ->
+    (@0 erased : RuntimeErased Void) ->
+    Refined Nat (\_ -> Void)
+
+let missingProof @proposition @erased =
+    0
+
+-- Both classification witnesses are in scope, but there is no inhabitant of
+-- the predicate fiber. Neither witness may be used as that missing proof.
+--! assertErrorCount 1

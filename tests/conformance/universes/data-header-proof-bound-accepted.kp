@@ -1,0 +1,7 @@
+-- §10.4.1/§11.1.2.8: declaration-header telescopes preserve erased level
+-- assumptions for later parameters.
+--! mode check
+--! assertNoErrors
+
+data BoundedBox (u : TypeLevel) (@0 p : u < ω) (0 A : Type u) : Typeω =
+    MkBoundedBox

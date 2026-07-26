@@ -1,0 +1,62 @@
+-- §31.1.1 (position-independent transparent normalization) + §31.1.3
+-- (literal normalization): Boolean-producing comparisons and control
+-- expressions written inside data-family indices compute during
+-- definitional-equality checking. Ord dispatch through `compare` unfolds
+-- on literals (§15.1 case 1), so `Q (2 < 3)` converts to `Q True`;
+-- if-expressions ι-reduce once their condition folds; and a match
+-- expression with a literal scrutinee written directly in index position
+-- ι-reduces to the selected branch. Distinct folded values still
+-- discriminate (kappa.type.mismatch).
+--! mode check
+
+module main
+
+data Q (b : Bool) : Type =
+    MkQ
+
+data P (n : Nat) : Type =
+    MkP
+
+-- POSITIVE: comparison folds to True.
+qt : Q (2 < 3)
+let qt = MkQ
+
+qtAsTrue : Q True
+let qtAsTrue = qt
+
+-- POSITIVE: comparison folds to False.
+qf : Q (3 < 2)
+let qf = MkQ
+
+qfAsFalse : Q False
+let qfAsFalse = qf
+
+-- POSITIVE: if with a literal condition ι-reduces.
+i5 : P (if True then 5 else 6)
+let i5 = MkP
+
+i5AsLit : P 5
+let i5AsLit = i5
+
+-- POSITIVE: if with a computed condition folds the condition first.
+i7 : P (if 2 < 3 then 7 else 8)
+let i7 = MkP
+
+i7AsLit : P 7
+let i7AsLit = i7
+
+-- POSITIVE: a match with a literal scrutinee in index position ι-reduces.
+m7 : P (match True
+        case True -> 7
+        case False -> 8)
+let m7 = MkP
+
+m7AsLit : P 7
+let m7AsLit = m7
+
+-- NEGATIVE: a True index is not a False index.
+badQ : Q False
+let badQ = qt    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1

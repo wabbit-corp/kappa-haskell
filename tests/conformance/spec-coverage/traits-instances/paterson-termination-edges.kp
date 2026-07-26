@@ -11,17 +11,17 @@
 -- than the head is rejected on the occurrence condition.
 module main
 
-trait Pack (a : Type) =
+trait Pack (0 a : Type) =
     packed : a -> Int
 
-trait Rel (a : Type) (b : Type) =
+trait Rel (0 a : Type) (0 b : Type) =
     rel : a -> b -> Bool
 
-data Stack (a : Type) : Type =
+data Stack (0 a : Type) : Type =
     SEmpty
     SPush a (Stack a)
 
-data Pairy (a : Type) (b : Type) : Type =
+data Pairy (0 a : Type) (0 b : Type) : Type =
     MkPairy a b
 
 instance Pack Int =
@@ -43,5 +43,3 @@ instance Rel b a => Rel a b = --!! kappa.termination.failure
 -- premise and only once in the head — occurrence growth is rejected.
 instance Rel a a => Pack (Pairy a b) = --!! kappa.termination.failure
     let packed p = 0
-
--- STATUS(a51e1bf): PASS

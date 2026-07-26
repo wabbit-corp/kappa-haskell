@@ -1,0 +1,54 @@
+-- The user-natural control for the prelude-Nat solver path. UNat is
+-- structurally a natural: Spec 14.5.2 accepts
+-- `derive ExactNaturalRepresentation` for exactly one nullary
+-- constructor and one unary constructor whose sole retained field is
+-- one strict recursive occurrence ("Constructor names, source spelling,
+-- and declaration order do not determine eligibility"), and Spec 14.5.1
+-- checks the IsSet/Eq derivations. But representation evidence is NOT
+-- arithmetic provider evidence: UNat has no AdditiveMonoid or
+-- CommutativeAdditiveMonoid instance, so Spec 15.8.4 algebraic
+-- normalization has no provider to consume, Spec 15.8.2 forbids
+-- scavenging look-alike lemmas (including plusZeroRight below), and the
+-- right identity `plus n Z = n` is NOT auto-closed. The manual
+-- induction with a cong lift remains required — unlike prelude Nat,
+-- where positive/nat-right-identity-transport pins the automatic path.
+
+data UNat : Type =
+    Z
+    S (pred : UNat)
+
+derive IsSet UNat
+derive Eq UNat
+derive ExactNaturalRepresentation UNat
+
+plus : UNat -> UNat -> UNat
+let plus m n =
+    match m
+    case Z -> n
+    case S k -> S (plus k n)
+
+data Vec (n : UNat) : Type =
+    MkVec
+
+expectsN : (n : UNat) -> Vec n -> Unit
+let expectsN n v = ()
+
+-- ACCEPTED: plus Z n reduces to n inside the index (first defining
+-- equation; ordinary delta/iota computation, Spec 15.1 case 2).
+zeroPlus : (n : UNat) -> Vec (plus Z n) -> Unit
+let zeroPlus n v = expectsN n v
+
+-- ACCEPTED: the right identity by structural induction plus cong.
+plusZeroRight : (n : UNat) -> (=) (plus n Z) n
+let plusZeroRight n =
+    match n
+    case Z -> refl
+    case S k -> cong (\ (x : UNat) -> S x) (plusZeroRight k)
+
+-- REJECTED (the provider gate): no Spec 15.8.2 provider evidence exists
+-- for UNat, so the solver returns Unknown, Spec 16.1.8 finds no
+-- transport plan, and the application is an ordinary argument mismatch.
+plusZeroAuto : (n : UNat) -> Vec (plus n Z) -> Unit
+let plusZeroAuto n v = expectsN n v
+
+--! assertErrorCount 1

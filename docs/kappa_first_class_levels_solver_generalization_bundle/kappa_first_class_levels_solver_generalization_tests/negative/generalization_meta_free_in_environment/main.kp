@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+bad :
+    Monad m =>
+    (@d : MonadRef m) ->
+    (A : Type) ->
+    d.Ref (Option A) ->
+    m Unit
+let bad (@d : MonadRef m) A r = do
+    let get = \() -> d.readRef r
+    let asString : Unit -> m (Option String) = get
+    pure Unit

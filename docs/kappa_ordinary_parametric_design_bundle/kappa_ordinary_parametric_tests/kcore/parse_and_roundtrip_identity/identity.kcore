@@ -1,0 +1,24 @@
+kcore 1;
+
+module @tests.kcore.identity#1001 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.identity",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  def ordinary @tests.kcore.identity.id#2001 .{^u#0} :
+    ((parametric parametric 0 explicit value %A#0 : Type ^u#0) ->
+      ((ordinary ordinary omega explicit value %x#1 : %A#0) -> %A#0))
+  {
+    body =
+      lambda (parametric parametric 0 explicit value %A#0 : Type ^u#0) {
+        lambda (ordinary ordinary omega explicit value %x#1 : %A#0) {
+          %x#1
+        }
+      };
+  }
+}

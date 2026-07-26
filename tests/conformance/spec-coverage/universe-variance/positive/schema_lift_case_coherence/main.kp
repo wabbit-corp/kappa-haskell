@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+--! assertSchemaLiftPresent Box
+
+data Box.{irrelevant u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)
+
+read : Box.{0} Int -> Int
+let read x =
+    let y : Box.{3} Int = x
+    match y
+    case Box value ->
+        value

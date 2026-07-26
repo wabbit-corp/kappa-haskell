@@ -1,0 +1,9 @@
+module explicit_projection_universe_schema
+
+projection value.{u}
+    (place box : (parametric 0 A : Type u, value : Int))
+    : Int =
+    yield box.value
+
+--! mode check
+--! assertNoErrors

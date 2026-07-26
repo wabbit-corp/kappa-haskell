@@ -6,8 +6,8 @@ module main
 -- proposition.  The doc lists '%synth IsProp Bool == fail'.  On this surface,
 -- evidence is summoned through 'summon : (goal : Type) -> (@ev : goal) -> goal':
 -- there is no 'instance IsProp Bool' and no compiler-owned intrinsic rule that
--- would manufacture one (the h-level traits are deliberately bare markers; only
--- 'instance IsSet String' exists in the prelude), so the implicit evidence is
+-- would manufacture one (the h-level traits are deliberately bare markers;
+-- `IsSet Bool` does not entail `IsProp Bool`), so the implicit evidence is
 -- UNSOLVED — the faithful realization of "fail".
 
 let probe = summon (IsProp Bool)

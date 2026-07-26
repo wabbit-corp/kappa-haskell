@@ -10,14 +10,14 @@
 module main
 
 type Inner = (x : Int, y : Int)
-type Outer = (pos : Inner)
+type Outer = (pos : Inner,)
 
 -- POSITIVE: nested projection chain (.pos.x) = \__x -> __x.pos.x.
 getX : Outer -> Int
 let getX = (.pos.x)
 
 useGetX : Int
-let useGetX = getX (pos = (x = 1, y = 2))
+let useGetX = getX (pos = (x = 1, y = 2),)
 
 -- NEGATIVE: record patch is not a receiver-section body.
 badPatch : Inner -> Inner

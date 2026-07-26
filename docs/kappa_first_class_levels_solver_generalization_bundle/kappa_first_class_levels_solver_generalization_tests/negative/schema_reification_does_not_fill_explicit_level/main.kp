@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+g : (u : TypeLevel) -> TypeLevel
+let g u = u
+
+bad : TypeLevel
+let bad = g

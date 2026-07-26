@@ -14,8 +14,8 @@ let main = do
     let f <- fork (race (ioPure 1) (ioPure 2))
     let ex <- await f
     match ex
-      case Success r ->
+      case Exit.Success r ->
         match r
-        case LeftWins v -> printlnString ("tie:left:" ++ showInt v)
-        case RightWins v -> printlnString ("tie:right:" ++ showInt v)
-      case Failure c -> printlnString "tie:failed"
+        case RaceResult.LeftWins v -> printlnString ("tie:left:" ++ showInt v)
+        case RaceResult.RightWins v -> printlnString ("tie:right:" ++ showInt v)
+      case Exit.Failure c -> printlnString "tie:failed"

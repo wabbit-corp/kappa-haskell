@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Render 0 irrelevant
+--! assertSchemaCertificateValid Render
+
+trait Render.{u} (A : Type u) =
+    render : A -> String

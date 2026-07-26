@@ -6,19 +6,15 @@
 
 module main
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 risky : IO String Nat
 let risky = do
     raise "boom"
-    pure (natOfInt 0)
+    pure (0 : Nat)
 
 handlerOk : Nat -> Nat -> IO String Nat
 let handlerOk x y = do
     try risky
-    except _ if leInt (natToInt y) (natToInt x) ->
+    except _ if y <= x ->
         pure (x - y)
     except _ ->
-        pure (natOfInt 0)
+        pure (0 : Nat)

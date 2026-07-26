@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
+
+opaque let leftLevel  (b : Bool) : TypeLevel = if b then 0 else omega
+opaque let rightLevel (b : Bool) : TypeLevel = if b then omega else 0
+
+idAt :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type u) ->
+    A -> A
+let idAt u p A x = x
+
+bad :
+    (b : Bool) ->
+    (@0 leftBound : leftLevel b < omega + 1) ->
+    (@0 rightBound : rightLevel b < omega + 1) ->
+    (A : Type (leftLevel b)) ->
+    A -> A
+let bad b leftBound rightBound A x =
+    idAt (rightLevel b) @rightBound A x

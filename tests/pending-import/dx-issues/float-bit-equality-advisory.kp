@@ -1,8 +1,18 @@
--- DX / §6.1.3 / §28.2: Kappa deliberately gives (==) on Double raw-bit
--- equality, so +0.0 == -0.0 is False while floatEq reports True. This reverses
--- the mainstream meaning of `==`; an advisory at the operator is the minimum
--- guardrail. The warning's eventual code is intentionally not pinned here so
--- the fixture remains well-formed before a diagnostic name is standardized.
+-- DX / §6.1.3 / §28.2 / §14.x: Kappa deliberately gives (==) on Double
+-- raw-bit equality, so +0.0 == -0.0 is False while floatEq reports True.
+-- This reverses the mainstream meaning of `==`; an advisory at the
+-- operator is the minimum guardrail. The warning's eventual code is
+-- intentionally not pinned here so the fixture remains well-formed before
+-- a diagnostic name is standardized.
+-- 2026-07-25 (Nat/Fin revision): Eq lost its eqIsSet MEMBER and gained an
+-- IsSet SUPERTRAIT (`trait IsSet a => Eq (parametric 0 a : Type)`), so
+-- IsSet Double is now a resolution premise of the required portable
+-- Eq Double instance — and the required-instance lists supply no explicit
+-- IsSet Double (the only prelude derive is `derive IsSet Nat`; §14.5.1's
+-- Hedberg route is a MAY). The probe below pins that Eq Double remains
+-- constructible and its IsSet supertrait projects (§14.1.4), i.e. raw-bit
+-- `==` is now a supertrait-carrying set equality — which sharpens, not
+-- weakens, the case for the advisory.
 --! mode run
 --! assertNoErrors
 --! assertWarningCount 1
@@ -13,8 +23,18 @@ module main
 negativeZero : Double
 let negativeZero = negDouble 0.0
 
+-- forces the new supertrait to resolve at Double: Eq Double via instance
+-- resolution, IsSet Double via §14.1.4 supertrait projection
+requiresSetEquality : forall (a : Type). (@evidence : Eq a) -> (@setEvidence : IsSet a) -> (x : a) -> Bool
+let requiresSetEquality @evidence @setEvidence x = x == x
+
+supertraitProbe : Bool
+let supertraitProbe = requiresSetEquality 0.0
+
 main : UIO Unit
 let main = do
     println (0.0 == negativeZero)
     println (floatEq 0.0 negativeZero)
 -- STATUS(a0497523): FAIL — expected 1 warnings, got 0
+-- (Recorded against the pre-revision file shape; the IsSet-supertrait
+-- probe was added 2026-07-25 and has not been run on a0497523.)

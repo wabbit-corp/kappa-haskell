@@ -1,34 +1,55 @@
 -- Stress test: GADT constructor with erased (quantity-0) implicit index, inferred from return type
 -- Spec: §10.2 (GADT constructors), §12.1-§12.2 (implicit erased
---       parameters), §16.3 (implicit application).
+--       parameters), §16.3 (implicit application), §15.8.6
+--       (metavariables and principal solutions).
+--
+-- Named `PFin` (Peano-style finite index) so it does not shadow the
+-- canonical §28.2 prelude `Fin n` — which is a refinement-style record
+-- `Fin (value, @0 isLt)` with representation duties under §34.3.2A and
+-- is covered by nat-fin-refinement/positive/fin-api. The subject here
+-- is only the inference of an erased quantity-0 implicit GADT index
+-- from the result type.
+--
+-- Mechanism note (Nat/Fin revision): `toFin2 : PFin 3 = FZ` yields the
+-- obligation `?n + 1 = 3` with the metavariable in `natAdd`'s recursion
+-- position — stuck, no iota — so acceptance is §15.8.6
+-- unique-principal-solution inversion (`?n := 2`), not literal folding.
 
 --! mode check
 
--- Fin n represents a finite number less than n.
+-- PFin n represents a finite number less than n.
 -- The bound n is erased at runtime; it is only needed for type-checking.
-data Fin (0 n : Nat) : Type =
-    FZ : forall (@0 n : Nat). Fin (n + 1)
-    FS : forall (@0 n : Nat). Fin n -> Fin (n + 1)
+data PFin (0 n : Nat) : Type =
+    FZ : forall (@0 n : Nat). PFin (n + 1)
+    FS : forall (@0 n : Nat). PFin n -> PFin (n + 1)
 
--- FZ : Fin 3 — erased n=2 is inferred from the return type annotation.
-toFin2 : Fin 3
+-- FZ : PFin 3 — erased n=2 is inferred from the return type annotation.
+toFin2 : PFin 3
 let toFin2 = FZ
 
--- FS FZ : Fin 3 — inner FZ : Fin 2 (erased n=1), outer FS : Fin 3 (erased n=2).
-toFin3 : Fin 3
+-- FS FZ : PFin 3 — inner FZ : PFin 2 (erased n=1), outer FS : PFin 3 (erased n=2).
+toFin3 : PFin 3
 let toFin3 = FS FZ
 
--- FS (FS FZ) : Fin 4 — three levels of erased implicit inference.
-toFin4 : Fin 4
+-- FS (FS FZ) : PFin 4 — three levels of erased implicit inference.
+toFin4 : PFin 4
 let toFin4 = FS (FS FZ)
 
--- A function converting Fin to Nat, using the erased index only at type level.
-toNat : forall (@0 n : Nat). Fin n -> Nat
+-- A function converting PFin to Nat, using the erased index only at type level.
+toNat : forall (@0 n : Nat). PFin n -> Nat
 let toNat value =
     match value
     case FZ   -> 0
     case FS k -> 1 + toNat k
 
---! assertNoErrors
+-- POSITIVE: `PFin 0` is empty — both constructor results demand
+-- `?n + 1 = 0`, refuted by §15.8.4 Presburger with non-negativity
+-- (§30.2.7 `Refuted`), so the remainder is empty and §17.1.5 accepts
+-- `case impossible`. (The canonical prelude analogue is §30.2.7A:
+-- "`Fin 0` MUST project to `Empty`".)
+noPFin0 : forall (a : Type). PFin 0 -> a
+let noPFin0 f =
+    match f
+    case impossible
 
--- STATUS(a0497523): FAIL (erased GADT indices are not inferred from result types)
+--! assertNoErrors

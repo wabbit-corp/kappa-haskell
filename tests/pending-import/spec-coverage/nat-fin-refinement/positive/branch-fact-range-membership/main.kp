@@ -1,0 +1,43 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+-- Spec 16.4.2 decomposes the `&&` guard, so the success branch carries
+-- the erased facts `(2 <= x) = True` and `(x <= 30) = True`
+-- (Spec 16.4.1). The Spec 16.1.9 insertion at `Some x` then asks the
+-- Spec 15.8 solver for `(contains (2 .. 30) x) = True`, which follows
+-- from those facts through the canonical membership equations of
+-- Spec 20.2.1. No runtime membership check is inserted: the guard is the
+-- explicit check.
+clampToRange :
+    (x : Nat) ->
+    Option (NatBetween 2 30)
+
+let clampToRange x =
+    if 2 <= x && x <= 30 then
+        Some x
+    else
+        None
+
+-- The same licensing works when the guard is spelled through `contains`
+-- itself: the branch fact is exactly the instantiated predicate.
+spelledMembershipGuard :
+    (x : Nat) ->
+    Option (NatBetween 2 30)
+
+let spelledMembershipGuard x =
+    if contains (2 .. 30) x then
+        Some x
+    else
+        None
+
+rejectedAtRuntime :
+    Option (NatBetween 2 30)
+
+let rejectedAtRuntime =
+    clampToRange 40
+
+--! assertNoErrors
+--! assertEval rejectedAtRuntime None

@@ -96,8 +96,15 @@ type of a type isn't itself):
   Type    : Type1      : Type2   …
 ```
 
-In the code a universe is `CSort n` (`Type` is `CSort 0`, `Type1` is `CSort 1`).
-**Cumulativity** means anything in `Type` also fits where `Type1` is expected.
+In the code a universe is `CSort level`, where `level` is the canonical
+`Kappa.Level.Level` expression (`Type0` is `CSort LZero`, `Type1` is
+`CSort (LFinite 1)`). A source-written bare `Type` initially carries a fresh
+level metavariable; complete declarations or declaration SCCs either solve it
+principally or generalize it into a hidden universe schema. Open levels preserve
+variables, neutral first-class `TypeLevel` identities, `omega`, commutative
+natural/Hessenberg addition, and `max` until the universe solver discharges
+their constraints. **Cumulativity** means anything in `Type0` also fits where
+`Type1` is expected, represented explicitly by checked lift evidence in Core.
 
 ### Bidirectional type checking: `infer` vs. `check`
 Instead of one "typecheck" function, there are two, which call each other. This

@@ -1,0 +1,5 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses a.kcore
+--! assertKCoreParses b.kcore
+--! assertKCoreSemanticHashEquals a.kcore b.kcore

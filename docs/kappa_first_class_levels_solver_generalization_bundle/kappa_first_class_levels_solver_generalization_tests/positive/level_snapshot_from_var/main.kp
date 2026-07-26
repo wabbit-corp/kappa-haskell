@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+snapshotLevel :
+    Monad m =>
+    MonadRef m =>
+    m TypeLevel
+let snapshotLevel = do
+    var u = 0
+    let u0 = u
+    type SnapshotType = Type u0
+    pure u0

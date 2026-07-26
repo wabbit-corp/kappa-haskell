@@ -1,0 +1,89 @@
+-- §31.1.3 (literal normalization): numeric literals appearing as type
+-- indices are normalized before comparison, and §31.1.1 makes transparent
+-- normalization position-independent, so closed literal arithmetic folds
+-- exactly inside data-family indices (§10.1.3) in BOTH directions: an
+-- arithmetic-expression index converts to its literal value and a literal
+-- index converts to any arithmetic expression denoting it. §28.2 declares
+-- `data Nat = Zero | Succ (pred : Nat)` with canonical `natAdd`/
+-- `natMultiply`, and the `Add Nat`/`Mul Nat` instances delegate to those
+-- definitions, which are §15.1 case 2 structural recursions on the first
+-- argument — closed folds are ordinary δ/ι computation ("Closed Nat
+-- computation is exact", §28.2; §15.8.4 requires exact closed addition,
+-- multiplication, checked subtraction, division, and modulo). The same
+-- folding applies to GADT constructor result types (§10.2): a constructor
+-- indexed at `rows + 1` builds literal-indexed witnesses. Wrong literal
+-- indices remain kappa.type.mismatch (§3.2.3) — folding never conflates
+-- distinct values.
+--! mode check
+
+module main
+
+data P (n : Nat) : Type =
+    MkP
+
+-- POSITIVE, direction 1: arithmetic-expression index used at literal index.
+a12 : P (1 + 2)
+let a12 = MkP
+
+aAsLit : P 3
+let aAsLit = a12
+
+-- POSITIVE, direction 2: literal index used at arithmetic-expression index.
+b4 : P 4
+let b4 = MkP
+
+bAsArith : P (2 + 2)
+let bAsArith = b4
+
+-- POSITIVE: multiplication, both directions.
+c6 : P (2 * 3)
+let c6 = MkP
+
+cAsLit : P 6
+let cAsLit = c6
+
+dLit : P 10
+let dLit = MkP
+
+dAsMul : P (2 * 5)
+let dAsMul = dLit
+
+-- POSITIVE: nested mixed arithmetic normalizes all the way down.
+e6 : P ((1 + 1) * (2 + 1))
+let e6 = MkP
+
+e6AsLit : P 6
+let e6AsLit = e6
+
+-- POSITIVE: closed checked subtraction on literals is exact. §28.2 lets
+-- checked `Nat` subtraction use well-founded recursion and erased domain
+-- proofs, i.e. it need not be conversion-reducible at all — in that case
+-- `3 - 1` meets `2` through §15.8.4 exact closed checked subtraction plus
+-- a §16.1.8 inserted transport rather than by δ/ι folding. Either
+-- mechanism must accept this pair.
+s2 : P (3 - 1)
+let s2 = MkP
+
+s2AsLit : P 2
+let s2AsLit = s2
+
+-- POSITIVE: constructor-result-side folding (§10.2). MatRow's result index
+-- `rows + 1` folds against the literal annotation, so two layers over
+-- MatZero check at Matrix 2 3.
+data Matrix (rows : Nat) (cols : Nat) : Type =
+    MatZero : Matrix 0 cols
+    MatRow  : (prev : Matrix rows cols) -> Matrix (rows + 1) cols
+
+m2x3 : Matrix 2 3
+let m2x3 = MatRow (MatRow MatZero)
+
+-- NEGATIVE: the index really discriminates after folding (3 /= 4).
+bad : P (2 + 2)
+let bad = a12    --!! kappa.type.mismatch
+
+-- NEGATIVE: two MatRow layers fold to 2 rows, never 3.
+badRows : Matrix 3 3
+let badRows = MatRow (MatRow MatZero)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 2

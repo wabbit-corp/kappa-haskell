@@ -1,0 +1,17 @@
+-- Canonical TypeLevel arithmetic is recognized by resolved declaration
+-- identity. A local operation named `+` is an ordinary neutral level term,
+-- not the standard additive solver constructor.
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
+
+module main
+
+type Bad
+    (u : TypeLevel)
+    (@0 p : u < omega)
+    : Typeω =
+    block
+        localAdd : TypeLevel -> TypeLevel -> TypeLevel
+        let localAdd x y = x
+        let `+` = localAdd
+        Type(`+` u 1)

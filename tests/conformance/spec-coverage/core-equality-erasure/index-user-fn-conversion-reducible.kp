@@ -1,0 +1,109 @@
+-- §15.1 conversion-reducibility applies to data-family indices exactly as
+-- to propositional-equality goals (§31.1.1 makes normalization
+-- position-independent; the propositional-position half is pinned by
+-- tests/conformance/spec-coverage/proofs-deriving-totality/
+-- conversion-reducibility-status.kp). A non-recursive transparent user
+-- function (§15.1 case 1) and a structurally recursive one over a user
+-- inductive (§15.1 case 2, §15.3) δ/ι-reduce in index positions, in both
+-- directions, including through top-level partial applications. Symbolic
+-- reduction follows the defining equations: `nadd Z n` reduces to `n` for
+-- open `n` (first equation fires), while `nadd n Z` is stuck (recursion is
+-- on the first argument), so that coercion is kappa.type.mismatch.
+--
+-- CONTRAST (load-bearing under §15.8): the same right-identity shape over
+-- the standard `Nat` — `V (natAdd n 0) -> V n` — is now ACCEPTED, because
+-- §15.8.4 monoid normalization consumes the required
+-- CommutativeAdditiveMonoid Nat provider evidence and §16.1.8 inserts the
+-- transport (pinned by tests/pending-import/spec-coverage/
+-- nat-fin-refinement/positive/nat-additive-identity-channels). `symR` is
+-- rejected here ONLY because `N` is a user inductive with no
+-- AdditiveMonoid/CommutativeAdditiveMonoid instance: §15.8.4 applies
+-- "whenever the referenced operations and required provider evidence are
+-- available", §15.8.2 requires a validated provider artifact bound to
+-- selected coherent evidence and forbids scavenging look-alike proof
+-- terms, and the required constructor/closed-arithmetic and Presburger
+-- domains are scoped to `Nat`, `Integer`, `Int`. This file is the
+-- no-provider-evidence control for that acceptance.
+--! mode check
+
+module main
+
+data P (n : Nat) : Type =
+    MkP
+
+-- Non-recursive transparent user function (conversion-reducible, case 1).
+double : Nat -> Nat
+let double n = n + n
+
+-- POSITIVE: application index converts to its literal value.
+d4 : P (double 2)
+let d4 = MkP
+
+d4AsLit : P 4
+let d4AsLit = d4
+
+-- POSITIVE: literal index converts to an application denoting it.
+d6Lit : P 6
+let d6Lit = MkP
+
+d6AsApp : P (double 3)
+let d6AsApp = d6Lit
+
+-- Top-level partial application of a trait operator is also transparent.
+plus3 : Nat -> Nat
+let plus3 = (+) 3
+
+-- POSITIVE: nested partial applications fold in an index.
+h7 : P (plus3 (plus3 1))
+let h7 = MkP
+
+h7AsLit : P 7
+let h7AsLit = h7
+
+-- Structurally recursive user function over a user inductive (case 2).
+data N : Type =
+    Z
+    S N
+
+data V (n : N) : Type =
+    MkV
+
+nadd : N -> N -> N
+let nadd a b =
+    match a
+    case Z -> b
+    case S x -> S (nadd x b)
+
+-- POSITIVE: δ + ι in equality goals — closed fold and open first-equation
+-- reduction both hold by refl.
+oneOne : nadd (S Z) (S Z) = S (S Z)
+let oneOne = refl
+
+zeroLeft : (b : N) -> nadd Z b = b
+let zeroLeft b = refl
+
+-- POSITIVE: the same recursion folds inside an index, both directions.
+v2 : V (nadd (S Z) (S Z))
+let v2 = MkV
+
+v2AsLit : V (S (S Z))
+let v2AsLit = v2
+
+v3Lit : V (S (S (S Z)))
+let v3Lit = MkV
+
+v3AsApp : V (nadd (S Z) (S (S Z)))
+let v3AsApp = v3Lit
+
+-- POSITIVE: symbolic LEFT identity — nadd Z n reduces to n for open n.
+symL : forall (n : N). V (nadd Z n) -> V n
+let symL x = x
+
+-- NEGATIVE: symbolic RIGHT identity — nadd n Z is stuck on the neutral
+-- head n; it does not convert to n (that identity is propositional only).
+symR : forall (n : N). V (nadd n Z) -> V n
+let symR x = x    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1
+--! assertNoWarnings

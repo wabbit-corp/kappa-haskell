@@ -8,9 +8,9 @@ data Token : Type =
 type Cell : Type =
     (value : Int, <=1 tok : Token)
 
-bump : (inout v : Int) -> UIO (1 v : Int)
-let bump (inout v : Int) : UIO (1 v : Int) =
-    pure (v = addInt v 1)
+bump : (inout v : Int) -> UIO (1 v : Int,)
+let bump (inout v : Int) : UIO (1 v : Int,) =
+    pure (v = addInt v 1,)
 
 bad : UIO Int
 let bad = do

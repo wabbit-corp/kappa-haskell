@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE
+
+up.{u} : Nat -> Nat
+let up n =
+    if n == 0 then 0 else up.{succ u} (n - 1)

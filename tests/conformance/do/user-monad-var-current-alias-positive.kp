@@ -6,7 +6,7 @@ module main
 -- §18.6.2: a current-value read bound to a simple local aliases the same
 -- VarCurrent representative for arbitrary lawful MonadRef carriers.
 
-data Wrap (a : Type) : Type =
+data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =

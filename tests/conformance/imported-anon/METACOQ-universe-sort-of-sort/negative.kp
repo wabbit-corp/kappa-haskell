@@ -3,7 +3,8 @@
 --       compiler.frontir.standard_diagnostic_families.type_equality
 --
 -- A sort cannot inhabit itself, and a sort cannot skip levels: `Type2 : Type3`,
--- not `Type2 : Type0`. Both rejections use family `kappa.type.mismatch`.
+-- not `Type2 : Type0`. Both failures are universe-constraint diagnostics;
+-- self-containment additionally has its dedicated portable alias.
 
 module negative
 
@@ -11,9 +12,10 @@ module negative
 
 -- NEGATIVE: a sort cannot inhabit itself.
 sortInItself : Type0
-let sortInItself = Type0   --!! kappa.type.mismatch
+let sortInItself = Type0   --!! E_UNIVERSE_SELF_CONTAINMENT
 
 skipLevel : Type0
-let skipLevel = Type2   --!! kappa.type.mismatch
+let skipLevel = Type2   --!! E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.universe.constraint
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT

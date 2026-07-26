@@ -1,0 +1,62 @@
+-- §17.1.9 (guard-success evidence), §16.4.1 (flow-sensitive branch
+-- evidence), §11.4.2 form 1 (boolean-to-type coercion in binder
+-- positions), §31.1.3 (literal normalization). Comparison-shaped flow
+-- facts discharge same-shaped @0 proof obligations at applications:
+--   * a `case _ if n == 0` guard proves (n == 0) = True in the guard body;
+--   * an `if n < 10` condition proves (n < 10) = True in the then branch,
+--     in the Ord-trait-method `<` shape (not a raw comparison primitive);
+--   * a binder written (@0 p : n < 10) elaborates to (n < 10) = True and
+--     is discharged both by the branch fact and, at a ground call site,
+--     by definitional folding of 3 < 10 to True.
+-- This file pins only SAME-shaped discharge. §15.8.4's required
+-- Presburger fragment additionally makes CROSS-shaped consequences
+-- dischargeable (e.g. a branch fact (n < 5) = True closing a goal
+-- (n < 10) = True); that new-spec extension is pinned separately by
+-- tests/pending-import/spec-coverage/nat-fin-refinement/positive/
+-- branch-fact-presburger-consequence. The no-fact negative below stays
+-- valid under §15.8.4: (n < 10) = True for unconstrained n is neither
+-- provable nor refutable, so the solver returns Unknown and the goal
+-- remains an unsolved implicit.
+
+module main
+
+--! mode check
+
+-- POSITIVE 1: == guard evidence at the exact goal shape (§17.1.9).
+zeroFact : (n : Int) -> (@0 p : (n == 0) = True) -> Int
+let zeroFact n = 7
+
+useGuard : Int -> Int
+let useGuard n =
+    match n
+    case _ if n == 0 -> zeroFact n
+    case _ -> 0
+
+-- POSITIVE 2: `<` (Ord trait method) branch fact from an if condition
+-- (§16.4.1), discharging the same-shaped goal.
+small : (n : Int) -> (@0 p : (n < 10) = True) -> Int
+let small n = 1
+
+useIf : Int -> Int
+let useIf n = if n < 10 then small n else 0
+
+-- POSITIVE 3: §11.4.2 form-1 sugar — a bare boolean comparison in a
+-- binder type means (n < 10) = True, and the branch fact discharges it.
+small2 : (n : Int) -> (@0 p : n < 10) -> Int
+let small2 n = 2
+
+useSugar : Int -> Int
+let useSugar n = if n < 10 then small2 n else 0
+
+-- ... and at a ground call site the obligation folds away definitionally:
+-- 3 < 10 normalizes to True (§31.1.3, §15.1).
+lit : Int
+let lit = small2 3
+
+-- NEGATIVE: the same goal with no branch fact in scope must be an
+-- unsolved implicit — the acceptances above are fact-driven, not vacuous.
+bad : Int -> Int
+let bad n = small n --!! kappa.implicit.unsolved
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved

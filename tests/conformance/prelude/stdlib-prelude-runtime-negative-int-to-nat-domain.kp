@@ -1,7 +1,13 @@
 @PrivateByDefault module main
 
 -- intToNat is partial: negative Int values have no Nat image and trap at
--- runtime instead of minting a negative Nat.
+-- runtime. NOTE: `intToNat` is an implementation extension with no §28.2
+-- counterpart — the specified surfaces for negative-to-Nat conversion are
+-- `tryRefine` (§28.2) or a `CheckedSub Nat` whose definedness proof
+-- cannot be discharged. Under §28.2's `data Nat = Zero | Succ (pred :
+-- Nat)` there is no negative Nat value to mint at all; `okNat` evaluates
+-- to `2` (not a unary spine) because §34.3.2A mandates an exact,
+-- non-unary, otherwise unobservable runtime representation.
 okNat : Nat
 let okNat = intToNat 2
 

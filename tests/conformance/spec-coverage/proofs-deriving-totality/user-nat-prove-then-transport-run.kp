@@ -1,0 +1,77 @@
+-- §15.1 (case 2) + §15.3 + §16.1.8 + §10.2 + §17.1.2: run-mode twin of the
+-- proof-and-transport chain, kept as the USER-natural control for the
+-- prelude-Nat solver path. Over the standard `Nat` the induction lemma
+-- would be unnecessary (§15.8 proves `natAdd n Zero = n` and §16.1.8
+-- inserts the transport); `UNat`/`plus` carry no §15.8.2 provider
+-- evidence, so the manual chain is still required here. A dependent
+-- append (recursing on the runtime index witness, refining both it and
+-- the vector) produces VecI (plus n Z); the induction lemma plus n Z = n
+-- is checked independently; and a definitionally-refl subst exercises the
+-- current profile's runtime-lowerable transport fragment, so head/sum observe
+-- the appended elements.
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "3\n7\n"
+module main
+
+data UNat : Type =
+    Z
+    S UNat
+
+plus : UNat -> UNat -> UNat
+let plus (m : UNat) (n : UNat) : UNat =
+    match m
+    case Z -> n
+    case S k -> S (plus k n)
+
+data VecI (n : UNat) : Type =
+    VNil  : VecI Z
+    VCons : (head : Int) -> (tail : VecI n) -> VecI (S n)
+
+-- (i) definitional at the index: plus Z n reduces, the identity checks.
+zeroPlusDef : forall (@0 n : UNat). VecI (plus Z n) -> VecI n
+let zeroPlusDef v = v
+
+-- (ii) the symbolic right identity, by structural induction plus cong.
+plusZeroRight : (n : UNat) -> (=) (plus n Z) n
+let plusZeroRight (n : UNat) : (=) (plus n Z) n =
+    match n
+    case Z -> refl
+    case S k -> cong (\ (x : UNat) -> S x) (plusZeroRight k)
+
+-- dependent append over a runtime index witness; each branch refines n,
+-- so the result index plus n m checks by iota under the branch facts.
+appendW : forall (@0 m : UNat). (n : UNat) -> VecI n -> VecI m -> VecI (plus n m)
+let appendW n v w =
+    match n
+    case Z ->
+        match v
+        case VNil -> w
+    case S k ->
+        match v
+        case VCons x t -> VCons x (appendW k t w)
+
+-- (iii) §11.4.1 permits runtime-relevant subst when the proof is
+-- definitionally refl. An abstract plusZeroRight transport requires a future
+-- computational-path implementation and is rejected by its dedicated test.
+fixRightRefl : (n : UNat) -> VecI n -> VecI n
+let fixRightRefl n v = subst refl v
+
+vhead : forall (@0 n : UNat). VecI (S n) -> Int
+let vhead v =
+    match v
+    case VCons x _ -> x
+
+vsum : forall (@0 n : UNat). VecI n -> Int
+let vsum v =
+    match v
+    case VNil -> 0
+    case VCons x t -> x + vsum t
+
+main : UIO Unit
+let main = do
+    let xs = VCons 3 (VCons 4 VNil)
+    let ys = fixRightRefl (S (S Z)) (appendW (S (S Z)) xs VNil)
+    printlnString (showInt (vhead ys))
+    printlnString (showInt (vsum ys))

@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+opaque let chooseLevel (b : Bool) : TypeLevel =
+    if b then 0 else omega
+
+same :
+    (b : Bool) ->
+    chooseLevel b = chooseLevel b
+let same b = refl

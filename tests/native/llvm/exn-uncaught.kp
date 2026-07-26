@@ -5,7 +5,7 @@
 -- and the C backend do.
 module main
 
-main : UIO Unit
+main : IO String Unit
 let main = do
     printlnString "start"
     throwIO "uncaught boom"

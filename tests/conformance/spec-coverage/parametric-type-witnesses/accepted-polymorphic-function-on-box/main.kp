@@ -1,0 +1,19 @@
+--! assertNoErrors
+
+type Poly : Type =
+    (0 A : Type) -> A -> A
+
+type Box : Type =
+    (f : Poly,)
+
+id :
+    (0 A : Type) -> A -> A
+
+let id A x =
+    x
+
+useBox :
+    Box -> Box
+
+let useBox b =
+    id Box b

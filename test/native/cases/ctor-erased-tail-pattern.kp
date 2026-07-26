@@ -1,6 +1,6 @@
 module main
 
-data T : Type = MkT (a : Int) (b : Int) (c : Type)
+data T : Type = MkT (a : Int) (b : Int) (0 c : Type)
 
 pickB : T -> Int
 let pickB t =

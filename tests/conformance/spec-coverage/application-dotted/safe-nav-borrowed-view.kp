@@ -8,9 +8,9 @@
 -- out is fine; a closure capturing the borrowed chain must not escape.
 module main
 
-type Leaf = (score : Int)
-type Mid = (leaf : Option Leaf)
-type Root = (mid : Option Mid)
+type Leaf = (score : Int,)
+type Mid = (leaf : Option Leaf,)
+type Root = (mid : Option Mid,)
 
 -- POSITIVE: two safe-nav steps under a borrowed root; each success
 -- binder inherits the borrow and the final Int is copied out.

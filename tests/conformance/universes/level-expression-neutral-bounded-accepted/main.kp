@@ -1,0 +1,13 @@
+-- §11.1.1: an ordinary stable, total TypeLevel application is an admissible
+-- rigid neutral even when it is not a standard solver operation. An explicit
+-- bound supplies the relation that opacity deliberately does not invent.
+--! mode check
+--! assertNoErrors
+
+expect term f : TypeLevel -> TypeLevel
+
+type Accepted
+    (u : TypeLevel)
+    (@0 p : f u < ω)
+    : Typeω =
+    Type(f u)

@@ -1,0 +1,36 @@
+-- Spec 16.4.2 + 18.6.2: an if STATEMENT pushes the NEGATED condition
+-- into its else-suite. With the standard Ord Nat (natCompare
+-- delegation, Spec 28.2) the else of `if x < y` carries
+-- `(x < y) = False`, and the standard CheckedSub Nat definedness goal
+-- `(y <= x) = True` (Spec 28.2.3: subDefined x y = (y <= x)) follows
+-- inside the required Presburger fragment (Spec 15.8.4: comparisons,
+-- negation, and Boolean proposition elaboration over exact Nat), so the
+-- checked subtraction elaborates with no explicit proof. The
+-- conformance twins (tests/conformance/equality/sub-proof-do-if-else.kp
+-- and siblings) keep the primitive comparison spelling until the
+-- negation bridge tracks semantic identity; this suite pins the
+-- standard-Ord spelling the revision requires.
+
+consume : Nat -> Nat
+let consume n = n
+
+elseDischarges : Nat -> Nat -> UIO Unit
+let elseDischarges x y = do
+    if x < y then
+        printlnString "lt"
+    else
+        let d = consume (x - y)
+        printlnString "ge"
+
+-- The accumulated negation threads through later elif suites the same
+-- way: every earlier condition evaluated False, with no user code
+-- between the tests and no loop back-edge (Spec 18.6.2).
+elifEarlierFalse : Nat -> Nat -> Bool -> UIO Unit
+let elifEarlierFalse x y flag = do
+    if x < y then
+        printlnString "lt"
+    elif flag then
+        let d = consume (x - y)
+        printlnString "elif-uses-earlier-false"
+
+--! assertNoErrors

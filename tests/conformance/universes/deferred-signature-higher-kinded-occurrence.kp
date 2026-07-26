@@ -1,0 +1,12 @@
+-- A signed declaration is one semantic SCC with its body. The List
+-- occurrences in the signature must remain provisional until map constrains
+-- their common representation level through the body.
+
+mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+let mapList f xs = map f xs
+
+mapped : List String
+let mapped = [for x in [1, 2], yield showInt x]
+
+--! mode check
+--! assertNoErrors

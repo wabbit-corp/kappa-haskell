@@ -1,0 +1,46 @@
+data Tagged (n : Nat) : Type =
+    Tagged
+
+expectsZero :
+    Tagged Nat.Zero ->
+    Unit
+
+let expectsZero value =
+    ()
+
+expectsSucc :
+    (k : Nat) ->
+    Tagged (Nat.Succ k) ->
+    Unit
+
+let expectsSucc k value =
+    ()
+
+-- Constructor branches on an ordinary Nat scrutinee refine dependent
+-- uses of that scrutinee (Spec 17.1.7 branch evidence, 15.8.4 Nat
+-- constructor computation and canonical predecessor facts, 16.1.8
+-- transport insertion): in the Nat.Zero branch the Tagged n argument
+-- meets Tagged Nat.Zero, and symmetrically for Nat.Succ.
+branchRefinesIndex :
+    (n : Nat) ->
+    Tagged n ->
+    Unit
+
+let branchRefinesIndex n value =
+    match n
+    case Nat.Zero -> expectsZero value
+    case Nat.Succ k -> expectsSucc k value
+
+-- The same branch knowledge materializes as a propositional equality;
+-- the literal 0 in the goal type is definitionally Nat.Zero
+-- (Spec 31.1.3).
+proofViaMatch :
+    (n : Nat) ->
+    Option (n = 0)
+
+let proofViaMatch n =
+    match n
+    case Nat.Zero -> Some refl
+    case Nat.Succ _ -> None
+
+--! assertNoErrors

@@ -7,7 +7,7 @@ module main
 -- in type position without introducing a term operator or fixity.
 
 data (~~) (@0 a : Type) (x : a) (y : a) : Type =
-    SameLike : (~~) a x x
+    SameLike : (~~) @a x x
 
-p : (~~) Integer 1 1
+p : (~~) @Integer 1 1
 let p = SameLike

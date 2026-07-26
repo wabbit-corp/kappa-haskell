@@ -13,12 +13,14 @@ module Kappa.Parser.Monad
   , parseFailAt
   , peekToken
   , peekTokenAt
+  , peekAfterMatchingParen
   , anyToken
   , satisfy
   , token
   , currentSpan
   , lastSpan
   , try
+  , recoverWith
   , lookAheadIs
   , optionMaybe
   , many1
@@ -34,6 +36,7 @@ module Kappa.Parser.Monad
   , withSameIndentContinuation
   , sameIndentContinuationAllowed
   , noEq
+  , withEq
   , eqAllowed
   , recordRecovered
   , recoveredSoFar
@@ -43,6 +46,8 @@ module Kappa.Parser.Monad
   ) where
 
 import Control.Applicative (Alternative (..))
+import Data.List (foldl')
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Kappa.Diagnostic (Diagnostic)
 import Kappa.Source (Pos (..), Span (..))
@@ -100,7 +105,19 @@ mergeErr :: PErr -> PErr -> PErr
 mergeErr e1 e2
   | spanStart (peSpan e2) > spanStart (peSpan e1) = e2
   | spanStart (peSpan e1) > spanStart (peSpan e2) = e1
-  | otherwise = e1 {peExpected = peExpected e1 <> peExpected e2}
+  | otherwise = e1 {peExpected = mergeExpected (peExpected e1) (peExpected e2)}
+  where
+    -- Recursive alternatives commonly fail at the same closing delimiter.
+    -- Keeping every duplicate expectation makes the error payload grow
+    -- exponentially and can overflow the parser stack during recovery.  The
+    -- expectation set is diagnostic metadata, so retain the first stable
+    -- occurrence of each token description while merging in linear time.
+    mergeExpected left right = reverse accumulated
+      where
+        (_, accumulated) = foldl' add (Set.empty, []) (left ++ right)
+        add state@(seen, values) expected
+          | expected `Set.member` seen = state
+          | otherwise = (Set.insert expected seen, expected : values)
 
 runP :: P a -> [Located] -> Either PErr (a, [Diagnostic])
 runP (P f) toks =
@@ -150,6 +167,33 @@ peekTokenAt n = P $ \s ->
       isSoft _ = False
    in Right (go n (visibleToks s), s)
 
+-- | When the next visible token is @(@, return the token immediately after
+-- its balanced closing parenthesis without consuming input.  The expression
+-- parser uses this narrow structural lookahead to distinguish an ordinary
+-- parenthesis tower from a binder whose quantity expression is itself
+-- parenthesized.  Counting delimiters is linear and avoids recursively
+-- running an ambiguous expression parser merely to answer that question.
+peekAfterMatchingParen :: P (Maybe Token)
+peekAfterMatchingParen = P $ \s ->
+  let dropInvisible
+        | psSoftNL s = id
+        | otherwise = dropWhile isSoft
+      isSoft (Located (TokNewline True) _) = True
+      isSoft _ = False
+      go _ [] = Nothing
+      go depth (Located tok _ : rest) = case tok of
+        TokLParen -> go (depth + 1) rest
+        TokRParen
+          | depth == 1 -> case dropInvisible rest of
+              Located next _ : _ -> Just next
+              [] -> Just TokEOF
+          | otherwise -> go (depth - 1) rest
+        _ -> go depth rest
+      result = case visibleToks s of
+        Located TokLParen _ : rest -> go 1 rest
+        _ -> Nothing
+   in Right (result, s)
+
 anyToken :: P Located
 anyToken = P $ \s -> case visibleToks s of
   (l : rest) -> Right (l, s {psToks = rest, psLast = locSpan l})
@@ -175,6 +219,17 @@ lastSpan = P $ \s -> Right (psLast s, s)
 -- restores; 'try' exists for documentation and error-position control).
 try :: P a -> P a
 try (P f) = P f
+
+-- | Run a parser transactionally and recover from its concrete failure while
+-- retaining the original input state. This is narrower than '<|>': the
+-- recovery branch receives the farthest 'PErr', so a caller can attach the
+-- diagnostic to the actual malformed sub-construct rather than the first
+-- token of an enclosing block.
+recoverWith :: P a -> (PErr -> P a) -> P a
+recoverWith (P f) handler = P $ \s ->
+  case f s of
+    Right result -> Right result
+    Left err -> unP (handler err) s
 
 lookAheadIs :: P a -> P Bool
 lookAheadIs (P f) = P $ \s -> case f s of
@@ -255,6 +310,15 @@ sameIndentContinuationAllowed = P $ \s -> Right (psSameIndentContinuation s, s)
 noEq :: P a -> P a
 noEq (P f) = P $ \s -> do
   (a, s') <- f s {psEqOk = False}
+  pure (a, s' {psEqOk = psEqOk s})
+
+-- | Re-enable propositional equality inside an explicit syntactic boundary.
+-- In particular, constructor-field annotations use 'noEq' so an unparenthesized
+-- @=@ can introduce a default, while @(lhs = rhs)@ remains an ordinary type
+-- expression and cannot be confused with that enclosing default separator.
+withEq :: P a -> P a
+withEq (P f) = P $ \s -> do
+  (a, s') <- f s {psEqOk = True}
   pure (a, s' {psEqOk = psEqOk s})
 
 eqAllowed :: P Bool

@@ -1,0 +1,8 @@
+--! requires capability symbolicCardinality
+--! requires capability representationCertificates
+--! assertNoErrors
+--! assertInhabitance SourceReachability Empty for Fin 0
+--! assertInhabitance SourceReachability Contractible for Fin 1
+--! assertInhabitance SourceReachability Finite(5) for Fin 5
+--! assertSymbolicCardinality n for Fin n
+--! assertOrdinalRepresentation n for Fin n

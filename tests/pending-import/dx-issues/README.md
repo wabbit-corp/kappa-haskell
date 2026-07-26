@@ -96,3 +96,10 @@ fixity/export, SS5.5.3 role gating + E_OPERATOR_ROLE_UNBOUND, SS7.1.1 role
 selectors, SS8.3.1 import selectors, SS6.1.4 rewrite; '--' excluded from
 operator tokens). Six formerly green conformance fixity tests were revised
 to role-marked syntax and staged pending implementation.
+
+2026-07-26 Nat/Fin reconciliation: nat-index-no-symbolic-proof-channel,
+literal-match-fact-result-index-replicate, primitive-nat-gadt-no-elimination,
+and commutative-additive-monoid-nat-missing moved into
+../spec-coverage/nat-fin-refinement/ (their dead-end premises became
+spec-required behavior under the Nat/Fin revision); the remaining
+arithmetic probes were re-based on the revised spec (see per-file headers).

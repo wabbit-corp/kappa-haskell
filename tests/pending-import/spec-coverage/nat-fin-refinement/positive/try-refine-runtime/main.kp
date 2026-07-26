@@ -1,0 +1,54 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+-- Bool is transparent here, so the generated no-confusion disjointness
+-- evidence of Spec 10.2.1 discharges this refutation goal through
+-- implicit resolution (Spec 16.3.3 step 4).
+trueIsNotFalse :
+    True = False ->
+    Void
+
+let trueIsNotFalse =
+    witness
+
+-- The runtime membership test becomes decision evidence through the
+-- branch facts of Spec 16.4.1: the success branch reifies `hit = True`,
+-- and the failure branch refutes `hit = True` from `hit = False`.
+decideBetween :
+    (x : Nat) ->
+    Dec ((contains (2 .. 30) x) = True)
+
+let decideBetween x =
+    let hit = contains (2 .. 30) x
+    if hit then
+        Dec.Yes witness
+    else
+        Dec.No (\claimed -> trueIsNotFalse (trans (sym claimed) witness))
+
+printOutcome :
+    Option (NatBetween 2 30) ->
+    UIO Unit
+
+let printOutcome outcome =
+    match outcome
+    case Some hit ->
+        printlnString ("in-range " ++ show hit.value)
+    case None ->
+        printlnString "out-of-range"
+
+-- An arbitrary runtime Nat never receives a silent dynamic membership
+-- check (Spec 20.2.1); `tryRefine` is the explicit runtime decision
+-- required by Spec 16.1.9 and T.12.6/T.12.7.
+main :
+    UIO Unit
+
+let main = do
+    printOutcome (tryRefine decideBetween 7)
+    printOutcome (tryRefine decideBetween 31)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "in-range 7\nout-of-range\n"

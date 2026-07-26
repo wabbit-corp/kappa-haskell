@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertRecursiveSchemaEdge lower lower lower-or-equal
+
+lower.{u} :
+    (v : TypeLevel) ->
+    (@0 p : v <= u) ->
+    Nat -> Nat
+let lower v p n =
+    if n == 0 then 0
+    else lower.{v} v (n - 1)

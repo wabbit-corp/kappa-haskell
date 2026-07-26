@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+expect data Need (A : Type) : Type
+expect data F (A : Type) : Type
+expect term xs : forall A. Need (F A)
+
+good :
+    PreservesParametricForall Need =>
+    Need (forall A. F A)
+let good evidence = xs

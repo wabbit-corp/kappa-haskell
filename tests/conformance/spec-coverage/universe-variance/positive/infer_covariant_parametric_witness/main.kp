@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole SomeWitness 0 covariant
+--! assertSchemaCertificateValid SomeWitness
+
+data SomeWitness.{u} : Type0 =
+    SomeWitness (parametric 0 A : Type u)

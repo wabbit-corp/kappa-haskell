@@ -6,11 +6,11 @@ data Token : Type =
     Token
 
 type Box (a : Type) : Type =
-    (1 value : a)
+    (1 value : a,)
 
 mkBox : (1 tok : Token) -> Box Token
 let mkBox tok =
-    (value = tok)
+    (value = tok,)
 
 bad : UIO Unit
 let bad = do

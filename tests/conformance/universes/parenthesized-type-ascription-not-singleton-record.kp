@@ -1,0 +1,16 @@
+-- A parenthesized ascription remains grouping. A singleton record type needs
+-- the trailing comma: `(field : T,)` (§13.1.1).
+
+module main
+
+ascribedId : forall (a : Type). a -> (a : Type)
+let ascribedId x = x
+
+ascribedRefl : (a : Type) = (a : Type)
+let ascribedRefl = refl
+
+three : Int
+let three = ascribedId @Int 3
+
+--! mode check
+--! assertNoErrors

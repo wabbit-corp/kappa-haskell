@@ -3,7 +3,7 @@
 data Box (a : Type) : Type =
     Box (value : a)
 
-F : Type -> Type
+F : (parametric 0 A : Type) -> Type
 let F = type Box
 
 unwrap : F Int -> Int

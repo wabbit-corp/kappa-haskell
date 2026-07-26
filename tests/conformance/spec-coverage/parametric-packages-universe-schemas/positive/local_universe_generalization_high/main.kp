@@ -1,0 +1,10 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+high : Type0
+let high =
+    let localId A x = x
+    localId Type0 Int

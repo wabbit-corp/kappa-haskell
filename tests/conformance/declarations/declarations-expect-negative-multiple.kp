@@ -6,5 +6,5 @@ let value = 1
 let value = 2
 
 --! assertErrorCount 2
---! assertDiagnosticCodes E_DUPLICATE_DECLARATION, E_EXPECT_AMBIGUOUS
+--! assertDiagnosticCodes E_DUPLICATE_DECLARATION, E_EXPECT_UNSATISFIED
 --! assertDeclKinds expect, let, let

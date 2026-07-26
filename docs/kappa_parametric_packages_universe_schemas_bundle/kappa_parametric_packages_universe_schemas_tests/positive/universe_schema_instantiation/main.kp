@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+data Box.{u}
+    (A : Type u)
+    : Type u =
+
+    Box (value : A)
+
+type Box0 : Type0 =
+    Box.{0} Int
+
+type Box3 : Type3 =
+    Box.{3} Type2

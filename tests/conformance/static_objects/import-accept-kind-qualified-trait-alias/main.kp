@@ -2,7 +2,7 @@
 
 import lib.classes.(trait Size as Sized)
 
-C : Type -> Type
+C : (parametric 0 A : Type) -> Type
 let C = trait Sized
 
 use : C String -> Sized String

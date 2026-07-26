@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+--! assertSchemaLiftCount 1
+
+data Code.{covariant u} : Type (succ u) =
+    Code (ordinary 0 A : Type u)
+
+up : Code.{0} -> Code.{3}
+let up x = x

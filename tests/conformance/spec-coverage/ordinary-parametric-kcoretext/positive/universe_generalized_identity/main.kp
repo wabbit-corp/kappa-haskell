@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+id :
+    (A : Type) ->
+    A ->
+    A
+
+let id A x =
+    x
+
+small :
+    Int -> Int
+
+let small x =
+    id Int x
+
+large :
+    Type0 -> Type0
+
+let large x =
+    id Type0 x
+
+veryLarge :
+    Type1 -> Type1
+
+let veryLarge x =
+    id Type1 x

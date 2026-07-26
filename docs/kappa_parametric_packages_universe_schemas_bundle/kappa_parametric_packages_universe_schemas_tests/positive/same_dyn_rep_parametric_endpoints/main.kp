@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+import std.gradual.(type DynRep, term sameDynRep)
+
+sameDynRepShape :
+    forall a b.
+    DynRep a ->
+    DynRep b ->
+    Dec (a = b)
+
+let sameDynRepShape a b =
+    sameDynRep

@@ -1,0 +1,20 @@
+-- Spec 14.5.2: derive RefinementView for a conforming nominal shape —
+-- exactly one retained base field, quantity-0 fiber-inhabitant and IsProp
+-- fields identified by their checked TYPES. The derived members feed
+-- 16.1.9 insertion.
+data Bounded9 : Type =
+    MkBounded9
+        (value : Nat)
+        (@0 isP : IsProp ((value <= 9) = True))
+        (@0 prf : (value <= 9) = True)
+
+derive RefinementView Bounded9
+
+eight : Bounded9
+let eight = 8
+
+back : Nat
+let back = eight
+
+--! assertNoErrors
+--! assertEval back 8

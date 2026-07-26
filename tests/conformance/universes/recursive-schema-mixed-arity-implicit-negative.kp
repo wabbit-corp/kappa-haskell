@@ -1,0 +1,24 @@
+-- A recursive SCC may mix a monomorphic declaration with a declaration
+-- universe schema. Calling the polymorphic member at a non-identity instance
+-- is still a recursive schema edge and therefore must be explicit.
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT
+
+module main
+
+data N : Type =
+    Z
+    S (p : N)
+
+f.{u} : (A : Type u) -> N -> N
+g : N -> N
+
+let f.{u} A n =
+    match n
+    case Z -> Z
+    case S m -> g m
+
+let g n =
+    match n
+    case Z -> Z
+    case S m -> f.{1} Bool m

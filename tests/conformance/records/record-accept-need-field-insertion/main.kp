@@ -4,10 +4,10 @@ data Cell : Type =
     Cell
 
 instance Shareable Cell =
-type NeedBox = (lazy cell : Cell)
+type NeedBox = (lazy cell : Cell,)
 
 ok : NeedBox
-let ok : NeedBox = (cell = Cell)
+let ok : NeedBox = (cell = Cell,)
 
 forced : Cell
 let forced : Cell = force ok.cell

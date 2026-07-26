@@ -1,0 +1,7 @@
+-- §10.3/§11.1.2.3A: applying an ordinary type former does not launder the
+-- capability of a parametric type witness used as its argument.
+--! mode check
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+
+bad : (0 A : Type) -> Type
+let bad A = List A

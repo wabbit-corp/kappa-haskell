@@ -1,0 +1,13 @@
+-- §7.6.1/§11.1.2.3A: parameterization does not let a local type alias turn a
+-- parametric witness into an ordinary inspectable type-code result.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+bad :
+    (0 A : Type) -> Type
+
+let bad A =
+    type Keep (0 B : Type) : Type = A
+    Keep Int

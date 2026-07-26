@@ -1,0 +1,6 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
+--! assertDiagnosticFamily error kappa.universe.constraint
+
+type SigTooSmall : Type0 =
+    (ordinary 0 A : Type0, value : A)

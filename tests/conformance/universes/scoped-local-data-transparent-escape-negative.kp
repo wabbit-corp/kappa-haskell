@@ -1,0 +1,12 @@
+module main
+
+leaked : Type
+let leaked =
+    block
+        scoped data Token : Type =
+            Token
+
+        Token
+
+--! mode check
+--! assertDiagnostic error E_LOCAL_NOMINAL_SCOPE_ESCAPE

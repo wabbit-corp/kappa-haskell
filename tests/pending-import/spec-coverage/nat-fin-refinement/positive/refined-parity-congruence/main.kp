@@ -1,0 +1,25 @@
+-- Spec 15.8.4 (division and modulo by positive literals; congruence
+-- classes modulo positive literals) + 16.1.9: a parity refinement is not a
+-- range. Literal synthesis discharges (4 % 2 == 0) = True; widening keeps
+-- the parity component while relaxing the bound (16.1.9 case 3, target
+-- predicate proved from source facts by the required solver).
+type EvenNat : Type =
+    Refined Nat (\value -> (value % 2 == 0) = True)
+
+type SmallEven : Type =
+    Refined Nat (\value -> ((value % 2 == 0) && (value <= 10)) = True)
+
+four : EvenNat
+let four = 4
+
+smallSix : SmallEven
+let smallSix = 6
+
+widenBound :
+    SmallEven ->
+    Refined Nat (\value -> ((value % 2 == 0) && (value <= 100)) = True)
+
+let widenBound value =
+    value
+
+--! assertNoErrors

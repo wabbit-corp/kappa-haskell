@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Phantom 0 irrelevant
+--! assertSchemaCertificateValid Phantom
+
+data Phantom.{u} : Type0 =
+    Phantom

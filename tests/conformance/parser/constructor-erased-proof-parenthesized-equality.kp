@@ -1,0 +1,10 @@
+module main
+
+data Bounded (limit : Nat) : Type =
+    MkBounded
+        (value : Nat)
+        (@0 predicateIsProp : IsProp ((value <= limit) = True))
+        (@0 proof : (value <= limit) = True)
+
+--! mode check
+--! assertNoErrors

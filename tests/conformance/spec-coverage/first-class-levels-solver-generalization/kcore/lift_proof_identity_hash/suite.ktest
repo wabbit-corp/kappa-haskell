@@ -1,0 +1,5 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses closed.kcore
+--! assertKCoreParses arithmetic.kcore
+--! assertKCoreSemanticHashEquals closed.kcore arithmetic.kcore

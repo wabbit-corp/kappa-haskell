@@ -1,12 +1,21 @@
 -- Source issues: METACOQ-238, METACOQ-367, METACOQ-436
--- Spec: §10.1.3 and §10.2 (GADT result constraints), §17.1.1 and §17.1.5
---       (indexed exhaustiveness and impossible cases).
+-- Spec: §10.1.3 and §10.2 (GADT result constraints), §17.1.1 (indexed
+--       exhaustiveness: definitional equality/unification first, then
+--       the §30.2.7 transport-aware compatibility judgment, then the
+--       required §15.8 arithmetic fragment), §17.1.4/§17.1.5
+--       (impossible cases), §30.2.7 (4-way ConstructorCompatibility),
+--       §15.8.4 (Presburger), §16.1.8 (automatic transport), §28.2
+--       (inductive prelude Nat).
 --
--- GADT-style constructors force index equalities at the matched constructor.
--- After matching VCons, the size index is refined to a successor, and the
--- recursive call may use that refinement. MetaCoq's PCUIC formalizes this
--- as part of the case type's predicate; the portable Kappa obligation is
--- that the branch is checked under the refined index.
+-- GADT-style constructors force index equalities at the matched
+-- constructor; the portable obligation is that each branch is checked
+-- under the refined index. With the inductive §28.2 Nat, `n + 1` is
+-- `natAdd n (Succ Zero)` — STUCK on the rigid `n`, neither a `Zero` nor
+-- a `Succ` head — so plain family-argument unification decides nothing
+-- about `VNil` at `Vec a (n + 1)`. Unreachability of that arm comes
+-- from §17.1.1's required-consultation chain: §15.8.4 Presburger (with
+-- non-negativity) refutes `0 = n + 1`, §30.2.7 returns `Refuted`, the
+-- refined case type is `Empty`, and §17.1.5 accepts `case impossible`.
 
 module test
 
@@ -17,16 +26,48 @@ data Vec (0 a : Type) (n : Nat) : Type =
     VCons : (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
 
 -- POSITIVE: head requires a non-empty vector by index refinement.
--- The VNil branch is unreachable by index unification (0 ≠ n + 1).
+-- VNil is `Refuted` by §15.8.4 Presburger (`0 = n + 1` has no natural
+-- solution), NOT by constructor unification — `n + 1` is a stuck
+-- application, not a `Succ` spine.
 vhead : forall (a : Type) (n : Nat). Vec a (n + 1) -> a
 let vhead v =
     match v
     case VCons x _ -> x
     case impossible
 
--- POSITIVE: zip on equal-length vectors. Both scrutinees must agree on the
--- index at each branch; the off-diagonal cases are rejected by index
--- unification and discharged with `case impossible`.
+-- POSITIVE (spelling bridge): the same head at index `Nat.Succ n`.
+-- `VCons` declares `Vec a (?k + 1)`; against `Vec a (Nat.Succ n)` rule 1
+-- of §30.2.7 fails (stuck `natAdd` vs rigid `Succ`), and the §15.8
+-- solver bridges `?k + 1 = Succ n` with unique principal solution
+-- `?k := n` (§15.8.6) — the arm is `PropositionallyCompatible` and
+-- receives the bridge as ordinary erased equality evidence (§17.1.1:
+-- it is "not added to the active conversion context merely because the
+-- constructor branch was selected"). VNil at `Vec a (Nat.Succ n)` is
+-- `Refuted` definitionally by §10.2.1 no-confusion (`Zero` vs `Succ`).
+vheadSucc : forall (a : Type) (n : Nat). Vec a (Nat.Succ n) -> a
+let vheadSucc v =
+    match v
+    case VCons x _ -> x
+    case VNil -> impossible
+
+-- POSITIVE (symbolic append): the VNil branch checks `ys : Vec b n` at
+-- `Vec b (0 + n)` DEFINITIONALLY via §28.2 `natAdd Zero n -> n`; the
+-- VCons branch's `(k + n) + 1` vs `(k + 1) + n` is stuck definitionally
+-- and requires a §15.8.4 solver proof, inserted as an erased transport
+-- per §16.1.8.
+vappend : forall (b : Type) (m : Nat) (n : Nat). Vec b m -> Vec b n -> Vec b (m + n)
+let vappend xs ys =
+    match xs
+    case VNil -> ys
+    case VCons x rest -> VCons x (vappend rest ys)
+
+-- POSITIVE: zip on equal-length vectors. NOTE the mechanism on the
+-- diagonal: in the VCons/VCons arm the inner scrutinee has index
+-- `k + 1` (rigid `k` from the outer branch), and the inner `VCons`
+-- result gives `?j + 1`. That is ordinary metavariable unification on
+-- the shared stuck head (`natAdd ?j 1 = natAdd k 1` gives `?j := k`) —
+-- NOT a §30.2.7 bridge. The off-diagonal arms (`0` vs `k + 1`) are
+-- `Refuted` by §15.8.4 Presburger and discharged with `case impossible`.
 data Pair (0 a : Type) (0 b : Type) : Type =
     MkPair a b
 
@@ -42,7 +83,18 @@ let vzip xs ys decreases structural xs =
         case (VCons y otherRest) -> VCons (MkPair x y) (vzip rest otherRest)
         case impossible
 
---! assertNoErrors
---! assertType vhead forall (a : Type) (n : Nat). Vec a (n + 1) -> a
+-- NEGATIVE (UnknownCompatibility): a nonlinear index (`n * n`) lies
+-- outside the required §15.8.4 fragment, so `VNil : Vec a 0` demanded
+-- at `Vec a (n * n)` is neither bridged nor refuted. §30.2.7 /
+-- §17.1.1: this "never justifies omitting the constructor branch
+-- merely because the index bridge was not solved. Exhaustiveness must
+-- retain a catch-all or another branch form that supplies the missing
+-- equality evidence." A match omitting the VNil arm is non-exhaustive.
+squareHead : forall (a : Type) (n : Nat). Vec a (n * n) -> Option a
+let squareHead v =
+    match v                              --!! E_PATTERN_NON_EXHAUSTIVE
+    case VCons x _ -> Some x
 
--- STATUS(a0497523): FAIL (indexed refinements are not propagated to branch checking)
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+--! assertType vhead forall (a : Type) (n : Nat). Vec a (n + 1) -> a

@@ -1,0 +1,5 @@
+module lib.ops
+
+plus : TypeLevel -> TypeLevel -> TypeLevel
+let plus = (+)
+

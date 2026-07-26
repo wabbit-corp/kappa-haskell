@@ -13,7 +13,7 @@
 -- absent, so this file must produce no warnings.
 module main
 
-type Box a = (value : a)
+type Box a = (value : a,)
 
 -- NEGATIVE: fully generic accessor; residual type unsolved.
 let getValue x = x?.value

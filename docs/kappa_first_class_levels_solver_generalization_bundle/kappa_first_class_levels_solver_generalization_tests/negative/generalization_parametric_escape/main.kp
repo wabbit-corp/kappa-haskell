@@ -1,0 +1,8 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_GENERALIZATION_PARAMETRIC_ESCAPE
+
+-- The declaration has no source signature: its bare Type parameter becomes a
+-- generalization candidate, then rigid body rechecking must reject returning
+-- that parametric witness as an ordinary runtime type code.
+let bad = \A -> A

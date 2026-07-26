@@ -1,0 +1,75 @@
+-- NOTE: refinedExt/finExt and the trait law binders are declared with
+-- forall binders (Spec 28.2); the explicit endpoint applications below
+-- track the open forall-explicitness question (OQ-1) and must be
+-- revisited with it.
+
+-- Two scattered points: not an inclusive range, and Nat is not a finite
+-- ordinal base, so none of the required structural certificate shapes of
+-- Spec 30.2.7B applies to this type. The only ordinal evidence is the
+-- handwritten instance below.
+type TwoPoint : Type =
+    Refined Nat (\value -> ((value == 3) || (value == 7)) = True)
+
+-- Spec 15.8 discharges both helpers from their erased premises
+-- (quantifier-free Presburger facts over Nat with boolean connectives),
+-- reached through implicit resolution (Spec 16.3.3 step 4).
+twoPointForcesSeven :
+    (n : Nat) ->
+    (@0 admitted : ((n == 3) || (n == 7)) = True) ->
+    (@0 notThree : (n == 3) = False) ->
+    7 = n
+
+let twoPointForcesSeven n @admitted @notThree =
+    witness
+
+finTwoForcesOne :
+    (n : Nat) ->
+    (@0 below : (n < 2) = True) ->
+    (@0 notZero : (n == 0) = False) ->
+    1 = n
+
+let finTwoForcesOne n @below @notZero =
+    witness
+
+-- An ordinary handwritten law bundle. It is legitimate source evidence,
+-- but it carries no compiler-verified OrdinalRepresentationCertificate,
+-- so it MUST NOT change layout (Spec 28.2, Spec 30.2.7B, Spec 34.3.2A:
+-- FiniteOrdinal may be selected only from a verified certificate). The
+-- law proofs use the branch facts of Spec 16.4.1 with branch-local
+-- normalization (Spec 31.1.2) plus equality reflection (Spec 16.3.3
+-- step 5).
+instance OrdinalRepresentation 2 TwoPoint =
+    let rank point =
+        if point.value == 3 then 0 else 1
+
+    let unrank index =
+        if index.value == 0 then 3 else 7
+
+    let unrankRank x =
+        if x.value == 3 then
+            refinedExt (unrank (rank x)) x (sym witness)
+        else
+            refinedExt (unrank (rank x)) x (twoPointForcesSeven x.value @x.proof @witness)
+
+    let rankUnrank i =
+        if i.value == 0 then
+            finExt (rank (unrank i)) i (sym witness)
+        else
+            finExt (rank (unrank i)) i (finTwoForcesOne i.value @i.isLt @witness)
+
+samplePoint :
+    TwoPoint
+
+let samplePoint =
+    3
+
+-- The retained runtime value must keep the exact-natural base
+-- representation of the Nat base field: no FiniteOrdinal 2 selection may
+-- appear for this type, because no verified certificate exists. Proof
+-- erasure is independent of that and still applies.
+--! mode compile
+--! requires capability representationQueries
+--! requires capability representationCertificates
+--! assertNoErrors
+--! assertRepresentationClass samplePoint ExactNatural
+--! assertRuntimeFieldAbsent samplePoint proof

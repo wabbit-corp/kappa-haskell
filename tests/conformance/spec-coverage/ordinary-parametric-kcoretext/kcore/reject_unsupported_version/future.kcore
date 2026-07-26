@@ -1,0 +1,9 @@
+kcore 999;
+module @tests.kcore.future#1006 [languageVersion = "kappa-v1", compilerInterfaceVersion = "999", sourceModuleIdentity = "tests.kcore.future",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+}

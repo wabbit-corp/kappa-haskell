@@ -1,18 +1,30 @@
--- DX EXPECTATION, not spec-required: division under a strictly-positive
--- divisor guard should typecheck. Every mainstream flow/refinement system
--- (and ordinary developer intuition) treats `y > 0` as establishing `y /= 0`
--- for integers. In Kappa, §16.4.1 only injects the syntactic branch fact
--- ((y > 0) = True) and discharge happens by definitional normalization alone,
--- so the (y /= 0)-shaped divDefined obligation stays unsolved — guarding on
--- `y /= 0`, `y == 0` (else-side), or `divDefined x y` works instead (pinned
--- green in tests/conformance/qtt/checked-div-branch-refinement.kp and
--- tests/pending-import/spec-coverage/prelude/checked-div-proof-flow-refinement.kp).
--- Expected-good behavior: either derive the entailment (y > 0) => (y /= 0)
--- for integer comparisons, or at minimum have the diagnostic suggest the
--- discharging guard shape. What currently happens (a0497523): a bare
--- E_UNSOLVED_IMPLICIT whose obligation prints as
---   = Bool (divDefined Integer __inst_CheckedDiv_12 @1 @0) True
--- with no hint (see unsolved-implicit-proof-rendering.kp for the rendering).
+-- SPEC-REQUIRED (re-based 2026-07-25 on the Nat/Fin revision; this was
+-- previously framed "DX EXPECTATION, not spec-required"): division under a
+-- strictly-positive divisor guard must typecheck. The discharge chain is
+-- now fully specified:
+--   * §16.4.1 injects the branch fact (y > 0) = True, and §16.3.3 step 1
+--     lists branch-local boolean equality evidence among the lexical
+--     assumptions visible to implicit resolution;
+--   * §16.3.3 step 4 ("Checked proof solvers") consults the required
+--     arithmetic/index solver of §15.8 for exactly this obligation shape;
+--   * §15.8.1 reification performs delta + selected trait-projection
+--     reduction, and §28.2.3 pins divDefined x y = (y /= zero), so the
+--     goal reaches the solver as (y /= 0) = True;
+--   * §15.8.4's required quantifier-free Presburger domain covers linear
+--     inequalities AND disequalities over Nat/Integer/Int, so
+--     (y > 0) = True |- (y /= 0) = True is inside the required portable
+--     fragment; CheckedDiv's divDefinedForNonZero bridge (§28.2.3) is an
+--     independent second route.
+-- Equivalent guard spellings are covered by §15.8.4's "conjunction,
+-- disjunction, and negation after Boolean proposition elaboration".
+-- The previously-pinned green shapes (guarding on `y /= 0`, else-side
+-- `y == 0`, or `divDefined x y`; tests/conformance/qtt/
+-- checked-div-branch-refinement.kp) remain valid but are no longer the
+-- only working spellings.
+-- Negative companion: nonpositive-guard-division-still-rejected.kp pins
+-- that a non-strict `y >= 0` guard must NOT discharge the obligation.
+-- Candidate promotion home once the compiler catches up:
+-- ../spec-coverage/nat-fin-refinement/positive/ (orchestrator's call).
 --! mode check
 --! assertNoErrors
 module main
@@ -20,6 +32,21 @@ module main
 posDiv : Int -> Int -> Int
 let posDiv x y = if y > 0 then x / y else 0
 
--- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT: the (y > 0) = True branch fact
--- does not entail the (y /= 0)-shaped divDefined obligation, and the message
--- offers no discharging-guard hint.
+-- Nat sibling: (d > 0) = True |- (d /= 0) = True over Nat; also reachable
+-- through §10.2.1 no-confusion (natZeroNotSucc) via §16.3.3 step 4.
+natPosDiv : Nat -> Nat -> Nat
+let natPosDiv n d = if d > 0 then n / d else 0
+
+-- Equivalent guard spellings (§15.8.4 Boolean combinations).
+posDivGe : Int -> Int -> Int
+let posDivGe x y = if y >= 1 then x / y else 0
+
+posDivNot : Int -> Int -> Int
+let posDivNot x y = if not (y == 0) then x / y else 0
+
+posDivFlip : Int -> Int -> Int
+let posDivFlip x y = if 0 < y then x / y else 0
+
+-- Same discharge feeding modulo (§28.2.3 modDefined/modDefinedForNonZero).
+posMod : Int -> Int -> Int
+let posMod x y = if y > 0 then x % y else 0

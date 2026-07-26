@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+arrowCode :
+    (ordinary 0 A : Type) ->
+    (ordinary 0 B : Type) ->
+    Type
+
+let arrowCode A B =
+    A -> B

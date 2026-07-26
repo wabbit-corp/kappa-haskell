@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+useLocal :
+    (A : Type) ->
+    A -> A
+
+let useLocal A x =
+    let localId B y = y
+    localId A x

@@ -1,11 +1,11 @@
 module main
 
--- §11.3.3: an unannotated alias parameter whose kind the body does not
--- constrain generalizes, so the alias applies to a value argument.
+-- §11.3.3: an alias parameter whose body does not constrain its domain must
+-- state the intended term-index domain rather than defaulting to Type.
 data A : Type =
     A
 
-type Dep x = Nat
+type Dep (x : A) = Nat
 
 demo : (x : A) -> Dep x
 let demo x =
@@ -13,7 +13,7 @@ let demo x =
     case A -> 0
 
 -- recursive type aliases are not admitted (§15.16): data is required
-type I1 = (left : I1)
+type I1 = (left : I1,)
 
 salvaged : I1
 let salvaged = ()

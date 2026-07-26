@@ -1,0 +1,7 @@
+module explicit_effect_universe_schema
+
+effect Reader.{u} (parametric 0 A : Type u) =
+    get : Unit -> A
+
+--! mode check
+--! assertNoErrors

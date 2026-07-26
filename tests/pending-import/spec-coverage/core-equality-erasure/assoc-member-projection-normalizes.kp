@@ -35,4 +35,36 @@ let stored =
     let d = summon (Store Int)
     d.put 3
 
--- STATUS(a0497523): PASS
+-- ============================================================
+-- Canonical prelude instance of the same rule (§28.2): "The canonical
+-- Add Nat, Mul Nat, and Ord Nat instances delegate to these
+-- definitions. Their selected dictionary projections normalize to the
+-- same semantic operation identities before arithmetic reification",
+-- and §15.8.1 lists selected coherent trait-member projection
+-- reduction among the normalizations performed before arithmetic
+-- recognition.
+--
+-- Reading caveat: "before arithmetic reification" may be read as
+-- solver-view normalization only rather than full definitional
+-- projection unfolding, so these arms pin only the WEAK reading — the
+-- trait spelling and the canonical spelling interconvert at an
+-- expected-type boundary (ordinary §31.1.1 conversion under the strong
+-- reading, §16.1.8 transport over §15.8 evidence under the weak one;
+-- both readings accept these declarations). The strong reading's
+-- refl-spelled `x + y = natAdd x y` is deliberately NOT asserted.
+-- ============================================================
+
+data NatIdx (n : Nat) : Type =
+    MkNatIdx
+
+plusDelegates : (x : Nat) -> (y : Nat) -> NatIdx (x + y) -> NatIdx (natAdd x y)
+let plusDelegates x y v = v
+
+plusDelegatesBack : (x : Nat) -> (y : Nat) -> NatIdx (natAdd x y) -> NatIdx (x + y)
+let plusDelegatesBack x y v = v
+
+data OrdIdx (o : Ordering) : Type =
+    MkOrdIdx
+
+compareDelegates : (x : Nat) -> (y : Nat) -> OrdIdx (compare x y) -> OrdIdx (natCompare x y)
+let compareDelegates x y v = v

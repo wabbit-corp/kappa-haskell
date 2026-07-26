@@ -19,8 +19,8 @@ let main = do
     let f <- fork (race fastL slowR)
     let ex <- await f
     match ex
-    case Success r ->
+    case Exit.Success r ->
       match r
-      case LeftWins v -> printlnString (showInt v)
-      case RightWins v -> printlnString "right"
-    case Failure c -> printlnString "failed"
+      case RaceResult.LeftWins v -> printlnString (showInt v)
+      case RaceResult.RightWins v -> printlnString "right"
+    case Exit.Failure c -> printlnString "failed"

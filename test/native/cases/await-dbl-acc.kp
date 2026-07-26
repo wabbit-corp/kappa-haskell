@@ -1,5 +1,7 @@
 module main
 
+import std.prelude.(type Exit(..))
+
 -- §6 / Stage 1.5 SOUNDNESS: a Double accumulator whose LIVE RANGE CROSSES a
 -- fork+await park.  `acc` is computed before the fork and read after the await;
 -- the await is polymorphic over the fiber's result (Exit Double), so this is the

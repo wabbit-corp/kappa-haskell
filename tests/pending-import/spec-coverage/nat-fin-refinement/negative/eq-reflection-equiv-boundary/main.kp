@@ -1,0 +1,52 @@
+-- Spec 14.1.1 + 16.3.3 step 5: Eq is reflective decidable
+-- observational identity — `trait IsSet a => Eq` carries required
+-- eqSound/eqComplete proof members, and equality reflection from
+-- `(x == y) = True` flows only through `Eq.eqSound`. Equiv is a
+-- NON-reflecting boolean equivalence: "The compiler never synthesizes
+-- x = y from (x ~= y) = True. Only Eq supports equality reflection;
+-- Equiv does not." The pre-revision prelude Eq carried no proof
+-- members (the conformance twin hand-rolls a PropEq control instead);
+-- this suite probes the shipped members directly.
+
+-- ACCEPTED: reflection through the prelude Eq proof member.
+intEqSound :
+    (@evidence : Eq Int) ->
+    (x : Int) ->
+    (y : Int) ->
+    (@0 p : (x == y) = True) ->
+    x = y
+
+let intEqSound @evidence x y @p =
+    evidence.eqSound x y p
+
+-- ACCEPTED: the IsSet supertrait replaces the former eqIsSet member and
+-- projects from the same evidence (Spec 14.1.4, 14.3.3).
+intIsSetFromEq :
+    (@evidence : Eq Int) ->
+    IsSet Int
+
+let intIsSetFromEq @evidence =
+    witness
+
+-- REJECTED: the eqIsSet member was deleted in favour of the supertrait;
+-- projection must fail as an unresolved member.
+oldEqIsSetMember :
+    (@evidence : Eq Int) ->
+    IsSet Int
+
+let oldEqIsSetMember @evidence =
+    evidence.eqIsSet
+
+-- REJECTED: Equiv evidence grants no reflection — refl checks at x = x
+-- only, and no compiler rule may close the gap from the Equiv
+-- hypothesis (Spec 16.3.3 step 5).
+noReflect :
+    (x : Int) ->
+    (y : Int) ->
+    (@0 p : (=) (x ~= y) True) ->
+    (=) x y
+
+let noReflect x y @p =
+    refl
+
+--! assertErrorCount 2

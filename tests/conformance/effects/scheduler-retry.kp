@@ -26,5 +26,5 @@ let main = do
     let p <- fork (producer tv)
     let ec <- await c
     match ec
-      case Success v -> printlnString (showInt v)
-      case Failure _ -> printlnString "failed"
+      case Exit.Success v -> printlnString (showInt v)
+      case Exit.Failure _ -> printlnString "failed"

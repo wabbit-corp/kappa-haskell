@@ -1,0 +1,18 @@
+kcore 1;
+
+module @tests.kcore.bad_certificate#1103 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.bad_certificate",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  level-certificate @certificate.tests.kcore.bad#5002 :
+    omega + 1 <= omega
+  {
+    closed;
+  }
+}

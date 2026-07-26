@@ -1,0 +1,20 @@
+-- Universe-polymorphic local SCCs retain one static telescope in Core/KCore,
+-- but lower to an ordinary recursive runtime environment with no level
+-- argument. This native anchor catches stale CLocal indices or a backend that
+-- mistakes the static instantiation spine for a runtime closure field.
+module main
+
+choose : (A : Type) -> A -> A
+let choose A value =
+    block
+        left : (B : Type) -> B -> B
+        right : (C : Type) -> C -> C
+        let left B x =
+            if True then x else right B x
+        let right C y =
+            if True then y else left C y
+        let low : Bool = left Bool True
+        if low then right A value else value
+
+main : UIO Unit
+let main = printlnString (showInt (choose Int 42))

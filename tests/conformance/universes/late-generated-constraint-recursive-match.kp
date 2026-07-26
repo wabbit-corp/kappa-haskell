@@ -1,0 +1,25 @@
+-- A declaration may acquire a universe constraint only when its complete
+-- instance body is closed.  Recursive calls under pattern binders must receive
+-- that newly prepended proof without shifting past the finalized local scope.
+--! mode check
+--! assertNoErrors
+
+trait Sequence (f : (A : Type) -> Type) (item : Type) =
+    empty : f item
+
+instance Sequence List Int =
+    let empty = Nil
+
+trait Sequence f item => SearchSequence (f : (A : Type) -> Type) (item : Type) =
+    contains : item -> f item -> Bool
+
+instance Eq Int => SearchSequence List Int =
+    let contains x xs =
+        match xs
+        case Nil -> False
+        case h :: t -> if h == x then True else contains x t
+
+found : Bool
+let found = contains 3 (3 :: Nil)
+
+--! assertType found Bool

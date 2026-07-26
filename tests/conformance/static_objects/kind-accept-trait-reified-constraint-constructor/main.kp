@@ -3,7 +3,7 @@
 trait Pretty (a : Type) =
     pretty : a -> String
 
-C : Type -> Type
+C : (parametric 0 A : Type) -> Type
 let C = trait Pretty
 
 use : C Int -> Pretty Int

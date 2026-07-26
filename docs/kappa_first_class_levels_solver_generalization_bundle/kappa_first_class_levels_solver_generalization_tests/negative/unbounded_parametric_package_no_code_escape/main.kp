@@ -1,0 +1,12 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+
+type AnyWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)
+
+bad :
+    (p : AnyWitness) ->
+    Type p.level
+let bad p = p.T

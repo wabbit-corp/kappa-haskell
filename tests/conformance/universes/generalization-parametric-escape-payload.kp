@@ -1,0 +1,13 @@
+-- Generalization failure payloads identify the declaration and SCC, and name
+-- the kind of rigid candidate that escaped through ordinary observation.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_GENERALIZATION_PARAMETRIC_ESCAPE
+--! assertDiagnosticFamily error kappa.generalization.parametric-escape
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/declarationIdentity main.bad
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/declarationSccIdentity main.bad
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/failedCandidateKind type
+
+module main
+
+let bad = \A -> A

@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+chooseCode :
+    Bool ->
+    Type
+
+let chooseCode flag =
+    if flag then Int else String
+
+arrowCode :
+    (ordinary A : Type) ->
+    (ordinary B : Type) ->
+    Type
+
+let arrowCode A B =
+    A -> B

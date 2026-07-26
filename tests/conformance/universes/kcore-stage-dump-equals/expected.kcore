@@ -1,0 +1,20 @@
+kcore 1;
+
+module @main#4b415050413a76313a4b436f726554657874006d61696e [
+  compilerInterfaceVersion = "1",
+  languageVersion = "kappa-v1",
+  levelCertificateVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  sourceModuleIdentity = "main",
+  typeLevelAlgebraVersion = "1"
+] {
+  def ordinary @main.id#4b415050413a76313a4b436f7265476c6f62616c006d61696e2e6964.{^u#0} :
+    ((parametric parametric 0 explicit value %v#0 : Type ^u#0) -> ((ordinary ordinary omega explicit value %v#1 : %v#0) -> %v#0))
+  {
+    body =
+      lambda (parametric parametric 0 explicit value %v#2 : Type ^u#0) { lambda (ordinary ordinary omega explicit value %v#3 : %v#2) { %v#3 } };
+  }
+  extension impl.kappa 1;
+}

@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+ignoreNat :
+    (parametric 0 n : Nat) ->
+    Int
+
+let ignoreNat n =
+    0

@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelNormalForm max (max u 0) (max v u) equals max u v
+
+expect term u : TypeLevel
+expect term v : TypeLevel

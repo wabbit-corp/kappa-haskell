@@ -905,9 +905,14 @@ E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
 E_UNIVERSE_VARIANCE_NOT_APPLICABLE
 E_UNIVERSE_SCHEMA_LIFT_INVALID
 
+E_DERIVE_HEAD
+E_DERIVE_UNSUPPORTED
+
 E_KCORE_TEXT_INVALID
 E_KCORE_TEXT_UNSUPPORTED_VERSION
 E_KCORE_LEVEL_CERTIFICATE_INVALID
+E_KCORE_ARITHMETIC_CERTIFICATE_INVALID
+E_KCORE_REPRESENTATION_CERTIFICATE_INVALID
 E_KCORE_SCHEMA_CERTIFICATE_INVALID
 
 E_QUOTE_MALFORMED_SYNTAX
@@ -954,6 +959,7 @@ E_HOST_PYTHON_PROVIDER_AMBIENT
 E_HOST_PYTHON_AFFINITY_VIOLATION
 
 E_BACKEND_GENERATED_NAME_COLLISION
+E_BACKEND_REQUIRED_REPRESENTATION_MISSING
 E_BACKEND_SPECIALIZATION_SEMANTICS
 ```
 
@@ -1040,6 +1046,12 @@ Meanings:
   selected implementation.
 * `E_KCORE_LEVEL_CERTIFICATE_INVALID` is emitted when a KCoreText level certificate is malformed, references unavailable
   assumptions, proves a different constraint, or fails the independent certificate checker.
+* `E_KCORE_ARITHMETIC_CERTIFICATE_INVALID` is emitted when a KCore or KCoreText arithmetic certificate is malformed,
+  references unavailable assumptions or normalization providers, proves a different proposition, uses an unsupported
+  certificate-domain version, or fails the independent arithmetic-certificate checker.
+* `E_KCORE_REPRESENTATION_CERTIFICATE_INVALID` is emitted when an ordinal, exact-natural, or refinement-representation
+  certificate is malformed, stale, forged, references the wrong source type or evidence, fails a round-trip or
+  constructor/eliminator simulation obligation, or is incompatible with its recorded backend restrictions.
 * `E_KCORE_SCHEMA_CERTIFICATE_INVALID` is emitted when a KCore or KCoreText nominal-signature action certificate is
   missing, malformed, stale, forged, produced by an unsupported checker version, disagrees with the declaration's
   signature closure, or fails independent verification.
@@ -1177,6 +1189,9 @@ Meanings:
   its declared thread, event-loop, interpreter, process, or GIL-affinity policy.
 * `E_BACKEND_GENERATED_NAME_COLLISION` is emitted when backend lowering would produce duplicate or captured target
   names.
+* `E_BACKEND_REQUIRED_REPRESENTATION_MISSING` is emitted when a backend cannot provide a representation contract that
+  this specification makes mandatory for the selected type and backend profile, including exact non-unary `Nat`
+  representation or a representation capability explicitly advertised by that profile.
 * `E_BACKEND_SPECIALIZATION_SEMANTICS` is emitted when backend specialization, wrapper erasure, inlining, or
   representation-class sharing cannot preserve source-level behavior.
 
@@ -2744,6 +2759,52 @@ A diagnostic in this family MUST use portable alias `E_KCORE_LEVEL_CERTIFICATE_I
 Family:
 
 ```text
+kappa.kcore.arithmetic-certificate-invalid
+```
+
+Used when a KCore or KCoreText arithmetic certificate is malformed, stale, forged, refers to unavailable assumptions or
+normalization-provider identities, proves a proposition other than its declared goal, or fails independent verification.
+
+Payload MUST include:
+
+* certificate identity;
+* arithmetic domain and domain version;
+* checker version;
+* declared goal;
+* normalized goal when available;
+* assumptions referenced by the certificate;
+* normalization-provider identities referenced by the certificate;
+* first failed certificate or rechecking obligation; and
+* whether the certificate came from the current unit or an imported verified artifact.
+
+A diagnostic in this family MUST use portable alias `E_KCORE_ARITHMETIC_CERTIFICATE_INVALID`.
+
+Family:
+
+```text
+kappa.kcore.representation-certificate-invalid
+```
+
+Used when an ordinal, exact-natural, or refinement-representation certificate fails independent interface, KCore, or
+KBackendIR verification.
+
+Payload MUST include:
+
+* certificate kind, among `ordinal`, `exact-natural`, and `refinement`;
+* certificate identity, format version, and checker version;
+* represented source type and semantic identity;
+* source evidence identity when present;
+* cardinality expression, base type, zero/successor constructors, retained field, or rank/unrank terms as applicable;
+* first failed round-trip, constructor simulation, eliminator simulation, erasure, opacity, dynamic-representation, ABI,
+  FFI, bridge, or backend-profile obligation;
+* certificate provenance and imported-interface identity when applicable; and
+* the checkpoint that rejected the certificate.
+
+A diagnostic in this family MUST use portable alias `E_KCORE_REPRESENTATION_CERTIFICATE_INVALID`.
+
+Family:
+
+```text
 kappa.kcore.unsupported-version
 ```
 
@@ -2770,6 +2831,8 @@ Payload MUST include:
 * implicit-resolution result for each equality goal;
 * relevant local equality, branch-refinement, boolean-refinement, constructor-family-argument, stable-alias,
   `Eq.eqSound`, or row-uniqueness evidence;
+* arithmetic/index obligations attempted, normalization-provider identities considered, solver result, and certificate
+  identity or certificate-checking failure when applicable;
 * whether any rejected plan would have required proof-relevant runtime transport; and
 * whether the failure was no proof, ambiguous proof, invalid plan shape, non-deterministic plan order, or
   non-lowerable runtime transport.
@@ -2998,7 +3061,8 @@ Payload MUST include:
 * candidates rejected by failed premises;
 * candidates rejected by visibility, opacity, `unhide`, or `clarify` rules;
 * instance-search depth or cycle information when relevant;
-* boolean-normalization or equality-reflection attempts when relevant.
+* boolean-normalization, no-confusion, arithmetic/index-solver, normalization-provider, certificate-validation, or
+  equality-reflection attempts when relevant.
 
 Family:
 
@@ -4304,6 +4368,33 @@ The diagnostic SHOULD be considered when:
   appropriate.
 
 The diagnostic MUST NOT reject programs by default. Explicit `HashCode` comparison is permitted by §29.3.
+
+<!-- compiler.kfrontir.standard_diagnostic_families.backend_required_representation -->
+#### 3.2.17A Required backend representation diagnostics
+
+Family:
+
+```text
+kappa.backend.required-representation
+```
+
+Used when a selected backend cannot satisfy a representation contract made mandatory by the language or by a capability
+that the backend profile advertises.
+
+Payload MUST include:
+
+* source type, canonical `TypeNF` identity, and declaration identity when the type is nominal;
+* selected backend profile;
+* required representation class or advertised capability;
+* available representation classes;
+* exact-natural, ordinal, or refinement certificate identity when applicable;
+* ABI, FFI, bridge, dynamic-representation, reflection, opacity, alignment, or atomicity restriction that blocked the
+  representation when applicable;
+* KBackendIR subject and lowering checkpoint; and
+* whether the failure is missing exactness, unary storage, missing certificate, failed certificate, unsupported compact
+  class, unsupported packing, or an incompatible boundary contract.
+
+The diagnostic MUST use portable alias `E_BACKEND_REQUIRED_REPRESENTATION_MISSING`.
 
 <!-- compiler.kfrontir.standard_diagnostic_families.backend_python -->
 #### 3.2.18 Python backend and Python host-binding diagnostics
@@ -9600,6 +9691,90 @@ as ordinary libraries. A state transition consumes a value at one index and prod
 non-transition operations may instead be expressed over borrowed parameters (`(& x : T state)`), preserving the current
 index without consuming the underlying resource.
 
+<!-- data_types.generated_no_confusion -->
+#### 10.2.1 Generated no-confusion packages
+
+Every accepted ordinary `data` declaration determines a compiler-generated **no-confusion package** after universe-size,
+positivity, and constructor-result checking have succeeded.
+
+The package is semantic metadata attached to the elaborated data declaration. It is not inferred from constructor
+spellings and it is not an additional source declaration syntax.
+
+For a data family `D` with constructors `C1 ... Cn`, the package contains checked derivations sufficient for:
+
+* **constructor disjointness:** an equality between applications of distinct visible constructors implies `Void`;
+* **same-constructor injectivity:** an equality between two applications of one constructor yields the equality obligations
+  for corresponding constructor arguments;
+* **dependent telescope injectivity:** constructor arguments are compared from left to right, transporting later field
+  types across already-derived equalities for earlier fields;
+* **constructor-result consequences:** for a GADT-style constructor, the package records the equalities and contradictions
+  among family arguments forced by that constructor's explicit result type; and
+* **definitional constructor decomposition:** when conversion compares two applications of the same constructor, the
+  unifier decomposes the comparison through corresponding constructor arguments under the same dependent-telescope order.
+
+Definitional constructor decomposition is a metatheoretic rule of conversion. It does not construct a source equality
+proof and it does not make propositionally equal constructor arguments definitionally equal.
+
+Propositional no-confusion is proof-producing. Given an in-scope proof whose endpoints expose visible constructors, the
+elaborator and proof solvers MAY use the package to construct:
+
+* a proof of `Void` for distinct constructors; or
+* the required field and family-argument equality proofs for the same constructor.
+
+The resulting source evidence MUST be ordinary checked KCore proof terms. An implementation may compress or share the
+internal no-confusion derivation, but any KCore term or exported theorem that consumes it must be independently checkable
+as ordinary path-inductive proof. Merely recording that the compiler generated the package is not evidence.
+
+For dependent or GADT-style constructors, the generated proof follows ordinary path induction and `subst`. It MUST NOT
+assume UIP, Streicher's `K`, proof irrelevance for arbitrary equality types, or equality reflection.
+
+Higher/path-constructor boundary:
+
+* the automatic package of this section applies to ordinary inductive point constructors and their ordinary GADT result
+  constraints;
+* if an extension adds path constructors, higher constructors, quotient equations, recursive equations, or boundary
+  clauses that can identify or otherwise relate point constructors or fields, ordinary constructor disjointness and
+  injectivity MUST NOT be assumed merely from the point-constructor syntax;
+* such a declaration receives only the no-confusion facts explicitly justified by the extension's checked declaration
+  certificate and standardized no-confusion rules; and
+* `derive Eq`, `derive IsSet`, reachability, and proof search may consume those extension facts only after the owning
+  extension certificate has been independently verified.
+
+Uses:
+
+* constructor and GADT pattern checking;
+* indexed reachability and exhaustiveness;
+* `derive Eq` and `derive IsSet`;
+* proof-directed equality synthesis;
+* inhabitance analysis of equality and constructor fibers; and
+* tooling that displays constructor-forced equalities.
+
+Visibility and opacity:
+
+* no-confusion facts may mention only constructors visible in the current visibility and opacity environment;
+* outside an `opaque data` declaration's defining scope, hidden-constructor no-confusion metadata is not available for new
+  source proofs or reachability decisions;
+* exported instances and exported theorems generated inside the defining scope remain usable through their declared
+  interfaces without exposing the hidden constructors; and
+* module interfaces serialize the no-confusion summary needed for visible constructors and for rechecking exported
+  generated proofs, but MUST NOT reveal hidden constructor structure.
+
+For the standard `Nat` declaration of §28.2, the package in particular supports:
+
+```kappa
+expect term natSuccInjective :
+    forall (m : Nat) (n : Nat).
+    Nat.Succ m = Nat.Succ n ->
+    m = n
+
+expect term natZeroNotSucc :
+    forall (n : Nat).
+    Nat.Zero = Nat.Succ n ->
+    Void
+```
+
+These are propositional consequences of the generated package. They are not additional definitional equations.
+
 <!-- data_types.type_aliases -->
 ### 10.3 Type aliases
 
@@ -13344,7 +13519,13 @@ intrinsic trait RuntimeErased (0 t : Type)
 intrinsic trait IsSubsingleton t => IsTrait (0 t : Type)
 ```
 
-`IsSubsingleton` by itself asserts uniqueness, not existence. `IsProp` classifies proof propositions and does not provide a value of its parameter.
+`IsSubsingleton` by itself asserts uniqueness, not existence. `IsProp` classifies proof propositions and does not provide
+an inhabitant of its parameter.
+
+Consequently, `IsProp P` may justify coherence of successfully synthesized proofs of `P`, but it MUST NOT by itself solve
+an obligation `P`, construct an omitted proof field, or prove that `P` is inhabited. Proof synthesis still requires an
+actual proof term or checked solver certificate. Runtime representation is a separate question governed by
+`RuntimeErased P`, quantity, phase, and §31.2.
 
 `IsTrait` is compiler-issued evidence that `t` is a trait evidence type. User source MUST NOT declare instances of
 `IsTrait`. The compiler synthesizes `IsTrait (Tr args)` for every well-formed full application of a trait constructor.
@@ -17711,12 +17892,13 @@ Syntax and formation:
 * Sort restriction:
   * The type `T` of an implicit field must elaborate either to:
     * a trait evidence type, meaning `T : Type u` and `IsTrait T` is available;
-    * a compile-time type in the sense of §11.1.6.1, or
+    * a compile-time type in the sense of §11.1.6.1;
+    * a proposition type for which `IsProp T` is available; or
     * a boolean proposition accepted by the coercion rule of §11.4.2 (so a bare boolean field type `@p : b` elaborates to
       `@p : b = True`).
-  * Ordinary computational data types such as `String`, `Bytes`, or `IO e a` cannot be marked as implicit record fields
-    unless they are explicitly made trait evidence types by an intrinsic compiler declaration, which portable user code
-    cannot do.
+  * An ordinary computational data type such as `String`, `Bytes`, or `IO e a` that satisfies none of the admitted
+    categories above cannot be marked as an implicit record field. Portable user code cannot make such a type trait
+    evidence merely to bypass this restriction.
 * Implicit record fields are the record-field analogue of implicit binders. A trait evidence field may also be written
   as an ordinary explicit field when explicit evidence passing is desired.
 * Quantity:
@@ -17725,6 +17907,9 @@ Syntax and formation:
   * If the field type is a trait evidence type, the default quantity is the ordinary implicit-binder default of §16.3:
     unrestricted `ω`, unless the user writes another quantity explicitly. Marker, law-only, and intrinsic row-trait
     evidence may still erase by representation analysis under §§11.1.4, 11.1.6, and 31.2.
+  * A non-compile-time proposition field admitted through `IsProp T` likewise uses the ordinary implicit-binder default
+    `ω` unless the source writes another quantity. Proposition uniqueness, proof synthesis, binder quantity, and runtime
+    erasure remain separate judgments even when `IsProp T` also supplies `RuntimeErased T` under §11.1.6.
 
 Introduction (construction):
 
@@ -17742,6 +17927,20 @@ When constructing a record literal, the user may omit any field marked with `@`.
 
 * Explicitly supplied implicit fields participate in the same dependency-respecting reordering as ordinary record
   fields.
+
+Proposition-field synthesis and erasure are orthogonal:
+
+* `IsProp T` permits an implicit field of type `T` and establishes that any two successfully checked inhabitants are
+  propositionally equal;
+* `IsProp T` does not establish that `T` is inhabited and does not fabricate a field value;
+* omission still succeeds only when ordinary elaboration, implicit resolution, a required proof-producing solver, or an
+  explicit checked certificate produces an inhabitant of `T`;
+* if several proof-producing paths yield inhabitants of an `IsProp` field, the implementation chooses a deterministic
+  canonical proof or certificate and MUST NOT report incoherence merely because the proof terms differ; safe evidence is
+  preferred over unsafe/debug evidence, and differing trust or audit provenance remains recorded rather than being erased
+  by proof uniqueness; and
+* runtime storage is determined independently by the field quantity, `RuntimeErased T`, phase, and §31.2. A proof field
+  written at quantity `0` is erased even if no global `RuntimeErased T` evidence is available.
 
 Elimination (existential unpacking):
 
@@ -18278,11 +18477,10 @@ trait Equiv (parametric 0 a : Type) =
         (& x : a) -> (& y : a) -> (& z : a) ->
         ((x ~= y) = True -> (y ~= z) = True -> (x ~= z) = True)
 
-trait Eq (parametric 0 a : Type) =
+trait IsSet a => Eq (parametric 0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (& x : a) -> (& y : a) -> ((x == y) = True  -> x = y)
     eqComplete : (& x : a) -> (& y : a) -> (x = y -> (x == y) = True)
-    eqIsSet    : IsSet a
 
 trait Eq a => Ord (parametric 0 a : Type) =
     compare : (& x : a) -> (& y : a) -> Ordering
@@ -18463,11 +18661,10 @@ A trait declaration introduces an abstract evidence record family.
 For example:
 
 ```kappa
-trait Eq (parametric 0 a : Type) =
+trait IsSet a => Eq (parametric 0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (x : a) -> (y : a) -> ((x == y) = True -> x = y)
     eqComplete : (x : a) -> (y : a) -> (x = y -> (x == y) = True)
-    eqIsSet    : IsSet a
 ```
 
 elaborates as if it introduced an abstract evidence type:
@@ -18543,9 +18740,10 @@ traits. They differ only in evidence introduction.
 Standard intrinsic traits include:
 
 ```kappa
-IsTrait
-ContainsRec, LacksRec, StableUnderRecChange, RecTailSatisfies
-ContainsVar, LacksVar
+IsTrait, IsNType, RuntimeErased, ExactNaturalRepresentation,
+QuantitySatisfies,
+ContainsRec, LacksRec, StableUnderRecChange, RecTailSatisfies,
+ContainsVar, LacksVar,
 ContainsEff, LacksEff, SplitEff
 ```
 
@@ -18569,9 +18767,9 @@ Consequently, within portable object-language Kappa, no pure context may disting
 available.
 
 An `Eq` instance participates in equality reflection only because `eqSound` and `eqComplete` are required members whose
-proof terms must typecheck. The member `eqIsSet` records that equality proofs for values of `a` are propositions; the
-compiler may synthesize it for ordinary instances from reflected decidable equality. No additional restriction on
-hand-written instances is required beyond the declared members.
+proof terms must typecheck. Its `IsSet a` supertrait records that equality proofs for values of `a` are propositions.
+The compiler may synthesize that supertrait for ordinary decidable-equality derivations by a checked proof of Hedberg's
+theorem. No global UIP or `K` principle is introduced.
 
 `Equiv` is a non-reflecting boolean equivalence relation. Its comparison operation is also non-consuming. The compiler
 MUST NOT derive `x = y` from `(x ~= y) = True`; only proof-carrying `Eq` participates in equality reflection (§16.3.3).
@@ -19454,8 +19652,9 @@ A Phase 0 body macro MUST NOT:
 
 For `Eq` specifically:
 
-* `derive Eq T` is permitted only if the compiler can synthesize both `eqSound` and `eqComplete` for `T`.
-* If either proof cannot be synthesized, deriving `Eq` fails.
+* `derive Eq T` is permitted only if the compiler can synthesize `eqSound`, `eqComplete`, and the `IsSet T`
+  supertrait required by §14.5.1.
+* If any required proof cannot be synthesized, deriving `Eq` fails.
 * A Phase 0 user-written body macro that generates only the boolean `(==)` member is not, by itself, a valid full `Eq` derivation unless the remaining proof members are supplied by handwritten code, by other macros whose generated proof terms typecheck, or by an implementation-defined built-in derivation path.
 * `std.deriving.shape.matchAdt2` may help generate field-wise branch syntax for equality, but it does not by itself expose constructor injectivity, constructor disjointness, no-confusion, or proof-producing equality certificates.
 
@@ -19466,8 +19665,122 @@ Outside the defining module it may be used only through the trait interface and 
 A `derive` declaration that appears in a block scope generates a local instance when the implementation supports such declarations.
 Its visibility, closure-conversion behavior, and admissibility rules are exactly those of a handwritten local instance under §30.1.1.
 
+<!-- traits.derived_hlevels_equality -->
+#### 14.5.1 Derived `IsSet` and `Eq`
+
+The following compiler-owned derivations are portable:
+
+```kappa
+derive IsSet T
+derive Eq T
+```
+
+Both derivations generate ordinary KCore evidence whose proof terms are checked before the instance is accepted.
+Arithmetic subgoals inside those proofs may use the compact arithmetic certificates of §15.8.7, but v1 defines no generic
+unchecked h-level or deriving certificate. A declaration is not accepted merely because the compiler's deriving
+implementation claims that it succeeded.
+
+Portable derivation failures use these diagnostic families and aliases:
+
+```text
+kappa.derive.invalid-head  / E_DERIVE_HEAD
+kappa.derive.unsupported   / E_DERIVE_UNSUPPORTED
+```
+
+`E_DERIVE_HEAD` is emitted when the declaration is not a supported trait
+applied to exactly one target type. `E_DERIVE_UNSUPPORTED` is emitted when
+the head is well-formed but the requested trait or checked target shape is
+outside the portable derivation fragment below. Both diagnostics precede
+backend lowering and MUST identify the source `derive` declaration.
+
+`derive IsSet T`:
+
+* generates an `IsSet T` instance;
+* does not require decidable equality for `T`;
+* may use the generated no-confusion package of §10.2.1, ordinary path induction, `subst`, and already available h-level
+  evidence;
+* is accepted for an ordinary data declaration, tuple, or closed record only when every generated proof obligation is
+  discharged; and
+* fails as an ordinary derivation error when the implementation cannot produce a checked proof.
+
+Required conservative structural fragment:
+
+* an ordinary non-dependent field must have `IsSet` evidence for its field type;
+* an implicit or erased proof field may instead use `IsProp` evidence for its exact field type;
+* dependent fields are processed in telescope order after transporting later field types across equalities already
+  established for earlier fields;
+* recursive occurrences are checked by a guarded greatest-fixed-point eligibility analysis over the mutually recursive
+  data group; every generated h-level proof must separately pass ordinary totality checking;
+* function fields without explicit `IsSet` evidence for their exact field type, opaque field types without exported
+  h-level evidence, and unsupported dependent eliminations cause the derivation to fail rather than assuming function
+  extensionality or proof irrelevance; and
+* higher/path constructors, quotient equations, or higher-inductive clauses require an extension-supplied checked h-level
+  derivation rule. In its absence, derivation fails.
+
+A compiler MAY additionally derive `IsSet T` from a checked decidable equality for `T` using a library proof of Hedberg's
+theorem. This is a local theorem about `T`; it does not add UIP to the ambient theory.
+
+`derive Eq T`:
+
+* generates the `(==)`, `eqSound`, and `eqComplete` members of `Eq T`;
+* must also discharge the `IsSet T` supertrait;
+* may use an existing coherent `IsSet T` instance or generate the same checked h-level proof that `derive IsSet T` would
+  generate;
+* must synthesize constructor disjointness and same-constructor field equality through §10.2.1; and
+* fails if either reflected decidable equality direction or the `IsSet` supertrait cannot be checked.
+
+A derived `Eq T` instance therefore exposes `IsSet T` by ordinary supertrait projection. When `derive IsSet T` and
+`derive Eq T` occur in the same coherent scope, the compiler uses one canonical generated `IsSet T` evidence object; it
+does not publish duplicate competing instances. An existing coherent direct `IsSet T` instance may instead satisfy the
+`Eq T` supertrait.
+
+Opacity:
+
+* deriving may inspect a data or record representation only where that representation is visible;
+* the resulting exported instances expose only their declared trait interfaces; and
+* no-confusion metadata for hidden constructors is not thereby exported.
+
+Derivation output, provider selection, generated proof/certificate identity, and generated KCore must be deterministic for
+a fixed source program, import environment, compiler version, and active profile.
+
+<!-- traits.derived_representations -->
+#### 14.5.2 Derived refinement and exact-natural representation evidence
+
+The following compiler-owned derivations are portable:
+
+```kappa
+derive RefinementView T
+derive ExactNaturalRepresentation T
+```
+
+`derive RefinementView T` is accepted in v1 only when the visible nominal representation has exactly one constructor
+and exactly one ordinary retained base-value field after mandatory erasure. The remaining fields must be quantity-`0`
+evidence fields from which the compiler can identify, by their checked types rather than their names, one predicate-fiber
+inhabitant and `IsProp` evidence for that same fiber. Every other remaining field must be compile-time-only or erased
+evidence irrelevant to runtime observation and must be deterministically synthesizable when `refine` constructs a value.
+If the base field, predicate proof, matching `IsProp` evidence, or any required constructor filler is ambiguous or
+unsolved, derivation fails rather than selecting one heuristically. The derivation generates the ordinary
+`RefinementView T` members and both round-trip proofs of §16.1.9.
+
+If erasure leaves exactly the selected base field and construction, projection, and elimination preserve that field's
+runtime observations, the derivation also emits a checked `RefinementRepresentationCertificate` under §30.2.7C. The
+ordinary trait evidence may exist even when a boundary or representation restriction prevents that certificate.
+
+`derive ExactNaturalRepresentation T` is accepted only when the checked semantic shape has exactly one nullary
+constructor and one unary constructor whose sole retained field is one strict recursive occurrence of `T`. It generates
+the private structural maps and proofs, plus the `ExactNaturalRepresentationCertificate` of §30.2.7C. Constructor names,
+source spelling, and declaration order do not determine eligibility.
+
+Neither derivation extends definitional equality or makes the represented type equal to its base type or to `Nat`.
+Representation use occurs only after erasure and certificate verification. V1 does not standardize a source
+`derive OrdinalRepresentation ...` form; the compiler may derive the structural ordinal certificates required by
+§30.2.7B, while users may write ordinary `OrdinalRepresentation` instances by hand.
+
+Derivation output and certificate serialization are deterministic and participate in interface identity, semantic hashes,
+query invalidation, and backend fingerprints whenever downstream compilation or representation selection can observe them.
+
 <!-- traits.derived_hashable -->
-#### 14.5.1 Derived `Hashable`
+#### 14.5.3 Derived `Hashable`
 
 A data type, record type, or tuple type may derive `std.hash.Hashable` when all runtime-relevant fields that participate
 in the corresponding `Eq` instance are themselves `Hashable`.
@@ -19763,25 +20076,222 @@ A lexicographic certificate is a tuple of measures such that every recursive cal
 component orders of §15.4 or under an explicit relation supplied by §15.11.
 
 <!-- declarations.totality.arithmetic_solver_for_termination -->
-### 15.8 Arithmetic solver for termination obligations
+### 15.8 Shared proof-producing arithmetic and index solver
 
-Arithmetic obligations generated by the portable termination checker are divided into a required linear fragment and an
-optional nonlinear fragment.
+Kappa implementations MUST expose one deterministic proof-producing arithmetic service shared by:
 
-The required portable fragment is quantifier-free linear integer arithmetic over `Nat`, `Int`, and `Integer` measure
-components, with the non-negative-subset rule of §15.4 for integer-valued default measures. For `Nat`, subtraction in the
-portable source language is interpreted according to the language definition of the operator being reduced; saturating
-`Nat` subtraction and integer subtraction are not interchangeable unless normalization has made the coercion explicit.
+* termination checking;
+* equality-based transport insertion;
+* refinement construction and widening;
+* GADT family-argument reachability;
+* `impossible` and exhaustiveness checking for required arithmetic propositions;
+* inhabitance and symbolic-cardinality queries;
+* bounds checking;
+* ordinal-representation derivation;
+* representation selection; and
+* diagnostics and tooling queries over the preceding obligations.
 
-The portable solver may use:
+The service is an elaboration and analysis component. It is not part of ordinary definitional equality.
 
-* definitional equality;
-* branch facts already available from pattern matching and boolean refinement;
-* linear equalities and inequalities over literals, addition, subtraction, and multiplication by literals;
-* non-negative side conditions for integer-valued measure components; and
-* predecessor facts required by §15.11 minimum acceptance.
+Conceptual result:
 
-A conforming implementation MUST decide the portable arithmetic fragment needed for:
+```text
+ArithmeticSolveResult ::=
+    SolvedByTerm        proofTerm
+  | SolvedByCertificate arithmeticCertificate
+  | RefutedByTerm       refutationTerm
+  | RefutedByCertificate arithmeticCertificate
+  | Unknown
+```
+
+A `Solved` result may affect source acceptance only after the produced proof term typechecks or the produced certificate
+passes its independent checker. `Unknown` means only that this service did not solve the goal.
+
+<!-- declarations.totality.arithmetic_solver.reification -->
+#### 15.8.1 Reification and semantic identity
+
+Arithmetic recognition is performed on elaborated KCore after:
+
+* beta reduction;
+* iota reduction for known constructor and Boolean decisions;
+* delta reduction of transparent conversion-reducible definitions;
+* selected coherent trait-member projection reduction;
+* transparent local alias expansion;
+* projection reduction; and
+* exact closed-literal normalization.
+
+Operations, constants, comparisons, and law bundles are recognized by resolved semantic identity and selected evidence,
+never by source spelling or raw syntactic resemblance.
+
+For standard `Nat`, `Integer`, and `Int`, the canonical operation identities are those exported by `std.prelude`. A
+transparent alias or selected dictionary projection participates only when normalization exposes the same semantic
+operation.
+
+The solver MUST preserve the exact source semantics of partial operations. In particular, a checked `Nat` subtraction may
+be reified as mathematical subtraction only together with its in-scope proof that the subtrahend is no greater than the
+minuend. Saturating subtraction is never inferred.
+
+<!-- declarations.totality.arithmetic_solver.providers -->
+#### 15.8.2 Proof-normalization providers
+
+Algebraic normalization is driven by explicit law evidence through validated **proof-normalization provider artifacts**.
+The compiler does not infer algebraic structure by scavenging unrelated proof terms whose types happen to resemble
+associativity, identity, commutativity, or distributivity laws.
+
+Conceptually:
+
+```text
+ProofNormalizationProviderArtifact =
+    (providerIdentity   : SemanticObjectId,
+     theoryKind        : NormalizationTheoryKind,
+     evidencePattern   : TraitApplicationPattern,
+     carrierPattern    : TypePattern,
+     operationMembers  : List ProviderMemberBinding,
+     constantMembers   : List ProviderMemberBinding,
+     lawMembers        : List ProviderMemberBinding,
+     normalFormVersion : Nat,
+     providerVersion   : Nat,
+     checkerVersion    : Nat)
+
+ProviderMemberBinding =
+    (role             : ProviderMemberRole,
+     ownerTrait       : SemanticObjectId,
+     memberIdentity   : SemanticObjectId,
+     instantiatedType : TypeSchema)
+
+ProviderMemberRole ::=
+    BinaryOperation slot
+  | UnaryOperation slot
+  | EqualityOperation slot
+  | OrderOperation slot
+  | Constant slot
+  | AssociativityLaw operationSlot
+  | LeftIdentityLaw operationSlot constantSlot
+  | RightIdentityLaw operationSlot constantSlot
+  | CommutativityLaw operationSlot
+  | IdempotenceLaw operationSlot
+  | LeftAnnihilatorLaw operationSlot constantSlot
+  | RightAnnihilatorLaw operationSlot constantSlot
+  | LeftDistributivityLaw outerOperationSlot innerOperationSlot
+  | RightDistributivityLaw outerOperationSlot innerOperationSlot
+  | LeftInverseLaw operationSlot inverseOperationSlot constantSlot
+  | RightInverseLaw operationSlot inverseOperationSlot constantSlot
+  | MonotoneLeftLaw operationSlot orderSlot
+  | MonotoneRightLaw operationSlot orderSlot
+
+NormalizationTheoryKind ::=
+    OrientedSimplifier
+  | Monoid
+  | CommutativeMonoid
+  | IdempotentCommutativeMonoid
+  | AdditivelyNoncommutativeSemiring
+  | Semiring
+  | Ring
+  | OrderedAdditive
+```
+
+A provider artifact names the evidence head, operations, constants, and exact law projections it consumes. It is
+instantiated only after ordinary implicit resolution has selected one coherent evidence value matching `evidencePattern`.
+Its checker verifies that every member has the `instantiatedType` and semantic role required by `theoryKind` after
+substituting the carrier and evidence arguments. A role is not accepted merely because a theorem's pretty-printed type
+looks similar: the provider explicitly binds the member to the role, and the checker verifies the exact role schema.
+
+Each standardized theory kind assigns fixed meanings to its numbered operation, constant, equality, and order slots,
+has one fixed required role multiset, and has one fixed canonicalization algorithm identified by `normalFormVersion`.
+The provider checker rejects an out-of-range slot, duplicate required slot, missing role, or law whose instantiated type
+does not relate the exact members occupying the referenced slots. Identity and annihilator simplifications are oriented
+only toward deleting the corresponding constant; associativity, commutativity, idempotence, inverse, and distributivity
+roles are consumed by the theory's canonicalizer rather than installed as unrestricted bidirectional rewrite rules.
+
+The **coherent evidence closure** is the selected evidence value together with its uniquely determined supertrait evidence
+and member projections. The selected operations, constants, and laws must all come from that closure. V1 defines no
+provider compatibility bridge that mixes independently selected dictionaries. A provider MUST NOT normalize with `add`
+from one dictionary while using identity, associativity, or commutativity laws from another. Provider matching is
+deterministic and uses semantic identities, never trait or member spellings.
+
+The generic normalization engine understands theory kinds, not source trait spellings. The standard prelude interface
+supplies validated provider artifacts connecting the standard algebraic law bundles of §28.2.2 to these theory kinds.
+An implementation may encode the artifacts directly in its standard-library interface, but it MUST NOT hardcode behavior
+based only on the text `AdditiveMonoid`, `Semiring`, or another source name.
+
+V1 defines no source syntax and no ordinary first-class object-language type for proof-normalization providers. They
+operate over open KCore terms, lexical contexts, evidence identities, and generated proofs; exposing them safely as
+ordinary values would require a separate elaboration/reflection API with explicit determinism, termination, coherence,
+and reproducibility rules. An implementation MAY internally represent providers as first-class meta-phase objects, but
+source programs cannot observe or install them in v1.
+
+Provider use never extends conversion. It constructs a propositional equality or implication proof, directly or through a
+checked certificate.
+
+<!-- declarations.totality.arithmetic_solver.canonicalization -->
+#### 15.8.3 Simplification versus algebraic canonicalization
+
+The service distinguishes:
+
+1. **oriented simplification**, for validated size-decreasing equations such as identities, annihilators, transparent
+   projections, and canonical predicate expansion; and
+2. **algebraic canonicalization**, for laws such as associativity, commutativity, idempotence, and distributivity that
+   require flattening, canonical ordering, collection of terms, or polynomial normalization rather than naive rewriting.
+
+A commutativity proof is never installed as the rewrite pair `x + y -> y + x` / `y + x -> x + y`. A commutative provider
+instead computes a canonical atom order and constructs a proof that each input equals its canonical form.
+
+Canonical atom ordering is by canonical KCore semantic identity after alpha-normalization and transparent normalization,
+not by source spelling, allocation order, hash-map iteration order, or solver search order.
+
+<!-- declarations.totality.arithmetic_solver.required_domains -->
+#### 15.8.4 Required portable domains
+
+The required portable service decides and produces checked evidence for the following domains whenever the referenced
+operations and required provider evidence are available.
+
+**Constructor and closed arithmetic:**
+
+* `Nat` constructor computation;
+* exact closed `Nat`, `Integer`, and `Int` literals;
+* exact closed comparison;
+* exact closed addition, multiplication, checked subtraction, division, and modulo; and
+* canonical predecessor facts on a branch known to contain a successor or a positive natural.
+
+**Algebraic normalization:**
+
+* monoid normalization by flattening and identity removal;
+* commutative monoid normalization by flattening, identity removal, and canonical atom sorting;
+* idempotent commutative monoid normalization by duplicate elimination;
+* additively noncommutative semiring normalization to sums of multiplicative words;
+* semiring polynomial equality normalization with canonical additive ordering while preserving factor order;
+* ring polynomial equality normalization with canonical additive ordering while preserving factor order; and
+* monotonicity consequences explicitly provided by `OrderedAdditive` or stronger selected evidence.
+
+Neither `Semiring` nor `Ring` permits reordering multiplicative factors. Such reordering requires a separate checked
+commutative-multiplication law bundle and provider; v1 does not infer it from the trait names.
+
+**Quantifier-free Presburger arithmetic:**
+
+* linear equalities and inequalities over exact `Nat`, `Integer`, and `Int` values;
+* arbitrary exact literal coefficients;
+* non-negativity side conditions;
+* disequalities;
+* addition and checked subtraction;
+* multiplication by literals;
+* division and modulo by positive literals;
+* congruence classes modulo positive literals; and
+* conjunction, disjunction, and negation after Boolean proposition elaboration.
+
+**Piecewise-linear expressions:**
+
+* `min`, `max`, `clamp`, and absolute value over admitted exact integer domains;
+* transparent `if` expressions whose condition belongs to the required arithmetic fragment; and
+* deterministic finite case splitting over such conditions.
+
+**Small finite domains:**
+
+* exact finite-domain instantiation for a domain whose verified ordinal cardinality is at most `256`;
+* total Boolean predicates whose applications normalize for every enumerated inhabitant under the current visibility,
+  opacity, and totality environment; and
+* exact proof or refutation by complete enumeration.
+
+The minimum required termination obligations remain:
 
 * `n - 1 < n` under `0 < n`;
 * `max 0 (n - 1) < max 0 n` under `0 < n`;
@@ -19789,22 +20299,96 @@ A conforming implementation MUST decide the portable arithmetic fragment needed 
 * lexicographic comparison of accepted measure tuples; and
 * non-negative affine combinations of accepted inequalities.
 
-Implementations MAY use SMT or another solver internally, but acceptance in the required portable fragment must be
-reproducible and independent of solver heuristics.
+`Fin 0` emptiness, literal range membership, affine range containment, and affine refinement widening are part of the
+required portable fragment, not optional optimizer strengthening.
 
-The optional nonlinear fragment may generate quantifier-free nonlinear integer arithmetic obligations, including
-polynomial equalities and inequalities produced by the polynomial measure language of §15.7. This fragment is not a
-complete decision procedure requirement: an implementation may return `unknown` or fail to discharge such an obligation.
-Only a proved-valid obligation may contribute to termination certification.
+<!-- declarations.totality.arithmetic_solver.optional_domains -->
+#### 15.8.5 Optional certified domains
 
-An SMT-backed nonlinear obligation is valid only when the implementation proves unsatisfiability of the negated goal
-under the collected branch and typing facts. The solver interface MUST fail closed: `sat`, `unknown`, timeout, crash,
-unsupported operator, parse failure, or missing solver all mean that the obligation was not discharged.
+An implementation MAY additionally support:
 
-The arithmetic solver MUST be sound.
-It MAY be incomplete.
-Failure to discharge an arithmetic obligation rejects that certificate; it is not proof that the recursive SCC is
-non-terminating.
+* nonlinear polynomial inequalities;
+* symbolic divisibility beyond literal moduli;
+* bit-vector arithmetic;
+* larger finite-domain instantiation;
+* Presburger quantifier elimination;
+* SAT/SMT-backed domain combinations; or
+* implementation-defined proof-normalization theories.
+
+An optional domain may affect source acceptance only behind an explicit owning feature gate recorded in the active
+language profile, interfaces, query keys, certificates, and artifact fingerprints. A standardized gate may define a
+portable extension. An implementation-defined gate defines an implementation-specific extension and MUST NOT be reported
+as portable v1 acceptance. With no active owning gate, an optional goal returns `Unknown` for source acceptance.
+
+An external solver result may affect acceptance only through the checked-proof or checked-certificate boundary of §15.9.
+The interface must fail closed: `sat`, `unknown`, timeout, crash, unsupported operator, parse failure, or missing solver is
+not a proof.
+
+<!-- declarations.totality.arithmetic_solver.metavariables -->
+#### 15.8.6 Metavariables and principal solutions
+
+Arithmetic automation MUST NOT guess assignments for underconstrained elaboration metavariables.
+
+It may assign a metavariable only when the required portable domain proves that the assignment is the unique principal
+solution under the current constraints. For example, `?n + 1 = 4` may solve `?n := 3`; `?x + ?y = 4` does not choose one
+of its many solutions.
+
+Otherwise the service leaves a residual obligation or returns `Unknown`. Proof-producing normalization is primarily a
+procedure over rigid or already determined terms, not an unrestricted arithmetic logic-programming engine.
+
+<!-- declarations.totality.arithmetic_solver.certificates -->
+#### 15.8.7 Proof terms and compact arithmetic certificates
+
+Implementations SHOULD emit ordinary proof terms when the canonical reconstructed proof remains below an
+implementation-defined deterministic size threshold.
+
+For larger derivations, an implementation MAY emit a compact `ArithmeticCertificate`.
+
+Every arithmetic certificate is closed over one explicit context `Γ` consisting of a universe telescope, its normalized
+universe-constraint block, and a term telescope. The declared goal, numbered assumptions, selected provider uses, and
+certificate payload may refer only to that context. A certificate MUST NOT capture an unrecorded elaborator local,
+metavariable, ambient solver fact, or importer-specific proof.
+
+Every use of an open certificate explicitly instantiates its universe and term telescopes and supplies one checked proof
+for each numbered assumption in canonical order. The resulting evidence has the instantiated goal. The canonical
+certificate identity includes the complete context, constraint block, goal, assumptions, provider applications, domain
+versions, and payload; context binders are De Bruijn-indexed so alpha-renaming does not change identity.
+
+The certificate checker is part of the trusted KCore implementation contract and MUST independently validate:
+
+* the declared proposition or refutation goal;
+* every referenced local assumption;
+* the arithmetic domain and domain version;
+* every referenced normalization-provider identity and instantiated law projection;
+* the canonical reification of operations and atoms;
+* the claimed canonical normal forms or decision result; and
+* the certificate's scope, semantic identity, and checker version.
+
+A certificate may contain normalization or search hints, but the checker MUST NOT trust those hints. It recomputes or
+validates the decisive normalization/decision step.
+
+A checked arithmetic certificate is semantically equivalent to an ordinary proof term of its declared type. It does not
+make its endpoints definitionally equal.
+
+Certificate generation, serialization, assumption ordering, provider ordering, and normal-form ordering are deterministic.
+The proof-term-versus-certificate threshold, enabled certificate domains, domain versions, provider versions, and checker
+versions participate in the compiler fingerprint and every affected query key. Cached KCore produced under different
+settings MUST NOT be reused as though those settings were semantically irrelevant.
+
+The checker SHOULD be small, separately testable, and suitable for independent formal verification; formal verification
+of one implementation is not itself a portability precondition.
+
+<!-- declarations.totality.arithmetic_solver.reachability -->
+#### 15.8.8 Use in source reachability and inhabitance
+
+Only the required portable arithmetic fragment may justify portable acceptance of an omitted arithmetic-impossible branch,
+`impossible`, `case impossible`, or a required exact inhabitance result.
+
+An optional solver may contribute diagnostics and optimization, or may affect source acceptance only under its owning
+feature gate. In every case, a checked proof or certificate is required; an analysis summary alone is not a source proof.
+
+The same arithmetic fact, when used by several compiler phases, MUST be keyed by one canonical normalized obligation and
+must not receive phase-dependent truth values.
 
 <!-- declarations.totality.external_termination_prover_boundary -->
 ### 15.9 External termination prover boundary
@@ -21215,6 +21799,8 @@ For each transport step, the equality proof may be synthesized from:
 * equality evidence transported across stable aliases;
 * `Eq.eqSound` applied to an available proof of `(x == y) = True`;
 * intrinsic row-uniqueness evidence specified by the row solver;
+* an ordinary proof term produced by the required arithmetic/index solver of §15.8;
+* a compact arithmetic certificate independently checked under §§15.8.7 and 30.2.0A; and
 * other compiler-specified intrinsic equality evidence.
 
 The implementation MUST NOT use arbitrary user equality assumptions as definitional equality.
@@ -21246,6 +21832,100 @@ Rules:
 * At an application boundary, this rule may be attempted only after ordinary argument checking, borrow introduction,
   suspension insertion, and arrow subsumption have failed to accept the supplied argument directly.
 
+
+<!-- expressions.application.refinement_view_subsumption -->
+#### 16.1.9 Refinement-view subsumption
+
+Expected-type checking supports one bounded, proof-directed refinement-view step after ordinary checking and
+§16.1.8 equality transport have failed.
+
+The standard abstraction is:
+
+```kappa
+trait RefinementView (0 t : Type) =
+    Base      : Type
+    Predicate : Base -> Type
+
+    refinementValue :
+        t -> Base
+
+    refinementPredicateIsProp :
+        (x : t) ->
+        IsProp (Predicate (refinementValue x))
+
+    refinementProof :
+        (x : t) ->
+        Predicate (refinementValue x)
+
+    refine :
+        (x : Base) ->
+        (@0 predicateIsProp : IsProp (Predicate x)) ->
+        (@0 proof : Predicate x) ->
+        t
+
+    valueAfterRefine :
+        forall (x : Base)
+               (@0 predicateIsProp : IsProp (Predicate x))
+               (@0 proof : Predicate x).
+        refinementValue (refine x @predicateIsProp @proof) = x
+
+    refineAfterValue :
+        forall (x : t).
+        refine
+            (refinementValue x)
+            @(refinementPredicateIsProp x)
+            @(refinementProof x) = x
+```
+
+`Base` and `Predicate` are associated static members. `RefinementView t` is coherent ordinary trait evidence; v1 does not
+recognize arbitrary `(value, @proof)` records by structural resemblance.
+
+Required expected-type-directed cases:
+
+1. **Base to refinement.** If `e : A` and the expected type `T` has coherent evidence `v : RefinementView T` with
+   `v.Base ≡ A`, generate both goals `IsProp (v.Predicate e)` and `v.Predicate e`. If both actual evidence values are
+   synthesized, elaborate to `v.refine e @predicateIsProp @proof`.
+2. **Refinement to base.** If `e : T`, coherent `v : RefinementView T` is available, and the expected type is
+   definitionally equal to `v.Base`, elaborate to `v.refinementValue e`.
+3. **Refinement widening.** If source and target types have coherent refinement views with definitionally equal bases,
+   project the source value and its source predicate evidence, synthesize `IsProp` evidence and a proof for the target
+   predicate at that same base value, and construct the target refinement.
+
+Single evaluation and ownership:
+
+* the source expression is evaluated exactly once;
+* when the source is not already a stable representative suitable for all generated predicate and projection obligations,
+  elaboration first binds it to a fresh hidden local whose quantity and access mode preserve the surrounding demand;
+* every generated predicate goal, proof, source projection, round-trip use, and target construction refers to that same
+  representative;
+* refinement insertion MUST NOT duplicate, discard, consume, or extend the borrow lifetime of the source beyond what the
+  original expected-type boundary permits; and
+* widening performs at most one source `refinementValue` projection and one target `refine` construction.
+
+Restrictions:
+
+* `IsProp (v.Predicate e)` establishes uniqueness, not existence. Refinement insertion requires both checked `IsProp`
+  evidence and an actual inhabitant proof; neither fabricates the other.
+* The elaborator performs at most one source projection and one target construction at one expected-type boundary. It
+  does not search arbitrary chains of refinement views.
+* Refinement-view subsumption is not definitional equality, subtyping, instance-head matching, coherence, or a new
+  source-level premise.
+* No runtime predicate test is inserted silently. A value whose predicate is not statically proved must use an explicit
+  decision function such as `tryRefine` from §28.2.
+* The selected evidence and generated predicate obligation are deterministic and preserve provenance as
+  `expected-type-directed-insertion` followed, when needed, by `equality-transport-insertion`.
+* Automatic use is permitted only when the selected `RefinementView` evidence is coherent and every inserted proof is
+  runtime-erased or otherwise lowerable under §11.4.1.
+
+A compiler-owned `derive RefinementView T` path may generate an instance for a visible nominal type only when it can
+produce all members and round-trip proofs above. Merely finding a field named `value` and another field that looks like a
+proof is insufficient.
+
+When the visible runtime shape contains exactly one retained base field and every other field is quantity-`0` or otherwise
+erased, the derivation MAY also emit a `RefinementRepresentationCertificate`. Its independent checker verifies that
+construction, projection, pattern elimination, and every retained runtime observation are representation identity on the
+base field. Only that certificate, not the ordinary `RefinementView` instance alone, authorizes wrapper elimination under
+§34.3.2A.
 
 <!-- expressions.lambdas -->
 ### 16.2 Lambdas
@@ -21765,12 +22445,15 @@ Resolution proceeds in this order:
 
    At the first lexical scope level containing one or more candidates whose types are definitionally equal to `G`:
    * if exactly one candidate is present, use it;
-   * if more than one candidate is present and `IsTrait G` is not available, the implicit goal is ambiguous and
-     compilation fails;
-   * if more than one candidate is present and `IsTrait G` is available, the candidates are accepted for local
-     implicit-resolution purposes. Any two well-typed local evidence values `d1 : G` and `d2 : G` are coherent at this
-     level because compiler-issued trait proof irrelevance provides `IsSubsingleton.allEqual d1 d2 : d1 = d2`. The
-     implementation selects a deterministic representative.
+   * if more than one candidate is present and neither `IsProp G` nor `IsTrait G` is available, the implicit goal is
+     ambiguous and compilation fails;
+   * if more than one candidate is present and either `IsProp G` or `IsTrait G` is available, the candidates are coherent
+     for local implicit-resolution purposes because the corresponding `IsSubsingleton G` evidence proves any two
+     candidates equal. The implementation selects a deterministic representative while preserving distinct unsafe/debug
+     or audit provenance in the generated obligation and artifact metadata.
+
+   For this ambiguity check, `IsProp G` may be obtained only from already available h-level evidence or a deterministic
+   h-level query that does not itself choose among the candidate inhabitants of `G`.
 
    Search does not continue to outer lexical levels once such a level is found.
 
@@ -21786,7 +22469,18 @@ Resolution proceeds in this order:
 This rule uses only the current active refinement context. It does not make arbitrary user-provided propositional
 equality evidence participate in definitional equality.
 
-4. **Equality reflection from `==`**: If `G` is `x = y`, and the implicit context contains `p : (x == y) = True`, and an
+4. **Checked proof solvers**: when `G` is a proposition or refutation goal supported by a required proof-producing
+   service, the compiler may attempt, in deterministic order:
+   * visible generated no-confusion evidence from §10.2.1 for constructor equality, injectivity, disjointness, and
+     constructor-result contradictions; and
+   * the required arithmetic and index solver of §15.8, including any selected proof-normalization provider artifacts.
+
+   A successful result is accepted only after the generated ordinary proof term typechecks or the compact certificate
+   passes its independent checker. The solver must prove exactly `G` from the current lexical assumptions; it must not
+   invent an exported premise, perform unbounded proof search, or treat an analysis summary as evidence. `Unknown` proceeds
+   to the next resolution step.
+
+5. **Equality reflection from `==`**: If `G` is `x = y`, and the implicit context contains `p : (x == y) = True`, and an
    implicit `Eq A` is available, elaborate using:
 
    ```kappa
@@ -22254,20 +22948,31 @@ match expr
 For GADT-style data families, pattern matching refines the scrutinee's family arguments and may render some constructor
 cases impossible.
 
-Implementations should:
+Implementations:
 
-* attempt to use definitional equality / unification of family arguments to detect unreachable cases;
-* after ordinary branch refinement, MAY compute the inhabitance summary of the refined case type under §30.2.7;
-* if that summary is `Empty`, treat the case as unreachable and therefore not required for exhaustiveness;
-* otherwise (if coverage still cannot be established) require an explicit catch-all (`_`) or an explicit user-written
-  case structure that proves impossibility.
+* MUST first use definitional equality and family-argument unification whenever those rules decide constructor
+  compatibility;
+* MUST then use the transport-aware constructor-result compatibility rule of §30.2.7 when a constructor result and the
+  demanded family instance differ propositionally rather than definitionally;
+* MUST consult the required structural inhabitance fragment of §30.2.7 and the required proof-producing arithmetic
+  fragment of §15.8 whenever an arithmetic or refined proof fiber must be decided for portable coverage;
+* if the resulting required query proves the refined case type `Empty`, treat the case as unreachable and therefore not
+  required for exhaustiveness; and
+* otherwise, if compatibility or coverage remains `Unknown`, do not treat the constructor as impossible; require an
+  explicit catch-all (`_`) or an explicit user-written case structure that supplies the missing equality evidence.
+
+When a constructor result is accepted only through a checked propositional bridge, the branch receives that bridge as
+ordinary erased equality evidence. It may be consumed by equality transport, implicit proof search, and the arithmetic
+solver. It does not become definitional equality and is not added to the active conversion context merely because the
+constructor branch was selected.
 
 As user-facing ways to state and check unreachability, a branch may use `-> impossible` (§17.1.4) and a `match` may end
 with `case impossible` (§17.1.5). Such forms are valid only when the compiler can verify the corresponding remainder is
 unreachable.
 
-Optional strengthening rules from §30.2.7 MAY improve diagnostics, but acceptance of a `match` MUST NOT depend on any
-rule outside the required structural fragment of that section.
+Optional strengthening rules from §30.2.7 MAY improve diagnostics, but portable acceptance of a `match` may depend only
+on the required structural fragment of §30.2.7 and the required portable arithmetic/proof fragment of §15.8. Optional
+solver domains may affect acceptance only under their explicit owning feature gate.
 
 <!-- expressions.match.index_refinement_constructor_knowledge -->
 #### 17.1.2 Family-argument refinement from constructor knowledge
@@ -22336,7 +23041,9 @@ match e
 
 Typing rule:
 * A branch body `impossible` is accepted only if the compiler can prove that the corresponding case is unreachable using
-  definitional equality, family-argument unification, and the required structural inhabitance rules of §30.2.7.
+  definitional equality, family-argument unification, the required structural inhabitance rules of §30.2.7, and the
+  required portable arithmetic/proof fragment of §15.8 when the contradiction is arithmetic or lies in a refined proof
+  fiber.
 * In particular, if the refined case type has inhabitance summary `Empty`, the branch is unreachable.
 * If the compiler cannot prove the case unreachable, it is a compile-time error.
 
@@ -22375,8 +23082,9 @@ Rules:
 * `case impossible` may appear only as the final case of a `match`.
 * `case impossible` introduces no binders and has no guard.
 * It is accepted only if, after accounting for the preceding cases and guards, the remaining uncovered remainder of the
-  scrutinee is unreachable using definitional equality, family-argument unification, and the required structural
-  inhabitance rules of §30.2.7.
+  scrutinee is unreachable using definitional equality, family-argument unification, the required structural inhabitance
+  rules of §30.2.7, and the required portable arithmetic/proof fragment of §15.8 when the contradiction is arithmetic or
+  lies in a refined proof fiber.
 * In particular, if that uncovered remainder has inhabitance summary `Empty`, the clause is accepted.
 * Otherwise it is a compile-time error.
 
@@ -27419,6 +28127,56 @@ Rules:
 * Range construction is pure. Iterating a range is governed by `IntoQuery` or another explicit consumer instance.
 * The portable prelude MUST provide `Rangeable` instances for `Nat`, `Int`, `Integer`, and `UnicodeScalar`.
 * A `Rangeable Float` or `Rangeable Double` instance is not part of the portable minimum.
+
+<!-- collections.ranges.membership -->
+#### 20.2.1 Range membership function
+
+Kappa provides ordinary membership through the standard `Contains` trait:
+
+```kappa
+trait Contains (0 container : Type) (0 item : Type) =
+    contains :
+        (& container : container) ->
+        (& item : item) ->
+        Bool
+```
+
+`contains container item` is an ordinary function application selected by coherent `Contains container item` evidence.
+Kappa v1 does not introduce a special `in` expression form for membership. The token `in` remains reserved for the
+existing grammars that use it, such as `let ... in` and comprehension clauses. A future revision may permit an infix
+membership spelling only through a general user-defined fixity mechanism for ordinary names; it must not be a hardcoded
+membership-only syntax rule.
+
+The portable prelude provides `Contains (Rangeable.Range Nat) Nat`, `Contains (Rangeable.Range Int) Int`, and
+`Contains (Rangeable.Range Integer) Integer` for their canonical range instances.
+
+For canonical exact numeric ranges, membership has the following transparent source equations:
+
+```text
+contains (lo .. hi)  x = (lo <= x) && (x <= hi)
+contains (lo ..< hi) x = (lo <= x) && (x < hi)
+```
+
+These canonical ranges are ascending. When `hi < lo`, the range has no members and its canonical iterator yields no
+values. A backend or library that wants descending iteration uses a distinct explicitly named range operation or range
+type rather than changing the meaning of `..`.
+
+The canonical standard `Rangeable` and `Contains` instances are ordinary total standard-library definitions. The
+preceding equations are their normative membership behavior. An implementation may accelerate them through the shared
+solver, but runtime, compile-time, and solver behavior must remain extensionally equivalent.
+
+The equations are recognized for proof-producing arithmetic by resolved `Rangeable`, `Contains`, comparison, and range
+constructor identities. Raw spelling such as `..`, `..<`, or the name `contains` is never the semantic recognition key.
+
+A refinement may therefore be written:
+
+```kappa
+type NatBetween (lo : Nat) (hi : Nat) : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+```
+
+Literal construction, branch-local refinement, and widening use §§15.8 and 16.1.9. No runtime membership check is
+inserted unless source explicitly calls `tryRefine` or another decision function.
 
 <!-- collections.comprehensions -->
 ### 20.3 Comprehensions: general shape
@@ -33441,6 +34199,9 @@ The standard runtime capability names are:
 * `rt-blocking`
 * `rt-atomics`
 * `rt-multishot-effects`
+* `rt-compact-finite-ordinal`
+* `rt-packed-finite-fields`
+* `rt-unboxed-refinement`
 
 Meaning:
 
@@ -33485,6 +34246,20 @@ Meaning:
   * logical cloning of captured continuation segments;
   * and the continuation storage/reclamation obligations of §32.2.16.
 
+* `rt-compact-finite-ordinal`:
+  * representation selection from a verified ordinal-representation certificate;
+  * at least one compact scalar representation class for finite ordinal values; and
+  * preservation of source constructor, elimination, equality, dynamic-representation, and boundary semantics.
+
+* `rt-packed-finite-fields`:
+  * packed field and packed-array lanes for verified finite ordinal element types; and
+  * deterministic layout selection documented by the backend profile.
+
+* `rt-unboxed-refinement`:
+  * elimination of nominal runtime wrapper storage for certified `Refined`, `Fin`, or `RefinementView` values when no ABI,
+    dynamic, opacity, identity, or boundary rule requires the wrapper; and
+  * representation sharing with the selected base representation.
+
 Capability rules:
 
 * A backend that lacks a required capability MUST reject the affected program or deployment mode rather than silently
@@ -33504,16 +34279,29 @@ Capability rules:
   atomicity and memory-order semantics.
 * Absence of `rt-multishot-effects` does not disable effect handlers generally.
   It disables only reachable source behavior that requires multi-shot resumptions.
+* Absence of `rt-compact-finite-ordinal`, `rt-packed-finite-fields`, or `rt-unboxed-refinement` does not change source
+  typing. It limits only the corresponding optional representation choices, except where a standard profile below is
+  required to advertise one of those capabilities.
+* Every runnable backend, regardless of advertised optional representation capabilities, must satisfy the exact
+  non-unary `Nat` contract of §34.3.2A.
 
 Recommended backend declarations:
 
-* `zig` SHOULD advertise:
+* `zig` MUST advertise:
   * `rt-core`,
   * `rt-parallel`,
   * `rt-shared-stm`,
   * `rt-blocking`,
   * `rt-atomics`,
-  * `rt-multishot-effects`.
+  * `rt-multishot-effects`,
+  * `rt-compact-finite-ordinal`,
+  * `rt-packed-finite-fields`,
+  * `rt-unboxed-refinement`.
+
+* An implementation-defined native backend profile that claims the same full internal-layout conformance class as
+  `zig` MUST advertise `rt-compact-finite-ordinal`, `rt-packed-finite-fields`, and `rt-unboxed-refinement`. A restricted
+  native ABI adapter or backend that delegates object layout to another managed runtime must not claim that conformance
+  class merely because it emits some native code.
 
 * managed `jvm` and managed `dotnet` SHOULD advertise:
   * `rt-core`,
@@ -33522,6 +34310,10 @@ Recommended backend declarations:
   * `rt-blocking`,
   * `rt-atomics`,
   * `rt-multishot-effects`.
+
+  Managed profiles MAY additionally advertise `rt-compact-finite-ordinal`, `rt-packed-finite-fields`, and
+  `rt-unboxed-refinement` when their object model, specialization strategy, and boundary contracts support those
+  representation choices. They are not required to shrink every finite nominal value to the smallest host scalar.
 
 * native-AOT or restricted managed deployment modes MAY withhold `rt-multishot-effects` if they cannot satisfy
   §§32.2.13, 32.2.14, 32.2.15, 32.2.16, 32.2.18, 32.2.19, and 32.2.20 for persistent multi-shot resumptions.
@@ -33767,7 +34559,7 @@ Implementations MUST provide the intrinsic trait declarations referenced by §§
 
 ```text
 IsEmpty, IsContr, IsSubsingleton, IsProp, IsSet, IsGroupoid, IsNType,
-RuntimeErased, IsTrait,
+RuntimeErased, IsTrait, ExactNaturalRepresentation,
 QuantitySatisfies,
 ContainsRec, LacksRec, StableUnderRecChange, RecTailSatisfies,
 ContainsVar, LacksVar,
@@ -33775,7 +34567,8 @@ ContainsEff, LacksEff, SplitEff
 ```
 
 `IsEmpty`, `IsContr`, `IsSubsingleton`, `IsProp`, `IsSet`, and `IsGroupoid` are ordinary proof traits.
-`IsNType`, `RuntimeErased`, `IsTrait`, `QuantitySatisfies`, and the row traits above are intrinsic solver traits unless
+`IsNType`, `RuntimeErased`, `IsTrait`, `ExactNaturalRepresentation`, `QuantitySatisfies`, and the row traits above are
+intrinsic solver traits unless
 a later section explicitly classifies a particular member as ordinary. Their source-level names are
 ordinary prelude exports, but their evidence introduction rules are owned by the compiler.
 
@@ -33802,7 +34595,7 @@ RecRow, VarRow, EffRow, Label, EffLabel,
 Unit, Void, Bool,
 Byte, Bytes,
 UnicodeScalar, Grapheme, String,
-Int, Nat, Integer, Float, Double, Rational, Ordering,
+Int, Nat, Fin n, Refined a p, Integer, Float, Double, Rational, Ordering,
 
 -- unions and rows
 Variant r,
@@ -33887,6 +34680,9 @@ Portable source code SHOULD use `UnicodeScalar`.
 
 `Integer`, `Int`, `Rational`, `Double`, and `Float` are ordinary user-facing numeric types exported by `std.prelude`.
 
+`Nat` is the ordinary inductive natural-number type shown below. Its source theory is `Zero`/`Succ`; its mandatory runtime
+representation is exact and non-unary under §34.3.2A.
+
 * `Integer` is an arbitrary-precision signed mathematical integer type.
 * `Int` is a transparent alias of `Integer`. Portable `Int` arithmetic is exact mathematical integer arithmetic, not
   machine-word arithmetic.
@@ -33898,6 +34694,8 @@ Portable source code SHOULD use `UnicodeScalar`.
 Constructors (constructor namespace):
 ```
 Bool.True, Bool.False,
+Nat.Zero, Nat.Succ,
+Fin.Fin, Refined.Refined,
 Ordering.LT, Ordering.EQ, Ordering.GT,
 Option.None, Option.Some,
 Result.Ok, Result.Err,
@@ -33974,9 +34772,13 @@ next,
 toQuery, toBorrowSourceQuery, toBorrowItemsQuery,
 fromComprehensionPlan, fromComprehensionRaw,
 
--- proof and equality helpers
+-- proof, equality, refinement, and finite-index helpers
 absurd,
 pathInd, subst, sym, trans, cong,
+natAdd, natMultiply, natCompare,
+natSuccInjective, natZeroNotSucc,
+refinedValue, refinedPredicateIsProp, refinedProof, refinedExt, refinedIsSet, tryRefine,
+finValue, finExt, finZero, finSucc, finWeaken, finLast, finCases, finInduction,
 unsafeAssertProof,
 witness, summon,
 measureRelation, lexRelation,
@@ -34009,8 +34811,8 @@ newPromise, awaitPromiseExit, awaitPromise, completePromise,
 newRef, readRef, writeRef,
 atomically, newTVar, readTVar, writeTVar, retry, check,
 
--- ranges
-range, (..), (..<),
+-- ranges and membership
+range, (..), (..<), contains,
 
 -- collection basics
 listLength, listAppend,
@@ -34075,17 +34877,20 @@ Zero, One, Add, Mul, Negatable,
 CheckedSub, CheckedDiv, CheckedMod,
 
 -- algebraic numeric traits
-AdditiveMonoid, AdditiveGroup,
+AdditiveMonoid, CommutativeAdditiveMonoid, AdditiveGroup,
 MultiplicativeMonoid,
-Semiring, Ring,
+AdditivelyNoncommutativeSemiring, Semiring, Ring,
 EuclideanSemiring, FieldLike,
 OrderedAdditive, OrderedSemiring,
+
+-- refinements and finite ordinal representations
+RefinementView, OrdinalRepresentation, ExactNaturalRepresentation,
 
 -- functorial / monadic
 Functor, Applicative, Monad, Alternative,
 
 -- containers and traversals
-Foldable, Traversable, Filterable, FilterMap, Monoid, Iterator, Rangeable,
+Foldable, Traversable, Filterable, FilterMap, Monoid, Iterator, Rangeable, Contains,
 
 -- interpolation, comprehensions, numeric literals, and explicit string conversion
 InterpolatedMacro, QuotedLiteralMacro,
@@ -34125,7 +34930,10 @@ data Bool : Type =
     True
     False
 
-expect data Nat : Type
+data Nat : Type =
+    Zero
+    Succ (pred : Nat)
+
 expect data Integer : Type
 expect data Rational : Type
 expect data Double : Type
@@ -34138,6 +34946,227 @@ data Ordering : Type =
     EQ
     GT
 ```
+
+
+Canonical `Nat` source theory:
+
+```kappa
+natAdd : Nat -> Nat -> Nat
+let natAdd x y =
+    match x
+    case Zero   -> y
+    case Succ m -> Succ (natAdd m y)
+
+natMultiply : Nat -> Nat -> Nat
+let natMultiply x y =
+    match x
+    case Zero   -> Zero
+    case Succ m -> natAdd y (natMultiply m y)
+
+natCompare : Nat -> Nat -> Ordering
+let natCompare x y =
+    match (x, y)
+    case (Zero, Zero)       -> EQ
+    case (Zero, Succ _)     -> LT
+    case (Succ _, Zero)     -> GT
+    case (Succ m, Succ n)   -> natCompare m n
+```
+
+The canonical `Add Nat`, `Mul Nat`, and `Ord Nat` instances delegate to these definitions. Their selected dictionary
+projections normalize to the same semantic operation identities before arithmetic reification.
+
+The preceding definitions determine the portable symbolic computation equations:
+
+```text
+natAdd Zero n          -> n
+natAdd (Succ m) n      -> Succ (natAdd m n)
+
+natMultiply Zero n     -> Zero
+natMultiply (Succ m) n -> natAdd n (natMultiply m n)
+
+natCompare Zero Zero         -> EQ
+natCompare Zero (Succ n)     -> LT
+natCompare (Succ m) Zero     -> GT
+natCompare (Succ m) (Succ n) -> natCompare m n
+```
+
+These are ordinary beta/delta/iota computation through transparent total source definitions. V1 does not add the symmetric
+propositional equations `n + Zero = n`, `n + Succ m = Succ (n + m)`, associativity, commutativity, or distributivity to
+definitional equality. The proof-producing service of §15.8 discharges those equations when required by checking.
+
+Closed `Nat` computation is exact and may be evaluated by an implementation primitive rather than materializing a unary
+constructor spine, provided the result and all observable constructor/eliminator behavior agree with these definitions.
+
+Every standard `Nat` arithmetic operation, including checked subtraction, division, and modulo, is specified by an
+ordinary total Kappa definition in the standard library. Checked subtraction, division, and modulo may use well-founded
+recursion and erased domain proofs. An implementation may replace a checked definition by a primitive evaluator or
+backend intrinsic, but that primitive implements the source definition and is not a second arithmetic semantics.
+
+The standard prelude derives or provides checked evidence:
+
+```kappa
+derive IsSet Nat
+derive Eq Nat
+derive ExactNaturalRepresentation Nat
+```
+
+The `ExactNaturalRepresentation` derivation for the canonical `Nat` is mandatory and is governed by §34.3.2A.
+
+Canonical refinements and finite naturals:
+
+```kappa
+data Refined.{u, v}
+    (0 a : Type u)
+    (parametric 0 predicate : a -> Type v)
+    : Type (max u v) =
+
+    Refined
+        (value : a)
+        (@0 predicateIsProp : IsProp (predicate value))
+        (@0 proof : predicate value)
+
+data Fin (n : Nat) : Type =
+    Fin
+        (value : Nat)
+        (@0 isLt : value < n)
+```
+
+`Refined a predicate` does not contain proposition evidence as a type index. Each constructor application instead
+carries erased evidence that its particular predicate fiber is a proposition. This supports extensionality without making
+a global pointwise proposition proof part of the type identity.
+
+Required standard evidence and operations:
+
+```kappa
+instance RefinementView (Refined a predicate)
+instance IsSet a => IsSet (Refined a predicate)
+instance Eq a => Eq (Refined a predicate)
+instance Ord a => Ord (Refined a predicate)
+
+expect term refinedValue : Refined a predicate -> a
+expect term refinedPredicateIsProp :
+    (x : Refined a predicate) ->
+    IsProp (predicate x.value)
+expect term refinedProof : (x : Refined a predicate) -> predicate x.value
+
+expect term refinedExt :
+    forall (x : Refined a predicate) (y : Refined a predicate).
+    x.value = y.value ->
+    x = y
+
+expect term refinedIsSet :
+    forall (a : Type) (predicate : a -> Type).
+    IsSet a ->
+    IsSet (Refined a predicate)
+
+expect term tryRefine :
+    forall (a : Type) (predicate : a -> Type).
+    (@0 predicateIsProp : forall (x : a). IsProp (predicate x)) ->
+    ((x : a) -> Dec (predicate x)) ->
+    (x : a) ->
+    Option (Refined a predicate)
+```
+
+The generic `IsSet (Refined a predicate)` proof uses `IsSet a`, the per-value `predicateIsProp` fields carried by the two
+refined values being compared, and ordinary dependent transport. It does not assume that every fiber is inhabited and it
+does not require function extensionality. The generic `Eq` and `Ord` instances compare only the base values and use
+`refinedExt` to justify reflection.
+
+```kappa
+instance RefinementView (Fin n)
+instance IsSet (Fin n)
+instance Eq (Fin n)
+instance Ord (Fin n)
+instance Show (Fin n)
+instance OrdinalRepresentation n (Fin n)
+
+expect term finValue : Fin n -> Nat
+expect term finExt :
+    forall (x : Fin n) (y : Fin n).
+    x.value = y.value ->
+    x = y
+expect term finZero  : Fin (n + 1)
+expect term finSucc  : Fin n -> Fin (n + 1)
+expect term finWeaken : Fin n -> Fin (n + 1)
+expect term finLast  : (n : Nat) -> Fin (n + 1)
+```
+
+Unlike `finZero`, `finSucc`, and `finWeaken`, `finLast` needs the bound `n`
+as its runtime ordinal. Its binder is therefore an ordinary explicit
+parameter, not an implicitly universalized quantity-`0` index.
+
+The standard eliminators expose the inductive zero/successor interface without making `Fin` physically unary:
+
+```kappa
+expect term finCases :
+    forall (n : Nat)
+           (parametric 0 motive : Fin (n + 1) -> Type).
+    motive finZero ->
+    ((i : Fin n) -> motive (finSucc i)) ->
+    (i : Fin (n + 1)) ->
+    motive i
+
+expect term finInduction :
+    forall (n : Nat)
+           (parametric 0 motive : (k : Nat) -> Fin k -> Type).
+    (forall (k : Nat). motive (k + 1) finZero) ->
+    (forall (k : Nat) (i : Fin k). motive k i -> motive (k + 1) (finSucc i)) ->
+    (i : Fin n) ->
+    motive n i
+```
+
+The `expect term` declarations above, including `finCases`, `finInduction`, `refinedExt`, and `refinedIsSet`, must be
+satisfied by ordinary total checked standard-library definitions. They are not axioms. Implementations may replace them
+with certified intrinsics only when the checked source definitions remain the normative meaning and behavior is
+extensionally equivalent.
+
+`Fin 0` is empty in the required source-reachability fragment. Establishing that fact uses the required arithmetic proof
+that no `value : Nat` satisfies `value < 0`; it is not inferred merely because the proof field is erased.
+
+`RefinementView` and ordinal evidence:
+
+```kappa
+trait RefinementView (0 t : Type) =
+    Base      : Type
+    Predicate : Base -> Type
+    refinementValue : t -> Base
+    refinementPredicateIsProp :
+        (x : t) -> IsProp (Predicate (refinementValue x))
+    refinementProof : (x : t) -> Predicate (refinementValue x)
+    refine :
+        (x : Base) ->
+        (@0 predicateIsProp : IsProp (Predicate x)) ->
+        (@0 proof : Predicate x) ->
+        t
+    valueAfterRefine :
+        forall (x : Base)
+               (@0 predicateIsProp : IsProp (Predicate x))
+               (@0 proof : Predicate x).
+        refinementValue (refine x @predicateIsProp @proof) = x
+    refineAfterValue :
+        forall (x : t).
+        refine
+            (refinementValue x)
+            @(refinementPredicateIsProp x)
+            @(refinementProof x) = x
+
+trait OrdinalRepresentation (n : Nat) (0 t : Type) =
+    rank   : t -> Fin n
+    unrank : Fin n -> t
+    unrankRank : forall (x : t). unrank (rank x) = x
+    rankUnrank : forall (i : Fin n). rank (unrank i) = i
+
+intrinsic trait ExactNaturalRepresentation (0 t : Type)
+```
+
+An ordinary `OrdinalRepresentation n t` instance is a source-level equivalence useful to libraries. It authorizes backend
+representation substitution only when accompanied by the compiler-verified ordinal-representation certificate of
+§30.2.7B. A handwritten law bundle alone does not silently change layout.
+
+`ExactNaturalRepresentation` has compiler-owned introduction. `derive ExactNaturalRepresentation T` is accepted only for
+a unary-natural declaration whose checked semantic shape has exactly one nullary zero constructor and exactly one unary
+successor constructor containing only one strict recursive runtime field after erasure. The derivation emits the
+representation certificate required by §34.3.2A.
 
 The following core ordinary types are primitive or implementation-provided ordinary runtime-capable types:
 
@@ -34178,12 +35207,21 @@ expect term sizedArrayLength :
     forall (n : Nat) (a : Type).
     SizedArray n a -> Nat
 
-expect term sizedArrayIndex :
+private expect term sizedArrayIndexNat :
     forall (n : Nat) (a : Type).
     (xs : SizedArray n a) ->
     (i : Nat) ->
     (@_ : (i < n) = True) ->
     a
+
+sizedArrayIndex :
+    forall (n : Nat) (a : Type).
+    SizedArray n a ->
+    Fin n ->
+    a
+
+let sizedArrayIndex xs i =
+    sizedArrayIndexNat xs i.value @i.isLt
 
 expect term sizedArrayToArray :
     forall (n : Nat) (a : Type).
@@ -35247,13 +36285,13 @@ Equality, ordering, and display:
 
 ```text
 Eq Unit, Eq Bool, Eq Byte, Eq Bytes, Eq UnicodeScalar, Eq Grapheme, Eq String, Eq Int, Eq Nat, Eq Integer, Eq Float, Eq Double, Eq Rational,
-Eq Ordering, Eq Duration, Eq Instant, Eq TypeLevel,
+Eq Ordering, Eq Duration, Eq Instant, Eq TypeLevel, Eq (Fin n),
 
 Ord Bool, Ord Byte, Ord Bytes, Ord UnicodeScalar, Ord String, Ord Int, Ord Nat, Ord Integer, Ord Float, Ord Double, Ord Rational,
-Ord Ordering, Ord Duration, Ord Instant, Ord TypeLevel,
+Ord Ordering, Ord Duration, Ord Instant, Ord TypeLevel, Ord (Fin n),
 
 Show Unit, Show Bool, Show Byte, Show Bytes, Show UnicodeScalar, Show Grapheme, Show String, Show Int, Show Nat, Show Integer, Show Float, Show Double, Show Rational,
-Show Ordering, Show Duration, Show Instant
+Show Ordering, Show Duration, Show Instant, Show (Fin n)
 ```
 
 The `Eq TypeLevel` and `Ord TypeLevel` instances are actual standard instances defined by §11.1.2.2. The universe
@@ -35334,19 +36372,20 @@ strings (§6.3.4), not by overloading unprefixed string literals.
 Algebraic numeric instances:
 
 ```text
-AdditiveMonoid Nat, MultiplicativeMonoid Nat, Semiring Nat, OrderedAdditive Nat, OrderedSemiring Nat,
-EuclideanSemiring Nat,
+AdditiveMonoid Nat, CommutativeAdditiveMonoid Nat,
+MultiplicativeMonoid Nat, AdditivelyNoncommutativeSemiring Nat, Semiring Nat,
+OrderedAdditive Nat, OrderedSemiring Nat, EuclideanSemiring Nat,
 
-AdditiveMonoid Integer, AdditiveGroup Integer,
-MultiplicativeMonoid Integer, Semiring Integer, Ring Integer,
+AdditiveMonoid Integer, CommutativeAdditiveMonoid Integer, AdditiveGroup Integer,
+MultiplicativeMonoid Integer, AdditivelyNoncommutativeSemiring Integer, Semiring Integer, Ring Integer,
 OrderedAdditive Integer, OrderedSemiring Integer,
 
-AdditiveMonoid Int, AdditiveGroup Int,
-MultiplicativeMonoid Int, Semiring Int, Ring Int,
+AdditiveMonoid Int, CommutativeAdditiveMonoid Int, AdditiveGroup Int,
+MultiplicativeMonoid Int, AdditivelyNoncommutativeSemiring Int, Semiring Int, Ring Int,
 OrderedAdditive Int, OrderedSemiring Int,
 
-AdditiveMonoid Rational, AdditiveGroup Rational,
-MultiplicativeMonoid Rational, Semiring Rational, Ring Rational,
+AdditiveMonoid Rational, CommutativeAdditiveMonoid Rational, AdditiveGroup Rational,
+MultiplicativeMonoid Rational, AdditivelyNoncommutativeSemiring Rational, Semiring Rational, Ring Rational,
 OrderedAdditive Rational, OrderedSemiring Rational,
 FieldLike Rational
 
@@ -35622,7 +36661,9 @@ trait (Eq a, One a, Mul a) => MultiplicativeMonoid (0 a : Type) =
         forall (x : a).
         multiply x one = x
 
-trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (0 a : Type) =
+trait (AdditiveMonoid a, MultiplicativeMonoid a)
+    => AdditivelyNoncommutativeSemiring (0 a : Type) =
+
     mulLeftZero :
         forall (x : a).
         multiply zero x = zero
@@ -35638,6 +36679,9 @@ trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (0 a : Type) =
     rightDistribute :
         forall (x : a) (y : a) (z : a).
         multiply (add x y) z = add (multiply x z) (multiply y z)
+
+trait (CommutativeAdditiveMonoid a, AdditivelyNoncommutativeSemiring a)
+    => Semiring (0 a : Type)
 
 trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (0 a : Type) =
     subDefinedAlways :
@@ -35684,6 +36728,12 @@ trait (OrderedAdditive a, Semiring a) => OrderedSemiring (0 a : Type) =
 Rules:
 
 * Numeric operation traits and algebraic traits are intentionally separate contracts, not lawful/unlawful variants.
+* `Semiring` has the conventional commutative additive monoid requirement. Types satisfying the distributive and zero
+  laws without commutative addition use `AdditivelyNoncommutativeSemiring` instead; a normalizer MUST request the exact
+  law bundle it uses rather than infer commutativity from a trait name.
+* The `AdditiveMonoid a` evidence inherited through `CommutativeAdditiveMonoid a` and through
+  `AdditivelyNoncommutativeSemiring a` must be the same coherent evidence closure. A `Semiring a` instance whose
+  supertrait paths select incompatible operation dictionaries is rejected by ordinary coherence checking.
 * A type may implement `Add`, `Mul`, `CheckedDiv`, or related operation traits without implementing stronger algebraic
   traits such as `Semiring`, `Ring`, `EuclideanSemiring`, or `FieldLike`.
 * Algorithms that require algebraic laws SHOULD request the algebraic traits, not merely the operation traits.
@@ -35709,19 +36759,20 @@ Zero Double, One Double, Add Double, Mul Double, Negatable Double, CheckedSub Do
 The portable prelude MUST provide the following algebraic instances:
 
 ```text
-AdditiveMonoid Nat, MultiplicativeMonoid Nat, Semiring Nat, OrderedAdditive Nat, OrderedSemiring Nat,
-EuclideanSemiring Nat,
+AdditiveMonoid Nat, CommutativeAdditiveMonoid Nat,
+MultiplicativeMonoid Nat, AdditivelyNoncommutativeSemiring Nat, Semiring Nat,
+OrderedAdditive Nat, OrderedSemiring Nat, EuclideanSemiring Nat,
 
-AdditiveMonoid Integer, AdditiveGroup Integer,
-MultiplicativeMonoid Integer, Semiring Integer, Ring Integer,
+AdditiveMonoid Integer, CommutativeAdditiveMonoid Integer, AdditiveGroup Integer,
+MultiplicativeMonoid Integer, AdditivelyNoncommutativeSemiring Integer, Semiring Integer, Ring Integer,
 OrderedAdditive Integer, OrderedSemiring Integer,
 
-AdditiveMonoid Int, AdditiveGroup Int,
-MultiplicativeMonoid Int, Semiring Int, Ring Int,
+AdditiveMonoid Int, CommutativeAdditiveMonoid Int, AdditiveGroup Int,
+MultiplicativeMonoid Int, AdditivelyNoncommutativeSemiring Int, Semiring Int, Ring Int,
 OrderedAdditive Int, OrderedSemiring Int,
 
-AdditiveMonoid Rational, AdditiveGroup Rational,
-MultiplicativeMonoid Rational, Semiring Rational, Ring Rational,
+AdditiveMonoid Rational, CommutativeAdditiveMonoid Rational, AdditiveGroup Rational,
+MultiplicativeMonoid Rational, AdditivelyNoncommutativeSemiring Rational, Semiring Rational, Ring Rational,
 OrderedAdditive Rational, OrderedSemiring Rational,
 FieldLike Rational
 ```
@@ -38085,6 +39136,8 @@ kcoreDecl ::=
   | interfaceDecl
   | dataDecl
   | levelCertificateDecl
+  | arithmeticCertificateDecl
+  | representationCertificateDecl
   | schemaCertificateDecl
   | extensionDecl
   | genericDecl
@@ -38207,6 +39260,7 @@ term ::=
   | 'construct' globalUse '(' argumentList? ')'
   | 'project' fieldRef term
   | 'lift' '[' level '<=' level 'by' evidenceRef ']' term
+  | arithmeticProofTerm
   | schemaLiftTerm
   | 'ascribe' term ':' term
   | localRecGroup
@@ -38378,6 +39432,99 @@ KCoreText canonicalization requires:
 * two verified proofs of the same normalized theorem from the same canonical dependency set have the same semantic hash.
 ```
 
+<!-- compiler.kcore.text_format.arithmetic_certificates -->
+##### Arithmetic certificates
+
+```text
+arithmeticCertificateDecl ::=
+    'arithmetic-certificate' certificateRef universeTelescope? binder*
+    '['
+        'checkerVersion' '=' integer ','
+        'domain' '=' identifier ','
+        'domainVersion' '=' integer
+    ']'
+    ':' term constraintBlock?
+    'assuming' '{' arithmeticAssumption* '}'
+    '{' namedValue* '}'
+
+arithmeticAssumption ::=
+    integer '=' term ';'
+
+arithmeticProofTerm ::=
+    'arithmetic-proof' '['
+        'certificate' '=' certificateRef universeInstantiation? ','
+        'arguments' '=' '(' argumentList? ')' ','
+        'assumptions' '=' '(' arithmeticEvidenceList? ')'
+    ']'
+
+arithmeticEvidenceList ::=
+    term (',' term)*
+```
+
+The optional universe telescope, normalized constraint block, and ordinary binder telescope form the certificate context
+`Γ`. They scope the declared goal, every numbered assumption, and every term/proof payload entry. The declared goal must
+be a proposition accepted by the proof and h-level rules of §11.4. Each numbered assumption is a proposition in `Γ`.
+
+The `namedValue` payload is a canonical domain-specific proof trace or set of hints. Its schema is selected by
+`(domain, domainVersion)`. Unknown domains or versions are rejected.
+
+The independent checker validates the certificate under §15.8.7. In particular, it checks the recorded telescope,
+constraint block, declared goal, and assumptions directly and does not trust a claimed normal form, solver result,
+provider identity, or payload digest. Canonical serialization De Bruijn-indexes the context and includes its normalized
+constraints, so alpha-renaming does not alter certificate identity.
+
+An `arithmetic-proof` use must provide exactly the recorded universe instantiation, one explicit/implicit argument for
+every term binder, and one proof for every numbered assumption in canonical numerical order. The KCore checker verifies
+each argument and assumption proof after substitution and discharges the recorded universe constraints. The term is well
+typed exactly at the instantiated goal after the certificate has passed independent verification. It introduces no new
+definitional equality.
+
+Invalid, stale, forged, or goal-mismatched certificates are rejected with
+`E_KCORE_ARITHMETIC_CERTIFICATE_INVALID`.
+
+<!-- compiler.kcore.text_format.representation_certificates -->
+##### Representation certificates
+
+```text
+representationCertificateDecl ::=
+    'representation-certificate' certificateRef universeTelescope? binder*
+    '['
+        'checkerVersion' '=' integer ','
+        'certificateVersion' '=' integer ','
+        'kind' '=' representationCertificateKind
+    ']'
+    'for' term constraintBlock?
+    '{' namedValue* '}'
+
+representationCertificateKind ::=
+    'ordinal'
+  | 'exact-natural'
+  | 'refinement'
+```
+
+The optional universe telescope, normalized constraint block, and ordinary binder telescope form the certificate context
+`Γ`. They scope the target term and every term/proof payload entry. The term after `for` must check as `Type u` in `Γ`.
+It may be a nominal type, a fully applied family such as `Fin n`, a structural record/product/sum, or another KCore type
+admitted by the corresponding certificate checker. A certificate use instantiates the recorded telescope and discharges
+its universe constraints before the certificate may authorize a representation decision.
+
+The target's canonical context-indexed `TypeNF` hard identity is authoritative; a readable global name is optional
+presentation metadata. Canonical serialization includes the telescope and normalized constraint block and represents its
+local references by De Bruijn index, so alpha-renaming the certificate binders does not change identity.
+
+The `namedValue` payload uses the canonical schema of the corresponding certificate in §30.2.7B and §30.2.7C. Every term,
+proof, field path, constructor identity, cardinality expression, source-evidence identity, erasure summary, and backend
+restriction required by that schema is explicit. Missing required entries and unknown entries in a closed schema version
+are rejected.
+
+Canonical KCoreText emits each representation certificate before its first reference. Independent certificates at the same
+scope are ordered by canonical certificate identity.
+
+A representation certificate is not a source term and introduces no coercion or definitional equality. It is consumed
+only by interface verification, representation selection, and KBackendIR legality checking after independent
+verification. Invalid, stale, forged, wrong-type, or failed-round-trip certificates are rejected with
+`E_KCORE_REPRESENTATION_CERTIFICATE_INVALID`.
+
 <!-- compiler.kcore.text_format.schema_certificates -->
 ##### Nominal-schema certificates and lifts
 
@@ -38494,6 +39641,8 @@ Canonical KCoreText obeys all of the following:
 * within one mutually recursive SCC, declarations are ordered lexicographically by authoritative stable identity, not
   source spelling, allocation order, or hash-map iteration order;
 * level-certificate declarations precede the first declaration that references them and are ordered by certificate
+  stable identity when otherwise independent;
+* arithmetic-certificate declarations precede the first proof term that references them and are ordered by certificate
   stable identity when otherwise independent;
 * nominal universe roles appear in declaration-schema order;
 * schema-certificate declarations precede the first declaration or lift that references them;
@@ -39441,6 +40590,11 @@ Boolean branch evidence continues to use ordinary propositional equality:
 * `if b then t else f` introduces branch-local erased evidence `b = True` / `b = False`.
 * `match b` on boolean constructors behaves likewise.
 
+A GADT constructor branch accepted through `PropositionallyCompatible` under §30.2.7 additionally carries the checked
+bridge proofs as explicit erased lexical equality evidence. These proofs may be used by `subst`, §16.1.8 transport
+insertion, and implicit proof search. They are not represented as `CtorIndexEq` active-conversion facts. Only equalities
+forced directly by the constructor result through ordinary family-argument refinement enter `CtorIndexEq`.
+
 Active refinement context:
 
 A conforming implementation MUST behave as if every branch body, guard body, `impossible` check, implicit-resolution
@@ -40133,18 +41287,53 @@ Closed sums and variants:
 * Adding two `Subsingleton` arms yields `Range 0 2`.
 * Adding an exact `Finite n` arm to `Unknown` yields `Range n Unbounded`, retaining the known inhabited lower bound.
 
-Constructor-result family-argument refinement:
+Transport-aware constructor-result family-argument refinement:
 
-For a GADT-style data family, a constructor arm is reachable only if the constructor's result family arguments can be
-unified with the demanded target type using ordinary definitional equality and family-argument unification.
+For a GADT-style data family, compare a constructor result `D resultArgs` with the demanded instance `D demandedArgs`
+using the following four-way judgment:
 
-If the required unification fails, that constructor arm contributes `Empty`.
+```text
+ConstructorCompatibility ::=
+    DefinitionallyCompatible forcedEqualities
+  | PropositionallyCompatible bridgeProofs
+  | Refuted incompatibilityProof
+  | UnknownCompatibility
+```
 
-If the required unification succeeds, the constructor arm summary is the product of the summaries of its retained
-constructor fields under the branch-local family-argument equalities forced by the constructor result type.
+Rules:
+
+1. Ordinary definitional equality and family-argument unification run first. Success yields
+   `DefinitionallyCompatible` and the constructor-forced family equalities of §§10.1.3 and 17.1.2.
+2. When the remaining mismatch belongs to the required proof-producing arithmetic/index fragment, the solver may produce
+   a finite dependency-ordered bridge plan between corresponding family arguments. Every bridge proof must typecheck or
+   pass its independent arithmetic-certificate checker. In portable v1, every such bridge equality must be known
+   `IsProp`, hence runtime-erased; a proof-relevant path bridge requires an extension-supplied compatibility and lowering
+   rule and otherwise remains `UnknownCompatibility`. A valid bridge use must satisfy §§11.4.1 and 16.1.8. Success yields
+   `PropositionallyCompatible`.
+3. A supported no-confusion rule or the required arithmetic/index solver may instead produce a checked refutation of the
+   required bridge. This yields `Refuted`.
+4. Failure to unify or to find a bridge is not a refutation. If neither compatibility nor incompatibility is proved, the
+   result is `UnknownCompatibility`.
+
+Consequences:
+
+* `DefinitionallyCompatible` contributes the product of the retained constructor-field summaries under the ordinary
+  constructor-forced branch equalities.
+* `PropositionallyCompatible` keeps the arm reachable and contributes that product under explicit erased bridge evidence.
+  The bridge evidence is available to transport and proof search but does not enlarge definitional equality.
+* `Refuted` contributes `Empty`.
+* `UnknownCompatibility` contributes `Empty` only when the retained constructor fields are independently proved empty;
+  otherwise it contributes `Unknown` for exact source inhabitance. It never justifies omitting the constructor branch
+  merely because the index bridge was not solved. Exhaustiveness must retain a catch-all or another branch form that
+  supplies the missing equality evidence.
+* Exact cardinality through a propositional bridge is retained only when the bridge equality is known to be a proposition,
+  or an extension certificate proves transport proof-insensitive for that family. Otherwise the exact result widens to
+  `Unknown`, because distinct proof-relevant transports are not silently collapsed.
+* Optional solver domains may change this judgment for source acceptance only under their explicit owning feature gate.
 
 For `RuntimeShape` and `Optimization`, compile-time-only fields, quantity-`0` fields, runtime-erased proof fields, and
-erased compile-time-only family arguments are removed before this product is computed.
+erased compile-time-only family arguments are removed before the product is computed. Runtime erasure does not turn
+`UnknownCompatibility` into `Refuted`.
 
 Proof-classification evidence:
 
@@ -40173,6 +41362,27 @@ For a propositional equality type `x = y`, where `x : A` and `y : A`:
 * if `x` and `y` are definitionally equal but no proposition or set evidence is available for the equality type, the
   required summary is `Unknown`;
 * otherwise the required summary is `Unknown`.
+
+Arithmetic propositions and canonical indexed refinements:
+
+Required arithmetic proposition strengthening:
+
+* if the required portable arithmetic service of §15.8 produces a checked refutation of an equality or Boolean
+  proposition, its source summary is `Empty`;
+* if it produces a checked inhabitant and `IsProp` evidence is available for the proposition, its source summary is
+  `Contractible`;
+* `IsProp` without an inhabitant remains `Subsingleton`, not `Contractible`; and
+* optional arithmetic solvers do not affect portable source reachability unless their owning feature gate permits that
+  consequence and they return checked evidence.
+
+Canonical indexed refinements:
+
+* `Fin 0` is `Empty`;
+* `Fin 1` is `Contractible`;
+* a closed `Fin n` for `n >= 2` is `Finite n`; and
+* `Refined A P` is analyzed fiberwise only when the required arithmetic or finite-domain fragment can establish the
+  relevant predicate inhabitants or refutations. An erased or proposition-classified proof field is never assumed
+  inhabited merely because it has no runtime storage.
 
 Supported no-confusion rules:
 
@@ -40279,7 +41489,7 @@ Additional restriction:
 Source-acceptance stability:
 
 * Acceptance of `match` exhaustiveness and `impossible` branches MUST NOT rely on any strengthening rule beyond the
-  required structural fragment.
+  required structural fragment and the required portable proof-producing arithmetic fragment of §15.8.
 * Only exact `Empty` may justify accepting `impossible`, `case impossible`, or omitting a branch as unreachable.
 * `Subsingleton` MUST NOT justify unreachable-code acceptance.
 * `Contractible` may justify unique-hole suggestions and singleton completion, but it MUST NOT by itself solve an
@@ -40294,6 +41504,240 @@ Source-acceptance stability:
   proof irrelevance, or accepted source programs.
 * Optional strengthening rules MAY affect diagnostics, completion, optimization, and code generation, but they MUST
   remain conservative.
+
+<!-- compiler.kcore.symbolic_cardinality -->
+#### 30.2.7A Symbolic cardinality summaries
+
+The concrete `InhabitanceSummary` above is retained for reachability and bounded implementation decisions. KCore also
+exposes a companion symbolic-cardinality query for indexed finite families.
+
+```text
+CardExpr Γ ::=
+    CardLiteral nat
+  | CardIndex natTerm
+  | CardAdd (CardExpr Γ) (CardExpr Γ)
+  | CardMul (CardExpr Γ) (CardExpr Γ)
+  | CardPowLiteral (CardExpr Γ) nat
+  | CardGuardedSub (CardExpr Γ) (CardExpr Γ)
+  | CardIf arithmeticConstraint (CardExpr Γ) (CardExpr Γ)
+
+CardUpper Γ ::=
+    FiniteCardinality (CardExpr Γ)
+  | UnboundedCardinality
+
+SymbolicCardinalitySummary Γ ::=
+    NoSymbolicCardinality
+  | ExactCardinality (CardExpr Γ)
+  | SymbolicBounds {
+        minCount : CardExpr Γ,
+        maxCount : CardUpper Γ
+    }
+```
+
+`CardIndex t` is admitted only when `t : Nat` is total, stable in `Γ`, and belongs to the arithmetic language of §15.8.
+`CardGuardedSub a b` denotes exact natural subtraction under the guard `b <= a`; outside that guard it is used only
+beneath a `CardIf` that supplies the empty alternative.
+
+Cardinality expressions are canonicalized by the required arithmetic service. They are scope-indexed KCore analysis
+objects, not ordinary runtime terms and not source equality proofs.
+
+Required exact symbolic results include the following equations. This block uses readable mathematical shorthand;
+canonical query output uses the `CardExpr` constructors above.
+
+```text
+cardinality (Fin n)
+    = ExactCardinality n
+
+cardinality (Refined Nat (\x -> (contains (lo .. hi) x) = True))
+    = ExactCardinality (
+          if lo <= hi
+          then hi - lo + 1
+          else 0)
+
+cardinality (A, B)
+    = cardinality A * cardinality B
+
+cardinality (Variant [A, B])
+    = cardinality A + cardinality B
+```
+
+The product and sum equations apply when the component symbolic cardinalities are exact and their dependency conditions
+are supported by the required query fragment.
+
+Projection to concrete inhabitance:
+
+* if the arithmetic context proves an exact cardinality is `0`, the concrete summary is `Empty`;
+* if it proves `1`, the concrete summary is `Contractible`;
+* if it proves a concrete `n >= 2`, the summary is `Finite n`;
+* if it proves only lower or upper bounds, those bounds may strengthen the concrete `Bounds` result; and
+* otherwise the concrete result remains conservative, even though an exact symbolic expression is retained.
+
+`Fin 0` MUST project to `Empty`. `Fin 1` MUST project to `Contractible`. `Fin k` for a closed literal `k >= 2` MUST
+project to `Finite k`.
+
+For a dependent product containing an erased proof field, `IsProp P` alone does not establish a cardinality contribution
+of `1`. The query must first prove that `P` is inhabited. Once an inhabitant and `IsProp P` are available, that fiber
+contributes exactly one source inhabitant and no runtime field after erasure.
+
+Optional symbolic strengthening must remain deterministic, bounded, and sound. Failure widens the result; it does not
+invent a finite expression.
+
+<!-- compiler.kcore.ordinal_representation_certificates -->
+#### 30.2.7B Ordinal-representation certificates
+
+Exact cardinality alone does not provide an encoding. Dense representation selection requires a checked
+**ordinal-representation certificate**.
+
+For `T : Type` and `n : Nat`, the source-level law bundle is:
+
+```kappa
+OrdinalRepresentation n T
+```
+
+with `rank`, `unrank`, and both round-trip laws from §28.2.
+
+The compiler certificate additionally records:
+
+```text
+OrdinalRepresentationCertificate =
+    (representedType       : KCoreTerm,
+     typeIdentity          : HardIdentity,
+     sourceEvidenceIdentity: Option HardIdentity,
+     cardinalityExpression: CardExpr Γ,
+     rankTerm              : KCoreTerm,
+     unrankTerm            : KCoreTerm,
+     unrankRankProof       : KCoreProofOrArithmeticCertificate,
+     rankUnrankProof       : KCoreProofOrArithmeticCertificate,
+     constructorEncoding   : List ConstructorOrdinalEncoding,
+     eliminatorSimulation  : EliminatorSimulationSummary,
+     erasureView           : ErasureSummary,
+     profileRestrictions   : List BackendProfileRestriction,
+     certificateVersion    : Nat,
+     checkerVersion        : Nat)
+```
+
+`HardIdentity` in these certificates is the canonical domain-separated identity of the recorded contextual KCore type
+`Γ ⊢ T` in the `KAPPA:v1:TypeNF` domain. The canonical serialization includes `Γ`, its normalized universe constraints,
+and De Bruijn-indexes its local binders. It therefore applies equally to open or closed, nominal or structural types; it
+is not merely a declaration ID.
+
+A source-evidence identity is the canonical identity of the fully instantiated evidence in the
+`KAPPA:v1:TraitEvidence` domain, interpreted in the same context `Γ`. It is not merely the semantic ID of an instance or
+trait declaration. This distinction is required for open instances, local evidence binders, and separately compiled
+generic evidence used by representation selection.
+
+The independent checker verifies:
+
+* when `sourceEvidenceIdentity` is present, the selected source `OrdinalRepresentation n T` evidence and both round-trip
+  laws;
+* otherwise, the directly recorded `rankTerm`, `unrankTerm`, and round-trip proofs as a compiler-generated internal law
+  bundle that is not silently published to ordinary instance search;
+* agreement between `n` and the symbolic-cardinality expression;
+* totality of `rank` and `unrank`;
+* preservation of visible constructor construction, pattern elimination, equality, ordering when declared, and all
+  surviving runtime observations;
+* consistency with erased fields and erased indices;
+* opacity, dynamic representation, ABI, bridge, and FFI restrictions; and
+* every backend-profile restriction recorded by the certificate.
+
+An ordinary handwritten `OrdinalRepresentation n T` instance is useful source evidence but does not by itself authorize
+layout substitution. Layout substitution requires this compiler-verified certificate. Conversely, a compiler-generated
+certificate for a structural finite type does not by itself add a globally searchable `OrdinalRepresentation` instance;
+source instance publication occurs only where the standard library or an explicit `instance`/future derive rule requests
+it.
+
+Required compiler-derived certificates exist for:
+
+* `Fin n` with rank `i.value`;
+* a closed finite nullary-constructor data type;
+* finite sums with constructor-offset encoding;
+* finite products with mixed-radix encoding;
+* an inclusive exact numeric range, using `value - lo` and `lo + ordinal`; and
+* a `Refined A P` over a verified finite ordinal base when `P` has a total transparent decision procedure whose
+  applications normalize for the enumerated inhabitants and complete filtering remains within the required finite-domain
+  threshold of §15.8.4.
+
+For products and sums, the checker uses exact unbounded cardinality arithmetic. It never wraps an ordinal count.
+
+A certificate is an optimization and representation witness. It does not make `T` definitionally equal to `Fin n`, does
+not introduce source-level coercions except through an explicit `RefinementView`, and does not change source inhabitance.
+
+<!-- compiler.kcore.exact_natural_refinement_representation_certificates -->
+#### 30.2.7C Exact-natural and refinement-representation certificates
+
+`ExactNaturalRepresentation T` and `RefinementView T` are source evidence. Runtime representation substitution additionally
+requires the following independently checked certificates.
+
+```text
+ExactNaturalRepresentationCertificate =
+    (representedType       : KCoreTerm,
+     typeIdentity          : HardIdentity,
+     evidenceIdentity      : HardIdentity,
+     zeroConstructor       : SemanticObjectId,
+     successorConstructor  : SemanticObjectId,
+     recursiveField        : ConstructorFieldPath,
+     toNatTerm             : KCoreTerm,
+     fromNatTerm           : KCoreTerm,
+     toNatFromNatProof     : KCoreProofOrArithmeticCertificate,
+     fromNatToNatProof     : KCoreProofOrArithmeticCertificate,
+     constructorSimulation : ConstructorSimulationSummary,
+     eliminatorSimulation  : EliminatorSimulationSummary,
+     erasureView           : ErasureSummary,
+     profileRestrictions   : List BackendProfileRestriction,
+     certificateVersion    : Nat,
+     checkerVersion        : Nat)
+
+RefinementRepresentationCertificate =
+    (representedType        : KCoreTerm,
+     typeIdentity           : HardIdentity,
+     refinementViewEvidenceIdentity : HardIdentity,
+     baseType                : KCoreTerm,
+     baseTypeIdentity        : HardIdentity,
+     baseProjection          : KCoreTerm,
+     refineConstructor      : KCoreTerm,
+     retainedBaseField      : ConstructorFieldPath,
+     erasedEvidenceFields   : List ConstructorFieldPath,
+     valueAfterRefineProof  : KCoreProofOrArithmeticCertificate,
+     refineAfterValueProof  : KCoreProofOrArithmeticCertificate,
+     eliminatorSimulation   : EliminatorSimulationSummary,
+     erasureView            : ErasureSummary,
+     profileRestrictions    : List BackendProfileRestriction,
+     certificateVersion     : Nat,
+     checkerVersion         : Nat)
+```
+
+The `evidenceIdentity` and `refinementViewEvidenceIdentity` fields use the canonical fully instantiated
+`KAPPA:v1:TraitEvidence` identity in the certificate context, not a declaration ID.
+
+The exact-natural checker verifies:
+
+* the visible declaration has exactly the certified zero and successor constructors after ordinary constructor and
+  no-confusion checking;
+* the successor constructor has exactly one retained strict recursive field and no other retained runtime payload;
+* `toNat` and `fromNat` are total structural maps and their round-trip proofs check;
+* zero maps to `Nat.Zero`, successor maps to `Nat.Succ`, and visible pattern elimination is simulated exactly;
+* erased fields, opacity, dynamic representation, ABI, FFI, bridge, and backend-profile restrictions are respected; and
+* the certificate contains no source-spelling or unverified layout assumption.
+
+For the canonical `Nat`, `toNat` and `fromNat` are identity maps. A different unary-natural type remains nominally and
+propositionally distinct from `Nat` unless ordinary source proofs explicitly relate them.
+
+The refinement checker verifies:
+
+* the referenced coherent `RefinementView T` evidence, its per-value `IsProp` evidence, and both round-trip laws;
+* that after mandatory erasure exactly one retained base field determines every surviving runtime observation;
+* that constructor application, projection, pattern elimination, copying, movement, and destruction are simulated by the
+  base representation without fabricating or inspecting erased evidence; and
+* all opacity, dynamic representation, reflection, ABI, FFI, bridge, and backend-profile restrictions.
+
+A source `RefinementView` instance without a valid refinement certificate still supports the elaboration rules of
+§16.1.9; it simply does not authorize wrapper elimination. A source `ExactNaturalRepresentation` evidence value cannot be
+hand-constructed because the trait is intrinsic, and its derivation is accepted only together with a valid exact-natural
+certificate.
+
+Certificate identities and checker versions participate in interface identity and backend fingerprints. Corrupt, stale,
+wrong-type, wrong-field, failed-round-trip, or profile-incompatible certificates are rejected at the earliest interface,
+KCore, or KBackendIR checkpoint that consumes them with `E_KCORE_REPRESENTATION_CERTIFICATE_INVALID`.
 
 <!-- compiler.kcore.inhabitant_enumeration -->
 #### 30.2.8 Finite inhabitant enumeration
@@ -42520,6 +43964,12 @@ SemanticCertificateSummary =
      visibilityOpacityMetadata  : VisibilityOpacitySummary,
      transparentReductionFacts  : List TransparentReductionFact,
      terminationCertificates    : List TerminationCertificateSummary,
+     arithmeticCertificates     : List ArithmeticCertificateSummary,
+     proofNormalizationProviders: List ProofNormalizationProviderArtifact,
+     noConfusionMetadata        : List VisibleNoConfusionSummary,
+     ordinalRepresentations     : List OrdinalRepresentationCertificateSummary,
+     exactNaturalRepresentations: List ExactNaturalRepresentationCertificateSummary,
+     refinementRepresentations  : List RefinementRepresentationCertificateSummary,
      instanceCoherenceArtifacts : List InstanceCoherenceArtifactIdentity,
      associatedNormalization    : List AssociatedNormalizationSummary,
      projectionAccessorMetadata : List ProjectionAccessorSummary,
@@ -42528,6 +43978,14 @@ SemanticCertificateSummary =
      featureGateProvenance      : List FeatureGateProvenance,
      unsafeDebugLedgerSummary   : Option UnsafeDebugAuditLedgerSummary)
 ```
+
+Arithmetic certificates and proof-normalization provider artifacts are imported only after their identities, versions,
+operation/law semantic identities, and checker compatibility have been validated. Downstream compilation does not trust a
+provider or certificate merely because it came from the standard library or from the same compiler executable.
+
+No-confusion metadata in an interface includes only constructors visible through that interface. Ordinal, exact-natural,
+and refinement-representation certificates may be retained for opaque types only when they expose no hidden constructor
+structure and their backend use preserves the opacity and boundary restrictions of §30.2.7B and §30.2.7C.
 
 Every exported nominal signature block MUST additionally record:
 
@@ -42587,6 +44045,8 @@ Term and transparent type declarations have no `NominalUniverseRoles` unless the
 
 `ProofClassificationSummary` records only interface-visible proof-classification facts, such as `IsProp`, `IsSet`,
 `RuntimeErased`, trait-evidence subsingleton facts, or intrinsic solver facts that downstream compilation may rely on.
+Visible no-confusion summaries, arithmetic-certificate identities, and derived h-level evidence are recorded separately
+from `ProofClassificationSummary`; a mere analysis result is not serialized as if it were a source proof.
 It MUST NOT assert UIP, proof irrelevance, or runtime erasure for arbitrary equality types unless the corresponding
 evidence is present in the interface.
 
@@ -44146,6 +45606,95 @@ inhabited, or uninhabited.
 If optional strengthening was used to choose a representation or calling convention, the relevant strengthening mode,
 bounds, and query dependencies MUST participate in the backend fingerprint for the affected KBackendIR unit.
 
+<!-- compiler.kbackendir.required_numeric_refinement_representations -->
+#### 34.3.2A Required `Nat`, `Fin`, refinement, and finite-ordinal representation contracts
+
+Source-level inductive structure and runtime representation are separate.
+
+<!-- compiler.kbackendir.required_numeric_refinement_representations.exact_natural -->
+##### Exact natural representation
+
+Every runnable backend MUST represent the canonical `Nat` with an `ExactNatural` representation class satisfying:
+
+* every mathematical natural number is represented exactly;
+* storage for a value is asymptotically proportional to its binary magnitude, not to its unary `Succ` depth;
+* zero test, successor, predecessor on positive values, comparison, addition, multiplication, checked subtraction,
+  division, and modulo preserve the exact source semantics of §28.2;
+* construction and pattern matching on `Nat.Zero` / `Nat.Succ` are observationally equivalent to zero testing and exact
+  predecessor extraction;
+* structural recursion accepted over `Nat` is lowered stack-safely whenever the target's ordinary call stack would be
+  insufficient; and
+* the concrete bit layout, small-value cutoff, limb width, host class, and allocation strategy are backend-defined and
+  not observable through ordinary Kappa semantics.
+
+A backend may use one uniform arbitrary-precision representation, immediate small values plus heap big values, a host
+arbitrary-precision integer, or another exact representation. It MUST NOT represent an ordinary `Nat` value as one
+allocated successor node per numeric unit.
+
+Failure to provide this contract is a backend rejection using `E_BACKEND_REQUIRED_REPRESENTATION_MISSING`.
+
+A type accepted by `derive ExactNaturalRepresentation T` receives the same requirement for that backend and type. Its
+verified `ExactNaturalRepresentationCertificate` maps the visible zero/successor constructors and eliminator to the
+exact-natural representation.
+
+<!-- compiler.kbackendir.required_numeric_refinement_representations.fin_refined -->
+##### `Fin` and `Refined`
+
+For `Fin n`:
+
+* the bound proof has no runtime field;
+* the runtime value is represented by the selected exact-natural or finite-ordinal representation of `value`;
+* `Fin n` and `Nat` remain distinct source types even when they share a runtime representation;
+* no runtime proof object or proof branch is fabricated; and
+* dynamic, ABI, bridge, or FFI boundaries retain whatever nominal witness or checked boundary contract those facilities
+  require.
+
+For `Refined A P` and a nominal type with a verified `RefinementRepresentationCertificate`:
+
+* proposition synthesis remains a frontend obligation;
+* a quantity-`0` proof field has no runtime storage;
+* the default runtime representation is the selected representation of the base value when the active profile permits
+  wrapper elimination; and
+* a backend may retain a nominal wrapper when required by host object models, separate compilation, dynamic
+  representation, reflection, exported ABI, bridge identity, opacity, or another explicit boundary contract.
+
+The absence of a wrapper optimization never changes source typing. The presence of the optimization never introduces
+source definitional equality.
+
+<!-- compiler.kbackendir.required_numeric_refinement_representations.finite_ordinal -->
+##### Finite ordinal representation by profile
+
+A backend may select `FiniteOrdinal n` only from a verified certificate of §30.2.7B.
+
+If the backend advertises `rt-compact-finite-ordinal`, then for internal non-boundary values with a closed exact
+cardinality it MUST select a documented compact scalar class capable of representing all `n` ordinals. "Compact" is
+relative to the backend's advertised representation classes; it does not require a JVM, CLR, or Python standalone value
+to occupy a literal minimum number of bytes.
+
+If the backend advertises `rt-packed-finite-fields`, certified finite ordinal values stored in eligible arrays or closed
+record/data fields MUST use the smallest documented packed lane that can represent the cardinality, subject to alignment,
+atomicity, vectorization, and ABI restrictions recorded by the profile.
+
+The standard native `zig` profile, and any implementation-defined native profile claiming the same full
+internal-layout conformance class, MUST advertise `rt-compact-finite-ordinal`, `rt-packed-finite-fields`, and
+`rt-unboxed-refinement`.
+
+Managed JVM, managed CLR, Python, JavaScript, and WebAssembly profiles:
+
+* MUST provide exact non-unary `Nat`;
+* MUST erase `Fin` and quantity-`0` refinement proofs;
+* SHOULD specialize `Fin` and `Refined` to their base representation in internal code when the host object model and
+  boundary contracts permit;
+* MAY retain a nominal object or host-word representation for standalone finite values; and
+* are required to choose compact general finite-ordinal layouts only when they advertise the corresponding capability.
+
+A representation decision MUST be recorded in KBackendIR and its backend fingerprint. It must identify the source type,
+base representation, certificate identity when any, profile restriction, boundary restrictions, and whether wrapper or
+proof storage was eliminated.
+
+Cardinality without an ordinal-representation certificate may guide diagnostics and broad layout planning, but it MUST
+NOT by itself justify rank/unrank conversion or dense encoding.
+
 <!-- compiler.kbackendir.lowering_legality_checkpoints -->
 #### 34.3.3 Lowering legality checkpoints
 
@@ -44169,8 +45718,13 @@ At or before publication of KBackendIR, the implementation MUST validate that:
 * any internal multi-return or join-point lowering of `Completion`, `Match`, projection/projector-elimination control,
   or implementation-generated boolean / constructor-refinement / case-split control satisfies §34.3.11;
 * data, variant, and record layout choices are fixed consistently with §§31.3-31.4;
+* every reachable canonical `Nat` uses an `ExactNatural` representation satisfying §34.3.2A;
+* every selected finite-ordinal layout has a verified ordinal-representation certificate and advertised backend
+  capability;
+* every selected exact-natural or refinement wrapper substitution has the corresponding verified certificate;
+* no erased `Fin` or refinement proof survives as a runtime field;
 * retained dictionaries and backend intrinsics have concrete runtime representations, or else compilation is rejected
-  before target lowering;
+  before target lowering; and
 * the compiled roots and exported runtime entrypoints are explicit.
 
 Failure of any of these checks is a compile-time error.
@@ -52385,6 +53939,9 @@ Portable capability names are:
 * `pipelineTrace`
 * `incremental`
 * `runTask`
+* `arithmeticCertificates`
+* `symbolicCardinality`
+* `representationQueries`
 
 Additional capability names are implementation-defined.
 
@@ -52553,6 +54110,14 @@ assertSchemaLiftPresent <qualified-declaration>
 assertSchemaCertificateValid <qualified-declaration>
 assertInterfaceContainsUniverseRoles <qualified-declaration> <role-list>
 assertSemanticHashDiffersFrom <artifact-or-target>
+assertArithmeticCertificatesValid
+assertInhabitance <purpose> <summary> for <typeExpr>
+assertSymbolicCardinality <cardExpr> for <typeExpr>
+assertOrdinalRepresentation <cardExpr> for <typeExpr>
+assertExactNaturalRepresentation for <typeExpr>
+assertRefinementRepresentation <baseTypeExpr> for <typeExpr>
+assertRepresentationClass <qualifiedName> <representationClass>
+assertRuntimeFieldAbsent <qualifiedName> <fieldName>
 assertLevelNormalForm <levelExpr> equals <levelExpr>
 assertLevelEntails <comparisonExpr>
 assertLevelDoesNotEntail <comparisonExpr>
@@ -52647,6 +54212,30 @@ Universe-variance assertions:
 * `assertRecursiveSchemaEdge` inspects verified KCore and checks the canonical recursive edge classification.
 * `assertSelectedEvidence` checks the evidence selected by ordinary implicit resolution for the normalized goal. It does
   not perform a second search during assertion evaluation.
+
+Arithmetic, inhabitance, and representation assertions:
+
+* `assertArithmeticCertificatesValid` independently verifies every arithmetic certificate reachable from the suite's
+  final KCore artifact. It requires capability `arithmeticCertificates`.
+* `assertInhabitance purpose summary for typeExpr` queries the concrete inhabitance summary under one of
+  `SourceReachability`, `Completion`, `RuntimeShape`, or `Optimization`. `summary` uses the canonical spellings
+  `Empty`, `Subsingleton`, `Contractible`, `Finite(n)`, `Range(lo,hi)`, `AtLeast(lo)`, or `Unknown`.
+* `assertSymbolicCardinality cardExpr for typeExpr` compares the canonical symbolic-cardinality expression of
+  §30.2.7A. It requires capability `symbolicCardinality`.
+* `assertOrdinalRepresentation cardExpr for typeExpr` requires a verified ordinal-representation certificate whose
+  canonical cardinality expression equals `cardExpr`.
+* `assertExactNaturalRepresentation for typeExpr` requires a verified exact-natural representation certificate under
+  §30.2.7C.
+* `assertRefinementRepresentation baseTypeExpr for typeExpr` requires a verified refinement-representation certificate
+  whose recorded base type is definitionally equal to `baseTypeExpr`.
+* `assertRepresentationClass qualifiedName representationClass` queries final verified KBackendIR for the selected
+  declaration, field, or generated value subject. It requires `mode compile` or `mode run`, a selected backend, and
+  capability `representationQueries`.
+* `assertRuntimeFieldAbsent qualifiedName fieldName` succeeds iff the named source field has no runtime storage in final
+  verified KBackendIR for that subject. It does not merely check that later dead-code elimination removed all uses.
+
+`cardExpr` and `representationClass` use the canonical machine-readable rendering exposed by the corresponding query.
+A test that depends on an optional backend representation capability must declare it with `requires capability ...`.
 
 Future-extension test suites may use capability requirements:
 

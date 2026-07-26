@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole FixedPhantom 0 invariant
+
+data FixedPhantom.{invariant u} : Type0 =
+    FixedPhantom

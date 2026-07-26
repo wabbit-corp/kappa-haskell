@@ -1,0 +1,6 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data Bad : Type0 =
+    Bad (ordinary 0 A : Type0)

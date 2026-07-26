@@ -1,10 +1,13 @@
--- §17.1.4 (L22027-22030): a branch body `impossible` is accepted ONLY via
--- definitional equality, family-argument unification, or the §30.2.7
--- structural inhabitance rules. Pattern-order overlap is not on that list:
--- an arm that is dead solely because a preceding wildcard shadows it is NOT
--- provably unreachable by the admissible proof methods, so claiming
--- `impossible` there is a compile-time error (family kappa.pattern.unreachable
--- per §3.2.10 covers branches "incorrectly claimed unreachable").
+-- §17.1.4: a branch body `impossible` is accepted ONLY via the closed
+-- four-item list — definitional equality, family-argument unification,
+-- the required structural inhabitance rules of §30.2.7, and the
+-- required portable arithmetic/proof fragment of §15.8 "when the
+-- contradiction is arithmetic or lies in a refined proof fiber".
+-- Pattern-order overlap is not on that list: an arm that is dead solely
+-- because a preceding wildcard shadows it is NOT provably unreachable
+-- by the admissible proof methods, so claiming `impossible` there is a
+-- compile-time error (family kappa.pattern.unreachable per §3.2.10
+-- covers branches "incorrectly claimed unreachable").
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnostic error E_IMPOSSIBLE_REACHABLE

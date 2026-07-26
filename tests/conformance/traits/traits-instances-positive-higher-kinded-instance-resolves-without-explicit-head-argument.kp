@@ -1,6 +1,6 @@
 module main
 
-trait IxPure (f : Type -> Type -> Type) =
+trait IxPure (f : (tag : Type) -> (a : Type) -> Type) =
     ixPure : a -> f tag a
 
 data Dummy tag a : Type =

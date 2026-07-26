@@ -1,0 +1,70 @@
+-- finCases (Spec 28.2) covers Fin (n + 1) with exactly one zero case
+-- and one successor case; evaluating every inhabitant of Fin 3 shows
+-- each value selects exactly one branch. The demanded bound Fin 3
+-- meets the eliminator's Fin (natAdd n 1) through the principal
+-- solution n := 2 (Spec 15.8.6).
+describeThree :
+    Fin 3 ->
+    Nat
+
+let describeThree i =
+    finCases 10 (\j -> finCases 20 (\k -> 30) j) i
+
+caseAtZero :
+    Nat
+
+let caseAtZero =
+    describeThree finZero
+
+caseAtOne :
+    Nat
+
+let caseAtOne =
+    describeThree (finSucc finZero)
+
+caseAtTwo :
+    Nat
+
+let caseAtTwo =
+    describeThree (finSucc (finSucc finZero))
+
+-- finInduction's zero case is polymorphic in every positive bound
+-- (forall (k : Nat). motive (natAdd k 1) finZero, Spec 28.2), so one
+-- zero case covers value zero of Fin 1 and of Fin 5 alike, and the
+-- step case rebuilds the ordinal value of any inhabitant.
+ordinalOf :
+    (n : Nat) ->
+    Fin n ->
+    Nat
+
+let ordinalOf n i =
+    (finInduction
+        (\ (@0 k : Nat) -> 0)
+        (\ (@0 k : Nat) (@0 j : Fin k) (rec : Nat) -> natAdd rec 1)
+        i)
+
+zeroAtBoundOne :
+    Nat
+
+let zeroAtBoundOne =
+    ordinalOf 1 finZero
+
+zeroAtBoundFive :
+    Nat
+
+let zeroAtBoundFive =
+    ordinalOf 5 finZero
+
+secondOfThree :
+    Nat
+
+let secondOfThree =
+    ordinalOf 3 (finSucc (finSucc finZero))
+
+--! assertNoErrors
+--! assertEval caseAtZero 10
+--! assertEval caseAtOne 20
+--! assertEval caseAtTwo 30
+--! assertEval zeroAtBoundOne 0
+--! assertEval zeroAtBoundFive 0
+--! assertEval secondOfThree 2

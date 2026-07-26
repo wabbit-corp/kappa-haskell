@@ -1,0 +1,22 @@
+-- A symbolic inequality inferred for a local recursive declaration is
+-- published as an implicit erased member contract. The final SCC replay must
+-- make that proof available to recursive calls as well as later uses.
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+result : Bool
+let result =
+    block
+        local.{u, v} : (A : Type u) -> A -> A
+        let local.{u, v} A value =
+            block
+                let widened : Type v = A
+                if True then value else local A value
+        local.{0, 1} Bool True

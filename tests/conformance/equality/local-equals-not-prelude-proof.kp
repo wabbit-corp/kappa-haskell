@@ -9,7 +9,7 @@ module main
 
 data (=) (@0 a : Type) (x : a) (y : a) : Type
 
-needsLocalEq : (@_ : (=) Integer 1 1) -> Integer
+needsLocalEq : (@_ : (=) @Integer 1 1) -> Integer
 let needsLocalEq = 42
 
 useIt : Integer

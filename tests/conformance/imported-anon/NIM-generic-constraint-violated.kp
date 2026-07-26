@@ -36,7 +36,7 @@ instance Show Bool =
         case False -> "false"
 
 -- POSITIVE: function requiring Show — accepted for Int and String.
-printValue : forall a. (@_ : Show a) -> a -> String
+printValue : forall (a : Type). (@_ : Show a) -> a -> String
 let printValue x = show x
 
 printInt : String
@@ -46,7 +46,7 @@ printStr : String
 let printStr = printValue "hello"
 
 -- POSITIVE: two-constraint function — both Eq and Show required.
-showIfEqual : forall a. (@_ : Eq a) -> (@_ : Show a) -> a -> a -> String
+showIfEqual : forall (a : Type). (@_ : Eq a) -> (@_ : Show a) -> a -> a -> String
 let showIfEqual x y =
     match x == y
     case True  -> "equal: " ++ show x

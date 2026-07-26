@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole (=) 0 irrelevant
+--! assertSchemaLiftPresent (=)
+
+reuse :
+    (A : Type0) ->
+    (x : A) ->
+    (y : A) ->
+    ((=).{0} @A x y) ->
+    ((=).{3} @A x y)
+let reuse A x y p = p

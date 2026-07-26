@@ -1,0 +1,12 @@
+module main
+
+import lib as L
+
+answer : Int
+let answer = L.identity.{0} Int 42
+
+boxed : L.Box.{0} Int
+let boxed = L.Box.{0} 42
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,15 @@
+-- §11.1.2.3A.1: a written local schema is complete. The bare universe
+-- introduced for B may not be silently minimized to zero.
+module main
+
+bad : Bool
+let bad =
+    let local.{u} (A : Type u) (B : Type) (x : A) = x
+    local.{0} Bool String True
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_NO_PRINCIPAL_SOLUTION
+--! assertDiagnosticFamily error kappa.universe.no-principal-solution
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/explicitUniverseSchema true
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/kind universe-no-principal-solution

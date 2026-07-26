@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+type AnyWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)
+
+copy : AnyWitness -> AnyWitness
+let copy p =
+    (level = p.level, T = p.T)

@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses lift.kcore
+--! assertKCoreRoundTrips lift.kcore

@@ -2,16 +2,30 @@
 --! assertNoErrors
 --! assertEval hi 2
 --! assertEval lo 1
+--! assertEval natHi 2
+--! assertEval natLo 1
+--! assertEval mag 3
+--! assertEval mid 2
 
--- DX expectation, not (directly) spec-required: `min`/`max` usable on
--- ordinary ordered types.  §28.2.1 declares a Max trait (member `max`,
--- Spec L35075) but the only instance the spec requires is Max TypeLevel
--- (L34939) — nothing gives Integer a max, and `min` appears nowhere in
--- the spec at all.  Every mainstream prelude ships binary min/max for
--- Ord-comparable values, and Kappa already has Ord Integer, so users
--- reasonably write `max 1 2` on day one.  (The missing trait/name
--- resolution itself is pinned as spec coverage in
--- spec-coverage/combo-2026-07-23/prelude-successor-max-trait-surface.kp.)
+-- SPEC-INTERNAL GAP (upgraded 2026-07-25 from a pure DX ask): `min`/`max`
+-- usable on ordinary ordered types.  §28.2.1 declares a Max trait (member
+-- `max`) but the only required instance is Max TypeLevel, no term-level
+-- `min`/`max` is exported, and §28.2.3's MUST-provide lists add none —
+-- "For ordinary ordered types, a library may define `max` from `Ord`".
+-- BUT the Nat/Fin revision's §15.8.4 makes "min, max, clamp, and absolute
+-- value over admitted exact integer domains" a REQUIRED portable solver
+-- domain, and §15.8.1 says "For standard Nat, Integer, and Int, the
+-- canonical operation identities are those exported by std.prelude" — so
+-- the spec now mandates solver reasoning over operations the prelude is
+-- not required to export, making the required domain unreachable from
+-- portable source.  §15.8.4's minimum termination obligation
+-- `max 0 (n - 1) < max 0 n` under `0 < n` has the same problem.  Every
+-- mainstream prelude ships binary min/max for Ord-comparable values, and
+-- Kappa already has Ord Integer (and now a required Ord Nat), so users
+-- reasonably write `max 1 2` on day one.  (The trait surface itself is
+-- pinned in spec-coverage/prelude/prelude-successor-max-trait-surface.kp,
+-- which covers only the trait declarations, not the §15.8.4 domain
+-- requirement.)
 --
 -- What currently happens: E_NAME_UNRESOLVED for both names, with
 -- actively misleading fix-its — "did you mean 'map'?" for max and
@@ -25,4 +39,33 @@ let hi = max 1 2
 
 lo : Integer
 let lo = min 1 2
+
+-- Nat has a required Ord Nat (§28.2.3), so the same names should work
+-- there too.
+natHi : Nat
+let natHi = max 1 2
+
+natLo : Nat
+let natLo = min 1 2
+
+-- The other two operations §15.8.4 names as required solver domains.
+mag : Integer
+let mag = abs (negate 3)
+
+-- clamp argument order is unspecified; the all-equal probe is
+-- order-insensitive.
+mid : Integer
+let mid = clamp 2 2 2
+
+-- Solver-facing companion: the required §15.8.4 piecewise-linear domain
+-- must discharge min/max obligations through §16.3.3 step 4 regardless
+-- of the prelude-name question.
+needsMinLe : (a : Integer) -> (b : Integer) -> (@0 p : (min a b <= a) = True) -> Integer
+let needsMinLe a b = a
+
+useNeedsMinLe : Integer -> Integer -> Integer
+let useNeedsMinLe a b = needsMinLe a b
 -- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x2: neither min nor max exists for ordinary types; fix-its suggest map/sin
+-- (Recorded against the pre-revision file shape — Integer max/min only;
+-- the Nat/abs/clamp/solver probes were added 2026-07-25 and have not
+-- been run on a0497523.)

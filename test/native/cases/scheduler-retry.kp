@@ -9,6 +9,8 @@
 -- This requires two concurrently-runnable fibers where one unblocks the other.
 module main
 
+import std.prelude.(type Exit(..))
+
 producer : TVar Int -> UIO Unit
 let producer tv = do
     atomically (writeTVar tv 42)

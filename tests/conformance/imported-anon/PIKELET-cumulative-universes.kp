@@ -43,6 +43,6 @@ let shrinking = Type1
 selfClassify : Type1
 let selfClassify = Type1
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.universe.constraint
 
 --! assertErrorCount 2

@@ -1,0 +1,13 @@
+module main
+
+-- Recovery is per constructor alternative: the malformed universe suffix on
+-- B must not delete the already parsed A or the following C.
+data D : Type =
+    A
+    B.{u,}
+    C
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! x-assertDataConstructors D A, C

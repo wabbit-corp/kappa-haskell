@@ -5,7 +5,7 @@ module main
 data Buffer : Type =
     Buffer
 
-type Pair = (1 buf : Buffer)
+type Pair = (1 buf : Buffer,)
 
 consumeWhole : (1 p : Pair) -> Unit
 let consumeWhole p =

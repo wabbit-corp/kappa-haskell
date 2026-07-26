@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+expect data Need (A : Type) : Type
+expect data F (A : Type) : Type
+expect term xs : forall A. Need (F A)
+
+bad : Need (forall A. F A)
+let bad = xs

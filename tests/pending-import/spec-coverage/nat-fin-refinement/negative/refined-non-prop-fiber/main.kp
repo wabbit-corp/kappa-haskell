@@ -1,0 +1,11 @@
+-- Spec 28.2 (Refined constructor carries @0 predicateIsProp per value) +
+-- 16.1.9: a predicate whose fiber is NOT a proposition (every fiber is Nat)
+-- cannot be refined into — the required IsProp (predicate v) evidence is
+-- unsynthesizable, and no structural fallback exists.
+type BadRefinement : Type =
+    Refined Nat (\value -> Nat)
+
+bad : BadRefinement
+let bad = 3
+
+--! assertErrorCount 1

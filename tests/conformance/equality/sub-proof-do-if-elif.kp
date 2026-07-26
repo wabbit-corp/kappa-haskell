@@ -4,17 +4,13 @@
 
 module main
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 consume : Nat -> Nat
 let consume n = n
 
 doElifOk : Nat -> Nat -> UIO Unit
 let doElifOk x y = do
-    if leInt (natToInt x) (natToInt y) then
+    if x <= y then
         printlnString "le"
-    elif leInt (natToInt y) (natToInt x) then
+    elif y <= x then
         let d = consume (x - y)
         printlnString "ge"

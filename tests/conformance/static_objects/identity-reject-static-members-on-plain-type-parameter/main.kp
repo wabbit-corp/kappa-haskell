@@ -1,4 +1,4 @@
 @PrivateByDefault module main
 
-bad : (F : Type -> Type) -> F Int
+bad : (F : (parametric 0 A : Type) -> Type) -> F Int
 let bad F = F.None

@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+--! assertDiagnosticFamily error kappa.universe.variance
+
+data BadConsumer.{covariant u} : Type (succ u) =
+    BadConsumer (run : (ordinary 0 A : Type u) -> Int)

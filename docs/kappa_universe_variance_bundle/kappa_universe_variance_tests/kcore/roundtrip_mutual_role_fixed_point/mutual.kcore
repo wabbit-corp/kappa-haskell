@@ -1,0 +1,17 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  extension nominal-mutual-signatures 1;
+  decl-node "mutual-nominal-signature" {
+    firstFamily = global-ref-value(@variance.demo.EvenTree#3700);
+    secondFamily = global-ref-value(@variance.demo.OddTree#3701);
+    firstRoles = string-value("irrelevant");
+    secondRoles = string-value("covariant");
+  }
+}

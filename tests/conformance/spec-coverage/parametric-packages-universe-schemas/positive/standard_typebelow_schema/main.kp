@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+
+data LocalTypeBelow.{u} : Type u =
+    LocalPackTypeBelow
+        (ordinary 0 level : TypeLevel)
+        (@0 bound : level < u)
+        (ordinary 0 T : Type level)

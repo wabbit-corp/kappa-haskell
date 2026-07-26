@@ -7,6 +7,8 @@
 -- terminal Exit is Failure (Interrupt cause).
 module main
 
+import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
+
 sleeper : UIO Int
 let sleeper = do
     sleepFor (seconds 10)

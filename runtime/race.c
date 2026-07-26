@@ -71,7 +71,25 @@ static KValue *race_k_signal(KEnv *env, KValue *signal) {
   KValue *left = kvar(env, 0), *right = kvar(env, 1);
   return krt2_bind(krt2_fork(left), kclo(race_k_lf, kpush(right, kpush(signal, NULL))));
 }
+
+/* \rf -> interrupt/drain rf; return the already-observable left result
+ * (env=[leftValue]).  OP_PURE is an action-node identity, not a source-name
+ * recognizer: its result exists before scheduler arbitration.  We still start
+ * the right branch and wait for its RaceLost finalizers, preserving race's
+ * loser-cleanup contract. */
+static KValue *race_left_pure_k(KEnv *env, KValue *rf) {
+  KValue *left_value = kvar(env, 0);
+  KValue *left_exit = krt2_success(left_value);
+  return krt2_then(krt2_interrupt(rf),
+                   krt2_pure(won(KCT_RO_LEFT, "RaceWonLeft", left_exit)));
+}
+
 KValue *krt2_race(KValue *left, KValue *right) {
+  if (kctor_tagid(left) == OP_PURE) {
+    KValue *left_value = kctor_arg(left, 0);
+    return krt2_bind(krt2_fork(right),
+                     kclo(race_left_pure_k, kpush(left_value, NULL)));
+  }
   return krt2_bind(krt2_new_promise(), kclo(race_k_signal, kpush(left, kpush(right, NULL))));
 }
 

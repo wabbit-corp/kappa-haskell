@@ -11,7 +11,9 @@ module main
 
 -- record carrying a Type-valued field -> Type1
 recField : Type1
-let recField = (ty : Type)
+let recField = (ty : Type,)
+-- A singleton record type is comma-terminated; plain `(ty : Type)` is an
+-- ascription/grouping expression.
 
 -- positional tuple type with a Type-valued component -> Type1
 tupField : Type1

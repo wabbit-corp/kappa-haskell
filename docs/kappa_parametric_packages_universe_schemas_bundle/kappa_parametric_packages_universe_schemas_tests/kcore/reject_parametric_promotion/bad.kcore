@@ -1,0 +1,17 @@
+kcore 1;
+module @tests.kcore.badpromotion#1004 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "tests.kcore.badpromotion",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  def ordinary @tests.kcore.badpromotion.bad#2004 .{^u#0} :
+    ((parametric parametric 0 explicit value %A#0 : Type ^u#0) -> Type ^u#0)
+  {
+    body =
+      lambda (parametric parametric 0 explicit value %A#0 : Type ^u#0) {
+        %A#0
+      };
+  }
+}

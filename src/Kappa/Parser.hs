@@ -21,11 +21,12 @@ module Kappa.Parser
 
 import Control.Applicative (Alternative (..), optional)
 import Control.Monad (guard, unless, void, when)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Diagnostic
 import Kappa.Lexer (lexSource)
+import Kappa.NominalVariance (UniverseVariance (..))
 import Kappa.Parser.Monad
 import Kappa.Source
 import Kappa.Syntax
@@ -492,13 +493,52 @@ pUnsafeAssertInner start = do
   pEndDecl
   DLet noMods d <$> spanFrom start
 
-pSigName :: P Name
-pSigName =
+pPlainSigName :: P Name
+pPlainSigName =
   pIdent <|> do
     token TokLParen
     op <- pOperatorTok <|> coreOpName
     token TokRParen
     pure op
+
+pSigName :: P Name
+pSigName = do
+  name <-
+    pPlainSigName
+  optionMaybe pUniverseSchema >>= \case
+    Nothing -> pure name
+    Just schema -> pure (NameWithUniverseSchema (nameText name) (nameSpan name) schema)
+
+pUniverseSchema :: P UniverseSchema
+pUniverseSchema = do
+  start <- currentSpan
+  token TokDot
+  token TokLBrace
+  entries <- sepBy1 pUniverseSchemaParameter (token TokComma)
+  token TokRBrace
+  let (roles, parameters) = unzip entries
+  UniverseSchema parameters roles <$> spanFrom start
+
+pUniverseSchemaParameter :: P (Maybe UniverseVariance, Name)
+pUniverseSchemaParameter = do
+  role <- optionMaybe . try $ do
+    spelling <- peekIdent
+    case spelling of
+      Just "invariant" -> pKeyword "invariant" >> pure Invariant
+      Just "covariant" -> pKeyword "covariant" >> pure Covariant
+      Just "irrelevant" -> pKeyword "irrelevant" >> pure Irrelevant
+      _ -> empty
+  parameter <- pIdent
+  pure (role, parameter)
+
+pUniverseInstantiation :: P UniverseInstantiation
+pUniverseInstantiation = do
+  start <- currentSpan
+  token TokDot
+  token TokLBrace
+  levels <- sepBy1 pExpr (token TokComma)
+  token TokRBrace
+  UniverseInstantiation levels <$> spanFrom start
 
 -- Reserved spellings usable as operator names in signatures, e.g. (=).
 coreOpName :: P Name
@@ -558,15 +598,17 @@ pLetDef = do
       -- parameters may be ordinary binders OR parenthesized destructuring
       -- patterns (e.g. `let foo (Bar n) = n`), each desugared to a `match`
       -- on a fresh binder (§9.1.2 irrefutable pattern parameter)
-      parts <- many pNamedParam
+      (parts, continued) <- pNamedParams
       let binders = concatMap fst parts
           wrapPats = foldr (.) id (map snd parts)
+      when continued (void (many pNewline))
       -- "decreases" is a global stop keyword, so the result type ends
       -- before any decreases clause
       resTy <- optionMaybe (token TokColon *> noEq pExpr)
       dec <- optionMaybe pDecreases
       token TokEquals
-      body <- pDefBody
+      body <- if continued then pSameIndentExpr else pDefBody
+      when continued (void (many pNewline) *> token TokDedent)
       pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec (wrapPats (desugarRecordParams binders body)))
     patBinding = do
       -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
@@ -630,13 +672,37 @@ pDataDecl :: P DataDecl
 pDataDecl = do
   pKeyword "data"
   n <- pSigName
-  params <- pParamBinders
+  (params, continued) <- pDeclParamBinders
+  when continued (void (many pNewline))
   kind <- optionMaybe (token TokColon *> noEq pExpr)
   ctors <-
     optionMaybe (token TokEquals) >>= \case
       Nothing -> pure []
-      Just () -> pCtorBlock
+      Just ()
+        | continued -> pCtorBlockContinued
+        | otherwise -> pCtorBlock
+  when continued (void (many pNewline) *> token TokDedent)
   pure (DataDecl n params kind ctors)
+
+-- | A continued data header already owns the indentation block containing its
+-- remaining parameters, classifier, and constructor alternatives. Constructors
+-- aligned with those header lines therefore do not introduce another indent.
+pCtorBlockContinued :: P [CtorDecl]
+pCtorBlockContinued = do
+  void (many1 pNewline)
+  void (optional (token TokBar))
+  go
+  where
+    go = do
+      ctor <- pCtorAlternative
+      void (many pNewline)
+      done <- suiteEnds
+      if done
+        then pure (maybe [] pure ctor)
+        else do
+          void (optional (token TokBar))
+          rest <- go
+          pure (maybe rest (: rest) ctor)
 
 pCtorBlock :: P [CtorDecl]
 pCtorBlock = indentedCtors <|> inlineCtors
@@ -647,51 +713,72 @@ pCtorBlock = indentedCtors <|> inlineCtors
       -- optional '|' before the first and each subsequent alternative
       -- (§10.1 writes both "C1 ‖ C2" stacked and "C1 ‖ | C2" styles)
       void (optional (token TokBar))
-      goodCtors <|> salvageCtors
-    goodCtors = do
       cs <- ctorSeq
-      token TokDedent
+      suiteDedent
       pure cs
-    -- §3.1.14A: a malformed constructor alternative is reported and the
-    -- block skipped, salvaging the data declaration's header (the type
-    -- stays usable; its constructors are gone)
-    salvageCtors = do
-      sp <- currentSpan
-      t <- peekToken
-      skipCtorBlock (0 :: Int)
-      endSp <- currentSpan
-      recordRecovered $
-        recoveryDiag
-          RecoveryNode
-            { rnSite = "constructor-alternative"
-            , rnExpected = "constructor-declaration"
-            , rnConfidence = RecLikely
-            , rnCode = "E_EXPECTED_SYNTAX_TOKEN"
-            , rnOrigin = sp
-            , rnSkipped = Just (spanFromTo sp endSp)
-            , rnMessage = "unexpected " <> tokenDescr t <> " in a constructor alternative"
-            }
-      pure []
-    skipCtorBlock depth = do
+    ctorSeq = do
+      x <- pCtorAlternative
+      void (many pNewline)
+      -- Recovery from an unmatched delimiter can consume the rest of the
+      -- physical constructor block and stop at EOF without a synthetic
+      -- DEDENT.  Treat every suite terminator as final here; retrying a
+      -- recovered alternative at EOF would make no input progress.
+      done <- suiteEnds
+      if done
+        then pure (maybe [] pure x)
+        else do
+          void (optional (token TokBar))
+          rest <- ctorSeq
+          pure (maybe rest (: rest) x)
+    -- single-line: C1 a | C2 b  (used by spec prelude examples)
+    inlineCtors = catMaybes <$> sepBy1 pCtorAlternative (token TokBar)
+
+-- | Recover one constructor alternative without discarding siblings. The
+-- parser is transactional, so recovery starts at the alternative's first
+-- token while the diagnostic retains the farthest concrete failure span.
+pCtorAlternative :: P (Maybe CtorDecl)
+pCtorAlternative =
+  recoverWith (Just <$> pCtorDecl) $ \err -> do
+    start <- currentSpan
+    skipMalformedCtorAlternative (0 :: Int)
+    end <- currentSpan
+    recordRecovered $
+      recoveryDiag
+        RecoveryNode
+          { rnSite = "constructor-alternative"
+          , rnExpected = "constructor-declaration"
+          , rnConfidence = RecCertain
+          , rnCode = "E_EXPECTED_SYNTAX_TOKEN"
+          , rnOrigin = peSpan err
+          , rnSkipped = Just (spanFromTo start end)
+          , rnMessage = peMessage err
+          }
+    pure Nothing
+  where
+    skipMalformedCtorAlternative depth = do
       t <- peekToken
       case t of
         TokEOF -> pure ()
-        TokIndent -> anyToken >> skipCtorBlock (depth + 1)
-        TokDedent
-          | depth == 0 -> void anyToken
-          | otherwise -> anyToken >> skipCtorBlock (depth - 1)
-        _ -> anyToken >> skipCtorBlock depth
-    ctorSeq = do
-      x <- pCtorDecl
-      void (many pNewline)
-      done <- lookAheadIs (token TokDedent)
-      if done
-        then pure [x]
-        else do
-          void (optional (token TokBar))
-          (x :) <$> ctorSeq
-    -- single-line: C1 a | C2 b  (used by spec prelude examples)
-    inlineCtors = sepBy1 pCtorDecl (token TokBar)
+        TokDedent | depth == 0 -> pure ()
+        TokBar | depth == 0 -> pure ()
+        TokNewline False | depth == 0 -> do
+          next <- peekTokenAt 1
+          case next of
+            TokIndent -> anyToken >> anyToken >> skipMalformedCtorAlternative 1
+            _ -> pure ()
+        TokLParen -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokLBracket -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokLBrace -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokVariantOpen -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokSetOpen -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokRParen -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        TokRBracket -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        TokRBrace -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        TokVariantClose -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        TokSetClose -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        TokIndent -> anyToken >> skipMalformedCtorAlternative (depth + 1)
+        TokDedent -> anyToken >> skipMalformedCtorAlternative (max 0 (depth - 1))
+        _ -> anyToken >> skipMalformedCtorAlternative depth
 
 sepEndByNewlines :: P a -> () -> P [a]
 sepEndByNewlines p () = do
@@ -765,11 +852,19 @@ suiteDedent = token TokDedent <|> pure ()
 pCtorDecl :: P CtorDecl
 pCtorDecl = do
   start <- currentSpan
-  n <- pSigName
+  n <- pPlainSigName
+  universes <- do
+    hasInstantiation <-
+      (&&)
+        <$> ((== TokDot) <$> peekToken)
+        <*> ((== TokLBrace) <$> peekTokenAt 1)
+    if hasInstantiation
+      then Just <$> pUniverseInstantiation
+      else pure Nothing
   -- GADT-style: C : Pi-type
   gadt <- optionMaybe (token TokColon *> pExpr)
   case gadt of
-    Just ty -> CtorDecl n [] (Just ty) <$> spanFrom start
+    Just ty -> CtorDecl n universes [] (Just ty) <$> spanFrom start
     Nothing -> do
       -- Parse exactly one constructor; the '|' separator between inline
       -- alternatives (§10.1 "data Tree a = Leaf | Branch ...", L8697) is
@@ -785,7 +880,7 @@ pCtorDecl = do
       --     Request
       --         { method : Method, ... }
       indented <- pIndentedBinders <|> pure []
-      CtorDecl n (binders ++ indented) Nothing <$> spanFrom start
+      CtorDecl n universes (binders ++ indented) Nothing <$> spanFrom start
 
 -- | A record-style @{ … }@ block that starts on a following, more-indented
 -- line. The lexer emits an INDENT before the brace; layout is suppressed
@@ -846,47 +941,62 @@ pTypeAlias :: DeclMods -> Span -> P Decl
 pTypeAlias mods start = do
   pKeyword "type"
   n <- pSigName
-  params <- pParamBinders
+  (params, continued) <- pDeclParamBinders
+  when continued (void (many pNewline))
   kind <- optionMaybe (token TokColon *> noEq pExpr)
-  rhs <- optionMaybe (token TokEquals *> pSuiteOrExpr)
-  pEndDecl
+  rhs <- optionMaybe (token TokEquals *> if continued then pSameIndentExpr else pSuiteOrExpr)
+  if continued
+    then void (many pNewline) *> token TokDedent
+    else pEndDecl
   DTypeAlias mods n params kind rhs <$> spanFrom start
 
 -- trait declarations (§14.1)
 pTraitDecl :: P TraitDecl
 pTraitDecl = do
   pKeyword "trait"
-  (supers, n, params) <- pTraitHead
+  (supers, n, params, continued) <- pTraitHead
+  when continued (void (many pNewline))
   members <-
     optionMaybe (token TokEquals) >>= \case
       Nothing -> pure []
-      Just () -> pTraitMembers
+      Just ()
+        | continued -> pTraitMembersContinued
+        | otherwise -> pTraitMembers
+  when continued (void (many pNewline) *> token TokDedent)
   pure (TraitDecl supers n params members)
 
 -- Heads: [C1, ..., Cn =>] Name params
-pTraitHead :: P ([Expr], Name, [Binder])
+pTraitHead :: P ([Expr], Name, [Binder], Bool)
 pTraitHead = withSupers <|> plain
   where
     withSupers = try $ do
       supers <- sepBy1 pAppExpr (token TokComma)
       pOperatorNamed "=>"
-      (n, ps) <- nameParams
-      pure (supers, n, ps)
+      (n, ps, continued) <- nameParams
+      pure (supers, n, ps, continued)
     plain = do
-      (n, ps) <- nameParams
-      pure ([], n, ps)
+      (n, ps, continued) <- nameParams
+      pure ([], n, ps, continued)
     nameParams = do
       n <- pSigName
-      ps <- pParamBinders
-      pure (n, ps)
+      (ps, continued) <- pDeclParamBinders
+      pure (n, ps, continued)
 
 pTraitMembers :: P [TraitMember]
 pTraitMembers = do
-  pNewline
+  void (many1 pNewline)
   token TokIndent
   ms <- pTraitMember `sepEndByNewlines` ()
   token TokDedent
   pure ms
+
+-- | A continued trait header already owns the indentation block containing
+-- its remaining parameters and members.  Requiring another 'TokIndent' here
+-- would reject members aligned with the continued telescope.
+pTraitMembersContinued :: P [TraitMember]
+pTraitMembersContinued = do
+  void (many1 pNewline)
+  pTraitMember `sepEndByNewlines` ()
 
 pTraitMember :: P TraitMember
 pTraitMember = do
@@ -907,13 +1017,14 @@ pTraitMember = do
 pInstanceDecl :: P InstanceDecl
 pInstanceDecl = do
   pKeyword "instance"
+  schema <- optionMaybe pUniverseSchema
   (premises, hd) <- pInstanceHead
   members <-
     optionMaybe (token TokEquals) >>= \case
       Nothing -> pure []
       -- an empty member suite is permitted: `instance Shareable Cell =`
       Just () -> pInstanceMembers <|> pure []
-  pure (InstanceDecl premises hd members)
+  pure (InstanceDecl schema premises hd members)
 
 pInstanceHead :: P ([Expr], Expr)
 pInstanceHead = withPremises <|> plain
@@ -970,12 +1081,12 @@ pEffectDecl = do
   where
     labelForm = try $ do
       pKeyword "label"
-      n <- pIdent
+      n <- pSigName
       token TokColon
       ty <- pExpr
       pure (EffectDecl n [] [] True (Just ty))
     interfaceForm = do
-      n <- pIdent
+      n <- pSigName
       params <- pParamBinders
       ops <-
         optionMaybe (token TokEquals) >>= \case
@@ -1023,7 +1134,21 @@ pImportSpec = do
   choiceOf ref
   where
     choiceOf ref =
-      itemsForm ref <|> wildcardForm ref <|> aliasForm ref <|> singletonForm ref <|> pure (ImportModule ref Nothing)
+      exposingForm ref <|> itemsForm ref <|> wildcardForm ref <|> aliasForm ref <|> singletonForm ref <|> pure (ImportModule ref Nothing)
+    -- Readable selective-import spelling used by the universe-schema suites.
+    -- It is exactly the existing ImportItems AST form; resolution therefore
+    -- has one semantic path for `M.(x)` and `M exposing x`.
+    exposingForm ref = try $ do
+      pKeyword "exposing"
+      items <-
+        (do
+            token TokLParen
+            selected <- sepBy1 pImportItem (token TokComma)
+            void (optional (token TokComma))
+            token TokRParen
+            pure selected)
+          <|> ((: []) <$> pImportItem)
+      pure (ImportItems ref items)
     itemsForm ref = try $ do
       token TokDot
       token TokLParen
@@ -1124,8 +1249,21 @@ pExceptItem = do
 
 pExpectForm :: P ExpectForm
 pExpectForm =
-  termForm <|> dataForm <|> typeForm <|> traitForm
+  letForm <|> termForm <|> dataForm <|> typeForm <|> traitForm
   where
+    -- §11.1.2.3A.1 uses declaration-signature spelling after @expect let@
+    -- so an explicit universe schema and its erased comparison binders are
+    -- represented by the ordinary signed term telescope. This is not a
+    -- definition and therefore has no equals sign or body.
+    letForm = do
+      pKeyword "let"
+      n <- pSigName
+      (parameters, continued) <- pDeclParamBinders
+      when continued (void (many pNewline))
+      token TokColon
+      result <- noEq pExpr
+      when continued (void (many pNewline) *> token TokDedent)
+      pure (ExpectTerm n (foldr EArrow result parameters))
     termForm = do
       pKeyword "term"
       n <- pSigName
@@ -1156,13 +1294,19 @@ pExpectForm =
 -- projection declarations (§9.1.1)
 pProjection :: DeclMods -> Span -> P Decl
 pProjection mods start = do
-  n <- pIdent
-  binders <- pParamBinders
+  n <- pSigName
+  (binders, continued) <- pDeclParamBinders
+  when continued (void (many pNewline))
   token TokColon
   resTy <- noEq pExpr
   token TokEquals
-  body <- accessorBody <|> (ProjSelector <$> pSuiteOrExpr)
-  pEndDecl
+  body <-
+    if continued
+      then ProjSelector <$> pSameIndentExpr
+      else accessorBody <|> (ProjSelector <$> pSuiteOrExpr)
+  if continued
+    then void (many pNewline) *> token TokDedent
+    else pEndDecl
   DProjection mods n binders resTy body <$> spanFrom start
   where
     accessorBody = try $ do
@@ -1198,7 +1342,7 @@ pProjection mods start = do
 
 pQuantity :: P Quantity
 pQuantity =
-  zeroOne <|> omega <|> bounded
+  zeroOne <|> omega <|> bounded <|> parenthesized
   where
     zeroOne = do
       (v, _, _) <- try $ do
@@ -1221,6 +1365,16 @@ pQuantity =
     intOne = do
       (v, suf, _) <- pInt
       guard (v == 1 && suf == Nothing)
+    -- An arbitrary quantity expression needs an explicit syntactic boundary;
+    -- without the inner parentheses, `(q x : A)` is indistinguishable from a
+    -- grouped two-name binder.  This is the form used by §12.1.1's
+    -- `quantityExpr` grammar and lets the checker enforce the portable-v1
+    -- static-dependency restriction rather than misparsing the binder.
+    parenthesized = try $ do
+      token TokLParen
+      expression <- pExpr
+      token TokRParen
+      pure (QTerm expression)
 
 pBorrowMark :: P BorrowMark
 pBorrowMark = do
@@ -1230,16 +1384,24 @@ pBorrowMark = do
 
 pBinderPrefix :: P BinderPrefix
 pBinderPrefix = do
+  mode <- optionMaybe pObservationMode
   q <- optionMaybe (try quantityBeforeName)
   b <- optionMaybe pBorrowMark
-  pure (BinderPrefix q b)
+  pure (BinderPrefix mode q b)
   where
+    pObservationMode =
+      peekIdent >>= \case
+        Just "ordinary" -> pKeyword "ordinary" >> pure Ordinary
+        Just "parametric" -> pKeyword "parametric" >> pure Parametric
+        _ -> empty
     -- A quantity must be followed by something binder-like, otherwise
     -- `(1, 2)` would mis-parse.
     quantityBeforeName = do
       q <- pQuantity
       nxt <- peekToken
       case nxt of
+        TokIdent "ordinary" -> parseFail "observation mode must precede quantity"
+        TokIdent "parametric" -> parseFail "observation mode must precede quantity"
         TokIdent _ -> pure q
         TokBacktick _ -> pure q
         TokOperator "&" -> pure q
@@ -1315,6 +1477,53 @@ pParamBinder = unitBinder <|> bareImplicit <|> recordParam <|> parenBinder <|> b
 
 pParamBinders :: P [Binder]
 pParamBinders = concat <$> many pParamBinder
+
+-- | Named definitions admit the same declaration-header continuation layout
+-- as data, type, and projection declarations. Keep pattern parameters here:
+-- reducing this to 'pDeclParamBinders' would silently lose the §9.1.2
+-- destructuring parameter surface on continued lines.
+pNamedParams :: P ([([Binder], Expr -> Expr)], Bool)
+pNamedParams = do
+  inline <- many pNamedParam
+  continued <- optionMaybe . try $ do
+    pNewline
+    token TokIndent
+    first <- many pNamedParam
+    guard (not (null first))
+    rest <- many . try $ do
+      void (many1 pNewline)
+      parameters <- many pNamedParam
+      guard (not (null parameters))
+      pure parameters
+    pure (first ++ concat rest)
+  pure (inline ++ fromMaybe [] continued, isJust continued)
+
+-- | A declaration header may continue its parameter telescope on a deeper
+-- layout line.  The caller keeps that layout block open through the header's
+-- classifier, equals sign, and body, then consumes the matching dedent.  This
+-- is the declaration-level counterpart of constructor continuation binders.
+pDeclParamBinders :: P ([Binder], Bool)
+pDeclParamBinders = do
+  inline <- pParamBinders
+  continued <- optionMaybe . try $ do
+    pNewline
+    token TokIndent
+    first <- pParamBinders
+    guard (not (null first))
+    rest <- many . try $ do
+      void (many1 pNewline)
+      binders <- pParamBinders
+      guard (not (null binders))
+      pure binders
+    pure (first ++ concat rest)
+  pure (inline ++ fromMaybe [] continued, isJust continued)
+
+-- | Parse the expression following an equals sign inside an already-open
+-- declaration continuation block.  A following physical line at the same
+-- indentation belongs to the expression, not to the module declaration list.
+pSameIndentExpr :: P Expr
+pSameIndentExpr =
+  withSameIndentContinuation (void (many1 pNewline) *> pExpr) <|> pExpr
 
 -- | A single parameter of a NAMED definition (@let f \<params\> = body@).
 -- Most parameters are ordinary binders, but a parenthesized destructuring
@@ -1714,7 +1923,20 @@ pArrowExpr = do
             _ -> anonBinder lhs
        in EArrow b rhs
     anonBinder l =
-      Binder False emptyPrefix Nothing NoReceiver False Nothing False (Just l) Nothing (exprSpan l)
+      -- §12.1.1 keeps non-dependent arrow sugar ordinary. Named binders and
+      -- forall binders use the domain-directed observation default, but
+      -- `A -> B` is `(_ : A) -> B` with an ordinary anonymous binder.
+      Binder
+        False
+        (BinderPrefix (Just Ordinary) Nothing Nothing)
+        Nothing
+        NoReceiver
+        False
+        Nothing
+        False
+        (Just l)
+        Nothing
+        (exprSpan l)
     asBinderName = \case
       EVar n
         | nameText n == "_" -> Just (NoReceiver, Nothing)
@@ -1799,12 +2021,14 @@ pChainElems = do
     pChainRest = do
       t <- peekToken
       eqok <- eqAllowed
+      stops <- extraStops
       case t of
         TokEquals | eqok -> do
           sp <- currentSpan
           void anyToken
           continueAfterOp (Name "=" sp)
         TokOperator op
+          | op `elem` stops -> pure []
           -- '=>' never continues a chain; '*' could be a wildcard only
           -- in imports, so it is safe as an infix operator here.
           -- '.<', '>.', and '.~' are reserved §23.2 staging
@@ -2011,7 +2235,13 @@ namedBlockArg :: P Arg
 namedBlockArg = do
   sp <- currentSpan
   token TokLBrace
-  items <- clearExtraStops (sepBy1 namedItem (token TokComma))
+  -- Empty named blocks are syntactically meaningful.  @C {}@ reaches the
+  -- constructor-metadata/default checker, which either fills every omitted
+  -- field or reports the required missing fields (§10.1.1).  Requiring one
+  -- item here made the parser reinterpret the braces as an empty map literal,
+  -- producing an unrelated @Eq _@ obligation.  A standalone @{}@ still goes
+  -- through 'pMapOrComp'; only braces in an application spine use this rule.
+  items <- clearExtraStops (sepBy namedItem (token TokComma))
   void (optional (token TokComma))
   token TokRBrace
   ArgNamedBlock items <$> spanFrom sp
@@ -2057,15 +2287,7 @@ pSuffixes e = do
     TokDot -> do
       nxt <- peekTokenAt 1
       case nxt of
-        TokLBrace -> do
-          sp0 <- currentSpan
-          void anyToken -- '.'
-          void anyToken -- '{'
-          items <- sepBy1 pPatchItem (token TokComma)
-          void (optional (token TokComma))
-          token TokRBrace
-          sp <- spanFrom sp0
-          pSuffixes (ERecordPatch e items sp)
+        TokLBrace -> explicitUniverseInstantiation e <|> recordPatch e
         _ -> do
           void anyToken
           m <- pDotMember
@@ -2100,6 +2322,28 @@ pSuffixes e = do
           pSuffixes (ECaptures e rs sp)
         _ -> pure e
     _ -> pure e
+  where
+    -- Record patches require an explicit '=' or ':=' on every item.  The
+    -- operator-free dot-brace form is therefore the unambiguous universe
+    -- instantiation grammar introduced by §11.1.2.3A.1.
+    explicitUniverseInstantiation base = try $ do
+      sp0 <- currentSpan
+      token TokDot
+      token TokLBrace
+      levels <- sepBy1 (withExtraStops [":="] (noEq pExpr)) (token TokComma)
+      token TokRBrace
+      sp <- spanFrom sp0
+      pSuffixes (EUniverseInstantiation base levels sp)
+
+    recordPatch base = do
+      sp0 <- currentSpan
+      token TokDot
+      token TokLBrace
+      items <- sepBy1 pPatchItem (token TokComma)
+      void (optional (token TokComma))
+      token TokRBrace
+      sp <- spanFrom sp0
+      pSuffixes (ERecordPatch base items sp)
 
 pDotMember :: P DotMember
 pDotMember =
@@ -2293,6 +2537,17 @@ pParenExpr start = do
       args <- many pAppArg
       token TokRParen
       EReceiverSection (m1 : more) args <$> spanFrom start
+    -- A nested opening parenthesis normally starts the grouped expression,
+    -- and trying every binder/record alternative recursively makes a tower of
+    -- parentheses exponential.  The exception is §12.1.1's explicitly
+    -- delimited quantity binder, @((quantityExpr) x : T)@.  A balanced-token
+    -- lookahead distinguishes that binder tail without reparsing the payload.
+    TokLParen ->
+      peekAfterMatchingParen >>= \case
+        Just (TokIdent _) -> generalParen
+        Just (TokBacktick _) -> generalParen
+        Just (TokOperator "&") -> generalParen
+        _ -> exprBased
     TokIdent k
       | k `elem` ["infix", "prefix", "postfix"] -> fixityRef k <|> generalParen
     _ -> generalParen
@@ -2338,9 +2593,11 @@ pParenExpr start = do
       ESectionLeft e (op {nameSpan = opSp}) <$> spanFrom start
 
     -- A parenthesized Pi binder: `(q x : A) -> B`, `(@t : Type) -> B`,
-    -- `(& x : A) -> B`, `(thunk x : A) -> B`, `(x y : A) -> B` (§12.1).
-    -- Recognized only when an annotated/marked binder is directly
-    -- followed by `)` and `->`.
+    -- `(@ev : C) => B`, `(& x : A) -> B`, `(thunk x : A) -> B`,
+    -- `(x y : A) -> B` (§12.1, §14.1).  The `=>` spelling does not create a
+    -- second anonymous evidence binder: the parenthesized binder already is
+    -- the implicit evidence binder, so both separators elaborate through the
+    -- same 'EArrow' node.
     piBinderArrow = do
       sp <- currentSpan
       bs <- pBinderBody sp False
@@ -2349,13 +2606,15 @@ pParenExpr start = do
           | isJust (bType b1) || bImplicit b1 || bInout b1 -> pure ()
         _ -> parseFail "not a binder"
       token TokRParen
-      token TokArrow
+      token TokArrow <|> pOperatorNamed "=>"
       pArrowCont
       rhs <- pExpr
       pure (foldr EArrow rhs bs)
 
-    -- record type: (l : T, ...) — requires a comma, a row tail, or a
-    -- binder prefix\/marker to distinguish from ascription.
+    -- Record type: @(l : T, ...)@. A singleton requires its trailing comma;
+    -- binder markers do not change that syntactic boundary. Marked Pi
+    -- binders are recognized by 'piBinderArrow' above only when followed by
+    -- @->@.
     recordTypeFields = try $ do
       f1 <- pRecTypeField
       t2 <- peekToken
@@ -2372,16 +2631,6 @@ pParenExpr start = do
           tailRow <- pExpr
           token TokRParen
           ERecordType [f1] (Just tailRow) <$> spanFrom start
-        TokRParen
-          -- single field with a distinguishing marker: (1 v : Int),
-          -- (& b : Buf), (@x : T), (opaque x : T), (thunk v : T)
-          | rtfOpaque f1
-              || rtfImplicit f1
-              || isJust (bpQuantity (rtfPrefix f1))
-              || isJust (bpBorrow (rtfPrefix f1))
-              || isJust (rtfSusp f1) -> do
-              void anyToken
-              ERecordType [f1] Nothing <$> spanFrom start
         _ -> parseFail "not a record type"
 
     recordLitFields = try $ do
@@ -2400,14 +2649,18 @@ pParenExpr start = do
             then ERecordLit (i1 : rest) <$> spanFrom start
             else parseFail "all-bare parenthesized names are a tuple"
         TokRParen -> do
-          void anyToken
-          case i1 of
-            RecItem _ _ (Just _) -> ERecordLit [i1] <$> spanFrom start
-            _ -> parseFail "bare name in parens is grouping, not a record"
+          -- A one-field record requires the trailing comma: @(x = e,)@.
+          -- Without it, @(x = e)@ is the parenthesized propositional-equality
+          -- expression parsed by 'exprBased'.  Keeping this distinction here
+          -- avoids a type-directed parser ambiguity between records and @=@.
+          parseFail "a one-field record literal requires a trailing comma"
         _ -> parseFail "not a record literal"
 
     exprBased = do
-      e <- pExpr
+      -- Parentheses are an explicit boundary for the constructor-default
+      -- ambiguity: even when the enclosing annotation parses under 'noEq',
+      -- equality inside these delimiters is an ordinary expression.
+      e <- withEq pExpr
       t2 <- peekToken
       case t2 of
         TokColon -> do
@@ -2451,17 +2704,32 @@ pRecItem = implicitItem <|> namedItem
       e <- pExpr
       pure (RecItem True n (Just e))
     namedItem = try $ do
+      mq <- optionMaybe . try $ do
+        q <- pQuantity
+        nxt <- peekToken
+        case nxt of
+          TokIdent _ -> pure q
+          TokBacktick _ -> pure q
+          _ -> parseFail "not a record-field quantity prefix"
       n <- pIdent
       me <- optionMaybe (token TokEquals *> pExpr)
       case me of
-        Just e -> pure (RecItem False n (Just e))
-        Nothing -> pure (RecItem False n Nothing) -- punning
+        Just e -> pure (maybe (RecItem False n (Just e)) (\q -> RecItemQ q False n (Just e)) mq)
+        Nothing -> pure (maybe (RecItem False n Nothing) (\q -> RecItemQ q False n Nothing) mq) -- punning
 
 pRecTypeField :: P RecTypeField
 pRecTypeField = try $ do
   opq <- isJust <$> optionMaybe (pKeyword "opaque")
   imp <- isJust <$> optionMaybe (token TokAt)
-  prefix <- pBinderPrefix
+  parsedPrefix <- pBinderPrefix
+  -- Spec §13.2.1: an opaque member is static package metadata.  Its
+  -- omitted quantity defaults to 0 (ordinary explicit fields still default
+  -- to omega).  Normalize that surface default here so every later consumer
+  -- sees the same quantity rather than reimplementing the exception.
+  let prefix =
+        if opq && isNothing (bpQuantity parsedPrefix)
+          then parsedPrefix {bpQuantity = Just QZero}
+          else parsedPrefix
   susp <- pSuspension
   n <- pIdent
   token TokColon
@@ -2964,7 +3232,7 @@ pDoItem = do
       -- §9.3: using always binds borrowed at the default quantity ω; an
       -- explicit prefix parses but is flagged for elaboration to reject
       let mPref = case prefix of
-            BinderPrefix Nothing Nothing -> Nothing
+            BinderPrefix Nothing Nothing Nothing -> Nothing
             _ -> Just psp
       pat <- pPattern
       token TokBackArrow

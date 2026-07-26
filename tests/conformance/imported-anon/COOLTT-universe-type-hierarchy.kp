@@ -40,15 +40,14 @@ let funType = Nat -> Nat
 
 -- POSITIVE: A polymorphic function over `Type0` lives at `Type1`.
 poly1 : Type1
-let poly1 = forall (A : Type0) -> A -> A
+let poly1 = forall (A : Type0). A -> A
 
 -- POSITIVE: cumulativity — a term of type `Type0` used where `Type1` is expected.
 liftedNat : Type1
 let liftedNat = Nat
 
--- POSITIVE: universe-polymorphic identity function.
--- Quantifying over `Type` introduces a fresh level variable inferred at each use.
-idPoly : forall {A : Type} -> A -> A
+-- POSITIVE: parametric polymorphic identity function at Type0 (§11.3).
+idPoly : forall (A : Type). A -> A
 let idPoly x = x
 
 -- POSITIVE: applying the polymorphic identity at Nat.
@@ -65,6 +64,7 @@ let badUniverse = Type0    --!! kappa.type.mismatch
 
 -- NEGATIVE: Type1 cannot classify itself (predicativity: Type1 ∉ Type1).
 selfClass : Type1
-let selfClass = Type1    --!! kappa.type.mismatch
+let selfClass = Type1    --!! E_UNIVERSE_SELF_CONTAINMENT
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT

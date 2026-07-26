@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+--! requires capability qiitUniverseVariance
+--! assertKCoreParses fixture.kcore

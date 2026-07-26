@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
+
+expect let liftCode.{u, v}
+    (@0 p : u <= v)
+    (ordinary 0 A : Type u)
+    : Type v
+
+bad : Type0
+let bad = liftCode.{3, 0} Type2

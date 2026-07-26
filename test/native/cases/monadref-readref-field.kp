@@ -2,11 +2,11 @@
 -- The scalar-loop recognizer must not treat fake.readRef as a mutable-cell read.
 module main
 
-type Fake = (readRef : Ref Int -> UIO Int)
+type Fake = (readRef : Ref Int -> UIO Int,)
 
 fake : Fake
 let fake =
-    ( readRef = \r -> ioPure 1
+    ( readRef = \r -> ioPure 1,
     )
 
 main : UIO Unit

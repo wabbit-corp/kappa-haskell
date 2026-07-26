@@ -1,0 +1,3 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelSolve [?u] where [1 <= ?u, 3 <= ?u] gives [?u = 3]

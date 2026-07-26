@@ -1,0 +1,35 @@
+-- §16.4.2 (flow typing through `not`, keyed by resolved semantic
+-- identity), §28.2.1 (CheckedDiv divDefined obligation), §31.1.2
+-- (branch-local refinement-aware normalization). The natural guard
+-- spelling `if y /= 0 then x / y else 0` typechecks: the prelude
+-- (/=) is the transparent definition `not (x == y)`, the §16.4.2
+-- `not` equation swaps the branches, the then-branch carries
+-- (y == 0) = False, and divDefined y normalizes to True under it.
+-- NEGATIVE: the lowering is keyed by semantic identity, not spelling —
+-- under a locally rebound (/=) the condition is an ordinary function
+-- application, no branch fact is introduced, and divDefined is unsolved.
+
+module main
+
+--! mode check
+
+safeDiv : Int -> Int -> Int
+let safeDiv x y = if y /= 0 then x / y else 0
+
+divides : Int
+let divides = safeDiv 10 2
+
+guarded : Int
+let guarded = safeDiv 10 0
+
+-- NEGATIVE: a shadowing (/=) has a different semantic identity, so the
+-- §16.4.2 unfolding must NOT apply even though it is spelled the same.
+shadowed : Int -> Int -> Int
+let shadowed x y =
+    let (/=) a b = True
+    if y /= 0 then x / y else 0 --!! kappa.implicit.unsolved
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertEval divides 5
+--! assertEval guarded 0

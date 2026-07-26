@@ -3,7 +3,7 @@
 data Box (a : Type) : Type =
     Box (value : a)
 
-B : Type -> Type
+B : (parametric 0 A : Type) -> Type
 let B = type Box
 
 ok : B Int

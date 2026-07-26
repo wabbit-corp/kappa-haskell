@@ -26,7 +26,7 @@ let getBuf (s : Sized) : Vec s.len Byte = s.buf
 resize : Sized -> Sized
 let resize (s : Sized) : Sized = s.{ len = 2, buf = makeVec this.len }
 
-type TypeBox : Type = (T : Type, value : this.T)
+type TypeBox : Type1 = (T : Type, value : this.T)
 
 box : TypeBox
 let box : TypeBox = (T = Int, value = 1)

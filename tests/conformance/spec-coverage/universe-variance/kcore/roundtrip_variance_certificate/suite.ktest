@@ -1,0 +1,5 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses variance.kcore
+--! assertKCoreRoundTrips variance.kcore
+--! assertKCoreSchemaCertificateValid variance.kcore @variance.demo.Phantom#3000

@@ -1,9 +1,15 @@
--- §14.5.1 (Spec L15049): the compiler MUST NOT derive Hashable from
--- Equiv. Q carries only an Equiv instance (a coarse equivalence, not Eq),
--- so this derivation must fail with exactly one error. NOTE: today the
--- single error is E_UNSUPPORTED (derive declarations unimplemented), not
--- an Equiv-specific derivation rejection; re-point the assertion when a
--- derivation path lands.
+-- §14.5.3: derived `Hashable` MUST be structurally aligned with the
+-- type's `Eq` semantics, and §14.5.1 makes derive a required portable
+-- path checked by generated-proof typechecking — a derivation is never
+-- accepted (or rejected) merely because the implementation says so. Q
+-- carries only an Equiv instance (a coarse equivalence, not Eq), so
+-- `derive Hashable Q` has no Eq semantics to align with and must fail
+-- with exactly one error. NOTE: today the single error is E_UNSUPPORTED
+-- (derive declarations unimplemented) rather than the real target — the
+-- missing `Eq Q` / Hashable-refines-Eq rejection of §14.5.3. The count
+-- assertion holds across both, but the blanket-E_UNSUPPORTED rationale is
+-- no longer spec-sanctioned (§14.5.1); re-point the assertion to the
+-- Eq-alignment diagnostic when the derivation path lands.
 --! mode check
 --! assertErrorCount 1
 module main

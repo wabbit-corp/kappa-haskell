@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelDoesNotEntail f x <= g x
+
+opaque let f (x : Nat) : TypeLevel = 0
+opaque let g (x : Nat) : TypeLevel = omega
+expect term x : Nat

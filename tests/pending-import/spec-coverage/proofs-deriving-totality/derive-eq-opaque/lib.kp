@@ -1,8 +1,10 @@
 module lib
 
--- §14.5 (Spec L15007-L15009): deriving that inspects the constructors of
--- an `opaque data` type is permitted here, inside the defining module,
--- where the representation is visible.
+-- §14.5 (opacity clause) + §14.5.1: deriving may inspect the
+-- constructors of an `opaque data` type only where that representation
+-- is visible — here, inside the defining module. `derive Eq Secret` is
+-- the portable compiler-owned derivation of §14.5.1, so it MUST be
+-- accepted here and its exported instance published.
 opaque data Secret : Type =
     MkSecret (payload : Int)
 

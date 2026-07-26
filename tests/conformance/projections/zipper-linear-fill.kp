@@ -4,7 +4,7 @@
 
 -- §12.4.3: Zipper packages a focus with a linear fill closure
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 fillOnce : (1 z : Zipper Cell Int Int) -> Cell
 let fillOnce (1 z : Zipper Cell Int Int) : Cell = z.fill 1

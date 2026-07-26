@@ -1,0 +1,25 @@
+-- A constructor interface retained before a referenced declaration closes must
+-- acquire that declaration's generated constraint, repair the nested call, and
+-- publish its own new proof prefix to existing constructor applications.
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+late.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let late A = A
+
+data Box.{u, v} (ordinary 0 A : Type u) : Type v =
+    MkBox (late.{u, v} A)
+
+make.{u, v} :
+    (ordinary 0 A : Type u) ->
+    A ->
+    Box.{u, v} A
+let make A x = MkBox x
+
+value : Box.{0, 0} Int
+let value = make Int 1

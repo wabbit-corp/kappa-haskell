@@ -19,10 +19,10 @@ let repack =
         seal x as exists (b : Type). Option b
 
 -- RecRow-typed witness hides a record's residual row
-type HiddenRow : Type1 = exists (r : RecRow). (rec : (x : Int | r))
+type HiddenRow : Type1 = exists (r : RecRow). (rec : (x : Int | r),)
 
 rowPkg : HiddenRow
-let rowPkg = seal (rec = (x = 1, y = "extra")) as HiddenRow
+let rowPkg = seal (rec = (x = 1, y = "extra"),) as HiddenRow
 
 -- opening reintroduces the row witness; the explicit prefix field of
 -- the payload record projects as usual

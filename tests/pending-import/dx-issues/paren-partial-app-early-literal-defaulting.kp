@@ -10,7 +10,11 @@
 -- commits 1 to Integer early, then reports kappa.type.mismatch
 -- "actual: Integer / expected: Nat" on the whole application.  The
 -- same failure blocks the natural way to write computed indices,
--- e.g. `P (((+) 1) 2)`.
+-- e.g. `P (((+) 1) 2)` — now asserted below (pIdx/pLit): with the
+-- 2026-07-25 Nat/Fin revision, closed Nat index computation is
+-- definitional (§28.2 canonical natAdd equations, §31.1.3 literal
+-- normalization), so `P (((+) 1) 2)` and `P 3` must be the same type
+-- by ordinary closed evaluation, no solver involved.
 --! mode check
 --! assertNoErrors
 
@@ -35,4 +39,17 @@ let tInfix = 1 + 2
 -- rejected today with actual Integer / expected Nat
 tPoly : Nat
 let tPoly = ((+) 1) 2
+
+-- the dependent-index manifestation: the same spine in type position,
+-- plus the pin that closed Nat index computation is definitional
+data P (n : Nat) : Type =
+    MkP
+
+pIdx : P (((+) 1) 2)
+let pIdx = MkP
+
+pLit : P 3
+let pLit = pIdx
 -- STATUS(a0497523): FAIL — expected 0 errors, got 1: tMono/tSat/tInfix check clean but tPoly fails E_TYPE_EQUALITY_MISMATCH "actual: Integer / expected: Nat" (the parenthesized partial application defaulted its literal before the outer application was seen, contradicting §6.1.5's after-inference timing)
+-- (Recorded against the pre-revision file shape; P/pIdx/pLit were added
+-- 2026-07-25 and have not been run on a0497523.)

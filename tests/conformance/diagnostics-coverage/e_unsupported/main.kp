@@ -1,6 +1,9 @@
 module main
 
-let x = moduleSig Foo
+data UnsupportedDeriveTarget : Type =
+    UnsupportedDeriveTarget
+
+derive Eq UnsupportedDeriveTarget
 
 --! mode check
 --! assertDiagnostic error E_UNSUPPORTED

@@ -1,5 +1,5 @@
 --! mode check
---! assertNoErrors
+--! assertErrorCount 1
 
 -- §11.1.1/§11.1.2.2/§31.1.3: the Nat -> TypeLevel crossings, positive half.
 -- Nonnegative integer literals cross into TypeLevel positions silently via
@@ -9,6 +9,13 @@
 -- only EXPLICITLY through `typeLevelFromInteger : Nat -> TypeLevel`, and the
 -- image is solver-known finite: the prelude theorem typeLevelFiniteBelowOmega
 -- discharges `typeLevelFromInteger n < omega` for an OPEN n.
+--
+-- Since the §28.2 revision the literal payload handed to
+-- `FromInteger TypeLevel` is the ordinary inductive Nat; closed payloads
+-- normalize by §28.2's exact-computation clause, and §11.1.2.2's
+-- `typeLevelSucc` body computes `n + 1` = `natAdd n 1` — which for an
+-- OPEN n is definitionally STUCK (natAdd recurses on its left
+-- argument), making the succCross arms below genuinely non-definitional.
 module main
 
 -- POSITIVE: literal at an annotated TypeLevel binding (silent crossing).
@@ -67,9 +74,38 @@ dischargeFin :
     A
 let dischargeFin n p A x = finAt n @(typeLevelFiniteBelowOmega n) A x
 
--- STATUS(a0497523): FAIL — stale-binary gap, not a diagnosed HEAD gap: the
--- a0497523 build predates first-class levels (14 errors, first
--- E_NAME_UNRESOLVED "unresolved name 'TypeLevel'"). typeLevelFromInteger and
--- typeLevelFiniteBelowOmega are current-tree std.typelevel exports
--- (src/Kappa/Prelude.hs). Revalidate on a current-HEAD build, then import to
--- tests/conformance/spec-coverage/universes-intrinsics/.
+-- POSITIVE: open-Nat successor crossing. `typeLevelFromInteger (Succ n)`
+-- is Level 0 (Succ n) while `typeLevelSucc (typeLevelFromInteger n)` is
+-- Level 0 (natAdd n 1) — NOT interconvertible by ordinary reduction for
+-- open n. The classifier boundary below is accepted because the
+-- universe solver's certified normalization bridge (§11.1.2.2) plus the
+-- required QF Presburger fragment (§15.8.4: `Succ n = natAdd n 1` is
+-- linear) decides the level constraint, and §16.1.8 accepts
+-- solver-produced equality evidence at an expected-type boundary — no
+-- user-written subst.
+succCross :
+    (n : Nat) ->
+    (@0 p : typeLevelFromInteger (Nat.Succ n) < omega) ->
+    (A : Type (typeLevelFromInteger (Nat.Succ n))) ->
+    A ->
+    A
+let succCross n p A x = x
+
+succCrossCaller :
+    (n : Nat) ->
+    (A : Type (typeLevelSucc (typeLevelFromInteger n))) ->
+    A ->
+    A
+let succCrossCaller n A x =
+    succCross n @(typeLevelFiniteBelowOmega (Nat.Succ n)) A x
+
+-- NEGATIVE companion: the same identity as a refl-spelled TERM equality
+-- goal must fail. The operation bodies are opaque outside std.typelevel
+-- for ordinary δ-reduction (§11.1.2.2), the certified bridge serves
+-- only universe-checking positions, and §16.1.8 transport insertion is
+-- elaboration-only — it "does not extend definitional equality" — so
+-- refl has no converting endpoints here.
+succImageNotDefinitional :
+    (n : Nat) ->
+    typeLevelFromInteger (Nat.Succ n) = typeLevelSucc (typeLevelFromInteger n)
+let succImageNotDefinitional n = refl --!! E_TYPE_MISMATCH

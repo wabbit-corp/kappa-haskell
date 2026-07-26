@@ -1,0 +1,13 @@
+module main
+
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+readVariant : (| Int | String |) -> Int
+let readVariant value =
+    match value
+    case (| n : Int |) -> n
+    case (| ..rest |) -> 0

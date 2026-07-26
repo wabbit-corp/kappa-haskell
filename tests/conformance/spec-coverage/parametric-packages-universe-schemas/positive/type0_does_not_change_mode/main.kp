@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+id0 :
+    (A : Type0) ->
+    A ->
+    A
+
+let id0 A x =
+    x

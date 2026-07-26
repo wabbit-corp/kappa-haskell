@@ -4,10 +4,10 @@
 module main
 
 type Player : Type =
-    (corruption : Int)
+    (corruption : Int,)
 
 type GameState : Type =
-    (player : Player)
+    (player : Player,)
 
 corrupt : Int -> GameState -> Int
 let corrupt amount game =

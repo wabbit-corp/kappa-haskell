@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Normalization by evaluation and definitional equality (Spec §31.1).
 --
@@ -16,7 +17,14 @@
 -- answers "equal" soundly.
 module Kappa.Eval
   ( Globals (..)
-  , GlobalDef (..)
+  , GlobalDef (GlobalDef, gdUniverses, gdProvisionalUniverseProjection, gdObservationMode, gdNominalSummary, gdType, gdCoreType, gdValue, gdCoreBody, gdReducible)
+  , globalDefWithObservationMode
+  , globalDefWithUniverses
+  , globalDefWithCoreType
+  , globalDefWithCoreBody
+  , globalDefWithNominalSummary
+  , specializeGlobalDefinitionBody
+  , specializeGlobalDefinitionTypePrefix
   , MetaState
   , emptyMetas
   , EvalCtx (..)
@@ -37,6 +45,7 @@ module Kappa.Eval
 import Data.Bits (xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Char (chr, ord)
+import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Ratio (denominator, numerator)
@@ -49,6 +58,10 @@ import GHC.Float (castDoubleToWord64)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import Kappa.Builtins
 import Kappa.Core
+import Kappa.Observation (ObservationMode (..))
+import Kappa.CoreOps (levelMetasOfTerm, zonkTermWith)
+import Kappa.Level (LevelMeta, compareClosedLevel, instantiateLocalLevelParams, normalizeLevel, substituteLevelMetas, substituteLevelParams)
+import Kappa.NominalVariance (NominalCumulativitySummary)
 import Kappa.Unicode
   ( NormForm (..)
   , graphemeClusters
@@ -70,13 +83,94 @@ foreign import ccall unsafe "math.h atan2"
   c_atan2 :: Double -> Double -> Double
 
 -- | One global definition.
-data GlobalDef = GlobalDef
-  { gdType :: !Value
+data GlobalDef = GlobalDefData
+  { gdUniverses :: !DeclarationUniverseTelescope
+  , gdProvisionalUniverseProjection :: ![(LevelMeta, Int)]
+  -- ^ Temporary source-meta to occurrence-spine projection of an inferred
+  -- declaration before its SCC installs the stable hidden telescope. Only
+  -- metas authenticated as declaration-owned schema parameters appear here;
+  -- minimizable classifiers and dependency occurrences remain solver-owned.
+  , gdObservationMode :: !ObservationMode
+  , gdNominalSummary :: !(Maybe NominalCumulativitySummary)
+  , gdType :: !Value
+  , gdCoreType :: !(Maybe Term)
+  -- ^ Closed generalized Core type when one exists. NbE deliberately erases
+  -- universe-lift and proof evidence, so serialization and declaration
+  -- generalization must prefer this authority over re-quoting 'gdType'.
   , gdValue :: !(Maybe Value)
   -- ^ 'Nothing' for primitives\/postulates and opaque-at-use-site defs.
+  , gdCoreBody :: !(Maybe Term)
+  -- ^ Closed generalized Core body when one exists. Universe specialization
+  -- uses this authority directly instead of re-quoting an NbE closure, whose
+  -- captured environments are intentionally not serialized by 'quote'.
   , gdReducible :: !Bool
   -- ^ Conversion-reducible (§15.1): may δ-unfold during conversion.
   }
+
+pattern GlobalDef :: Value -> Maybe Value -> Bool -> GlobalDef
+pattern GlobalDef ty value reducible <- GlobalDefData _ _ _ _ ty _ value _ reducible
+  where
+    GlobalDef ty value reducible =
+      GlobalDefData emptyDeclarationUniverseTelescope [] Ordinary Nothing ty Nothing value Nothing reducible
+
+{-# COMPLETE GlobalDef #-}
+
+globalDefWithUniverses :: DeclarationUniverseTelescope -> GlobalDef -> GlobalDef
+globalDefWithUniverses universes def = def {gdUniverses = universes}
+
+globalDefWithCoreType :: Term -> GlobalDef -> GlobalDef
+globalDefWithCoreType coreType def = def {gdCoreType = Just coreType}
+
+globalDefWithObservationMode :: ObservationMode -> GlobalDef -> GlobalDef
+globalDefWithObservationMode mode def = def {gdObservationMode = mode}
+
+globalDefWithCoreBody :: Term -> GlobalDef -> GlobalDef
+globalDefWithCoreBody body def = def {gdCoreBody = Just body}
+
+globalDefWithNominalSummary :: NominalCumulativitySummary -> GlobalDef -> GlobalDef
+globalDefWithNominalSummary summary def = def {gdNominalSummary = Just summary}
+
+-- | Specialize the leading declaration-universe prefix selected by an
+-- enclosing nominal occurrence while leaving any declaration-local suffix
+-- polymorphic. Trait members use this when the trait occurrence fixes the
+-- trait's universes but the member generalized additional levels of its own.
+specializeGlobalDefinitionTypePrefix :: EvalCtx -> [Level] -> GlobalDef -> Maybe Value
+specializeGlobalDefinitionTypePrefix ctx universes definition
+  | length universes > dutParameterCount (gdUniverses definition) = Nothing
+  | null universes = Just (gdType definition)
+  | otherwise =
+      let raw = quote (ctx {ecFacts = Map.empty}) 0 (gdType definition)
+          specialized =
+            zonkTermWith (\_ _ -> Nothing) (substituteLevelParams universes) 0 raw
+       in Just (eval ctx [] specialized)
+
+-- | Specialize a retained Core body at one occurrence of its declaration
+-- universe telescope.  Consumers that inspect transparent Core must share
+-- this operation: some bodies still carry the declaration's provisional meta
+-- projection, while finalized bodies carry stable level parameters.
+specializeGlobalDefinitionBody :: [Level] -> GlobalDef -> Maybe Term
+specializeGlobalDefinitionBody universes definition = do
+  body <- gdCoreBody definition
+  let projection = gdProvisionalUniverseProjection definition
+  pure $
+    if null universes
+      then body
+      else
+        if not (null projection)
+            && all ((< length universes) . snd) projection
+            && any (`elem` map fst projection) (levelMetasOfTerm body)
+          then
+            zonkTermWith
+              (\_ _ -> Nothing)
+              (substituteLevelMetas (Map.fromList [(meta, universes !! index) | (meta, index) <- projection]))
+              0
+              body
+          else
+            zonkTermWith
+              (\_ _ -> Nothing)
+              (substituteLevelParams universes)
+              0
+              body
 
 newtype Globals = Globals {globalsMap :: Map GName GlobalDef}
 
@@ -128,32 +222,70 @@ lookupEnv i env = case drop i env of
 eval :: HasCallStack => EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
   CVar i -> lookupEnv i env
+  CLocal i [] -> lookupEnv i env
+  CLocal i universes ->
+    -- Local declaration universes are static identity, not term arguments.
+    -- Specialize the generalized semantic value at the occurrence before it
+    -- participates in conversion; runtime lowering erases the same spine.
+    let generalized = lookupEnv i env
+        generalizedTerm = quote ctx (length env) generalized
+        specialized =
+          zonkTermWith
+            (\_ _ -> Nothing)
+            (instantiateLocalLevelParams (length universes) (map (evalLevel ctx env) universes))
+            0
+            generalizedTerm
+     in eval ctx env specialized
   -- primitives quoted by 'quote' round-trip back to 'VPrim'
-  CGlob g@(GName m p) -> if m == primModule then VPrim p [] else VGlobN g []
-  CLam ic q n body -> VLam ic q n (Closure env body)
-  CPi ic q brw n a b -> VPi ic q brw n (eval ctx env a) (Closure env b)
+  CGlobal g@(GName m p) universes ->
+    if m == primModule
+      then VPrim p []
+      else VGlobal g (map (evalLevel ctx env) universes) []
+  CLamM mode ic q n body -> VLamM mode ic q n (Closure env body)
+  CPiEvidenceM mode formation ic q brw n assumption origin a b ->
+    VPiEvidenceM mode formation ic q brw n
+      (fmap (\(lower, upper) -> (evalLevel ctx env lower, evalLevel ctx env upper)) assumption)
+      origin
+      (eval ctx env a)
+      (Closure env b)
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
-  CSort n -> VSort n
+  CSort n -> VSort (evalLevel ctx env n)
+  CLevel n -> VLevel (evalLevel ctx env n)
+  CUniverseLift _ _ _ t -> eval ctx env t
+  CSchemaLift _ _ _ _ _ _ _ _ t -> eval ctx env t
   CLit l -> VLit l
-  -- the Stage 0 head-type annotation is observe-only and is not represented
-  -- in the 'Value' domain, so evaluation drops it (and a quote/eval roundtrip
-  -- yields 'Nothing'); see 'Kappa.Core' for the contract.
-  CCtor g _ args -> VCtor g (map (eval ctx env) args)
-  CMatch scrut _ alts ->
-    reduceMatch ctx (eval ctx env scrut) alts env
-  CRecordT fs -> VRecordT [(n, eval ctx env t) | (n, t) <- fs]
+  -- The head-type annotation remains observe-only, but universes and the
+  -- complete typed argument spine survive in the semantic domain so quoting
+  -- cannot turn a polymorphic constructor occurrence into a monomorphic one.
+  CCtorI g universes _ arguments ->
+    VCtorI g (map (evalLevel ctx env) universes)
+      [ ConstructorValueArg (caIcit argument) (caPayload argument) (caName argument)
+          (eval ctx env (caTerm argument))
+      | argument <- arguments
+      ]
+  CMatch scrut annotation alts ->
+    reduceMatch ctx (eval ctx env scrut) (eval ctx env <$> annotation) alts env
+  CRecordTQ fs -> VRecordTQ (map (fmap (eval ctx env)) fs)
   CRecordV fs -> VRecordV [(n, eval ctx env t) | (n, t) <- fs]
-  CProj e f -> vproj ctx (eval ctx env e) f
+  CProjM mode e f -> vproj ctx mode (eval ctx env e) f
   -- P0.4: the fixed-offset index is a backend-only hint; the interpreter
   -- projects by NAME exactly as for CProj (so check/run/test are unchanged).
-  CProjAt e f _ -> vproj ctx (eval ctx env e) f
+  CProjAtM mode e f _ -> vproj ctx mode (eval ctx env e) f
   CVariantT ms -> VVariantT (map (eval ctx env) ms)
   CInject tag e -> VInject tag (eval ctx env e)
-  CLet _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body
-  CLetRec _ _ _ rhs body ->
+  CLetM _ _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body
+  CLetRecM _ _ _ _ rhs body ->
     -- recursive local definition: tie the knot lazily (the rhs is a
     -- lambda, so forcing the binding terminates)
     let env' = eval ctx env' rhs : env in eval ctx env' body
+  CLetPolyM _ _ _ _ _ rhs body ->
+    eval ctx (eval ctx env rhs : env) body
+  CLetRecPolyM _ _ _ _ _ rhs body ->
+    let env' = eval ctx env' rhs : env in eval ctx env' body
+  CLetRecGroupM _ definitions body ->
+    let values = [eval ctx env' (clrdRhs definition) | definition <- definitions]
+        env' = reverse values ++ env
+     in eval ctx env' body
   CMeta m -> case Map.lookup m (ecMetas ctx) of
     Just (Just v) -> v
     _ -> VFlex m []
@@ -178,16 +310,15 @@ vapp ctx fv ic av = case fv of
   VLam _ _ _ clo -> closApply ctx clo av
   VRigid l sp -> VRigid l (sp ++ [(ic, av)])
   VFlex m sp -> VFlex m (sp ++ [(ic, av)])
-  VGlobN g sp -> VGlobN g (sp ++ [(ic, av)])
+  VGlobI g universes sp -> VGlobI g universes (sp ++ [(ic, av)])
   -- implicit arguments are erased at runtime for constructors and
   -- primitives (§31.2); neutral globals keep them (types).
-  VCtor g args
-    | ic == Impl -> VCtor g args
-    | otherwise -> VCtor g (args ++ [av])
+  VCtorI g universes arguments
+    | ic == Impl -> VCtorI g universes arguments
+    | otherwise ->
+        VCtorI g universes
+          (arguments ++ [ConstructorValueArg Expl True Nothing av])
   VPrim p args
-    -- an implicit argument to a stuck application must not be erased;
-    -- nest another marker so 'force' can replay it faithfully
-    | isStuckMarker p, ic == Impl -> VPrim (stuckAppMarker Impl) [fv, av]
     | ic == Impl -> VPrim p args
     | otherwise ->
         -- Force ONLY the freshly-appended argument and keep the existing
@@ -204,27 +335,55 @@ vapp ctx fv ic av = case fv of
               Nothing -> VPrim p args'
   -- stuck application: keep the icit so 'force' can re-apply once the
   -- head becomes canonical (e.g. a solved meta's dictionary projection).
-  _ -> VPrim (stuckAppMarker ic) [fv, av]
+  _ -> VAppN ic fv av
 
-stuckAppMarker :: Icit -> Text
-stuckAppMarker = \case
-  Expl -> "__stuck_app"
-  Impl -> "__stuck_appI"
-
-isStuckMarker :: Text -> Bool
-isStuckMarker p = p == "__stuck_app" || p == "__stuck_appI"
+instantiateGlobalValue :: EvalCtx -> [Level] -> GlobalDef -> Value
+instantiateGlobalValue ctx universes definition
+  | null universes = value
+  | Just body <- specializeGlobalDefinitionBody universes definition =
+      eval ctx [] body
+  | projection <- gdProvisionalUniverseProjection definition
+  , not (null projection)
+  , all ((< length universes) . snd) projection =
+      eval ctx [] $
+        zonkTermWith
+          (\_ _ -> Nothing)
+          (substituteLevelMetas (Map.fromList [(meta, universes !! index) | (meta, index) <- projection]))
+          0
+          (quote (ctx {ecFacts = Map.empty}) 0 value)
+  | otherwise =
+      eval ctx [] $
+        zonkTermWith
+          (\_ _ -> Nothing)
+          (substituteLevelParams universes)
+          0
+          (quote (ctx {ecFacts = Map.empty}) 0 value)
+      -- A declaration value is closed, while 'ecFacts' describes rigid levels
+      -- in the caller's local branch. Re-quoting the declaration under those
+      -- facts lets fresh quotation rigids (which start at level 0) collide with
+      -- unrelated caller levels and can spuriously reduce matches. Universe
+      -- specialization therefore quotes in a facts-free context; the resulting
+      -- value is still forced later under the real call-site facts.
+  where
+    value = case gdValue definition of
+      Just body -> body
+      Nothing -> error "Kappa.Eval.instantiateGlobalValue: definition has no value"
 
 evalApp :: EvalCtx -> Value -> [(Icit, Value)] -> Value
 evalApp ctx = foldl (\f (ic, a) -> vapp ctx f ic a)
 
-vproj :: EvalCtx -> Value -> Text -> Value
-vproj ctx v f = case force ctx v of
+vproj :: EvalCtx -> ObservationMode -> Value -> Text -> Value
+vproj ctx mode v f = case force ctx v of
   VRecordV fs | Just x <- lookup f fs -> x
+  VCtorI _ _ arguments
+    | Just argument <-
+        find ((== Just f) . cvaName) (reverse arguments) ->
+          cvaValue argument
   -- §13.2.10: projection computes through a seal except for opaque
   -- members, whose defining equations are hidden (runtime projections
   -- of retained ordinary fields always compute)
-  VSealV ls r | f `notElem` ls || ecRuntime ctx -> vproj ctx r f
-  v' -> VProjN v' f
+  VSealV ls r | f `notElem` ls || ecRuntime ctx -> vproj ctx mode r f
+  v' -> VProjN mode v' f
 
 vforce :: EvalCtx -> Value -> Value
 vforce ctx v = case force ctx v of
@@ -258,6 +417,19 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
       | ecRuntime ctx = VPrim "__recursionDepth" []
       | otherwise = v
     go fuel v = case v of
+      -- Nat keeps ordinary logical constructors in Core while canonical
+      -- closed values use the exact compact integer normal form. Open
+      -- successors stay structural, preserving the first-argument
+      -- computation rules of the source definitions.
+      VCtor g [] | g == prelNatZero -> VLit (LitInt 0)
+      VCtor g [predecessor]
+        | g == prelNatSucc
+        , VLit (LitInt n) <- go (fuel - 1) predecessor
+        , n >= 0 ->
+            VLit (LitInt (n + 1))
+      VGlobI g _ spine
+        | Just result <- closedNatOperation g spine ->
+            go (fuel - 1) result
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
@@ -265,7 +437,7 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
       VRigid l []
         | Just (FactIs sol) <- Map.lookup l (ecFacts ctx) ->
             go (fuel - 1) sol
-      VGlobN g sp
+      VGlobI g universes sp
         | Just gd <- lookupGlobal ctx g
         , Just body <- gdValue gd
         , ecRuntime ctx || gdReducible gd || isPrimRoot body ->
@@ -275,17 +447,15 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
                   if ecRuntime ctx
                     then [(ic, go (fuel - 1) a) | (ic, a) <- sp]
                     else sp
-             in go (fuel - 1) (evalApp ctx body sp')
-      -- a stuck application: explicit over-applications append to the
-      -- marker's argument list, so replay the head against all of them
-      VPrim p (f : a : rest)
-        | Just ic <- stuckAppIcit p
-        , f' <- go (fuel - 1) f
+                body' = instantiateGlobalValue ctx universes gd
+             in go (fuel - 1) (evalApp ctx body' sp')
+      VAppN ic f a
+        | f' <- go (fuel - 1) f
         , reapplicable f' ->
-            go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' ic a) rest)
+            go (fuel - 1) (vapp ctx f' ic a)
       VPrim p sp
         | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
-      VProjN inner fld ->
+      VProjN mode inner fld ->
         -- §13.2.10: a projection re-fires through seal layers unless
         -- the member is opaque (always computes at runtime)
         let unseal x = case x of
@@ -293,23 +463,38 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
               _ -> x
          in case unseal (go (fuel - 1) inner) of
               VRecordV fs | Just x <- lookup fld fs -> go (fuel - 1) x
-              _ -> v
+              inner' -> VProjN mode inner' fld
       VIfN c t f -> case go (fuel - 1) c of
         VCtor g [] | g == prelTrue -> go (fuel - 1) (closRun t)
         VCtor g [] | g == prelFalse -> go (fuel - 1) (closRun f)
         _ -> v
-      VMatchN scrut alts env
+      VMatchN scrut _ alts env
         | Just v' <- tryReduceMatch ctx scrut alts env ->
             go (fuel - 1) v'
       _ -> v
       where
+        -- This is a representation-preserving accelerator keyed by resolved
+        -- declaration identity. It avoids unary normalization of huge closed
+        -- naturals without adding equations for open terms.
+        closedNatOperation global spine =
+          case (global, [go (fuel - 1) argument | (Expl, argument) <- spine]) of
+            (g, [VLit (LitInt left), VLit (LitInt right)])
+              | g == prelNatAdd
+              , left >= 0
+              , right >= 0 ->
+                  Just (VLit (LitInt (left + right)))
+              | g == prelNatMultiply
+              , left >= 0
+              , right >= 0 ->
+                  Just (VLit (LitInt (left * right)))
+              | g == prelNatCompare
+              , left >= 0
+              , right >= 0 ->
+                  Just (VCtor (prelOrdering (compare left right)) [])
+            _ -> Nothing
         isPrimRoot = \case
           VPrim _ [] -> True
           _ -> False
-        stuckAppIcit = \case
-          "__stuck_app" -> Just Expl
-          "__stuck_appI" -> Just Impl
-          _ -> Nothing
         -- shapes 'vapp' can make progress on (avoids rebuilding the same
         -- stuck application forever)
         reapplicable = \case
@@ -318,16 +503,16 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
           VFlex {} -> True
           VGlobN {} -> True
           VCtor {} -> True
-          VPrim p _ | p /= "__stuck_app" && p /= "__stuck_appI" -> True
+          VPrim {} -> True
           _ -> False
         closRun (Closure env body) = eval ctx env body
 
 -- ι-reduction of match when the scrutinee is canonical.
-reduceMatch :: EvalCtx -> Value -> [CaseAlt] -> Env -> Value
-reduceMatch ctx scrut alts env =
+reduceMatch :: EvalCtx -> Value -> Maybe Value -> [CaseAlt] -> Env -> Value
+reduceMatch ctx scrut annotation alts env =
   case tryReduceMatch ctx scrut alts env of
     Just v -> v
-    Nothing -> VMatchN scrut alts env
+    Nothing -> VMatchN scrut annotation alts env
 
 -- | 'Just' iff some alternative definitely fires (used by 'force' to
 -- re-reduce matches stuck on metavariables).
@@ -364,6 +549,9 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
                    | (p, a) <- zip ps (drop (length args - length ps) args)
                    ]
              )
+      (CPCtor g _ _, VLit (LitInt n))
+        | g == prelNatZero -> n /= 0
+        | g == prelNatSucc -> n <= 0
       (CPLit l, VLit l') -> l /= l'
       (CPTuple ps, VRecordV fs)
         | length ps == length fs ->
@@ -386,6 +574,17 @@ matchPat ctx pat v0 =
         (CPWild, _) -> Just []
         (CPVar _, _) -> Just [v]
         (CPLit l, VLit l') | l == l' -> Just []
+        (CPCtor g nEx ps, VLit (LitInt n))
+          | g == prelNatZero
+          , n == 0
+          , null ps ->
+              Just (replicate nEx (VRecordV []))
+          | g == prelNatSucc
+          , n > 0
+          , length ps <= 1 ->
+              (replicate nEx (VRecordV []) ++)
+                <$> concatM
+                  [matchPat ctx p (VLit (LitInt (n - 1))) | p <- ps]
         (CPCtor g nEx ps, VCtor g' args)
           | g == g', length ps <= length args ->
               -- §17.1: the @nEx@ existential-skolem slots come FIRST (so after the
@@ -439,23 +638,21 @@ forceQ ctx = go (1000 :: Int)
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
-      VPrim p (f : a : rest)
-        | p == "__stuck_app" || p == "__stuck_appI"
-        , f' <- go (fuel - 1) f
+      VAppN ic f a
+        | f' <- go (fuel - 1) f
         , progressed f' ->
-            go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' (markerIcit p) a) rest)
+            go (fuel - 1) (vapp ctx f' ic a)
       VPrim p sp
         | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
       _ -> v
       where
-        markerIcit p = if p == "__stuck_appI" then Impl else Expl
         progressed = \case
           VLam {} -> True
           VRigid {} -> True
           VFlex {} -> True
           VGlobN {} -> True
           VCtor {} -> True
-          VPrim p _ | p /= "__stuck_app" && p /= "__stuck_appI" -> True
+          VPrim {} -> True
           _ -> False
 
 -- | Read a 'Value' back into a normalized 'Term'. @lvl@ is the current
@@ -470,25 +667,35 @@ quote :: EvalCtx -> Int -> Value -> Term
 quote ctx lvl v = case forceQ ctx v of
   VRigid l sp -> quoteSpine (CVar (lvl - 1 - l)) sp
   VFlex m sp -> quoteSpine (CMeta m) sp
-  VGlobN g sp -> quoteSpine (CGlob g) sp
-  VLam ic q n clo ->
-    CLam ic q n (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
-  VPi ic q brw n a clo ->
-    CPi ic q brw n (quote ctx lvl a) (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
+  VGlobal g universes sp -> quoteSpine (CGlobal g universes) sp
+  VLamM mode ic q n clo ->
+    CLamM mode ic q n (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
+  VPiEvidenceM mode formation ic q brw n assumption origin a clo ->
+    CPiEvidenceM mode formation ic q brw n assumption origin
+      (quote ctx lvl a)
+      (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n
+  VLevel n -> CLevel n
   VLit l -> CLit l
-  -- the Value domain carries no head-type annotation, so a quoted ctor has
-  -- 'Nothing'; the annotation is a fresh-elaboration-only artifact.
-  VCtor g args -> CCtor g Nothing (map (quote ctx lvl) args)
-  VRecordT fs -> CRecordT [(n, quote ctx lvl t) | (n, t) <- fs]
+  -- The head-type annotation is a fresh-elaboration-only artifact, but hidden
+  -- universes and erased typed arguments are stable KCore identity and survive
+  -- the eval/quote round trip.
+  VCtorI g universes arguments ->
+    CCtorI g universes Nothing
+      [ ConstructorArg (cvaIcit argument) (cvaPayload argument) (cvaName argument)
+          (quote ctx lvl (cvaValue argument))
+      | argument <- arguments
+      ]
+  VRecordTQ fs -> CRecordTQ (map (fmap (quote ctx lvl)) fs)
   VRecordV fs -> CRecordV [(n, quote ctx lvl t) | (n, t) <- fs]
   VVariantT ms -> CVariantT (map (quote ctx lvl) ms)
   VInject t x -> CInject t (quote ctx lvl x)
-  VMatchN scrut alts env ->
+  VMatchN scrut annotation alts env ->
     -- Stuck match: quote scrutinee, keep alts with their env baked in
     -- only when env is empty; otherwise approximate via fresh rigids.
-    CMatch (quote ctx lvl scrut) Nothing (map (quoteAlt env) alts)
-  VProjN e f -> CProj (quote ctx lvl e) f
+    CMatch (quote ctx lvl scrut) (quote ctx lvl <$> annotation) (map (quoteAlt env) alts)
+  VProjN mode e f -> CProjM mode (quote ctx lvl e) f
+  VAppN ic f a -> CApp ic (quote ctx lvl f) (quote ctx lvl a)
   VSealV ls x -> CSealE ls (quote ctx lvl x)
   VSigT ls x -> CSigT ls (quote ctx lvl x)
   VDoV lbl items _ -> CDo lbl items
@@ -536,37 +743,63 @@ convertible ctx = go (200 :: Int)
     -- post-force VGlobN rule below, but fires first so the structural match
     -- short-circuits the divergent unfold.
     go fuel lvl v1 v2
-      | VGlobN g1 sp1 <- forceQ ctx v1
-      , VGlobN g2 sp2 <- forceQ ctx v2
+      | VGlobI g1 us1 sp1 <- forceQ ctx v1
+      , VGlobI g2 us2 sp2 <- forceQ ctx v2
       , g1 == g2
+      , hiddenUniversesCompatible us1 us2
       , length sp1 == length sp2
       , and (zipWith (\(_, a) (_, b) -> go (fuel - 1) lvl a b) sp1 sp2) =
           True
     go fuel lvl v1 v2 = case (force ctx v1, force ctx v2) of
       (VSort a, VSort b) -> a == b
+      (VLevel a, VLevel b) -> a == b
       (VLit a, VLit b) -> a == b
-      (VPi i1 q1 _ _ a1 b1, VPi i2 q2 _ _ a2 b2) ->
+      (VLit (LitInt n), VCtor g args)
+        | g == prelNatZero -> n == 0 && null args
+        | g == prelNatSucc
+        , n > 0
+        , [predecessor] <- args ->
+            go (fuel - 1) lvl (VLit (LitInt (n - 1))) predecessor
+      (VCtor g args, VLit (LitInt n))
+        | g == prelNatZero -> n == 0 && null args
+        | g == prelNatSucc
+        , n > 0
+        , [predecessor] <- args ->
+            go (fuel - 1) lvl predecessor (VLit (LitInt (n - 1)))
+      (VPiM m1 i1 q1 _ _ a1 b1, VPiM m2 i2 q2 _ _ a2 b2) ->
         i1 == i2
+          && m1 == m2
           && q1 == q2 -- quantities are part of function-type identity
           && go (fuel - 1) lvl a1 a2
           && goClos fuel lvl b1 b2
-      (VLam i1 _ _ b1, VLam i2 _ _ b2)
-        | i1 == i2 -> goClos fuel lvl b1 b2
+      (VLamM m1 i1 _ _ b1, VLamM m2 i2 _ _ b2)
+        | m1 == m2 && i1 == i2 -> goClos fuel lvl b1 b2
       -- η for functions
-      (VLam i _ _ b, f) ->
+      (VLamM _ i _ _ b, f) ->
         let x = VRigid lvl []
          in go (fuel - 1) (lvl + 1) (closApply ctx b x) (vapp ctx f i x)
-      (f, VLam i _ _ b) ->
+      (f, VLamM _ i _ _ b) ->
         let x = VRigid lvl []
          in go (fuel - 1) (lvl + 1) (vapp ctx f i x) (closApply ctx b x)
       (VRigid l1 sp1, VRigid l2 sp2) -> l1 == l2 && goSpine fuel lvl sp1 sp2
       (VFlex m1 sp1, VFlex m2 sp2) -> m1 == m2 && goSpine fuel lvl sp1 sp2
-      (VGlobN g1 sp1, VGlobN g2 sp2)
-        | g1 == g2, goSpine fuel lvl sp1 sp2 -> True
+      (VGlobI g1 us1 sp1, VGlobI g2 us2 sp2)
+        | g1 == g2, hiddenUniversesCompatible us1 us2, goSpine fuel lvl sp1 sp2 -> True
       -- unfold non-reducible-blocked globals only if reducible (force
       -- already unfolded those); different heads -> try nothing more
-      (VCtor g1 a1, VCtor g2 a2) ->
-        g1 == g2 && length a1 == length a2 && and (zipWith (go (fuel - 1) lvl) a1 a2)
+      (VCtorI g1 universes1 arguments1, VCtorI g2 universes2 arguments2) ->
+        g1 == g2
+          && hiddenUniversesCompatible universes1 universes2
+          && length arguments1 == length arguments2
+          && and
+            ( zipWith
+                (\left right ->
+                   cvaIcit left == cvaIcit right
+                     && cvaPayload left == cvaPayload right
+                     && go (fuel - 1) lvl (cvaValue left) (cvaValue right))
+                arguments1
+                arguments2
+            )
       (VRecordT f1, VRecordT f2) ->
         map fst f1 == map fst f2 && and (zipWith (go (fuel - 1) lvl) (map snd f1) (map snd f2))
       (VRecordV f1, VRecordV f2) ->
@@ -581,7 +814,9 @@ convertible ctx = go (200 :: Int)
       (VVariantT m1, VVariantT m2) ->
         length m1 == length m2 && and (zipWith (go (fuel - 1) lvl) m1 m2)
       (VInject t1 x1, VInject t2 x2) -> t1 == t2 && go (fuel - 1) lvl x1 x2
-      (VProjN e1 f1, VProjN e2 f2) -> f1 == f2 && go (fuel - 1) lvl e1 e2
+      (VProjN _ e1 f1, VProjN _ e2 f2) -> f1 == f2 && go (fuel - 1) lvl e1 e2
+      (VAppN ic1 f1 a1, VAppN ic2 f2 a2) ->
+        ic1 == ic2 && go (fuel - 1) lvl f1 f2 && go (fuel - 1) lvl a1 a2
       -- §13.2.10: seal is pure and non-generative; sealed packages are
       -- equal iff the underlying records are (seal e as S ≡ e)
       (VSealV _ x1, y1) -> go (fuel - 1) lvl x1 y1
@@ -607,7 +842,7 @@ convertible ctx = go (200 :: Int)
       -- terms required (a stuck guard cannot have fired, so the surrounding
       -- match is genuinely neutral). This is the §7.4.1 neutral-eliminator
       -- rule for 'match', mirroring the existing 'VProjN'/'VIfN' cases.
-      (VMatchN s1 alts1 e1, VMatchN s2 alts2 e2)
+      (VMatchN s1 _ alts1 e1, VMatchN s2 _ alts2 e2)
         | length alts1 == length alts2
         , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts1
         , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts2
@@ -625,17 +860,17 @@ convertible ctx = go (200 :: Int)
       where
         patBinders = \case
           CPWild -> 0
-          CPVar _ -> 1
+          CPVarM _ _ -> 1
           CPLit _ -> 0
-          CPCtor _ nEx ps -> nEx + sum (map patBinders ps)
+          CPCtorM existentialModes _ _ ps -> length existentialModes + sum (map patBinders ps)
           CPTuple ps -> sum (map patBinders ps)
-          CPRecord fs rest ->
+          CPRecordM fs rest ->
             sum (map (patBinders . snd) fs)
-              + case rest of Just nm | not (T.null nm) -> 1; _ -> 0
+              + case rest of Just (_, nm) | not (T.null nm) -> 1; _ -> 0
           CPInject _ p -> patBinders p
-          CPInjectRest _ -> 1
+          CPInjectRestM _ _ -> 1
           CPOr ps _ -> case ps of p : _ -> patBinders p; [] -> 0
-          CPAs _ p -> 1 + patBinders p
+          CPAsM _ _ p -> 1 + patBinders p
         closRun (Closure env body) = eval ctx env body
         goClos fl l c1 c2 =
           let x = VRigid l []
@@ -645,11 +880,96 @@ convertible ctx = go (200 :: Int)
             && and (zipWith (\(_, a) (_, b) -> go (fl - 1) l a b) sp1 sp2)
         etaRecord fs t = case t of
           VRecordV _ -> False -- the structural rule above decides
-          _ -> all (\(f, x) -> go (fuel - 1) lvl x (vproj ctx t f)) fs
+          _ -> all (\(f, x) -> go (fuel - 1) lvl x (vproj ctx Ordinary t f)) fs
+
+-- Pure conversion observes finalized hidden-universe identity. Fresh
+-- instantiation metas are reconciled by the checker before this fallback;
+-- treating an arbitrary meta as equal here would make distinct universe
+-- instances definitionally equal without recording a constraint.
+hiddenUniversesCompatible :: [Level] -> [Level] -> Bool
+hiddenUniversesCompatible left right =
+  map normalizeLevel left == map normalizeLevel right
+
+-- | Read a closed compiler-owned TypeLevel primitive tree. Ordinary globals,
+-- user functions, and neutral variables are deliberately not recognized.
+closedTypeLevel :: Value -> Maybe Level
+closedTypeLevel = \case
+  VPrim "__typeLevelZero" [] -> Just LZero
+  VPrim "__typeLevelFinite" [VLit (LitInt n)] | n >= 0 -> Just (finiteLevel n)
+  VPrim "__typeLevelOmega" [] -> Just LOmega
+  VPrim "__typeLevelSucc" [a] -> LSucc <$> closedTypeLevel a
+  VPrim "__typeLevelAdd" [a, b] -> LAdd <$> closedTypeLevel a <*> closedTypeLevel b
+  VPrim "__typeLevelMax" [a, b] -> LMax <$> closedTypeLevel a <*> closedTypeLevel b
+  _ -> Nothing
+
+-- | Instantiate rigid level leaves when a Core sort is evaluated under a
+-- term environment. 'LVar' uses the same outermost-first level identity as
+-- 'VRigid'; the environment itself is innermost-first, hence the conversion.
+-- This is the universe analogue of evaluating a 'CVar' and is required for
+-- applications of level-indexed type families.
+evalLevel :: EvalCtx -> Env -> Level -> Level
+evalLevel ctx env = normalizeLevel . go
+  where
+    go = \case
+      LVar l
+        | let i = length env - 1 - l
+        , i >= 0
+        , i < length env
+        , Just level <- valueLevel (force ctx (lookupEnv i env)) -> level
+      LProjection root path
+        | let i = length env - 1 - root
+        , i >= 0
+        , i < length env
+        , Just level <- valueLevel (foldl (vproj ctx Ordinary) (force ctx (lookupEnv i env)) path) -> level
+      LSucc a -> LSucc (go a)
+      LAdd a b -> LAdd (go a) (go b)
+      LMax a b -> LMax (go a) (go b)
+      LNeutral atom -> LNeutral (mapNeutralLevelAtomLevels go atom)
+      level -> level
+
+    valueLevel = \case
+      VLevel level -> Just level
+      VRigid l [] -> Just (LVar l)
+      VFlex m [] -> Just (LMeta m)
+      projected@VProjN {} -> do
+        (root, path) <- projectionRoot projected
+        pure (LProjection root path)
+      value -> closedTypeLevel value
+
+    projectionRoot = go []
+      where
+        go path = \case
+          VProjN _ receiver field -> go (field : path) receiver
+          VRigid root [] -> Just (root, path)
+          _ -> Nothing
+
+closedLevelValue :: Level -> Maybe Value
+closedLevelValue = \case
+  LZero -> Just (VPrim "__typeLevelZero" [])
+  LFinite n -> Just (VPrim "__typeLevelFinite" [VLit (LitInt n)])
+  LOmega -> Just (VPrim "__typeLevelOmega" [])
+  LSucc a -> VPrim "__typeLevelSucc" . pure <$> closedLevelValue a
+  LAdd a b -> VPrim "__typeLevelAdd" <$> sequence [closedLevelValue a, closedLevelValue b]
+  LMax a b -> VPrim "__typeLevelMax" <$> sequence [closedLevelValue a, closedLevelValue b]
+  LVar _ -> Nothing
+  LParam _ -> Nothing
+  LField _ _ -> Nothing
+  LProjection _ _ -> Nothing
+  LNeutral _ -> Nothing
+  LMeta _ -> Nothing
 
 -- | Pure primitive reduction shared by conversion and runtime.
 evalPurePrim :: Text -> [Value] -> Maybe Value
 evalPurePrim p args = case (p, args) of
+  ("__typeLevelFromNat", [VLit (LitInt n)])
+    | n >= 0 -> closedLevelValue (finiteLevel n)
+  ("__eqTypeLevel", [a, b])
+    | Just la <- closedTypeLevel a
+    , Just lb <- closedTypeLevel b -> bool (compareClosedLevel la lb == Just EQ)
+  ("__compareTypeLevel", [a, b])
+    | Just la <- closedTypeLevel a
+    , Just lb <- closedTypeLevel b
+    , Just ord <- compareClosedLevel la lb -> Just (VCtor (prelOrdering ord) [])
   ("addInt", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
   ("subInt", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
   ("mulInt", [VLit (LitInt a), VLit (LitInt b)]) -> int (a * b)
@@ -1061,6 +1381,11 @@ evalPurePrim p args = case (p, args) of
 -- §18.1 algebraic-effect kernel (whose continuations are ordinary
 -- closure values, so the driver needs application).
 evalPrimCtx :: EvalCtx -> Text -> [Value] -> Maybe Value
+-- Quotation represents a neutral 'CForceE' as the internal @force@ head.
+-- Declaration-universe specialization quotes and re-evaluates closed values,
+-- so this head must implement the same eliminator as the direct Core node or
+-- partially applied polymorphic aliases change meaning during specialization.
+evalPrimCtx ctx "force" [v] = Just (vforce ctx v)
 evalPrimCtx ctx p args = case evalPurePrim p args of
   Just v -> Just v
   Nothing -> evalEffPrim ctx p args
@@ -1204,7 +1529,7 @@ evalEffPrim ctx p args = case (p, args) of
     VCtor g [v] | g == prelEffPure -> Just (vapp ctx f Expl v)
     VCtor g [l, op, a, cont] | g == prelEffOp ->
       -- Op l op a (\x -> __effBind (cont x) f)
-      Just (VCtor g [l, op, a, VLam Expl QW "x" (Closure [f, cont] bindBody)])
+      Just (VCtor g [l, op, a, VLamM Ordinary Expl QW "x" (Closure [f, cont] bindBody)])
     _ -> Nothing
   -- §18.7/§32.2.19 Eff-carrier do-scope / exit-action nodes (Stage 4a).
   -- `__effDoscope` delimits a do-scope; under `runPure` it is transparent (it adds
@@ -1241,7 +1566,8 @@ evalEffPrim ctx p args = case (p, args) of
                   let k
                         | isTrueV (force ctx deepV) = reinstall cont
                         | otherwise = cont
-                   in Just (vapp ctx (vapp ctx clause Expl a) Expl k)
+                      runtimeClause = instantiateErasedClause clause
+                   in Just (vapp ctx (vapp ctx runtimeClause Expl a) Expl k)
             _ -> Nothing
       | g == prelEffOp ->
           -- operations at other labels propagate outward unchanged,
@@ -1249,7 +1575,7 @@ evalEffPrim ctx p args = case (p, args) of
           Just (VCtor g [l, opName, a, reinstall cont])
     _ -> Nothing
     where
-      reinstall cont = VLam Expl QW "x" (Closure [cont, ops, ret, label, deepV] handleBody)
+      reinstall cont = VLamM Ordinary Expl QW "x" (Closure [cont, ops, ret, label, deepV] handleBody)
   _ -> Nothing
   where
     effBindG = CGlob prelEffBind
@@ -1266,7 +1592,17 @@ evalEffPrim ctx p args = case (p, args) of
     sameLabel a b = case (a, b) of
       (VGlobN g1 [], VGlobN g2 []) -> g1 == g2
       (VCtor g1 [], VCtor g2 []) -> g1 == g2
+      (VLit (LitStr label1), VLit (LitStr label2)) -> label1 == label2
       _ -> False
     isTrueV = \case
       VCtor g [] | g == prelTrue -> True
       _ -> False
+    -- Operation-local `forall` parameters are represented by erased implicit
+    -- lambdas in typed Core, but the OpCall runtime payload intentionally does
+    -- not carry them. Native lowering erases those lambdas; the interpreter
+    -- mirrors that boundary by instantiating only the authenticated Q0/Impl
+    -- prefix with an inert value before applying payload and resumption.
+    instantiateErasedClause clause = case force ctx clause of
+      lambda@(VLamM _ Impl Q0 _ _) ->
+        instantiateErasedClause (vapp ctx lambda Impl (VRecordV []))
+      runtimeClause -> runtimeClause

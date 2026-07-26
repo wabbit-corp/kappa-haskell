@@ -1,0 +1,9 @@
+-- §7.6.1/§11.1.2.3A: a local value alias preserves the capability of its
+-- definiens.
+--! mode check
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+
+bad : (0 A : Type) -> Type
+let bad A =
+    let B = A
+    B

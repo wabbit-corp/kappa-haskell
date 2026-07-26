@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT
+
+data Code.{covariant u} : Type (succ u) =
+    Code (ordinary 0 A : Type u)
+
+expect term baseCode.{u} : Code.{u}
+
+bad.{u} :
+    (v : TypeLevel) ->
+    (@0 p : v <= u) ->
+    Nat ->
+    Code.{u}
+let bad v p n =
+    if n == 0 then baseCode.{u}
+    else
+        let lower : Code.{v} = bad v (n - 1)
+        lower

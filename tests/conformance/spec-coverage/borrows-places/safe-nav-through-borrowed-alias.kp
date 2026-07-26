@@ -13,7 +13,7 @@ module main
 
 import std.prelude.(type Option)
 
-type Inner = (c : Int)
+type Inner = (c : Int,)
 type Box = (1 opt : Option Inner, tag : Int)
 
 consumeBox : (1 b : Box) -> Box

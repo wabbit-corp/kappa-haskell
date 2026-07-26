@@ -953,7 +953,14 @@ runPrimIO' rt p args = case (p, args) of
             else VCtor prelTOExit [exitV]
   -- §18.1.6 race: run both branches concurrently; the first to terminate
   -- wins, the loser is interrupted with tag RaceLost and race waits for it to
-  -- terminate. The left branch wins ties.
+  -- terminate. The left branch wins ties. An already-complete left action is
+  -- observable before either scheduler agent runs, so resolve it directly
+  -- while still starting and draining the right branch. This removes host
+  -- thread scheduling from the canonical @race (ioPure a) (ioPure b)@ tie.
+  ("__race", [VPrim "ioPure" [leftValue], rightIO]) -> do
+    (rtid, rmv) <- spawnExit rt rightIO
+    interruptWait rtid rmv (interruptCause "RaceLost")
+    pure (VCtor prelROLeft [VCtor prelSuccess [leftValue]])
   ("__race", [leftIO, rightIO]) -> do
     (ltid, lmv) <- spawnExit rt leftIO
     (rtid, rmv) <- spawnExit rt rightIO
@@ -1055,7 +1062,7 @@ runPrimIO' rt p args = case (p, args) of
   -- (a bare `kapp(raw, act)`, where the kunit type slot was already absorbed by
   -- the wrapper), keeping interp == C == LLVM.
   ("__restoreAt", [raw, act]) ->
-    runIOValue rt (vapp ec (vapp ec raw Impl (VSort 0)) Expl act)
+    runIOValue rt (vapp ec (vapp ec raw Impl (VSort LZero)) Expl act)
   -- §18.1.11 source-level blocking bridge. The interpreter runs on GHC green
   -- threads, so it has no scheduler-worker monopolization to avoid; executing
   -- the body directly is the sequential oracle for success/failure/interruption.

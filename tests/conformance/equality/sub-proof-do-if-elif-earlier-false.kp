@@ -4,13 +4,14 @@
 -- into the later suite. Here the second suite uses the FIRST condition
 -- `(x < y) = False` ⟹ `y <= x` to discharge `subDefined x y`, even though its
 -- OWN guard `flag` says nothing about the order of x and y.
+-- NOTE: the condition keeps the primitive comparison spelling because the
+-- current negation-fact bridge operates on that layer; the standard
+-- `Ord Nat` spelling of negated-condition facts (§28.2.3 + §15.8.4) is
+-- pinned by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- positive/branch-negation-checked-sub.
 --! assertNoErrors
 
 module main
-
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
 
 consume : Nat -> Nat
 let consume n = n

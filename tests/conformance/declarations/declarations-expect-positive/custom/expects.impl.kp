@@ -1,0 +1,12 @@
+module custom.expects
+
+data Box : Type =
+    Box
+
+trait Display a =
+    show : a -> String
+
+build : Box
+let build = Box
+
+--! assertDeclKinds data, trait, signature, let

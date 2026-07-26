@@ -1,0 +1,22 @@
+-- Alpha-normalizing a shared recursive schema must not capture free schema
+-- occurrences with an ordinary binder whose spelling matches the canonical
+-- schema parameter.
+--! mode check
+--! requires capability kcoreText
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+result : Bool
+let result =
+    block
+        f.{u} : (A : Type u) -> (v : Int) -> (B : Type u) -> A -> A
+        g.{v} : (A : Type v) -> (u : Int) -> (B : Type v) -> A -> A
+        let f.{u} A v B x =
+            if True then x else g A v B x
+        let g.{v} A u B x =
+            if True then x else f A u B x
+        f Bool 0 String True

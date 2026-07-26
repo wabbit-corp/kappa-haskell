@@ -1,0 +1,62 @@
+kcore 1;
+
+module @main#1f5962a2ce9803c8 [
+  compilerInterfaceVersion = "1",
+  languageVersion = "kappa-v1",
+  levelCertificateVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  sourceModuleIdentity = "main",
+  typeLevelAlgebraVersion = "1"
+] {
+  def ordinary @main.bump#d2553ef3873502f2 :
+    ((ordinary ordinary omega explicit value %arg#41 : @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c) ->
+      @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c)
+  {
+    body = term-node "impl.kappa.core.body-unavailable" { };
+  }
+
+  data @main.LocalLifted#1bc66adbb99254e9.{covariant ^level#27}
+    (ordinary ordinary 0 implicit value %mono#73 :
+      apply @std.typelevel.Monotone#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4d6f6e6f746f6e65(explicit @main.bump#d2553ef3873502f2))
+    : Type add(1, level-term(
+        apply @main.bump#d2553ef3873502f2(
+          explicit term-node "impl.kappa.level-value" {
+            level = level-value(^level#27);
+          })))
+    certificate @schema:certificate.h5239777368379342659#b50f6553fe5d0fc {
+      constructor @main.LocalLifted.constructor#9cc15735880180b7.{^level#27} :
+        ((ordinary ordinary 0 explicit value %payload#99 :
+          Type level-term(
+            apply @main.bump#d2553ef3873502f2(
+              explicit term-node "impl.kappa.level-value" {
+                level = level-value(^level#27);
+              }))) ->
+          apply @main.LocalLifted#1bc66adbb99254e9.{^level#27}(implicit %mono#73))
+        fields { @field:A#4b415050413a76313a4b436f72654669656c640041 = 0; };
+    }
+
+  schema-certificate @schema:certificate.h5239777368379342659#b50f6553fe5d0fc
+    for @main.LocalLifted#1bc66adbb99254e9
+    [checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, levelCertificateVersion = 1, signatureHash = local, saturationArity = 1] {
+      roles = [covariant];
+      clauseKinds = [sort_declaration, point_constructor, eliminator, computation_rule];
+      monotoneWitnesses = [
+        {
+          parameter = 0;
+          operator = @main.bump#d2553ef3873502f2;
+          goal = apply @std.typelevel.Monotone#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4d6f6e6f746f6e65(
+            explicit @main.bump#d2553ef3873502f2);
+          evidence = %mono#73;
+          dependencies = [
+            %mono#73,
+            @std.typelevel.Monotone#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4d6f6e6f746f6e65,
+            @main.bump#d2553ef3873502f2
+          ];
+        }
+      ];
+    }
+
+  extension impl.kappa 1;
+}

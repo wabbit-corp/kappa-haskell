@@ -1,0 +1,12 @@
+-- §7.6.1/§11.1.2.3A: a parameterized local type alias preserves its declared
+-- kind and the parametric capability of both its parameter and result.
+--! mode check
+--! assertNoErrors
+
+good :
+    (0 A : Type) -> A -> A
+
+let good A x =
+    type Id (0 T : Type) : Type = T
+    let y : Id A = x
+    y

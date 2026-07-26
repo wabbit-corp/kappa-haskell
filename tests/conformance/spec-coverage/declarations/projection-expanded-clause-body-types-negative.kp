@@ -5,7 +5,7 @@ module main
 -- elaborate to `Zipper S T T`. Returning the focus value instead is a
 -- type error in both clauses.
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection badSet (place p : Cell) : Int =
     get -> p.value

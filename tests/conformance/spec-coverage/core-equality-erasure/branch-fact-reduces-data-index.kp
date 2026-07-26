@@ -1,0 +1,37 @@
+-- §31.1.2 + §16.4.1 + §17.1.7: branch-local boolean facts reduce a data
+-- INDEX expression (not merely a Bool -> Type function). Inside the then
+-- branch the active refinement context proves b = True, so the index
+-- (if b then 1 else 2) iota-reduces to 1 and P 1 is accepted; the else
+-- branch dually reduces it to 2; a boolean match introduces the same
+-- facts. Outside any branch no fact is available, the index stays
+-- neutral, and returning P 1 unconditionally is rejected.
+--! mode check
+--! assertErrorCount 1
+--! assertNoWarnings
+--! assertDiagnosticFamily error kappa.type.mismatch
+module main
+
+data P (n : Nat) : Type =
+    MkP
+
+one : P 1
+let one = MkP
+
+two : P 2
+let two = MkP
+
+-- POSITIVE: if-form branch evidence reduces the index in each branch.
+pickIf : (b : Bool) -> P (if b then 1 else 2)
+let pickIf b = if b then one else two
+
+-- POSITIVE: match-form boolean decision introduces the same facts.
+pickMatch : (b : Bool) -> P (if b then 1 else 2)
+let pickMatch b =
+    match b
+    case True -> one
+    case False -> two
+
+-- NEGATIVE: outside any branch the index is neutral; P 1 does not
+-- convert to P (if b then 1 else 2).
+badPick : (b : Bool) -> P (if b then 1 else 2)
+let badPick b = one    --!! kappa.type.mismatch

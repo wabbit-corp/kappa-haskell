@@ -6,10 +6,18 @@
 -- position. Decimal, hex, and binary spellings of the same Nat value
 -- must be definitionally equal as indices (underscores/base prefixes
 -- have no semantic effect, §6.1.1), so `Tag 0x3` accepts `Three : Tag 3`
--- and `Tag 0b101` accepts `Five : Tag 5`. A ground literal index also
--- drives exhaustiveness: at `Tag 3` the constructor `Five : Tag 5` is
--- refuted by index disequality (5 ≠ 3), so matching `Three` alone is
--- exhaustive.
+-- and `Tag 0b101` accepts `Five : Tag 5`.
+--
+-- Mechanism (Nat/Fin revision): under §28.2 a literal Nat index is a
+-- CONSTRUCTOR term — `0x3`, `0b101`, `3`, `5` all normalize through
+-- `FromInteger Nat` (§31.1.3) to canonical `Succ^k Zero` spines, so
+-- base spelling and constructor identity are two distinct facts this
+-- test composes. A ground literal index also drives exhaustiveness: at
+-- `Tag 3` the constructor `Five : Tag 5` is refuted by the §10.2.1
+-- no-confusion package on those spines (natZeroNotSucc /
+-- natSuccInjective), §30.2.7 returns `Refuted`, and the arm's fiber is
+-- `Empty` — so matching `Three` alone is exhaustive, and an explicit
+-- `case Five -> impossible` arm MUST be accepted (§17.1.4).
 module main
 
 data Tag (n : Nat) : Type =
@@ -22,12 +30,41 @@ let viaHex = Three
 viaBin : Tag 0b101
 let viaBin = Five
 
--- exhaustive at ground index 3: Five is refuted by 5 ≠ 3
+-- exhaustive at ground index 3: Five is refuted by no-confusion on the
+-- closed constructor spines (5 = 3 is `Succ`-peeled to `Succ^2 Zero =
+-- Zero`, refuted); the explicit impossible arm pins the refutation
+-- rather than leaving it implicit in an omitted branch.
 pick : Tag 3 -> Int
 let pick t =
     match t
     case Three -> 33
+    case Five -> impossible
 
 narrowed : Int
 let narrowed = pick viaHex
--- STATUS(a0497523): PASS
+
+-- A symbolic-index sibling: the same family shape with an open index.
+data Tag2 (n : Nat) : Type =
+    Off  : Tag2 0
+    Bump : (prev : Tag2 n) -> Tag2 (n + 1)
+
+-- POSITIVE (symbolic refutation): at `Tag2 (n + 1)` the `Off : Tag2 0`
+-- arm demands `0 = n + 1`, refuted by §15.8.4 Presburger with
+-- non-negativity (NOT by constructor no-confusion — `natAdd n 1` is
+-- stuck on the rigid `n`, not a `Succ` spine). §30.2.7 `Refuted`,
+-- §17.1.4 accepts `impossible`. The Bump arm is ordinary metavariable
+-- unification on the shared stuck head (`natAdd ?k 1 = natAdd n 1`).
+unbump : forall (n : Nat). Tag2 (n + 1) -> Tag2 n
+let unbump t =
+    match t
+    case Bump p -> p
+    case Off -> impossible
+
+-- POSITIVE (spelling bridge): `Tag2 (Nat.Succ n)` and `Tag2 (n + 1)`
+-- are NOT definitionally equal for open `n`; acceptance is the §30.2.7
+-- `PropositionallyCompatible` channel — a §15.8 solver proof of
+-- `n + 1 = Succ n` consumed as an erased transport per §16.1.8.
+-- (For CLOSED indices the two spellings compute to the same spine and
+-- no bridge is involved — that is the `viaHex`/`viaBin` half above.)
+toSucc : forall (n : Nat). Tag2 (n + 1) -> Tag2 (Nat.Succ n)
+let toSucc t = t

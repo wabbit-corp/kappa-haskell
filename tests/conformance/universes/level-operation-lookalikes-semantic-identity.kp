@@ -1,0 +1,36 @@
+-- §11.1.1/§11.1.2.2: ordinary TypeLevel-producing functions remain admissible
+-- neutral indices, but Boolean lookalikes do not become level assumptions
+-- merely because they have compatible types. Solver decomposition and bound
+-- recognition are selected by semantic identity.
+--! mode check
+
+fakeSucc : TypeLevel -> TypeLevel
+let fakeSucc u = u
+
+fakeAdd : TypeLevel -> TypeLevel -> TypeLevel
+let fakeAdd u v = u
+
+fakeMax : TypeLevel -> TypeLevel -> TypeLevel
+let fakeMax u v = u
+
+fakeLt : TypeLevel -> TypeLevel -> Bool
+let fakeLt u v = True
+
+fakeLe : TypeLevel -> TypeLevel -> Bool
+let fakeLe u v = True
+
+type BadSucc (u : TypeLevel) : Typeω = Type(fakeSucc u)
+type BadAdd (u : TypeLevel) (v : TypeLevel) : Typeω = Type(fakeAdd u v)
+type BadMax (u : TypeLevel) (v : TypeLevel) : Typeω = Type(fakeMax u v)
+
+type BadLt : Typeω =
+    (u : TypeLevel) ->
+    (@0 p : fakeLt u ω) ->
+    Type u
+
+type BadLe : Typeω =
+    (u : TypeLevel) ->
+    (@0 p : fakeLe u ω) ->
+    Type u
+
+--! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE

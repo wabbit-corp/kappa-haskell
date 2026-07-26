@@ -1,0 +1,12 @@
+-- §13.2.4A: an inferred record field without quantity 0 is an ordinary
+-- type-code slot and therefore cannot store a parametric type witness.
+--! mode check
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+bad :
+    (0 A : Type) -> Unit
+
+let bad A =
+    let r = (A = A,)
+    ()

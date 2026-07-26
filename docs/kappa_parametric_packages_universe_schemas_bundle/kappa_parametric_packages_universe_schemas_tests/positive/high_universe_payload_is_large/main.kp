@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+
+type LargePack : Type3 =
+    (parametric 0 T : Type3,
+     value : T)

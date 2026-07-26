@@ -37,7 +37,7 @@ import Kappa.Eval (EvalCtx (..), Globals (..))
 import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
-import Kappa.Source (ModuleName, Pos (..), Span (..), moduleNameText)
+import Kappa.Source (ModuleName (..), Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
 import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory)
 import System.Environment (getArgs)

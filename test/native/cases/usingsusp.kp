@@ -8,6 +8,8 @@
 -- Exercises the do-kernel `using` CPS lowering surviving a park.
 module main
 
+import std.prelude.(type Exit(..))
+
 data Res : Type = MkRes (rid : Integer)
 
 instance Releasable (IO e) Res =

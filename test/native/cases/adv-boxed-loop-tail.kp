@@ -10,6 +10,8 @@
 -- closure-bearing body), keeping the boxed lowering.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..))
+
 spinThenPrint : UIO Unit
 let spinThenPrint = do
     let r <- newRef 0

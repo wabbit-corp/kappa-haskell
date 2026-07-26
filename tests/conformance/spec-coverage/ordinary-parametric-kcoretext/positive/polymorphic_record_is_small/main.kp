@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+type Poly : Type =
+    (A : Type) -> A -> A
+
+type Box : Type =
+    (f : Poly,)
+
+boxId :
+    Box -> Box
+
+let boxId b =
+    b

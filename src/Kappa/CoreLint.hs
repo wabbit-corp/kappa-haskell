@@ -74,10 +74,15 @@ lintTermHeads ctx who = go
               Nothing -> []
          in here ++ go hd ++ concatMap (go . snd) args
       CVar _ -> []
+      CLocal _ _ -> []
       CGlob _ -> []
       CLam _ _ _ b -> go b
       CPi _ _ _ _ a b -> go a ++ go b
+      CUniverseLift _ _ _ t' -> go t'
+      CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
+        concatMap go sourceArguments ++ concatMap go targetArguments ++ go t'
       CSort _ -> []
+      CLevel _ -> []
       CLit _ -> []
       CCtor _ _ as -> concatMap go as
       CMatch s _ alts -> go s ++ concatMap goAlt alts
@@ -89,8 +94,12 @@ lintTermHeads ctx who = go
       CInject _ e -> go e
       CLet _ _ a b c -> go a ++ go b ++ go c
       CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CLetPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecGroupM _ definitions body ->
+        concatMap (\definition -> go (clrdType definition) ++ go (clrdRhs definition)) definitions ++ go body
       CMeta _ -> []
-      CDo {} -> []
+      CDo _ items -> concatMap goItem items
       CSealE _ e -> go e
       CSigT _ e -> go e
       CThunkE e -> go e
@@ -99,6 +108,31 @@ lintTermHeads ctx who = go
       CIf a b c -> go a ++ go b ++ go c
       CQuote _ slots -> concatMap go slots
     goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
+
+    goItem = \case
+      KBind _ _ action _ -> go action
+      KLet _ _ value -> go value
+      KLetQ _ value mElse -> go value ++ maybe [] (go . snd) mElse
+      KExpr term -> go term
+      KVarItem _ initial action _ -> go initial ++ go action
+      KAssign root _ value action _ -> go root ++ go value ++ go action
+      KReturn term -> go term
+      KBreak {} -> []
+      KContinue {} -> []
+      KWhile _ condition body mElse ->
+        goCondition condition ++ concatMap goItem body ++ maybe [] (concatMap goItem) mElse
+      KFor _ _ source body mElse ->
+        go source ++ concatMap goItem body ++ maybe [] (concatMap goItem) mElse
+      KIf alternatives mElse ->
+        concatMap (\(condition, body) -> go condition ++ concatMap goItem body) alternatives
+          ++ maybe [] (concatMap goItem) mElse
+      KDefer _ action -> go action
+      KUsing _ acquire release -> go acquire ++ go release
+      KSubDo _ body -> concatMap goItem body
+
+    goCondition = \case
+      KCondPure condition -> go condition
+      KCondAction condition -> go condition
 
 -- | Decide whether @hd@, used as the head of a value application, is
 -- /statically/ a non-function value. Returns 'Just' a human-readable reason

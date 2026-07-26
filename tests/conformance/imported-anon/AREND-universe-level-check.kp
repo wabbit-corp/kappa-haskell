@@ -30,9 +30,8 @@ let liftType = Nat    -- Nat : Type0, and Type0 ≤ Type1
 funType : Type0
 let funType = Nat -> Nat
 
--- POSITIVE: universe-polymorphic function.
--- The bare `Type` introduces a fresh level metavariable inferred at each site.
-identity : forall (A : Type) -> A -> A
+-- POSITIVE: parametric polymorphic function at Type0 (§11.3).
+identity : forall (A : Type). A -> A
 let identity x = x
 
 useIdNat : Nat
@@ -44,11 +43,12 @@ let useIdType = identity Nat
 -- NEGATIVE: using a universe at a level that is too large for the required level.
 -- `Type1` cannot be classified in `Type1`; it requires `Type2` (or larger).
 badUniverse : Type1
-let badUniverse = Type1    --!! kappa.type.mismatch
+let badUniverse = Type1    --!! E_UNIVERSE_SELF_CONTAINMENT
 
 -- NEGATIVE: using a value of type `Type1` where a `Type0` is expected.
 -- `Type0` is not cumulative downward.
 downLift : Type0
-let downLift = Type1    --!! kappa.type.mismatch
+let downLift = Type1    --!! E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.universe.constraint
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT

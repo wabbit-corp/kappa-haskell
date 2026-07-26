@@ -1,0 +1,13 @@
+-- §11.1.1: explicit Type indices use the canonical TypeLevel language.
+-- Numeric constants do not depend on overloaded FromInteger resolution, and
+-- max is authenticated as the standard TypeLevel operation.
+--! mode check
+--! assertNoErrors
+
+module main
+
+data AtZero : Type 0 =
+    AtZero
+
+data AtMaximum.{u, v} (0 A : Type u) (0 B : Type v) : Type (max u v) =
+    AtMaximum

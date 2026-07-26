@@ -29,28 +29,28 @@ type Kind = (| A | B | C |)
 -- residual `{kind}`, the binder `kind` retains type `Kind = (| A | B | C |)`
 -- minus positive evidence; the inner match on `kind` must therefore admit B
 -- and C arms (and a catch-all to discharge residual negative evidence).
-limitedKind : (data : (kind : Kind)) -> String
+limitedKind : (data : (kind : Kind,)) -> String
 let limitedKind data =
     match data
       case (kind = (| _ : A |))  -> "A is special"
-      case (kind = k)            ->
+      case (kind = k,)            ->
         match k
           case (| _ : B |) -> "B"
           case (| _ : C |) -> "C"
           case _           -> ""
 
---! assertType limitedKind (data : (kind : Kind)) -> String
+--! assertType limitedKind (data : (kind : Kind,)) -> String
 
 -- NEGATIVE: omitting the catch-all in the inner match must surface as
 -- non-exhaustive even though the outer match peeled off the A case — because
 -- inside the inner match, the original Kind row is still in scope. (The
 -- branch-local LacksCtor evidence for A is not strong enough to coerce the
 -- inner match into a smaller closed row.)
-limitedKindMissing : (data : (kind : Kind)) -> String
+limitedKindMissing : (data : (kind : Kind,)) -> String
 let limitedKindMissing data =
     match data
       case (kind = (| _ : A |))  -> "A is special"
-      case (kind = k)            ->
+      case (kind = k,)            ->
         match k
           case (| _ : B |) -> "B"
 

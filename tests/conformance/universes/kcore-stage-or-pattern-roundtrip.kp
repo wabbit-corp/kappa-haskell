@@ -1,0 +1,16 @@
+module main
+
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+data PairChoice : Type =
+    LeftPair Int Int
+    | RightPair Int Int
+
+readFirst : PairChoice -> Int
+let readFirst value =
+    match value
+    case LeftPair x y | RightPair y x -> x

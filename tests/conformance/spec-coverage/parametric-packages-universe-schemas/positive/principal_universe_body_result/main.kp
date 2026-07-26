@@ -1,0 +1,18 @@
+-- §11.1.2.4A: a declaration body participates in the complete semantic SCC
+-- before its result-classifier universe is minimized. The identity body forces
+-- the result universe to the ordinary input type's universe.
+module main
+
+codeOf :
+    (ordinary 0 A : Type) -> Type
+
+let codeOf A = A
+
+type Low : Type0 = codeOf Int
+type High : Type3 = codeOf Type2
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

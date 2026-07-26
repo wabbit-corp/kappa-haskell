@@ -6,9 +6,9 @@ data Byte : Type =
 type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
 type Outer = (sized : Sized, tag : Nat)
 
-keepBuffer : forall (n : Nat). (inout buffer : Array n Byte) -> UIO (1 buffer : Array n Byte)
-let keepBuffer (@0 n : Nat) (inout buffer : Array n Byte) : UIO (1 buffer : Array n Byte) =
-    pure (buffer = buffer)
+keepBuffer : forall (n : Nat). (inout buffer : Array n Byte) -> UIO (1 buffer : Array n Byte,)
+let keepBuffer (@0 n : Nat) (inout buffer : Array n Byte) : UIO (1 buffer : Array n Byte,) =
+    pure (buffer = buffer,)
 
 ok : (1 outer : Outer) -> UIO Outer
 let ok (1 outer : Outer) : UIO Outer =

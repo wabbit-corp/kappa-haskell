@@ -1,0 +1,4 @@
+--! mode interface
+--! assertSemanticHashDiffers irrelevant.kp invariant.kp
+--! assertInterfaceContainsUniverseRoles irrelevant.kp R [irrelevant]
+--! assertInterfaceContainsUniverseRoles invariant.kp R [invariant]

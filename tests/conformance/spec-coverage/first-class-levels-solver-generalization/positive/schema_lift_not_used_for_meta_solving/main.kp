@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertSchemaLiftCount 0
+
+data Code.{covariant u} : Type (succ u) =
+    Code (ordinary 0 A : Type u)
+
+inferred : Code.{0} -> Code.{0}
+let inferred x =
+    let y : Code = x
+    y

@@ -1,0 +1,8 @@
+module main
+
+-- Spec §11.1.4: RuntimeErased evidence introduction is compiler-owned.
+instance RuntimeErased Int
+
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+--! assertDiagnosticFamily error kappa.universe.level-expression

@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+rememberLevel :
+    (level : TypeLevel) ->
+    (parametric 0 T : Type level) ->
+    TypeLevel
+
+let rememberLevel level T =
+    level

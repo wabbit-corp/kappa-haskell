@@ -1,0 +1,10 @@
+-- §11.1.2.7/§11.1.2.8: an unbounded ordinary dependent record over
+-- TypeLevel has no ceiling independent of the bound level variable. The
+-- corresponding omitted-mode type-code fields default to parametric.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE
+--! assertDiagnosticFamily error kappa.universe.unbounded-telescope
+
+type LevelRecord =
+    (ordinary 0 u : TypeLevel, ordinary 0 T : Type u)

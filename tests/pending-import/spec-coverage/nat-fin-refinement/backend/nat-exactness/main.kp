@@ -1,0 +1,111 @@
+aboveWord :
+    Nat
+
+let aboveWord =
+    natAdd 18446744073709551616 1
+
+largeProduct :
+    Nat
+
+let largeProduct =
+    natMultiply 4294967296 4294967296
+
+needDiv :
+    forall (A : Type).
+    (@evidence : CheckedDiv A) ->
+    (x : A) ->
+    (y : A) ->
+    (@proof : divDefined x y = True) ->
+    A
+
+let needDiv @evidence x y @proof =
+    divide x y @proof
+
+needMod :
+    forall (A : Type).
+    (@evidence : CheckedMod A) ->
+    (x : A) ->
+    (y : A) ->
+    (@proof : modDefined x y = True) ->
+    A
+
+let needMod @evidence x y @proof =
+    modulo x y @proof
+
+largeQuotient :
+    Nat
+
+let largeQuotient =
+    needDiv aboveWord 3
+
+largeRemainder :
+    Nat
+
+let largeRemainder =
+    needMod aboveWord 3
+
+largeSuccessor :
+    Nat
+
+let largeSuccessor =
+    natAdd aboveWord 1
+
+largePredecessor :
+    Nat
+
+let largePredecessor =
+    aboveWord - 1
+
+largeComparison :
+    Ordering
+
+let largeComparison =
+    natCompare aboveWord largeProduct
+
+-- 500-digit arm (cross-listed with
+-- tests/pending-import/spec-coverage/literals/bigint-500-digit-literal-arithmetic.kp):
+-- natAdd recurses on its LEFT argument, so exact arithmetic at this
+-- magnitude is only reachable through the non-unary ExactNatural
+-- representation contract of Spec 34.3.2A plus 28.2's exact
+-- closed-computation clause, never through a Succ spine.
+
+huge :
+    Nat
+
+let huge =
+    12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890
+
+hugeSuccessor :
+    Nat
+
+let hugeSuccessor =
+    natAdd huge 1
+
+hugeDelta :
+    Nat
+
+let hugeDelta =
+    hugeSuccessor - huge
+
+hugeComparison :
+    Ordering
+
+let hugeComparison =
+    natCompare hugeSuccessor huge
+
+--! requires capability representationQueries
+--! requires capability representationCertificates
+--! mode run
+--! assertNoErrors
+--! assertEval aboveWord 18446744073709551617
+--! assertEval largeProduct 18446744073709551616
+--! assertEval largeQuotient 6148914691236517205
+--! assertEval largeRemainder 2
+--! assertEval largeSuccessor 18446744073709551618
+--! assertEval largePredecessor 18446744073709551616
+--! assertEval largeComparison GT
+--! assertEval hugeDelta 1
+--! assertEval hugeComparison GT
+--! assertExactNaturalRepresentation for Nat
+--! assertRepresentationClass aboveWord ExactNatural
+--! assertRepresentationClass huge ExactNatural

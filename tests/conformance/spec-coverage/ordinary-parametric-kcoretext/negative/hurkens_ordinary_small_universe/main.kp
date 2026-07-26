@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data SmallUniverse : Type0 =
+    Code (ordinary 0 T : Type0)

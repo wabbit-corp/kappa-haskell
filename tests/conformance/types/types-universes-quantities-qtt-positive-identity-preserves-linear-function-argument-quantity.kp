@@ -3,7 +3,7 @@ module main
 -- Source issue: Idris2#189
 -- Kappa analogue: expected linear binder quantities on function arguments should be preserved through ordinary identity-style wrappers.
 -- Spec: §7.1.3, §14.3
-id : forall a. a -> a
+id : forall (a : Type). a -> a
 let id x = x
 
 consume : ((1 _ : Int) -> (1 _ : Int) -> Int) -> Int

@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Lifted 0 covariant
+--! assertSchemaCertificateValid Lifted
+--! assertSchemaLiftPresent Lifted
+--! assertStageDumpRoundTrips KCore
+--! allow_unsafe_assert_proof
+
+import lib exposing Lifted
+
+up : Lifted.{0} -> Lifted.{2}
+let up x = x

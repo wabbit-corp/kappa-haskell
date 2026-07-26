@@ -19,9 +19,9 @@ data Vec (n : Nat) (a : Type) : Type =
 
 type Sized : Type = (len : Nat, buffer : Vec this.len Byte)
 
-touch : forall (@0 n : Nat). (inout b : Vec n Byte) -> (& l : Nat) -> UIO (1 b : Vec n Byte)
-let touch @n (inout b : Vec n Byte) (& l : Nat) : UIO (1 b : Vec n Byte) =
-    pure (b = b)
+touch : forall (@0 n : Nat). (inout b : Vec n Byte) -> (& l : Nat) -> UIO (1 b : Vec n Byte,)
+let touch @n (inout b : Vec n Byte) (& l : Nat) : UIO (1 b : Vec n Byte,) =
+    pure (b = b,)
 
 bad : (1 s : Sized) -> UIO Unit
 let bad (1 s : Sized) : UIO Unit = do

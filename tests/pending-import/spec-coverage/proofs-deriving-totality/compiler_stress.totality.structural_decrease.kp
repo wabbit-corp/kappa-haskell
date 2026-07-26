@@ -4,12 +4,18 @@
 
 --! mode check
 
-data Nat : Type =
+-- Nat2 is a deliberately user-local Peano type: §28.2 now ships the
+-- canonical inductive `Nat` (Zero/Succ), so a local `data Nat` would
+-- shadow a spec-canonical type of the same shape. Per §15.8.1, the user
+-- `add` below is also NOT recognized as prelude Nat addition even though
+-- it has natAdd's exact shape — recognition is by resolved semantic
+-- identity, never source spelling or syntactic resemblance.
+data Nat2 : Type =
     Z
-    | S Nat
+    | S Nat2
 
 -- POSITIVE: add decreases structurally on n; each recursive call passes n', a sub-term of S n'.
-add : Nat -> Nat -> Nat
+add : Nat2 -> Nat2 -> Nat2
 let add n m decreases structural n =
     match n
     case Z    -> m
@@ -20,7 +26,7 @@ data List a : Type =
     Nil
     | Cons a (List a)
 
-len : List a -> Nat
+len : List a -> Nat2
 let len xs decreases structural xs =
     match xs
     case Nil       -> Z

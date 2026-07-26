@@ -1,0 +1,12 @@
+type BareBooleanPredicate
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> contains (lo .. hi) value)
+
+-- Spec 11.4.2 lists the only positions where a bare Bool is promoted to
+-- `b = True`; an arbitrary lambda result in Refined's Type-valued
+-- predicate argument is not one of them, so the Bool-valued body must
+-- not silently kind-check by coercion (T.12.7). The portable spelling is
+-- `(contains (lo .. hi) value) = True`.
+--! assertErrorCount 1

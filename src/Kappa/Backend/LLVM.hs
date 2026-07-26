@@ -56,11 +56,11 @@ import Kappa.Backend.IR
   , BackendPat (..)
   , BackendTerm (..)
   , KBackendIR (..)
-  , backendPatToCorePat
   , lowerKBackendIR
   )
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import qualified Kappa.Backend.Repr as Repr
+import qualified Kappa.Builtins as Builtins
 import Kappa.Build.Types (FfiClass (..))
 import Kappa.Check (CheckState (..))
 import Kappa.Core
@@ -280,12 +280,16 @@ userCtorKeys = goT
       | Repr.isBuiltinCtor g = Set.empty -- builtins keep fixed ids; not numbered
       | otherwise = Set.singleton (gKey g)
     goT t = case t of
+      CUniverseLift _ _ _ inner -> goT inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> goT inner
       CVar {} -> Set.empty
+      CLocal {} -> Set.empty
       CGlob {} -> Set.empty
       CLam _ _ _ b -> goT b
       CPi _ _ _ _ ty b -> goT ty <> goT b
       CApp _ a b -> goT a <> goT b
       CSort {} -> Set.empty
+      CLevel {} -> Set.empty
       CLit {} -> Set.empty
       CCtor g _ args -> user g <> foldMap goT args
       CMatch s _ alts -> goT s <> foldMap goAlt alts
@@ -297,6 +301,11 @@ userCtorKeys = goT
       CInject _ e -> goT e
       CLet _ _ ty rhs body -> goT ty <> goT rhs <> goT body
       CLetRec _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetPolyM _ _ _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRecPolyM _ _ _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRecGroupM _ definitions body ->
+        Set.unions
+          (goT body : [goT (clrdType definition) <> goT (clrdRhs definition) | definition <- definitions])
       CMeta {} -> Set.empty
       CDo _ items -> foldMap goItem items -- §M-E+: ctors ARE built/matched in the do-kernel
       CSealE _ e -> goT e
@@ -1560,8 +1569,12 @@ expandTopOrLL (BackendAlt meta pat binders g body) = [BackendAlt meta p binders 
 distributePatLL :: BackendPat -> [BackendPat]
 distributePatLL = \case
   BPOr ps _ -> concatMap distributePatLL ps
-  BPCtor g ps -> [BPCtor g qs | qs <- mapM distributePatLL ps]
-  BPTuple ps -> [BPTuple qs | qs <- mapM distributePatLL ps]
+  BPCtor g runtimeArity fields ->
+    let (indices, patterns) = unzip fields
+     in [BPCtor g runtimeArity (zip indices qs) | qs <- mapM distributePatLL patterns]
+  BPTuple runtimeArity fields ->
+    let (indices, patterns) = unzip fields
+     in [BPTuple runtimeArity (zip indices qs) | qs <- mapM distributePatLL patterns]
   BPRecord fs rest ->
     let (names, pats) = unzip fs
      in [BPRecord (zip names qs) rest | qs <- mapM distributePatLL pats]
@@ -1576,8 +1589,8 @@ distributePatLL = \case
 orReorderedLL :: BackendPat -> Bool
 orReorderedLL = \case
   BPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReorderedLL ps
-  BPCtor _ ps -> any orReorderedLL ps
-  BPTuple ps -> any orReorderedLL ps
+  BPCtor _ _ fields -> any (orReorderedLL . snd) fields
+  BPTuple _ fields -> any (orReorderedLL . snd) fields
   BPRecord fs _ -> any (orReorderedLL . snd) fs
   BPInject _ p -> orReorderedLL p
   BPAs _ p -> orReorderedLL p
@@ -1701,15 +1714,12 @@ bodyToJoin compileBody joinL body = do
 -- refutable (it dispatches on a tag / equality).  Mirrors which 'CorePat' forms
 -- C's 'patTest' answers 'Nothing' for.
 patAlwaysMatches :: BackendPat -> Bool
-patAlwaysMatches = patAlwaysMatchesCore . backendPatToCorePat
-
-patAlwaysMatchesCore :: CorePat -> Bool
-patAlwaysMatchesCore = \case
-  CPWild -> True
-  CPVar _ -> True
-  CPAs _ p -> patAlwaysMatchesCore p
-  CPTuple ps -> all patAlwaysMatchesCore ps
-  CPRecord fs _ -> all (patAlwaysMatchesCore . snd) fs
+patAlwaysMatches = \case
+  BPWild -> True
+  BPVar _ -> True
+  BPAs _ p -> patAlwaysMatches p
+  BPTuple _ fields -> all (patAlwaysMatches . snd) fields
+  BPRecord fs _ -> all (patAlwaysMatches . snd) fs
   -- A CPInject test exists in the C backend (kvariant_tagid dispatch), so an
   -- inject is refutable; keep parity by treating it as a test.
   _ -> False
@@ -1741,18 +1751,15 @@ patAlwaysMatchesCore = \case
 --   * 'CPInjectRest' / 'CPOr' -> a clean 'unsupported' (see notes below); emit a
 --     constant-false branch so the IR stays well-formed.
 patTestBranch :: Text -> BackendPat -> Text -> Gen ()
-patTestBranch v pat failL = patTestBranchCore v (backendPatToCorePat pat) failL
-
-patTestBranchCore :: Text -> CorePat -> Text -> Gen ()
-patTestBranchCore v pat failL = case pat of
-  CPWild -> pure ()
-  CPVar _ -> pure ()
-  CPAs _ p -> patTestBranchCore v p failL
+patTestBranch v pat failL = case pat of
+  BPWild -> pure ()
+  BPVar _ -> pure ()
+  BPAs _ p -> patTestBranch v p failL
   -- Milestone F: a literal pattern — value-equality against the scrutinee via
   -- the SAME runtime call the C backend uses (@klit_eq(v, lit)@, an @int@ truthy
   -- result).  A literal binds no fields ('patBindingsLL' returns @[]@), so this
   -- is purely a test.  An unsupported literal records an error and never matches.
-  CPLit l -> do
+  BPLit l -> do
     mlv <- litValueLL l
     case mlv of
       Nothing -> branchFalse -- unsupported literal: error already recorded
@@ -1763,43 +1770,57 @@ patTestBranchCore v pat failL = case pat of
         cond <- freshReg
         emit (cond <> " = icmp ne i32 " <> eqi <> ", 0")
         branchOn cond
-  CPCtor g _ ps -> do
-    tag <- ctorTagId g
-    declRuntime "declare i32 @kctor_tagid(ptr)"
-    ti <- freshReg
-    emit (ti <> " = call i32 @kctor_tagid(ptr " <> v <> ")")
-    cond <- freshReg
-    emit (cond <> " = icmp eq i32 " <> ti <> ", " <> T.pack (show tag))
-    branchOn cond
-    -- Tag confirmed: recurse LEFT-TO-RIGHT into each field, each at the C M-C
-    -- offset @kctor_arg(v, kctor_argc(v) - nps + i)@.  A field's own test (if
-    -- any) short-circuits to the SAME failL.
-    let nps = length ps
-    forM_ (zip [0 ..] ps) $ \(i, p) -> do
-      av <- ctorArgLL v nps i
-      patTestBranchCore av p failL
-  CPTuple ps -> do
+  BPCtor g _ fields -> do
+    if
+      | g == Builtins.prelNatZero -> do
+          requireNatural v
+          cmp <- compareNaturalWithZero v
+          cond <- freshReg
+          emit (cond <> " = icmp eq i32 " <> cmp <> ", 0")
+          branchOn cond
+      | g == Builtins.prelNatSucc -> do
+          requireNatural v
+          cmp <- compareNaturalWithZero v
+          cond <- freshReg
+          emit (cond <> " = icmp sgt i32 " <> cmp <> ", 0")
+          branchOn cond
+          forM_ fields $ \(_, p) -> do
+            predecessor <- natPredecessorLL v
+            patTestBranch predecessor p failL
+      | otherwise -> do
+          tag <- ctorTagId g
+          declRuntime "declare i32 @kctor_tagid(ptr)"
+          ti <- freshReg
+          emit (ti <> " = call i32 @kctor_tagid(ptr " <> v <> ")")
+          cond <- freshReg
+          emit (cond <> " = icmp eq i32 " <> ti <> ", " <> T.pack (show tag))
+          branchOn cond
+          -- Tag confirmed: recurse left-to-right through the physical runtime
+          -- indices recorded by KBackendIR after erasure and hidden-field lowering.
+          forM_ fields $ \(index, p) -> do
+            av <- ctorArgAtLL v index
+            patTestBranch av p failL
+  BPTuple runtimeArity fields -> do
     -- A tuple IS a record (K_REC); the arity is fixed, but the C backend still
     -- guards on @krec_size@, so mirror that, then recurse into @krec_at(v, i)@.
-    let n = length ps
     declRuntime "declare i32 @krec_size(ptr)"
     sz <- freshReg
     emit (sz <> " = call i32 @krec_size(ptr " <> v <> ")")
     cond <- freshReg
-    emit (cond <> " = icmp eq i32 " <> sz <> ", " <> T.pack (show n))
+    emit (cond <> " = icmp eq i32 " <> sz <> ", " <> T.pack (show runtimeArity))
     branchOn cond
-    forM_ (zip [0 ..] ps) $ \(i, p) -> do
-      av <- recAtLL v i
-      patTestBranchCore av p failL
+    forM_ fields $ \(index, p) -> do
+      av <- recAtLL v index
+      patTestBranch av p failL
   -- §17.2.5: a record pattern's rest binder always matches; the named fields
   -- determine the test.  Recurse into each @kproj(v, f)@.
-  CPRecord pfs _ ->
+  BPRecord pfs _ ->
     forM_ pfs $ \(f, p) -> do
       av <- projNameLL v f
-      patTestBranchCore av p failL
+      patTestBranch av p failL
   -- §13 variant pattern: tag test via the runtime's string-tag predicate, then
   -- recurse into the payload.
-  CPInject tag p -> do
+  BPInject tag p -> do
     nameG <- internCStr tag
     declRuntime "declare i32 @kvariant_is(ptr, ptr)"
     isv <- freshReg
@@ -1808,14 +1829,14 @@ patTestBranchCore v pat failL = case pat of
     emit (cond <> " = icmp ne i32 " <> isv <> ", 0")
     branchOn cond
     av <- variantPayloadLL v
-    patTestBranchCore av p failL
+    patTestBranch av p failL
   -- Deferred forms: record a clean unsupported and emit a never-taken branch so
   -- the surrounding IR is still well-formed.
-  CPInjectRest _ -> do
+  BPInjectRest _ -> do
     _ <- unsupported "pattern"
       "the LLVM backend does not lower residual-row variant patterns (CPInjectRest); use the C backend"
     branchFalse
-  CPOr _ _ -> do
+  BPOr _ _ -> do
     -- Top-level or-patterns are expanded into separate alternatives before
     -- codegen ('expandTopOrLL' / 'distributePatLL'), so any CPOr reaching here is
     -- nested — which would need decision-tree compilation.  Deferred.
@@ -1834,6 +1855,22 @@ patTestBranchCore v pat failL = case pat of
       deadL <- freshLabel "pat.dead."
       emit ("br label %" <> failL)
       startBlock deadL
+    requireNatural operand = do
+      declRuntime "declare i32 @kis_int_any(ptr)"
+      isInteger <- freshReg
+      emit (isInteger <> " = call i32 @kis_int_any(ptr " <> operand <> ")")
+      cond <- freshReg
+      emit (cond <> " = icmp ne i32 " <> isInteger <> ", 0")
+      branchOn cond
+    compareNaturalWithZero operand = do
+      zero <- litValueLL (LitInt 0)
+      case zero of
+        Nothing -> pure "1"
+        Just zeroOperand -> do
+          declRuntime "declare i32 @kint_cmp(ptr, ptr)"
+          comparison <- freshReg
+          emit (comparison <> " = call i32 @kint_cmp(ptr " <> operand <> ", ptr " <> zeroOperand <> ")")
+          pure comparison
 
 -- | A pattern whose fields 'bindPatDo' can push as a single env slot without a
 -- shape test: a variable, a wildcard, or an as-pattern over one of those.  Used
@@ -1883,51 +1920,52 @@ bindPat sv pat = do
 --     (its test path) — but a discard / absent rest binds cleanly.
 --   * 'CPInject' t p -> the payload's bindings at @kvariant_payload(v)@.
 patBindingsLL :: Text -> BackendPat -> Gen [Text]
-patBindingsLL sv = patBindingsCoreLL sv . backendPatToCorePat
-
-patBindingsCoreLL :: Text -> CorePat -> Gen [Text]
-patBindingsCoreLL = go
+patBindingsLL = go
   where
     go v = \case
-      CPWild -> pure []
-      CPLit _ -> pure []
-      CPVar _ -> pure [v]
-      CPAs _ p -> do rest <- go v p; pure (v : rest)
-      CPCtor _ nEx ps -> do
-        -- KBackendIR has already erased existential-skolem slots. A nonzero
-        -- count here would indicate an invalid caller that bypassed BackendPat.
-        skolems <- replicateM nEx compileUnit
-        let nps = length ps
-        fields <- concat <$> mapM (\(i, p) -> ctorArgLL v nps i >>= \av -> go av p) (zip [0 ..] ps)
-        pure (skolems ++ fields)
-      CPTuple ps ->
-        concat <$> mapM (\(i, p) -> recAtLL v i >>= \av -> go av p) (zip [0 ..] ps)
-      CPRecord pfs mrest -> do
+      BPWild -> pure []
+      BPLit _ -> pure []
+      BPVar _ -> pure [v]
+      BPAs _ p -> do rest <- go v p; pure (v : rest)
+      BPCtor g _ fields
+        | g == Builtins.prelNatZero -> pure []
+        | g == Builtins.prelNatSucc ->
+            concat <$> mapM (\(_, p) -> natPredecessorLL v >>= \av -> go av p) fields
+        | otherwise ->
+            concat <$> mapM (\(index, p) -> ctorArgAtLL v index >>= \av -> go av p) fields
+      BPTuple _ fields ->
+        concat <$> mapM (\(index, p) -> recAtLL v index >>= \av -> go av p) fields
+      BPRecord pfs mrest -> do
         named <- concat <$> mapM (\(f, p) -> projNameLL v f >>= \av -> go av p) pfs
         case mrest of
           Just nm | not (T.null nm) -> do
             rv <- recWithoutLL v (map fst pfs)
             pure (named ++ [rv])
           _ -> pure named
-      CPInject _ p -> variantPayloadLL v >>= \pl -> go pl p
-      CPInjectRest _ -> pure [v]
-      CPOr _ _ -> pure [] -- only non-binding ors could reach here; deferred anyway
+      BPInject _ p -> variantPayloadLL v >>= \pl -> go pl p
+      BPInjectRest _ -> pure [v]
+      BPOr _ _ -> pure [] -- only non-binding ors could reach here; deferred anyway
 
 -- | @kctor_arg(v, kctor_argc(v) - nps + i)@ as SSA: read the field count,
 -- compute the absolute index, then the field.  Matches C's 'ctorArgExpr' — the
 -- M-C offset that drops the leading (non-bound) constructor arguments.
-ctorArgLL :: Text -> Int -> Int -> Gen Text
-ctorArgLL v nps i = do
-  declRuntime "declare i32 @kctor_argc(ptr)"
+ctorArgAtLL :: Text -> Int -> Gen Text
+ctorArgAtLL v index = do
   declRuntime "declare ptr @kctor_arg(ptr, i32)"
-  argc <- freshReg
-  emit (argc <> " = call i32 @kctor_argc(ptr " <> v <> ")")
-  idx <- freshReg
-  -- kctor_argc(v) - nps + i  (nps and i are compile-time constants)
-  emit (idx <> " = add i32 " <> argc <> ", " <> T.pack (show (i - nps)))
   r <- freshReg
-  emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> idx <> ")")
+  emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> T.pack (show index) <> ")")
   pure r
+
+natPredecessorLL :: Text -> Gen Text
+natPredecessorLL value = do
+  one <- litValueLL (LitInt 1)
+  case one of
+    Nothing -> pure "null"
+    Just oneOperand -> do
+      declRuntime "declare ptr @kp_subInt(ptr, ptr)"
+      result <- freshReg
+      emit (result <> " = call ptr @kp_subInt(ptr " <> value <> ", ptr " <> oneOperand <> ")")
+      pure result
 
 -- | @krec_at(v, i)@ as SSA — a tuple's i-th positional field (mirrors C's
 -- 'recAtExpr').

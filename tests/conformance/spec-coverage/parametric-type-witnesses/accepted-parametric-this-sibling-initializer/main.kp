@@ -1,0 +1,11 @@
+-- §13.2.1 / §11.1.2.8: generated `this.field` projections preserve the
+-- field's declared observation mode while elaborating dependent siblings.
+--! mode check
+--! assertNoErrors
+
+type TypePair : Type =
+    (A : Type, B : Type)
+
+pair : TypePair
+let pair =
+    (A = Int, B = this.A)

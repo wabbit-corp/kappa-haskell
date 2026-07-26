@@ -1,14 +1,30 @@
 -- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
 --   (newtype LIST a = LIST [a] deriving (Eq, Read, Show); testReadShowNT).
 -- Spec: §10.1 (`data` declarations: a Curry newtype is a
---       single-constructor single-field data declaration), §14.3
---       (instances), §17.1.
+--       single-constructor single-field data declaration), §18 (`Eq`
+--       trait: `IsSet a` supertrait plus required `eqSound`/`eqComplete`
+--       members), §14.3.4 (missing associated static members fail
+--       instance checking), §14.5.1 (derived `IsSet`/`Eq`).
 --
--- Pins: the wrapper-as-data mapping — equality on wrapped values is
--- equality on their payloads, via an ordinary handwritten Eq instance
--- that unwraps the single constructor. (The standalone-`derive` half of
--- the original lives in
--- CURRY-singleton-data-wrapper-deriving-derive-eq.kp.)
+-- *** FLIPPED BY THE NAT/FIN SPEC REVISION — this test was green. ***
+-- The old pin accepted `instance Eq IntListW` supplying ONLY `(==)`.
+-- New §18 declares
+--     trait IsSet a => Eq (parametric 0 a : Type) =
+--         (==) ; eqSound ; eqComplete
+-- (the old `eqIsSet` member was deleted in favour of the `IsSet a`
+-- SUPERTRAIT). An instance supplying only `(==)` therefore fails
+-- instance checking per §14.3.4: required associated static members
+-- with no default that the instance does not define, and no
+-- `IsSet IntListW` evidence in scope for the supertrait.
+--
+-- The green half of the original Curry pin (equality on wrapped values
+-- is equality on their payloads) lives in
+-- proofs-deriving-totality/CURRY-singleton-data-wrapper-deriving-derive-eq.kp
+-- via `derive Eq`, which per §14.5.1 must synthesize
+-- `eqSound`/`eqComplete` through the §10.2.1 no-confusion package and
+-- discharge the `IsSet IntListW` supertrait. (§14.5.2
+-- `derive RefinementView` is NOT applicable here: the payload field
+-- carries no predicate/IsProp evidence fields.)
 
 module test
 
@@ -22,7 +38,6 @@ data IntListW : Type =
 wrap : List Int -> IntListW
 let wrap xs = MkIntListW xs
 
---! assertNoErrors
 --! assertType wrap (List Int -> IntListW)
 
 eqIntList : List Int -> List Int -> Bool
@@ -32,6 +47,11 @@ let eqIntList xs ys =
     case (x :: xr, y :: yr) -> if x == y then eqIntList xr yr else False
     case _ -> False
 
+-- NEGATIVE: a handwritten `Eq` instance that supplies only `(==)` omits
+-- the required `eqSound` and `eqComplete` members and discharges no
+-- `IsSet IntListW` supertrait, so instance checking fails (§14.3.4:
+-- "If a required associated static member has no default and the
+-- instance does not define it, instance checking fails").
 instance Eq IntListW =
     let (==) a b =
         match a
@@ -39,28 +59,5 @@ instance Eq IntListW =
             match b
             case MkIntListW ys -> eqIntList xs ys
 
---! assertNoErrors
-
--- POSITIVE: equality on wrapped lists is equality on their contents.
-twoCopies : IntListW
-let twoCopies = MkIntListW (1 :: 2 :: Nil)
-
-eqWrapped : Bool
-let eqWrapped = twoCopies == MkIntListW (1 :: 2 :: Nil)
-
---! assertType eqWrapped Bool
---! assertEval eqWrapped True
-
--- POSITIVE: wrapped lists with different contents are unequal (checked
--- through the prelude's derived-from-Eq `/=`).
-oneCopy : IntListW
-let oneCopy = MkIntListW (1 :: Nil)
-
-distinct : Bool
-let distinct = oneCopy /= twoCopies
-
---! assertNoErrors
---! assertType distinct Bool
---! assertEval distinct True
-
--- STATUS(a0497523): PASS
+--! assertErrorCount 1
+--! assertDiagnosticMatch eqSound|eqComplete|IsSet|member|instance

@@ -3558,3 +3558,18 @@ identify the reporting campaign lane; many entries cite a pinning test under
 
 - **§T.5.4** (L52359) `[r3:dx-runtime]`
   Appendix T defines `assertExitCode n` ("compares the process or task exit code observed by the harness") but the spec nowhere specifies what exit code an uncaught run-task failure (uncaught expected error, defect, or runtime failure) produces, nor any program-level exit-status contract for success. The reference implementation uses 0 on success and 1 on uncaught failure (pinned in uncaught-error-exit-code-run.kp); portable tests using assertExitCode on failing programs have no normative basis for the expected value.
+
+## III.8 Nat/Fin refinement review additions (2026-07-24)
+
+- **§T.5 (Appendix T), §30.2.7A** `[r4:nat-fin-review]`
+  The new analysis directives take open type expressions with free variables (`assertSymbolicCardinality n for
+  Fin n`, `... for NatBetween lo hi`) but the directive grammar defines no binding form for those variables, while
+  §30.2.7A summaries are context-indexed. Specify that free `Nat` variables of `typeExpr`/`cardExpr` are implicitly
+  universalized into the query context (or add an explicit telescope form to the directives).
+
+- **§T.5 (Appendix T), §30.2.7A, §34.3.2A** `[r4:nat-fin-review]`
+  `assertSymbolicCardinality`/`assertOrdinalRepresentation` compare "the canonical machine-readable rendering" of a
+  `CardExpr`, and `assertRepresentationClass` compares a representation-class rendering, but neither canonical
+  rendering is defined anywhere; §30.2.7A shows only "readable mathematical shorthand" and §34.3.2A names the class
+  `FiniteOrdinal n` while leaving packed lane widths backend-documented with no portable spelling. Define the
+  canonical renderings (or state that the shorthand grammar is the canonical one).

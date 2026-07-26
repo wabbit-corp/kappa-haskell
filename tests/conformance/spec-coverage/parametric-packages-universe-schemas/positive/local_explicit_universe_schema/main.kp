@@ -1,0 +1,14 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+useLocal :
+    (A : Type) ->
+    A -> A
+
+let useLocal A x =
+    let localId.{u} (B : Type u) (y : B) = y
+    let boolResult : Bool = localId.{0} Bool True
+    localId A x

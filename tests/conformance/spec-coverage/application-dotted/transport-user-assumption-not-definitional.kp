@@ -12,7 +12,7 @@ module main
 data FlagBox (b : Bool) : Type =
     MakeFlagBox
 
-trait Tagged (a : Type) =
+trait Tagged (0 a : Type) =
     tagOf : Int
 
 instance Tagged (FlagBox True) =

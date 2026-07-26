@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+opaque let levelOf (n : Nat) : TypeLevel =
+    if n == 0 then 0 else omega
+
+idAt :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type u) ->
+    A -> A
+let idAt u p A x = x
+
+exact :
+    (n : Nat) ->
+    (@0 p : levelOf n < omega + 1) ->
+    (A : Type (levelOf n)) ->
+    A -> A
+let exact n p A x = idAt (levelOf n) @p A x

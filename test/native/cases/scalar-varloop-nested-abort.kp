@@ -7,6 +7,8 @@
 -- following print runs.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..))
+
 spin : UIO Unit
 let spin = do
     var i = 0

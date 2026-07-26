@@ -1,0 +1,16 @@
+-- §11.1.2.2: `LevelLt` and `LevelLe` remain transparent compatibility aliases
+-- for erased level-comparison proof binders.
+--! mode check
+--! assertNoErrors
+
+data BelowViaAlias (k : TypeLevel) : Type k =
+    PackBelowViaAlias
+        (u : TypeLevel)
+        (@0 lt : LevelLt u k)
+        (T : Type u)
+
+data AtMostViaAlias (k : TypeLevel) : Type(k+1) =
+    PackAtMostViaAlias
+        (u : TypeLevel)
+        (@0 le : LevelLe u k)
+        (T : Type u)

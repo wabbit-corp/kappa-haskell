@@ -2,7 +2,7 @@
 
 import lib.optionish.(type Maybe)
 
-F : Type -> Type
+F : (parametric 0 A : Type) -> Type
 let F = Maybe
 
 ok : F Int

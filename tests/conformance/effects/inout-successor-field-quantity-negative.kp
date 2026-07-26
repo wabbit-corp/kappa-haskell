@@ -2,6 +2,6 @@
 
 module main
 
-badStep : (inout v : Int) -> UIO (v : Int)
-let badStep (inout v : Int) : UIO (v : Int) =
-    pure (v = addInt v 1)
+badStep : (inout v : Int) -> UIO (v : Int,)
+let badStep (inout v : Int) : UIO (v : Int,) =
+    pure (v = addInt v 1,)

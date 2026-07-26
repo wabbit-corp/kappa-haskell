@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+
+useF :
+    (F : (A : Type) -> Type) ->
+    (A : Type) ->
+    F A ->
+    F A
+
+let useF F A x =
+    x
+
+optionId :
+    Option Int ->
+    Option Int
+
+let optionId x =
+    useF Option Int x

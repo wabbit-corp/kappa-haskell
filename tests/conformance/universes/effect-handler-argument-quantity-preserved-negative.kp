@@ -1,0 +1,18 @@
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+
+-- Spec §18.1.15 and §30.2.0: a handler clause receives operation arguments
+-- at the quantities declared by the operation's explicit Pi telescope.
+module main
+
+effect Inspect =
+    1 inspect : (1 x : Int) -> Int
+
+bad : Eff <[Inspect : Inspect]> Int -> Int
+let bad computation =
+    block
+        let handled =
+            deep handle Inspect computation with
+                case return x -> pure x
+                case inspect x k -> k (addInt x x)
+        runPure handled

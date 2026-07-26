@@ -32,5 +32,5 @@ let main = do
     let f <- fork body
     let ex <- await f
     match ex
-      case Success _ -> printlnString "after"
-      case Failure _ -> printlnString "failed"
+      case Exit.Success _ -> printlnString "after"
+      case Exit.Failure _ -> printlnString "failed"

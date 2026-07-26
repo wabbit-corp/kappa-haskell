@@ -1,0 +1,56 @@
+-- Spec 20.2.1: the canonical membership equations are recognized by
+-- resolved Rangeable, Contains, comparison, and range constructor
+-- identities; raw spelling is never the semantic recognition key. T.12.7:
+-- recognition is unchanged by rebinding the same semantic operations
+-- under different spellings.
+myContains :
+    forall (container : Type) (item : Type).
+    (@evidence : Contains container item) ->
+    (& container : container) ->
+    (& item : item) ->
+    Bool
+
+let myContains =
+    contains
+
+myUpTo :
+    forall (v : Type).
+    (@evidence : Rangeable v) ->
+    v ->
+    v ->
+    Rangeable.Range v
+
+let myUpTo =
+    (..)
+
+type AliasBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (myContains (myUpTo lo hi) value) = True)
+
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+-- Literal synthesis must still fire when the predicate is written with
+-- the aliases: the resolved identities are the canonical ones.
+aliasThree :
+    AliasBetween 2 30
+
+let aliasThree =
+    3
+
+-- Widening across the two spellings: both predicates reduce to the same
+-- canonical membership propositions, so Spec 16.1.9 case 3 proves the
+-- target from the source facts exactly as it does for one spelling.
+widenAcrossSpellings :
+    AliasBetween 2 30 ->
+    NatBetween 0 100
+
+let widenAcrossSpellings value =
+    value
+
+--! assertNoErrors

@@ -1,0 +1,10 @@
+kcore 1;
+module @tests.kcore.bad#1003 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "tests.kcore.bad",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.bad.f#2003 : ((0 explicit value %A#0 : Type 0) -> %A#0);
+}

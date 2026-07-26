@@ -1,0 +1,21 @@
+data Square (n : Nat) : Type =
+    MkSquare : (root : Nat) -> Square (natMultiply root root)
+
+-- Failure to unify or to bridge `natMultiply root root` with
+-- `natMultiply p q` for rigid distinct p and q is not a refutation
+-- (Spec 30.2.7 rule 4): the nonlinear existential bridge lies outside
+-- the required portable fragment (Spec 15.8.4), so the compatibility
+-- verdict is UnknownCompatibility and the omitted MkSquare branch must
+-- not be treated as unreachable.
+squareUnknownRemainder :
+    (p : Nat) ->
+    (q : Nat) ->
+    Square (natMultiply p q) ->
+    Nat
+
+let squareUnknownRemainder p q s =
+    match s
+    case impossible
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_INDEXED_IMPOSSIBLE_REACHABLE

@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+liftCode.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let liftCode A = A

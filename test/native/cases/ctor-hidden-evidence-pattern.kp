@@ -1,0 +1,18 @@
+module main
+
+trait Render (a : Type) =
+    render : a -> String
+
+instance Render Int =
+    let render n = showInt n
+
+data Renderable : Type =
+    MkRenderable : Render Int => Int -> Renderable
+
+renderValue : Renderable -> String
+let renderValue value =
+    match value
+    case MkRenderable payload -> showInt payload
+
+main : UIO Unit
+let main = printlnString (renderValue (MkRenderable 23))

@@ -1,0 +1,13 @@
+--! mode check
+--! assertDiagnostic error E_CAPTURE_SET_MISMATCH
+--! assertErrorCount 1
+
+-- §12.3.1: a user-written capture annotation is an upper bound.  The
+-- closure below captures t, which is not contained in the demanded {s}.
+module main
+
+bad :
+    forall (s : Region) (t : Region).
+    (&[s] x : Int) -> (&[t] y : Int) -> ((Unit -> Int) captures (s))
+let bad (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : ((Unit -> Int) captures (s)) =
+    \() -> y

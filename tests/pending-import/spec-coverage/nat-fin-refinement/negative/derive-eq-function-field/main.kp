@@ -1,0 +1,14 @@
+data Blob : Type =
+    MkBlob
+        (fn : Int -> Int)
+        (tag : Int)
+
+-- Spec 14.5 and 14.5.1: `derive Eq Blob` is permitted only if the
+-- compiler can synthesize eqSound, eqComplete, AND the IsSet Blob
+-- supertrait. The function field `fn` has no IsSet (or other exact
+-- field-type) evidence, and the conservative structural fragment never
+-- assumes function extensionality, so the derivation fails as one
+-- ordinary derivation error.
+derive Eq Blob
+
+--! assertErrorCount 1

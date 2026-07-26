@@ -1,5 +1,7 @@
 /* race.c (test) — race and timeout (§18.1.6).
  *
+ *   R0: race (pure 1)  (pure 2)               => RaceWonLeft (Success 1)
+ *       both results are already observable, so the specified left bias wins.
  *   R1: race (sleep 50ms; pure 1)  (pure 2)   => RaceWonRight (Success 2)
  *       the right side wins instantly; the sleeping left side is interrupted.
  *   R2: race (pure 1)  (sleep 50ms; pure 2)   => RaceWonLeft  (Success 1)
@@ -10,7 +12,7 @@
  * loser / the timed-out action would make this wait out the 50ms and 1s sleeps,
  * so the test also asserts the whole run finishes well under 1 second.
  *
- * Expected stdout: R1:ok / R2:ok / R3:ok / R4:ok / DONE
+ * Expected stdout: R0:ok / R1:ok / R2:ok / R3:ok / R4:ok / DONE
  */
 #include "kappart2.h"
 #include "kappart2_harness.h"
@@ -52,8 +54,15 @@ static KValue *r1_k(KEnv *e, KValue *r1) {  /* race (slow) (pure 2) => RaceWonRi
   return krt2_then(krt2_println_c(won_with(r1, "RaceWonRight", 2) ? "R1:ok" : "R1:bad"),
                    krt2_bind(krt2_race(krt2_pure(kint(1)), sleep_then(50000000LL, 2)), kclo(r2_k, NULL)));
 }
+static KValue *r0_k(KEnv *e, KValue *r0) {  /* race (pure 1) (pure 2) => left-biased tie */
+  (void)e;
+  return krt2_then(krt2_println_c(won_with(r0, "RaceWonLeft", 1) ? "R0:ok" : "R0:bad"),
+                   krt2_bind(krt2_race(sleep_then(50000000LL, 1), krt2_pure(kint(2))),
+                             kclo(r1_k, NULL)));
+}
 static KValue *program(void) {
-  return krt2_bind(krt2_race(sleep_then(50000000LL, 1), krt2_pure(kint(2))), kclo(r1_k, NULL));
+  return krt2_bind(krt2_race(krt2_pure(kint(1)), krt2_pure(kint(2))),
+                   kclo(r0_k, NULL));
 }
 
 static KValue *capture_run(KValue *prog, char *buf, size_t n) {
@@ -83,7 +92,7 @@ int main(void) {
   clock_gettime(CLOCK_MONOTONIC, &t1);
   double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
 
-  const char *expected = "R1:ok\nR2:ok\nR3:ok\nR4:ok\nDONE\n";
+  const char *expected = "R0:ok\nR1:ok\nR2:ok\nR3:ok\nR4:ok\nDONE\n";
   int ok = 1;
   if (strcmp(out, expected) != 0) { fprintf(stderr, "FAIL: output\n--exp--\n%s--got--\n%s", expected, out); ok = 0; }
   if (!kctor_is(exitv, "Success")) { fprintf(stderr, "FAIL: Exit not Success\n"); ok = 0; }

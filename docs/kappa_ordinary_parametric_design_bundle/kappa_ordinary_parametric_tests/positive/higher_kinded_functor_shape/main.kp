@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+trait MiniFunctor f =
+    map :
+        forall a b.
+        (a -> b) ->
+        f a ->
+        f b

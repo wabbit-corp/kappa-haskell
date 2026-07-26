@@ -1,0 +1,12 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.universe.schema-arity
+
+data Box.{u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)
+
+type Bad =
+    Box.{0, 1} Int

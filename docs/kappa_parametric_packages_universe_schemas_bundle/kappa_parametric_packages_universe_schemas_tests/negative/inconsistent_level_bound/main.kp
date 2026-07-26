@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
+--! assertDiagnosticFamily error kappa.universe.constraint
+
+bad :
+    (ordinary 0 level : TypeLevel) ->
+    (@0 impossible : level < level) ->
+    Type level

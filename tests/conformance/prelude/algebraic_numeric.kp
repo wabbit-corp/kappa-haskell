@@ -3,7 +3,15 @@
 
 -- §28.2.2/§28.2.3: the algebraic numeric trait hierarchy is declared and
 -- the mandated instances are present. A function demanding the algebraic
--- evidence can use the refined operations.
+-- evidence can use the refined operations. NOTE: §28.2.2 splits the
+-- hierarchy further — `CommutativeAdditiveMonoid` and
+-- `AdditivelyNoncommutativeSemiring` sit between `AdditiveMonoid` and a
+-- now member-less `Semiring`, and §28.2.3 mandates those instances for
+-- Nat/Integer/Int/Rational (they are the §15.8.2 provider evidence behind
+-- solver-discharged Nat identities). Evidence probes for the split are
+-- pinned by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- positive/algebraic-hierarchy-evidence; this file pins only the surface
+-- both hierarchies share.
 
 module main
 

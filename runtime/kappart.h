@@ -104,6 +104,13 @@ enum {
   KCT_MK_INTERRUPT_CAUSE,                                    /* InterruptCause */
   KCT_IT_REQUESTED, KCT_IT_SCOPE_SHUTDOWN, KCT_IT_TIMED_OUT, /* InterruptTag (native)        */
   KCT_IT_RACE_LOST, KCT_IT_EXTERNAL,                         /* InterruptTag (interp/future) */
+  /* §11.1 runtime TypeLevel comparison produces Ordering in the runtime, so
+   * these constructors have fixed ids just like the other runtime-built
+   * result families. */
+  KCT_LT, KCT_EQ, KCT_GT,
+  /* Private constructor of opaque std.typelevel.TypeLevel. Source Level
+   * construction and intrinsic level operations must share this exact ABI. */
+  KCT_TYPELEVEL_LEVEL,
   KCT_USER_BASE = 40
 };
 

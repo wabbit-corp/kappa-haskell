@@ -1,0 +1,16 @@
+-- Spec §§11.1.2.8/30.2.0A: a scoped level proof is authority for checked
+-- consequences of its relation, not only for a byte-identical endpoint pair.
+-- The emitted lift for succ u <= succ v must remain replayable after KCoreText
+-- round-trip.
+module main
+
+type LiftSuccessor : Typeω =
+    forall (v : TypeLevel). forall (@0 vBound : v < ω).
+    forall (u : TypeLevel). forall (@0 p : u <= v).
+    Type(succ u) -> Type(succ v)
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

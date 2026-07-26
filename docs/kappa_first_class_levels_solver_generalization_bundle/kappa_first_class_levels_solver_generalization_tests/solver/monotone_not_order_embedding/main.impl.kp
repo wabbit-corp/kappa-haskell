@@ -1,0 +1,3 @@
+opaque let f x = x
+opaque let p = typeLevelZero
+let fMonotoneProof x y le = unsafeAssertProof "f is monotone"

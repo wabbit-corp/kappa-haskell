@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+data MyEq.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+
+    MyRefl : MyEq x x
+
+myRefl :
+    forall A x.
+    MyEq x x
+
+let myRefl A x =
+    MyRefl

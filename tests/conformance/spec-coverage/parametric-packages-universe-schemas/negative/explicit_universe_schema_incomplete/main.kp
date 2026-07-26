@@ -1,0 +1,16 @@
+-- §11.1.2.3A.1: an explicit declaration schema is complete. The bare
+-- universe of B is a distinct source-generalizable parameter and must not be
+-- silently specialized to Type0 merely because only u was written.
+module main
+
+bad.{u} : (A : Type u) -> (B : Type) -> A -> A
+let bad.{u} A B x = x
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_NO_PRINCIPAL_SOLUTION
+--! assertDiagnosticFamily error kappa.universe.no-principal-solution
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/declarationIdentity main.bad
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/declarationSccIdentity main.bad
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/explicitUniverseSchema true
+--! assertDiagnosticPayload error E_UNIVERSE_NO_PRINCIPAL_SOLUTION /payload/kind universe-no-principal-solution

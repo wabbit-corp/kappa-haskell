@@ -1,15 +1,14 @@
--- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
--- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
--- Kappa's family on import (verified: same error count, single family).
+-- [import note] §6.1.5 performs whole-declaration numeric inference before
+-- defaulting.  The second argument fixes the shared carrier to String, so the
+-- portable failure is missing Eq String and FromInteger String evidence; an
+-- eager Int default followed by an argument mismatch would be order-dependent.
 -- Source issue: MLatu #21 ("Switch from traits to type classes"). The
 --   proposed `instance Eq Int { define = (Int, Int -> Bool) ... }`
---   states that the method type is fixed by the instance head; passing
---   a value of the wrong instance type is a static error. The portable
---   Kappa obligation is that the inferred instance type is enforced at
---   each call site.
+--   states that the method type is fixed by the instance head. Kappa's
+--   overloaded literal rule instead infers the common carrier from the full
+--   application, then rejects the unavailable carrier dictionaries.
 -- Spec: traits.instances, traits.instances.resolution_algorithm,
---       compiler.frontir.standard_diagnostic_families.type_equality
---       (family kappa.application.argument-mismatch).
+--       literals.numeric_literals.typing, expressions.implicits.
 
 module test
 
@@ -21,9 +20,10 @@ trait Eq (a : Type) =
 instance Eq Int =
     let eq x y = x == y
 
--- NEGATIVE: dispatch picks Eq Int from the first argument; the second
--- argument is then required to have type Int but is given as String.
+-- NEGATIVE: the String operand fixes the shared carrier to String. Neither
+-- Eq String nor FromInteger String is available.
 mixed : Bool
-let mixed = eq 7 "seven"                   --!! kappa.application.argument-mismatch
+let mixed = eq 7 "seven"
 
---! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertErrorCount 2

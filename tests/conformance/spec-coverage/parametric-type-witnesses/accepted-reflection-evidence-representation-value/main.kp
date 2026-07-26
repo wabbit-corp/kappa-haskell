@@ -1,0 +1,16 @@
+--! assertNoErrors
+
+data TypeRep (0 A : Type) : Type =
+    TypeRep (name : String)
+
+trait Typeable (0 A : Type) =
+    typeRep : TypeRep A
+
+useTypeRep :
+    (0 A : Type) ->
+    Typeable A =>
+    A ->
+    TypeRep A
+
+let useTypeRep A ev x =
+    ev.typeRep

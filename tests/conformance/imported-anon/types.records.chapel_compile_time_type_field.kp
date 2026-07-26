@@ -11,7 +11,7 @@
 
 -- A "generic container" record: T is a transparent compile-time type field;
 -- val has type T. This is a sigma type: exists T : Type, T.
-type Box : Type =
+type Box : Type1 =
     ( T   : Type   -- compile-time type field; erased at runtime
     , val : T      -- value field whose type depends on T
     )

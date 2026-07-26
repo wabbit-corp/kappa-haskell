@@ -1,0 +1,32 @@
+-- §11.1.2.2: all operation evidence at TypeLevel is compiler-owned. Source
+-- instances are rejected by resolved trait/type identity, independently of
+-- method bodies or duplicate-instance ordering.
+--! mode check
+--! assertErrorCount 8
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+--! assertDiagnosticFamily error kappa.universe.level-expression
+
+instance Zero TypeLevel =
+    let zero = 0
+
+instance One TypeLevel =
+    let one = 1
+
+instance FromInteger TypeLevel =
+    let fromInteger n = 0
+
+instance Successor TypeLevel =
+    let succ u = u
+
+instance Add TypeLevel =
+    let add u v = u
+
+instance Max TypeLevel =
+    let max u v = u
+
+instance Eq TypeLevel =
+    let (==) u v = True
+
+instance Ord TypeLevel =
+    let compare u v = Equal
+

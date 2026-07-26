@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Consumer 0 invariant
+--! assertSchemaCertificateValid Consumer
+
+data Consumer.{u} : Type (succ u) =
+    Consumer (run : (ordinary 0 A : Type u) -> Int)

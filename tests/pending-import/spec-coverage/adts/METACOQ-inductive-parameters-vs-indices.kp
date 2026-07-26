@@ -1,11 +1,20 @@
 -- Source issues: METACOQ-1120, METACOQ-1108
 -- Spec: §10.1.3 (uniform data-family arguments), §10.2 (GADT-style
---       constructors), §10.4 (well-formedness).
+--       constructors), §10.4 (well-formedness), §15.8.6 (metavariables
+--       and principal solutions), §28.2 (inductive prelude Nat).
 --
 -- MetaCoq distinguishes parameters from indices. Kappa instead places every
 -- family argument in the data header; a GADT constructor's explicit result
 -- determines which family arguments it constrains. This fixture preserves the
 -- portable substance: `a` remains unchanged while constructor results vary `n`.
+--
+-- NOTE (Nat/Fin revision): the `n + 1` index obligations below (e.g.
+-- `?n + 1 = 2` for `ok`, `?n + 1 = 1` for `natVec`) are solved by
+-- §15.8.6 unique-principal-solution metavariable inversion, NOT by iota
+-- on `natAdd` (whose recursion argument is the metavariable, so no
+-- computation equation fires). The element type in `natVec : Vec Nat 1`
+-- is now the ordinary inductive prelude Nat of §28.2, with `1` the
+-- constructor term `Succ Zero` after §31.1.3 literal normalization.
 
 module test
 

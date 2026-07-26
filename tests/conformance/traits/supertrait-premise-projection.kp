@@ -10,13 +10,13 @@
 -- `instance Describe a => Describe (Box a)`.
 module main
 
-trait Describe (a : Type) =
+trait Describe (0 a : Type) =
     describe : a -> String
 
-trait Describe a => Tagged (a : Type) =
+trait Describe a => Tagged (0 a : Type) =
     tagOf : a -> Int
 
-data Box (a : Type) =
+data Box (0 a : Type) =
     MkBox (unBox : a)
 
 instance Describe Int =

@@ -6,6 +6,8 @@
 -- interrupted (RaceLost) and awaited, so race returns promptly with LeftWins.
 module main
 
+import std.prelude.(type Exit(..), type RaceResult(..))
+
 slowR : UIO Int
 let slowR = do
     sleepFor (seconds 10)

@@ -30,7 +30,7 @@ data DependentConst (@0 a : Type) (@0 n : a) : Type =
     DependentConst
 
 -- The dependent form is constructible at a closed concrete instantiation.
-let three : DependentConst Int 3 = DependentConst
+let three : DependentConst @Int @3 = DependentConst
 
 --! assertNoErrors
 
@@ -48,10 +48,10 @@ let shape = ()
 -- POSITIVE: applying the dependent shape at distinct instantiations
 -- produces distinct types — but each instantiation is well-formed and
 -- type-checks.
-useInt : DependentConst Int 7
+useInt : DependentConst @Int @7
 let useInt = DependentConst
 
-useBool : DependentConst Bool True
+useBool : DependentConst @Bool @True
 let useBool = DependentConst
 
 --! assertNoErrors

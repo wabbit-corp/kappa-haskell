@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_NOT_APPLICABLE
+--! assertDiagnosticFamily error kappa.universe.variance
+
+id.{covariant u} :
+    (A : Type u) ->
+    A -> A
+let id A x = x

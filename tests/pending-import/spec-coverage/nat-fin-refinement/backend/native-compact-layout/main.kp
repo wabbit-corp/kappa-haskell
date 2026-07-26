@@ -1,0 +1,39 @@
+small :
+    Fin 200
+
+let small =
+    17
+
+data PackedHolder : Type =
+    PackedHolder
+        (finiteField : Fin 200)
+
+packedHolder :
+    PackedHolder
+
+let packedHolder =
+    PackedHolder small
+
+type SmallNat : Type =
+    Refined Nat (\value -> (contains (0 .. 255) value) = True)
+
+unboxedRefinement :
+    SmallNat
+
+let unboxedRefinement =
+    17
+
+--! mode compile
+-- FiniteOrdinal n is the specced representation class (Spec 34.3.2A); the
+-- concrete packed lane width remains backend-documented, so the assertions
+-- name the parameterized class, not a lane spelling.
+--! requires capability rt-compact-finite-ordinal
+--! requires capability rt-packed-finite-fields
+--! requires capability rt-unboxed-refinement
+--! assertNoErrors
+--! assertOrdinalRepresentation 200 for Fin 200
+--! assertRefinementRepresentation Nat for SmallNat
+--! assertRepresentationClass small FiniteOrdinal 200
+--! assertRepresentationClass PackedHolder.finiteField FiniteOrdinal 200
+--! assertRepresentationClass unboxedRefinement ExactNatural
+--! assertRuntimeFieldAbsent unboxedRefinement proof

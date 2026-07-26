@@ -1,6 +1,6 @@
 @PrivateByDefault module main
 
-make : (F : Type -> Type) -> (value : F Int) -> F Int
+make : (F : (parametric 0 A : Type) -> Type) -> (value : F Int) -> F Int
 let make F value = value
 
 ok : Option Int

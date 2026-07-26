@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+oneOmegaCommutes :
+    one + omega = omega + one
+
+let oneOmegaCommutes =
+    typeLevelOnePlusOmega
+
+omegaDoubles :
+    (omega < omega + omega) = True
+
+let omegaDoubles =
+    typeLevelOmegaPlusOmega

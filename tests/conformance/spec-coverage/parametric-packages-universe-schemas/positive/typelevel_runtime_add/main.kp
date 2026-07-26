@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+addLevels :
+    TypeLevel ->
+    TypeLevel ->
+    TypeLevel
+
+let addLevels x y =
+    x + y

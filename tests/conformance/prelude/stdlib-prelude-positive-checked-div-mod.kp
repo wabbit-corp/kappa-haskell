@@ -1,13 +1,18 @@
 @PrivateByDefault module main
 
 -- Spec §28.2.1 CheckedDiv/CheckedMod operational coverage: divide/modulo via
--- the prelude instances for Int, Integer, Nat (Int-routed), and Double, plus
--- the definedness predicates.
-needDiv : forall (a : Type). (@ev : CheckedDiv a) -> a -> a -> a
-let needDiv @ev x y = divide x y
+-- the prelude instances for Int, Integer, Nat, and Double, plus the
+-- definedness predicates. Nat checked division/modulo are ordinary total
+-- library definitions over the inductive `Nat` of §28.2 (an implementation
+-- primitive may replace them only as an implementation of that source
+-- definition); the runtime representation is the exact-natural class of
+-- §34.3.2A, which must preserve the exact §28.2 division/modulo semantics
+-- and is not otherwise observable.
+needDiv : forall (a : Type). (@ev : CheckedDiv a) -> (x : a) -> (y : a) -> (@p : divDefined x y = True) -> a
+let needDiv @ev x y @p = divide x y @p
 
-needMod : forall (a : Type). (@ev : CheckedMod a) -> a -> a -> a
-let needMod @ev x y = modulo x y
+needMod : forall (a : Type). (@ev : CheckedMod a) -> (x : a) -> (y : a) -> (@p : modDefined x y = True) -> a
+let needMod @ev x y @p = modulo x y @p
 
 intDiv : Int
 let intDiv = needDiv 7 2

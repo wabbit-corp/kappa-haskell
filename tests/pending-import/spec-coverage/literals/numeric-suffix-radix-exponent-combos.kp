@@ -18,8 +18,12 @@
 --                 this the plain literal 0xFFF (4095) with NO suffix —
 --                 not `f 0xFF`.
 --   * suffix on a huge payload: the suffix term receives the exact
---                 arbitrary-precision Nat (120 digits here; 6.1.6 +
---                 28.2).
+--                 Nat (120 digits here; 6.1.6, with exactness owed to
+--                 34.3.2A's non-unary ExactNatural representation
+--                 contract now that 28.2's Nat is the ordinary
+--                 inductive Zero/Succ type). The final `==` resolves
+--                 through the prelude's mandatory `derive Eq Nat`
+--                 (28.2), not a primitive equality.
 
 px : Nat -> Integer
 let px n = natToInt n + 1000

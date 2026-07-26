@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+
+chooseCode :
+    (b : Bool) ->
+    Type omega
+let chooseCode b =
+    if b then Int else Type0

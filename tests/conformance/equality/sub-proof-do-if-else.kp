@@ -2,13 +2,15 @@
 -- condition into its `else`-suite (as the if-EXPRESSION else-branch already
 -- does). In the `else` of `if x < y`, `(x < y) = False`, so `subDefined x y`
 -- = `(y <= x) = True` holds branch-locally and discharges checked subtraction.
+-- NOTE: the condition is spelled with the primitive comparison because the
+-- current negation-fact bridge operates on that layer; the standard
+-- `Ord Nat` spelling of the same negated-condition discharge (§28.2.3
+-- `subDefined x y = (y <= x)` + §15.8.4 negation) is pinned by
+-- tests/pending-import/spec-coverage/nat-fin-refinement/positive/
+-- branch-negation-checked-sub.
 --! assertNoErrors
 
 module main
-
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
 
 consume : Nat -> Nat
 let consume n = n

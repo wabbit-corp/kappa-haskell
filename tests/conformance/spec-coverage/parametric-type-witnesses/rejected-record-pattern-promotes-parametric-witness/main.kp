@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+type Sig : Type =
+    (A : Type, value : A)
+
+bad :
+    Sig -> Type
+
+let bad s =
+    match s
+    case (A = A, value = value) ->
+        A

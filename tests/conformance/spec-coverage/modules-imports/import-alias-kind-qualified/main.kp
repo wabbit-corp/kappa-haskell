@@ -8,7 +8,7 @@ import klib.(type Rose as Tree, trait Marked as Tagged)
 grow : Tree -> Tree
 let grow t = t
 
-useTrait : Type -> Type
+useTrait : (parametric 0 A : Type) -> Type
 let useTrait = trait Tagged
 
 badOriginal : Int

@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+type Poly : Type =
+    (A : Type) -> A -> A
+
+type Box : Type =
+    (f : Poly,)
+
+useStored :
+    Box -> Box
+
+let useStored b =
+    b.f Box b

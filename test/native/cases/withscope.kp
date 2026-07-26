@@ -6,6 +6,8 @@
 -- fiber with tag ScopeShutdown and waits; withScope brackets a fresh scope.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
+
 sleeper : UIO Int
 let sleeper = do
     sleepFor (seconds 10)

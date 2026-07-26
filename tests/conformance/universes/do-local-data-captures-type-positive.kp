@@ -1,0 +1,16 @@
+module main
+
+roundTrip.{u} : (parametric 0 A : Type u) -> A -> UIO A
+let roundTrip.{u} A value = do
+    data Local : Type u =
+        Local (payload : A)
+
+    let box = Local value
+    match box
+        case Local payload -> pure payload
+
+answer : UIO Int
+let answer = roundTrip Int 42
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,127 @@
+data Idx (n : Nat) : Type =
+    Idx
+
+-- The prelude fixes no canonical Nat min/max/clamp terms, so these are
+-- ordinary local transparent definitions. Spec 15.8.1 reifies after
+-- delta reduction of transparent definitions, leaving transparent `if`
+-- expressions whose conditions lie in the required fragment; Spec 15.8.4
+-- then decides them by deterministic finite case splitting.
+natMax :
+    (x : Nat) ->
+    (y : Nat) ->
+    Nat
+
+let natMax x y =
+    if x <= y then y else x
+
+natMin :
+    (x : Nat) ->
+    (y : Nat) ->
+    Nat
+
+let natMin x y =
+    if x <= y then x else y
+
+natClamp :
+    (lo : Nat) ->
+    (hi : Nat) ->
+    (x : Nat) ->
+    Nat
+
+let natClamp lo hi x =
+    natMax lo (natMin x hi)
+
+integerAbs :
+    (x : Integer) ->
+    Integer
+
+let integerAbs x =
+    if x <= 0 then negate x else x
+
+-- max n n collapses to n in both branches of the split.
+idempotentMax :
+    (n : Nat) ->
+    Idx (natMax n n) ->
+    Idx n
+
+let idempotentMax n value =
+    value
+
+-- min lo hi <= hi in both branches: lo <= hi is the taken condition in
+-- the first, hi <= hi is reflexive in the second.
+requiresAtMost :
+    (hi : Nat) ->
+    (n : Nat) ->
+    (@0 atMost : (n <= hi) = True) ->
+    Nat
+
+let requiresAtMost hi n @atMost =
+    n
+
+minStaysBelowHigh :
+    (lo : Nat) ->
+    (hi : Nat) ->
+    Nat
+
+let minStaysBelowHigh lo hi =
+    requiresAtMost hi (natMin lo hi)
+
+-- clamp is bounded below unconditionally: whichever branch max takes,
+-- the result is either lo itself or a value the condition already
+-- places above lo.
+requiresAtLeast :
+    (lo : Nat) ->
+    (n : Nat) ->
+    (@0 atLeast : (lo <= n) = True) ->
+    Nat
+
+let requiresAtLeast lo n @atLeast =
+    n
+
+clampBoundedBelow :
+    (lo : Nat) ->
+    (hi : Nat) ->
+    (x : Nat) ->
+    Nat
+
+let clampBoundedBelow lo hi x =
+    requiresAtLeast lo (natClamp lo hi x)
+
+-- ... and bounded above once the lexical premise orders the endpoints;
+-- the one branch that would violate the bound contradicts the premise
+-- and is refuted inside the same split.
+clampBoundedAbove :
+    (lo : Nat) ->
+    (hi : Nat) ->
+    (x : Nat) ->
+    (@0 ordered : (lo <= hi) = True) ->
+    Nat
+
+let clampBoundedAbove lo hi x @ordered =
+    requiresAtMost hi (natClamp lo hi x)
+
+-- Absolute value over Integer is nonnegative in both branches.
+requiresNonNegative :
+    (i : Integer) ->
+    (@0 nonNegative : (0 <= i) = True) ->
+    Integer
+
+let requiresNonNegative i @nonNegative =
+    i
+
+absoluteIsNonNegative :
+    (i : Integer) ->
+    Integer
+
+let absoluteIsNonNegative i =
+    requiresNonNegative (integerAbs i)
+
+-- Closed clamping still computes through the transparent definitions.
+clampedHigh :
+    Nat
+
+let clampedHigh =
+    natClamp 2 30 50
+
+--! assertNoErrors
+--! assertEval clampedHigh 30

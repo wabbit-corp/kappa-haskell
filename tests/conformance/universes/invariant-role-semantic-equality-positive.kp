@@ -1,0 +1,14 @@
+module main
+
+data Fixed.{invariant u} : Type u =
+    Fixed
+
+distribute.{u, v, w} :
+    Fixed.{u + max v w} ->
+    Fixed.{max (u + v) (u + w)}
+let distribute x = x
+
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Fixed 0 invariant
+

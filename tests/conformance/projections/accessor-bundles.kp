@@ -4,7 +4,7 @@
 -- §9.1.1 expanded form: get/set/sink clauses, synthesized open (§16.1.6),
 -- projection-section update (§13.2.5)
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 consumeInt : (1 x : Int) -> Int
 let consumeInt (1 x : Int) : Int = x

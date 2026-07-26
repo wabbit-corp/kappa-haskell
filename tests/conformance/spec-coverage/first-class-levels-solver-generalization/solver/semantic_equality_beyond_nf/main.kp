@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelEntails max u (succ u) <= succ u
+--! assertLevelEntails succ u <= max u (succ u)
+
+expect term u : TypeLevel

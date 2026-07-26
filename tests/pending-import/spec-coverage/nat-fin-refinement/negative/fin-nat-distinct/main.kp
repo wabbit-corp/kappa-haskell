@@ -1,0 +1,27 @@
+data Boxed (0 a : Type) : Type =
+    Boxed
+        (item : a)
+
+-- Fin n and Nat are distinct source types (Spec 28.2, catalog T.12.5),
+-- even though the refinement representation certificate may assign
+-- Fin the very same runtime representation as Nat. Refinement-view
+-- subsumption (Spec 16.1.9) inserts at most one projection or one
+-- construction at a direct expected-type boundary; under an invariant
+-- type constructor no insertion applies, so both directions below are
+-- plain type mismatches.
+natsFromFins :
+    Boxed (Fin 4) ->
+    Boxed Nat
+
+let natsFromFins box =
+    box
+
+finsFromNats :
+    Boxed Nat ->
+    Boxed (Fin 4)
+
+let finsFromNats box =
+    box
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_TYPE_MISMATCH

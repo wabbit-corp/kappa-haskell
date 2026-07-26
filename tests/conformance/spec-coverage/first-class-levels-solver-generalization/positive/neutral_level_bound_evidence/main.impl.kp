@@ -1,0 +1,6 @@
+opaque let chooseLevel
+    (b : Bool)
+    : TypeLevel =
+    if b then 0 else omega
+
+let chooseLevelBounded b = unsafeAssertProof "chooseLevel is bounded"

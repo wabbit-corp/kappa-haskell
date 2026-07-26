@@ -1,0 +1,15 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §30.2.0A: the canonical checkpoint must preserve do-kernel structure;
+-- an implementation-owned generic node may not erase it to rendered text.
+module main
+
+run : UIO Int
+let run = do
+    return 7

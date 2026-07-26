@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+type Id A =
+    A
+
+useF :
+    (F : (A : Type) -> Type) ->
+    (A : Type) ->
+    F A ->
+    F A
+
+let useF F A x =
+    x
+
+idInt :
+    Id Int ->
+    Id Int
+
+let idInt x =
+    useF Id Int x

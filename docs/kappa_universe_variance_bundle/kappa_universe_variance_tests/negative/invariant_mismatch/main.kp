@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_LIFT_INVALID
+--! assertDiagnosticFamily error kappa.universe.schema-lift
+
+data Fixed.{invariant u} : Type0 =
+    Fixed
+
+bad : Fixed.{0} -> Fixed.{1}
+let bad x = x

@@ -1,0 +1,102 @@
+-- §15.1 / §31.1.1 (conversion-reducible user functions normalize in
+-- type indices), §10 (indexed data), §17.1.1/§17.1.2 (indexed-match
+-- exhaustiveness and refinement), §28.2 (cong/subst). End-to-end
+-- dependent-vector journey over a user-defined inductive natural:
+--   * structurally recursive `plus` reduces definitionally in indices at
+--     ground arguments (plus (S Z) (S Z) ~> S (S Z)) AND partially
+--     symbolic ones (plus Z m ~> m, plus (S Z) m ~> S m, m abstract);
+--   * `vhead` is exhaustive with a single VCons case at an abstract
+--     successor index;
+--   * `replicate` refines the goal index by matching the VALUE n;
+--   * witness-style `appendW` refines both the goal index and the
+--     sibling binder's type from the same match;
+--   * `plusZright` proves plus n Z = n by structural induction (cong);
+--   * a definitionally-refl subst exercises the current profile's portable
+--     runtime transport fragment (§11.4.1);
+--   * the whole journey RUNS: mode run pins evaluation, not just checking.
+
+module main
+
+--! mode run
+
+data PNat : Type =
+    Z
+    S (p : PNat)
+
+plus : PNat -> PNat -> PNat
+let plus a b =
+    match a
+    case Z -> b
+    case S k -> S (plus k b)
+
+data Vec (n : PNat) (a : Type) : Type =
+    VNil  : Vec Z a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (S n) a
+
+-- Ground-index reduction: plus (S Z) (S Z) ~> S (S Z) (§15.1, §31.1.1).
+two : Vec (plus (S Z) (S Z)) Int
+let two = VCons 1 (VCons 2 VNil)
+
+-- Partially-symbolic iota: plus Z m ~> m with m abstract...
+idxZ : forall (@0 a : Type) (@0 m : PNat). Vec m a -> Vec (plus Z m) a
+let idxZ v = v
+
+-- ...and plus (S Z) m ~> S m with m abstract.
+idxS : forall (@0 a : Type) (@0 m : PNat). Vec (S m) a -> Vec (plus (S Z) m) a
+let idxS v = v
+
+-- Single VCons case is exhaustive at an abstract successor index (§17.1.1).
+vhead : forall (@0 a : Type) (@0 n : PNat). Vec (S n) a -> a
+let vhead v =
+    match v
+    case VCons x _ -> x
+
+-- Dependent match on the VALUE n refines the goal index per branch.
+replicate : forall (@0 a : Type). (n : PNat) -> a -> Vec n a
+let replicate n x =
+    match n
+    case Z -> VNil
+    case S k -> VCons x (replicate k x)
+
+-- Witness-style append: matching n refines both the goal index and the
+-- type of the sibling binder v (§17.1.2).
+appendW : forall (@0 a : Type) (@0 m : PNat). (n : PNat) -> Vec n a -> Vec m a -> Vec (plus n m) a
+let appendW n v w =
+    match n
+    case Z ->
+        match v
+        case VNil -> w
+    case S k ->
+        match v
+        case VCons x t -> VCons x (appendW k t w)
+
+vsum : forall (@0 n : PNat). Vec n Int -> Int
+let vsum v =
+    match v
+    case VNil -> 0
+    case VCons x t -> x + vsum t
+
+-- Induction lemma: plus n Z = n via cong on the recursive call (§28.2).
+plusZright : (n : PNat) -> plus n Z = n
+let plusZright n =
+    match n
+    case Z -> refl
+    case S k -> cong S (plusZright k)
+
+-- Runtime-relevant transport is portable in the current profile when its
+-- proof is definitionally refl (§11.4.1). The symbolic plusZright proof above
+-- remains a static theorem; transporting along that abstract proof would need
+-- a computational-path implementation.
+fixRightRefl : (n : PNat) -> Vec n Int -> Vec n Int
+let fixRightRefl n v = subst refl v
+
+main : UIO Unit
+let main = do
+    let a = VCons 5 (VCons 6 VNil)
+    let b = replicate (S (S (S Z))) 1
+    printlnString (showInt (vhead a))
+    printlnString (showInt (vsum b))
+    printlnString (showInt (vsum (appendW (S (S Z)) a b)))
+    printlnString (showInt (vsum (fixRightRefl (S (S Z)) (appendW (S (S Z)) a VNil))))
+
+--! assertStdout "5\n3\n14\n11\n"

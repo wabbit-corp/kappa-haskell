@@ -1,0 +1,12 @@
+-- §11.1.2.8: the `TypeBelow`-shaped schema is accepted because the earlier
+-- erased `u < k` proof binder is in scope as a level assumption when the later
+-- ordinary field `T : Type u` is checked. The bound is a declaration-universe
+-- parameter, never a first-class TypeLevel argument.
+--! mode check
+--! assertNoErrors
+
+data LocalTypeBelow.{k} : Type k =
+    LocalPackTypeBelow
+        (ordinary 0 u : TypeLevel)
+        (@0 lt : u < k)
+        (ordinary 0 T : Type u)

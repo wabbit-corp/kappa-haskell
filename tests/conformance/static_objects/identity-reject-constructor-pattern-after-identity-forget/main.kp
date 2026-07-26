@@ -3,10 +3,10 @@
 data Box (a : Type) : Type =
     Box (value : a)
 
-forget : (F : Type -> Type) -> (G : Type -> Type,)
+forget : (F : (parametric 0 A : Type) -> Type) -> (G : (parametric 0 A : Type) -> Type,)
 let forget F = (G = F,)
 
-pkg : (G : Type -> Type,)
+pkg : (G : (parametric 0 A : Type) -> Type,)
 let pkg = forget (type Box)
 
 bad : pkg.G Int -> Int

@@ -27,8 +27,8 @@ let main = do
     atomically (writeTVar flag 1)
     let ex <- await f
     match ex
-      case Success v -> printlnString ("fair:" ++ showInt v)
-      case Failure c -> printlnString "fair:failed"
+      case Exit.Success v -> printlnString ("fair:" ++ showInt v)
+      case Exit.Failure c -> printlnString "fair:failed"
     -- cede as interruption point: a never-set flag spins forever until
     -- the interrupt is delivered at a cede
     let never <- atomically (newTVar 0)
@@ -37,6 +37,6 @@ let main = do
     interrupt g
     let ex2 <- await g
     match ex2
-      case Success v -> printlnString "spin-completed"
-      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "spin-interrupted"
-      case Failure c -> printlnString "spin-other"
+      case Exit.Success v -> printlnString "spin-completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "spin-interrupted"
+      case Exit.Failure c -> printlnString "spin-other"

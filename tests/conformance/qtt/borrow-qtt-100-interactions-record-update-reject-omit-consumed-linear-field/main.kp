@@ -2,7 +2,7 @@
 
 --! allow_unsafe_consume
 
-type Box : Type = (value : Int)
+type Box : Type = (value : Int,)
 type Packet : Type = (1 payload : Box, tag : Int)
 
 boxValue : (1 b : Box) -> Int

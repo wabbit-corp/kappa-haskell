@@ -1,0 +1,5 @@
+--! mode check
+--! assertNoErrors
+
+data PhantomCode : Type0 =
+    PhantomCode (T : Type3)

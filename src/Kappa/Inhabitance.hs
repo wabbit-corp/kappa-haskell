@@ -45,7 +45,7 @@ module Kappa.Inhabitance
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Kappa.Core (GName, Value (..))
+import Kappa.Core (GName, Value (..), pattern VRecordT)
 import Numeric.Natural (Natural)
 
 -- | A finite upper cardinality bound or the absence of a finite upper bound.
@@ -240,7 +240,7 @@ inhabitanceSummary env purpose ty0
         -- A nominal data head. First consult the no-confusion / evidence rules
         -- that key on the type as a whole, then fall through to the structural
         -- data-type analysis.
-        VGlobN g _ -> do
+        VGlobal g _ _ -> do
           mverdict <- ieEqualityVerdict env t
           case mverdict of
             Just True -> pure Empty

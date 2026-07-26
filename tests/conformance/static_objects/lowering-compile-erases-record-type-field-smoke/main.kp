@@ -3,7 +3,7 @@
 extract : Int
 let extract =
     block
-        let pkg : (F : Type -> Type, value : F Int) =
+        let pkg : (F : (parametric 0 A : Type) -> Type, value : F Int) =
             (F = Option, value = Some 1)
         match pkg.value
         case Some n -> n

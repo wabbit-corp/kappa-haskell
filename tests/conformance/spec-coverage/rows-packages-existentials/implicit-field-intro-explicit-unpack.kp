@@ -22,7 +22,7 @@ let summon (@tc : Pretty Int) : Pretty Int = tc
 type SafeInt : Type = (v : Int, @p : this.v > 0)
 
 -- trait-evidence implicit field over an earlier type field
-type Box : Type = (a : Type, @tc : Pretty this.a, val : this.a)
+type Box : Type1 = (a : Type, @tc : Pretty this.a, val : this.a)
 
 needsPos : (n : Int) -> (@p : n > 0) -> Int
 let needsPos n = n

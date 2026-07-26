@@ -1,0 +1,12 @@
+module main
+
+bad : UIO Unit
+let bad = do
+    var q : Quantity = 1
+    let f : ((q) x : Int) -> Int = \x -> 0
+    return ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_VAR_IN_STATIC_POSITION
+--! assertDiagnosticFamily error kappa.var.mutable-binding

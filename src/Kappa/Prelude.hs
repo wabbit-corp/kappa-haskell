@@ -5,6 +5,9 @@
 module Kappa.Prelude
   ( builtinState
   , preludeSource
+  , stdTypeLevelBootstrapSource
+  , stdTypeLevelSource
+  , stdTypeLevelPackagesSource
   , stdDerivingShapeSource
   , stdHashSource
   , stdDebugSource
@@ -22,27 +25,117 @@ module Kappa.Prelude
   , evalPurePrim
   ) where
 
+import Control.Monad.State.Strict (State, evalState, get, put)
+import Control.Monad (replicateM)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Kappa.Builtins
+  ( prelBorrowRegionOf
+  , prelNat
+  , prelNatSucc
+  , prelNatZero
+  , prelTypeLevel
+  )
 import Kappa.Check
 import Kappa.Core
-import Kappa.Eval (evalPurePrim, lookupEnv)
+import Kappa.CoreOps (levelParamsOfTerm)
+import Kappa.Eval
+  ( EvalCtx (..)
+  , GlobalDef (gdType)
+  , Globals (..)
+  , emptyMetas
+  , evalPurePrim
+  , globalDefWithUniverses
+  , lookupEnv
+  , quote
+  )
 import Kappa.Source (ModuleName (..))
 
 prel :: Text -> GName
 prel = GName preludeModule
 
 -- small Pi-type builders (closed terms, evaluated lazily by the checker)
+piM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Term -> Term -> Term
+piM mode ic q borrowed name domain codomain =
+  CPiEvidenceM mode formation ic q borrowed name Nothing BinderSourceWritten domain codomain
+  where
+    formation
+      | mode == Parametric && paramKind domain = FormationParametric
+      | otherwise = FormationOrdinary
+
 infixr 5 ~>
 (~>) :: Term -> Term -> Term
-a ~> b = CPi Expl QW False "_" a b
+a ~> b = piM Ordinary Expl QW False "_" a b
 
 piI :: Q -> Text -> Term -> Term -> Term
-piI q nm a b = CPi Impl q False nm a b
+piI q nm a b = piM (defaultMode a) Impl q False nm a b
+
+pi0 :: Text -> Term -> Term -> Term
+pi0 nm a b = piM (defaultMode a) Expl Q0 False nm a b
+
+-- The embedded prelude has already-elaborated Core domains, so apply the same
+-- structural §11.1.2.3B defaulting judgment directly.  This is independent of
+-- the requested quantity: only the elaborated parametric-kind shape selects
+-- the observation mode.
+defaultMode :: Term -> ObservationMode
+defaultMode domain
+  | paramKind domain = Parametric
+  | otherwise = Ordinary
+
+paramKind :: Term -> Bool
+paramKind = \case
+  CSort _ -> True
+  CPiEvidenceM Parametric FormationParametric _ Q0 False _ _ _ dom cod ->
+    paramKind dom && paramKind cod
+  _ -> False
 
 tcon :: Text -> Term
 tcon = CGlob . prel
+
+-- | Hidden-universe arities of source-defined type constructors referenced by
+-- the hand-built builtin signatures below. A bare 'tcon' is the seeded
+-- counterpart of an ordinary source reference: 'floatBuiltinUniverses'
+-- assigns a fresh declaration-universe instance to each occurrence. Explicit
+-- 'CGlobI' occurrences keep their written instance. Keeping this table on
+-- resolved identities makes the seeded KCore as explicit as source-elaborated
+-- KCore; the finalized checkpoint rejects any arity drift.
+seededTypeUniverseArities :: Map.Map GName Int
+seededTypeUniverseArities =
+  Map.fromList
+    [ (prel "Array", 1)
+    , (prel "BorrowView", 1)
+    , (prel "Cause", 1)
+    , (prel "ClosedCode", 1)
+    , (prel "Code", 1)
+    , (prel "Core", 1)
+    , (prel "CoreEq", 2)
+    , (prel "Eff", 1)
+    , (prel "Elab", 1)
+    , (prel "Eq", 1)
+    , (prel "Exit", 2)
+    , (prel "Fiber", 2)
+    , (prel "FiberRef", 1)
+    , (prel "IO", 2)
+    , (prel "IsTrait", 1)
+    , (prel "List", 1)
+    , (prel "Map", 2)
+    , (prel "Monitor", 2)
+    , (prel "Option", 1)
+    , (prel "Ord", 1)
+    , (prel "Projector", 2)
+    , (prel "Promise", 2)
+    , (prel "QueryCore", 1)
+    , (prel "RaceOutcome", 4)
+    , (prel "Ref", 1)
+    , (prel "Set", 1)
+    , (prel "STM", 1)
+    , (prel "Syntax", 1)
+    , (prel "TVar", 1)
+    , (prel "TimeoutOutcome", 2)
+    , (prel "__ArrayBuf", 1)
+    , (prel "__AtomicCell", 1)
+    ]
 
 -- | Initial state: builtin types and primitives under @std.prelude@.
 builtinState :: CheckState
@@ -74,20 +167,47 @@ builtinState =
         Map.fromList [(testingModule, [nm | (GName _ nm, _) <- testingPrims])]
     }
   where
-    opaqueTy t = GlobalDef t Nothing False
-    prim name t = (prel name, GlobalDef t (Just (VPrim name [])) False)
+    opaqueTy t = inferDeclarationUniverses (GlobalDef t Nothing False)
+    prim name t = (prel name, inferDeclarationUniverses (GlobalDef t (Just (VPrim name [])) False))
+    internalPrim name t =
+      ( GName primModule name
+      , inferDeclarationUniverses (GlobalDef t (Just (VPrim name [])) False)
+      )
+    compilerOpaque identity t =
+      ( identity
+      , inferDeclarationUniverses (GlobalDef t Nothing False)
+      )
+    inferDeclarationUniverses def =
+      let params = levelParamsOfTerm (quote closedEvalCtx 0 (gdType def))
+          count = case params of
+            [] -> 0
+            _ -> maximum params + 1
+       in globalDefWithUniverses (DeclarationUniverseTelescope count False) def
+    closedEvalCtx = EvalCtx (Globals Map.empty) emptyMetas False Map.empty
     testingModule = ModuleName ["std", "testing"]
     -- @std.testing@ (§T.6 support library): @failNow@ aborts evaluation
     -- with a message; it reduces to a stuck primitive that the harness
     -- and runtime report as a runtime failure.
     testingPrims =
       [ ( GName testingModule "failNow"
-        , GlobalDef (tyV (piI Q0 "a" tType (tStr ~> CVar 1))) (Just (VPrim "failNow" [])) False
+        , inferDeclarationUniverses (GlobalDef (tyV (piI Q0 "a" tType (tStr ~> CVar 1))) (Just (VPrim "failNow" [])) False)
         )
       ]
 
-    tType = CSort 0
-    tyV t = evalClosed t
+    tType = CSort LZero
+    tTypeAt i = CSort (LParam i)
+    -- Parametric carrier arguments generalize, while the carrier's result
+    -- classifier is minimized independently (§11.1.3). These compiler-seeded
+    -- declarations therefore have one hidden universe per type argument and a
+    -- principal Type0 result, exactly like equivalent source declarations.
+    typeToType = piM Parametric Expl Q0 False "A" (tTypeAt 0) tType
+    typeToTypeToType =
+      piM Parametric Expl Q0 False "A" (tTypeAt 0) $
+        piM Parametric Expl Q0 False "B" (tTypeAt 1) tType
+    capturesType =
+      piM Parametric Expl Q0 False "A" (tTypeAt 0) $
+        piM Parametric Expl Q0 False "region" (tcon "Region") (tTypeAt 0)
+    tyV t = evalClosed (floatBuiltinUniverses t)
     types =
       [ (prel "Integer", opaqueTy (tyV tType))
       , (prel "Nat", opaqueTy (tyV tType))
@@ -106,50 +226,52 @@ builtinState =
       , (prel "StringSpan", opaqueTy (tyV tType)) -- §29.4 string span
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
       , -- §12.3.1 capture-annotated type former: part of type identity (§31.1)
-        (prel "__captures", opaqueTy (tyV (tType ~> tcon "Region" ~> tType)))
+        (prel "__captures", opaqueTy (tyV capturesType))
       , -- §18.1 Duration/Instant are ordinary opaque data over Int (the std.time
         -- fragment in the prelude library below), NOT compiler-opaque builtins.
-        (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
-      , (prel "TVar", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
-      , (prel "Promise", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.11 one-shot promise
+        (prel "STM", opaqueTy (tyV typeToType)) -- §18.1.13
+      , (prel "TVar", opaqueTy (tyV typeToType)) -- §18.1.13
+      , (prel "Promise", opaqueTy (tyV typeToTypeToType)) -- §18.11 one-shot promise
       , (prel "Scope", opaqueTy (tyV tType)) -- §18.1.8 explicit supervision scope
-      , (prel "Monitor", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.1.8 fiber monitor
-      , (prel "FiberRef", opaqueTy (tyV (tType ~> tType))) -- §18.1.7 fiber-local cell
-      , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
-      , (prel "Need", opaqueTy (tyV (tType ~> tType)))
-      , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , (prel "Monitor", opaqueTy (tyV typeToTypeToType)) -- §18.1.8 fiber monitor
+      , (prel "FiberRef", opaqueTy (tyV typeToType)) -- §18.1.7 fiber-local cell
+      , (prel "Thunk", opaqueTy (tyV typeToType))
+      , (prel "Need", opaqueTy (tyV typeToType))
+      , (prel "IO", opaqueTy (tyV typeToTypeToType))
+      , (prel "Ref", opaqueTy (tyV typeToType))
       , -- §29.1 the opaque atomic cell wrapped by AtomicRef. NOT a
         -- Ref/TVar: it has no readRef/writeRef surface, so atomicity cannot be
         -- bypassed. Built by __newAtomicRef; consumed by the other __atomic* ops.
-        (prel "__AtomicCell", opaqueTy (tyV (tType ~> tType)))
+        (prel "__AtomicCell", opaqueTy (tyV typeToType))
       , -- MUTABLE-ARRAY-DESIGN §4.1: the opaque mutable-array buffer wrapped by
         -- MutArray. The element type is a Q0-erased parameter that never reaches
         -- the runtime. Built by __newArray; consumed by __arrayRead/Write/Len.
-        (prel "__ArrayBuf", opaqueTy (tyV (tType ~> tType)))
+        (prel "__ArrayBuf", opaqueTy (tyV typeToType))
       , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
         -- labels; rows are encoded as neutral spines
         -- '__effRowCons label iface rest' ending in '__effRowNil'
         (prel "EffRow", opaqueTy (tyV tType))
       , (prel "EffLabel", opaqueTy (tyV tType))
-      , (prel "Eff", opaqueTy (tyV (tcon "EffRow" ~> tType ~> tType)))
+      , (prel "Eff", opaqueTy (tyV (piM Ordinary Expl Q0 False "row" (tcon "EffRow") typeToType)))
       , (prel "__effRowNil", opaqueTy (tyV (tcon "EffRow")))
-      , (prel "__effRowCons", opaqueTy (tyV (tcon "EffLabel" ~> tType ~> tcon "EffRow" ~> tcon "EffRow")))
+      , (prel "__effRowCons", opaqueTy (tyV
+          (tcon "EffLabel" ~> piM Parametric Expl Q0 False "interface" tType
+            (tcon "EffRow" ~> tcon "EffRow"))))
       , -- §20 collection carriers and the §20.10 query core
-        (prel "Set", opaqueTy (tyV (tType ~> tType)))
-      , (prel "Map", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Array", opaqueTy (tyV (tType ~> tType)))
+        (prel "Set", opaqueTy (tyV typeToType))
+      , (prel "Map", opaqueTy (tyV typeToTypeToType))
+      , (prel "Array", opaqueTy (tyV typeToType))
       , (prel "Quantity", opaqueTy (tyV tType)) -- §12.1.1 reified quantities
       , -- phantom carrier for the corpus 'Array n elem' accommodation
         -- (see inferT in Kappa.Check)
-        (prel "__sizedOf", opaqueTy (tyV (tcon "Nat" ~> tType ~> tType)))
+        (prel "__sizedOf", opaqueTy (tyV (piM Ordinary Expl QW False "n" (tcon "Nat") typeToType)))
       , -- §11.3.1 record rows: row kind, the lacks constraint (labels
         -- are elaborated to string literals), and the open-record
         -- encoding '__openRec r (explicit-prefix record type)'
         (prel "RecRow", opaqueTy (tyV tType))
       , (prel "LacksRec", opaqueTy (tyV (tcon "RecRow" ~> tStr ~> tType)))
       , (prel "__openRec", opaqueTy (tyV (tcon "RecRow" ~> tType ~> tType)))
-      , (prel "__rowExtend", GlobalDef (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))) (Just (VPrim "__rowExtend" [])) False)
+      , (prel "__rowExtend", inferDeclarationUniverses (GlobalDef (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))) (Just (VPrim "__rowExtend" [])) False))
       , -- a closed residual row tail '__closedRow (fields record type)':
         -- solving an open record against a closed record instantiates
         -- the row tail with the leftover closed fields (§11.3.1A)
@@ -158,25 +280,21 @@ builtinState =
         -- intrinsic row traits (the evidence carries no information)
         (prel "__rowEvidence", opaqueTy (tyV (piI Q0 "r" (tcon "RecRow") (piI Q0 "l" tStr (CApp Expl (CApp Expl (tcon "LacksRec") (CVar 1)) (CVar 0))))))
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
-      , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
-      , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2
+      , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> typeToType)))
+      , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> typeToType))) -- §20.10.2
       , -- §12.4.3 first-class projector and accessor descriptors
-        (prel "Projector", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Getter", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Opener", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Setter", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "Sinker", opaqueTy (tyV (tType ~> tType ~> tType)))
-      , (prel "composeProjector", GlobalDef composeProjectorTy (Just (VPrim "composeProjector" [])) False)
-      , (prel "captureBorrow", GlobalDef captureBorrowTy (Just (VPrim "captureBorrow" [])) False)
-      , (prel "withBorrowView", GlobalDef withBorrowViewTy (Just (VPrim "withBorrowView" [])) False)
-      , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) (y : a) : Type
-        (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
-      , (prel "refl", GlobalDef reflTy Nothing False)
-      , -- §21 metaprogramming: compile-time-only type families (the
-        -- domains live one universe up so 'Syntax Type' is well-typed
-        -- under §11.1.1 cumulativity)
-        (prel "Syntax", opaqueTy (tyV (CSort 1 ~> tType)))
-      , (prel "Elab", opaqueTy (tyV (CSort 1 ~> tType)))
+        (prel "Projector", opaqueTy (tyV typeToTypeToType))
+      , (prel "Getter", opaqueTy (tyV typeToTypeToType))
+      , (prel "Opener", opaqueTy (tyV typeToTypeToType))
+      , (prel "Setter", opaqueTy (tyV typeToTypeToType))
+      , (prel "Sinker", opaqueTy (tyV typeToTypeToType))
+      , (prel "composeProjector", inferDeclarationUniverses (GlobalDef composeProjectorTy (Just (VPrim "composeProjector" [])) False))
+      , (prel "captureBorrow", inferDeclarationUniverses (GlobalDef captureBorrowTy (Just (VPrim "captureBorrow" [])) False))
+      , (prel "withBorrowView", inferDeclarationUniverses (GlobalDef withBorrowViewTy (Just (VPrim "withBorrowView" [])) False))
+      , -- §21 metaprogramming: hidden declaration universes let Syntax/Elab
+        -- index values from any universe without a term-level TypeLevel Pi.
+        (prel "Syntax", opaqueTy (tyV (piM Parametric Expl Q0 False "A" (CSort (LParam 0)) tType)))
+      , (prel "Elab", opaqueTy (tyV (piM Parametric Expl Q0 False "A" (CSort (LParam 0)) tType)))
       , (prel "SyntaxOrigin", opaqueTy (tyV tType))
       , -- §21.6 semantic-reflection symbol identity (compile-time only)
         (prel "Symbol", opaqueTy (tyV tType))
@@ -184,33 +302,40 @@ builtinState =
         -- elaborated well-scoped core term `Core Γ t` in context `Γ`, with
         -- the witness-bearing exact equality `CoreEq`.
         (prel "CoreCtx", opaqueTy (tyV tType))
-      , (prel "Core", opaqueTy (tyV (tcon "CoreCtx" ~> CSort 1 ~> tType)))
-      , (prel "CoreEq", opaqueTy coreEqKind)
+      , (prel "Core", globalDefWithUniverses coreUniverses (opaqueTy (tyV coreKind)))
+      , (prel "CoreEq", globalDefWithUniverses coreEqUniverses (opaqueTy coreEqKind))
       , -- §23.1 generative staged code (not inspectable as Syntax)
-        (prel "Code", opaqueTy (tyV (tType ~> tType)))
-      , (prel "ClosedCode", opaqueTy (tyV (tType ~> tType)))
+        (prel "Code", opaqueTy (tyV typeToType))
+      , (prel "ClosedCode", opaqueTy (tyV typeToType))
       , -- §20.9 opaque carriers passed to comprehension sink hooks
-        (prel "RawComprehension", opaqueTy (tyV (tType ~> tType)))
-      , (prel "ComprehensionPlan", opaqueTy (tyV (tType ~> tType)))
+        (prel "RawComprehension", opaqueTy (tyV typeToType))
+      , (prel "ComprehensionPlan", opaqueTy (tyV typeToType))
       , -- §22.4 trait-constructor classifier (witnesses synthesized by
         -- implicit resolution when the head is a declared trait)
-        (prel "IsTrait", opaqueTy (tyV (tType ~> tType)))
+        (prel "IsTrait", opaqueTy (tyV (pi0 "t" tType tType)))
       , (prel "__isTraitWitness", opaqueTy (tyV (piI Q0 "t" tType (CApp Expl (tcon "IsTrait") (CVar 0)))))
       ]
-    reflTy =
-      tyV $
-        piI Q0 "a" tType $
-          piI Q0 "x" (CVar 0) $
-            CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)
+    coreUniverses = DeclarationUniverseTelescope 1 False
+    coreEqUniverses = DeclarationUniverseTelescope 2 False
+    -- §21.6 Core/CoreEq carry the universes of their reflected object types
+    -- as declaration parameters. They are not fixed to Type0 and do not
+    -- expose term-level TypeLevel binders.
+    coreKind =
+      pi0 "G" (tcon "CoreCtx") $
+        piM Parametric Expl Q0 False "A" (CSort (LParam 0)) tType
+    coreAt universe context objectType =
+      CApp Expl
+        (CApp Expl (CGlobI (prel "Core") [universe]) context)
+        objectType
     -- §21.6 CoreEq kind: forall (@0 Γ : CoreCtx) (@0 a b : Type).
     -- Core Γ a -> Core Γ b -> Type
     coreEqKind =
       tyV $
         piI Q0 "G" (tcon "CoreCtx") $
-          piI Q0 "a" (CSort 1) $
-            piI Q0 "b" (CSort 1) $
-              CApp Expl (CApp Expl (tcon "Core") (CVar 2)) (CVar 1)
-                ~> CApp Expl (CApp Expl (tcon "Core") (CVar 3)) (CVar 1) ~> tType
+          piM Parametric Impl Q0 False "a" (CSort (LParam 0)) $
+            piM Parametric Impl Q0 False "b" (CSort (LParam 1)) $
+              coreAt (LParam 0) (CVar 2) (CVar 1)
+                ~> coreAt (LParam 1) (CVar 3) (CVar 1) ~> tType
     projT r f = CApp Expl (CApp Expl (tcon "Projector") r) f
     -- §12.4.3 composeProjector (one-field root packs of the middle
     -- projector are admitted structurally, hence the extra parameter)
@@ -220,41 +345,48 @@ builtinState =
           piI Q0 "mid" tType $
             piI Q0 "midRoots" tType $
               piI Q0 "focus" tType $
-                CPi Expl QW False "_" (projT (CVar 3) (CVar 2)) $
-                  CPi Expl QW False "_" (projT (CVar 2) (CVar 1)) $
+                piM Ordinary Expl QW False "_" (projT (CVar 3) (CVar 2)) $
+                  piM Ordinary Expl QW False "_" (projT (CVar 2) (CVar 1)) $
                     projT (CVar 5) (CVar 2)
     captureBorrowTy =
       tyV $
         piI Q0 "ρ" (tcon "Region") $
           piI Q0 "a" tType $
-            CPi Expl QW False "_" (CVar 0) $
+            piM Ordinary Expl QW False "_" (CVar 0) $
               CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)
+    borrowRegionOfTy =
+      tyV $
+        piI Q0 "a" tType $
+          piM Ordinary Expl QW True "value" (CVar 0) (tcon "Region")
     withBorrowViewTy =
       tyV $
         piI Q0 "ρ" (tcon "Region") $
           piI Q0 "a" tType $
             piI Q0 "r" tType $
-              CPi Expl QW False "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
-                CPi Expl QW False "_" (CPi Expl QW False "_" (CVar 2) (CVar 2)) $
+              piM Ordinary Expl QW False "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
+                piM Ordinary Expl QW False "_" (piM Ordinary Expl QW False "_" (CVar 2) (CVar 2)) $
                   CVar 2
+    -- Nat is logically an ordinary inductive family even though its runtime
+    -- representation is the exact compact Integer carrier.  Seed the same
+    -- constructor interfaces an equivalent source data declaration would
+    -- publish; evaluator and KBackendIR lowering provide the representation
+    -- bridge without replacing these logical identities.
     ctors =
-      [ (prel "refl", CtorInfo (prel "=") (quoteClosedTy reflTy) [])
+      [ (prelNatZero, CtorInfo prelNat emptyDeclarationUniverseTelescope tNat [] [])
+      , (prelNatSucc, CtorInfo prelNat emptyDeclarationUniverseTelescope (tNat ~> tNat)
+            [(Just "predecessor", Nothing)] [(Expl, Just "predecessor")])
       ]
     datas =
-      [ (prel "=", DataInfo [prel "refl"] 3)
+      [ (prelNat, DataInfo [prelNatZero, prelNatSucc] 0 LZero)
       ]
     -- §10.4 built-in parameter-positivity signatures for the opaque
     -- carriers that are "declared as strictly positive together with a
     -- parameter-positivity signature" (the spec names List/Option/Array
-    -- specifically; List/Option/Result are source-defined data types
-    -- whose signatures the positivity pass computes, so only the opaque
-    -- carriers are seeded here). Each carrier below is covariant in all
-    -- of its type parameters. 'refl' (propositional equality) is not a
-    -- container and never appears as an admissible positive head, so it
-    -- carries the all-non-positive signature.
+    -- specifically; List/Option/Result and propositional equality are
+    -- source-defined data types whose signatures the positivity pass
+    -- computes, so only the opaque carriers are seeded here).
     positivity =
-      [ (prel "=", [False, False, False])
-      , (prel "Array", [True]) -- §10.4 names Array explicitly
+      [ (prel "Array", [True]) -- §10.4 names Array explicitly
       , (prel "Set", [True])
       , (prel "Map", [True, True])
       , (prel "Ref", [True])
@@ -262,14 +394,15 @@ builtinState =
       , (prel "Code", [True])
       , (prel "ClosedCode", [True])
       ]
-    quoteClosedTy _ = piI Q0 "a" tType (piI Q0 "x" (CVar 0) (CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)))
-
     tInt = tcon "Integer"
     tNat = tcon "Nat"
+    tLevel = CGlob prelTypeLevel
+    tType1 = CSort (finiteLevel (1 :: Integer))
     synT a = CApp Expl (tcon "Syntax") a
     elabT a = CApp Expl (tcon "Elab") a
+    elabTAt level a = CApp Expl (CGlobI (prel "Elab") [level]) a
     tOrigin = tcon "SyntaxOrigin"
-    tconShape = CGlob . GName shapeModule
+    tconShapeAt name universes = CGlobI (GName shapeModule name) universes
     tDouble = tcon "Double"
     tRat = tcon "Rational"
     tStr = tcon "String"
@@ -293,12 +426,38 @@ builtinState =
     mapT k v = CApp Expl (CApp Expl (tcon "Map") k) v
     queryT m q a = CApp Expl (CApp Expl (CApp Expl (tcon "QueryCore") m) q) a
     entryT k v = CRecordT [("key", k), ("value", v)]
-    forallE body = piI Q0 "e" tType body -- erased error param
-    forallEA body = piI Q0 "e" tType (piI Q0 "a" tType body)
-    forallEFA body = piI Q0 "e" tType (piI Q0 "f" tType (piI Q0 "a" tType body))
+    forallE body = piM Parametric Impl Q0 False "e" (tTypeAt 0) body
+    forallEA body =
+      piM Parametric Impl Q0 False "e" (tTypeAt 0) $
+        piM Parametric Impl Q0 False "a" (tTypeAt 1) body
+    forallEFA body =
+      piM Parametric Impl Q0 False "e" (tTypeAt 0) $
+        piM Parametric Impl Q0 False "f" (tTypeAt 1) $
+          piM Parametric Impl Q0 False "a" (tTypeAt 2) body
 
     prims =
-      [ prim "addInt" (tyV (tInt ~> tInt ~> tInt))
+      [ compilerOpaque prelBorrowRegionOf borrowRegionOfTy
+      , internalPrim "__typeLevelZero" (tyV tLevel)
+      , internalPrim "__typeLevelOmega" (tyV tLevel)
+      , internalPrim "__typeLevelSucc" (tyV (tLevel ~> tLevel))
+      , internalPrim "__typeLevelAdd" (tyV (tLevel ~> tLevel ~> tLevel))
+      , internalPrim "__typeLevelMax" (tyV (tLevel ~> tLevel ~> tLevel))
+      , internalPrim "__typeLevelFromNat" (tyV (tNat ~> tLevel))
+      , internalPrim "__elabPure"
+          (tyV
+            (piI Q0 "a" (CSort (LParam 0))
+              (CVar 0 ~> elabTAt (LParam 0) (CVar 1))))
+      , internalPrim "__elabBind"
+          (tyV
+            (piI Q0 "a" (CSort (LParam 0))
+              (piI Q0 "b" (CSort (LParam 1))
+                ( elabTAt (LParam 0) (CVar 1)
+                    ~> (CVar 2 ~> elabTAt (LParam 1) (CVar 2))
+                    ~> elabTAt (LParam 1) (CVar 2)
+                ))))
+      , prim "__compareTypeLevel" (tyV (tLevel ~> tLevel ~> tcon "Ordering"))
+      , prim "__eqTypeLevel" (tyV (tLevel ~> tLevel ~> tBool))
+      , prim "addInt" (tyV (tInt ~> tInt ~> tInt))
       , prim "subInt" (tyV (tInt ~> tInt ~> tInt))
       , prim "mulInt" (tyV (tInt ~> tInt ~> tInt))
       , prim "divInt" (tyV (tInt ~> tInt ~> tInt))
@@ -380,10 +539,10 @@ builtinState =
       , prim "__stringSentences" (tyV (tStr ~> listT tStr))
       , -- §29.4 StringBuilder (linear text accumulator)
         prim "__newStringBuilder" (tyV (tcon "StringBuilder"))
-      , prim "__stringBuilderString" (tyV (tStr ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__stringBuilderScalar" (tyV (tScalar ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__stringBuilderGrapheme" (tyV (tGrapheme ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__finishStringBuilder" (tyV (CPi Expl Q1 False "b" (tcon "StringBuilder") tStr))
+      , prim "__stringBuilderString" (tyV (tStr ~> piM Ordinary Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderScalar" (tyV (tScalar ~> piM Ordinary Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderGrapheme" (tyV (tGrapheme ~> piM Ordinary Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__finishStringBuilder" (tyV (piM Ordinary Expl Q1 False "b" (tcon "StringBuilder") tStr))
       , -- §29.4 string cursors (StringCursor is a scalar offset; the
         -- byte offset is reported by __stringCursorOffset)
         prim "__stringStart" (tyV (tStr ~> tcon "StringCursor"))
@@ -402,10 +561,10 @@ builtinState =
         -- 'Err MkUnicodeDecodeError' and Some to 'Ok'.
         prim "__newUtf8Decoder" (tyV (tcon "Utf8Decoder"))
       , prim "__decodeUtf8Chunk"
-          (tyV (tBytes ~> CPi Expl Q1 False "d" (tcon "Utf8Decoder")
+          (tyV (tBytes ~> piM Ordinary Expl Q1 False "d" (tcon "Utf8Decoder")
                   (optionT (CRecordT [("decoder", tcon "Utf8Decoder"), ("text", tStr)]))))
       , prim "__finishUtf8Decoder"
-          (tyV (CPi Expl Q1 False "d" (tcon "Utf8Decoder") (optionT tStr)))
+          (tyV (piM Ordinary Expl Q1 False "d" (tcon "Utf8Decoder") (optionT tStr)))
       , prim "__byteToNat" (tyV (tByte ~> tNat))
       , prim "__natToByte" (tyV (tNat ~> tByte)) -- §29.5 builder/byte construction
       , -- §29.5 std.bytes internals (wrapped by the std.bytes module)
@@ -428,9 +587,9 @@ builtinState =
       , prim "__bytesFromList" (tyV (listT tByte ~> tBytes))
       , prim "__bytesCompact" (tyV (tBytes ~> tBytes))
       , prim "__newBytesBuilder" (tyV (tcon "BytesBuilder"))
-      , prim "__bytesBuilderByte" (tyV (tByte ~> CPi Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
-      , prim "__bytesBuilderBytes" (tyV (tBytes ~> CPi Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
-      , prim "__finishBytesBuilder" (tyV (CPi Expl Q1 False "b" (tcon "BytesBuilder") tBytes))
+      , prim "__bytesBuilderByte" (tyV (tByte ~> piM Ordinary Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__bytesBuilderBytes" (tyV (tBytes ~> piM Ordinary Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__finishBytesBuilder" (tyV (piM Ordinary Expl Q1 False "b" (tcon "BytesBuilder") tBytes))
       , -- §29.1 std.atomic bitwise read-modify-write internals
         prim "__intAnd" (tyV (tInt ~> tInt ~> tInt))
       , prim "__intOr" (tyV (tInt ~> tInt ~> tInt))
@@ -490,9 +649,9 @@ builtinState =
         -- the std.debug wrappers (DebugTree / DebugEq), which live one
         -- module up, so the prim result is an unconstrained `r` pinned at
         -- the call site. The runtime builds the std.debug constructors.
-        prim "__debugInspect" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 0))))
+        prim "__debugInspect" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 1))))
       , prim "__debugRender" (tyV (piI Q0 "a" tType (CVar 0 ~> tStr)))
-      , prim "__debugCompare" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 1 ~> CVar 0))))
+      , prim "__debugCompare" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 2 ~> CVar 2))))
       , prim "stringAppend" (tyV (tStr ~> tStr ~> tStr))
       , prim "showInt" (tyV (tInt ~> tStr))
       , prim "primitiveIntToString" (tyV (tInt ~> tStr))
@@ -506,7 +665,7 @@ builtinState =
         prim "intToNat" (tyV (tInt ~> tNat))
       , -- linear sink used by the external corpus behind its
         -- 'allow_unsafe_consume' directive: discards a linear value
-        prim "unsafeConsume" (tyV (piI Q0 "a" tType (CPi Expl Q1 False "x" (CVar 0) tUnit)))
+        prim "unsafeConsume" (tyV (piI Q0 "a" tType (piM Ordinary Expl Q1 False "x" (CVar 0) tUnit)))
       , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
@@ -810,7 +969,7 @@ builtinState =
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime
         -- values are Int/Nat literals or Unicode scalars.
-        prim "__rangeEnum" (tyV (piI Q0 "v" tType (CVar 0 ~> CVar 1 ~> tBool ~> listT (CVar 2))))
+        prim "__rangeEnum" (tyV (piI Q0 "v" tType (CVar 0 ~> CVar 1 ~> tBool ~> listT (CVar 3))))
       , -- §20 collection/query plumbing (the §20.10.11 as-if list model)
         prim "__quantityOfNat" (tyV (tNat ~> tcon "Quantity"))
       , prim "__queryFromList"
@@ -834,8 +993,8 @@ builtinState =
         -- on a proof-irrelevantly equal value: 'subst'/'pathInd' carry
         -- the runtime payload through unchanged. '__eqProof' inhabits an
         -- erased equality proposition.
-        prim "__absurd" (tyV (piI Q0 "a" tType (tcon "Void" ~> CVar 0)))
-      , prim "__transport" (tyV (piI Q0 "from" tType (piI Q0 "to" tType (CVar 1 ~> CVar 0))))
+        prim "__absurd" (tyV (piI Q0 "a" tType (tcon "Void" ~> CVar 1)))
+      , prim "__transport" (tyV (piI Q0 "from" tType (piI Q0 "to" tType (CVar 1 ~> CVar 1))))
       , prim "__eqProof" (tyV (piI Q0 "t" tType (CVar 0)))
       , prim "__mapFromEntries"
           (tyV (piI Q0 "k" tType (piI Q0 "v" tType (listT (entryT (CVar 1) (CVar 0)) ~> mapT (CVar 2) (CVar 1)))))
@@ -856,20 +1015,20 @@ builtinState =
       , -- §21.5/§21.9 elaboration-time reflection and diagnostics
         -- (interpreted by the elaborator's §21.8 Elab runner; stuck as
         -- values everywhere else)
-        prim "renderSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT tStr)))
-      , prim "syntaxOrigin" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT tOrigin)))
-      , prim "normalizeSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
-      , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
-      , prim "whnfSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+        prim "renderSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT tStr)))
+      , prim "syntaxOrigin" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT tOrigin)))
+      , prim "normalizeSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+      , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType1 (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
+      , prim "whnfSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT (CVar 1)))))
       , -- §21.6 'typeOfSyntax': the type of a quoted expression, reified as
         -- 'Syntax Type' (forall t. Syntax t -> Elab (Syntax Type))
-        prim "typeOfSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT tType))))
+        prim "typeOfSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT tType))))
       , -- §21.6 semantic-reflection convenience queries (elaboration-time;
         -- interpreted by 'Kappa.Check.runElab')
         prim "defEqSyntax"
-          (tyV (piI Q0 "a" tType (piI Q0 "b" tType (synT (CVar 1) ~> synT (CVar 1) ~> elabT tBool))))
+          (tyV (piI Q0 "a" tType1 (piI Q0 "b" tType1 (synT (CVar 1) ~> synT (CVar 1) ~> elabT tBool))))
       , prim "headSymbolSyntax"
-          (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (optionT (tcon "Symbol")))))
+          (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (optionT (tcon "Symbol")))))
       , -- §21.6 'sameSymbol' compares resolved declaration identity
         prim "sameSymbol" (tyV (tcon "Symbol" ~> tcon "Symbol" ~> tBool))
       , -- §23 staged code: '.< e >.' elaborates to '__codeQuote e' (the
@@ -892,25 +1051,28 @@ builtinState =
         -- the type argument is passed explicitly so the elaboration-time
         -- evaluator can see it)
         prim "__shapeInspectAdt"
-          (tyV (CPi Expl QW False "a" tType (synT tType ~> elabT (CApp Expl (tconShape "AdtShape") (CVar 1)))))
+          (tyV (pi0 "a" (CSort (LParam 0)) (synT (CSort (LParam 1)) ~> elabT (CApp Expl (tconShapeAt "AdtShape" [LParam 0]) (CVar 1)))))
       , prim "__shapeInspectRecord"
-          (tyV (CPi Expl QW False "a" tType (synT tType ~> elabT (CApp Expl (tconShape "RecordShape") (CVar 1)))))
+          (tyV (pi0 "a" (CSort (LParam 0)) (synT (CSort (LParam 1)) ~> elabT (CApp Expl (tconShapeAt "RecordShape" [LParam 0]) (CVar 1)))))
       , prim "__shapeRequireFieldInstances"
-          (tyV (CPi Expl QW False "tc" (tType ~> tType) (CPi Expl QW False "a" tType (CApp Expl (tconShape "AdtShape") (CVar 0) ~> elabT tUnit))))
+          (tyV
+             (pi0 "tc" (piM Parametric Expl Q0 False "x" (CSort (LParam 0)) (CSort (LParam 1)))
+                (pi0 "a" (CSort (LParam 2))
+                   (CApp Expl (tconShapeAt "AdtShape" [LParam 2]) (CVar 0) ~> elabT tUnit))))
       , prim "__shapeMatchAdt"
           (tyV
              (piI Q0 "a" tType (piI Q0 "r" tType
-                (CApp Expl (tconShape "AdtShape") (CVar 1)
+                (CApp Expl (tconShapeAt "AdtShape" [LParam 0]) (CVar 1)
                    ~> synT (CVar 2)
-                   ~> ((tconShape "ShapeConstructor" ~> listT (tconShape "BoundField") ~> elabT (synT (CVar 4))) ~> elabT (synT (CVar 3)))))))
+                   ~> ((tconShapeAt "ShapeConstructor" [] ~> listT (tconShapeAt "BoundField" []) ~> elabT (synT (CVar 4))) ~> elabT (synT (CVar 3)))))))
       , prim "__shapeMatchAdt2"
           (tyV
              (piI Q0 "a" tType (piI Q0 "r" tType
-                (CApp Expl (tconShape "AdtShape") (CVar 1)
+                (CApp Expl (tconShapeAt "AdtShape" [LParam 0]) (CVar 1)
                    ~> synT (CVar 2)
                    ~> synT (CVar 3)
-                   ~> ((tconShape "ShapeConstructor" ~> listT (tconShape "BoundFieldPair") ~> elabT (synT (CVar 5)))
-                         ~> ((tconShape "ShapeConstructor" ~> tconShape "ShapeConstructor" ~> elabT (synT (CVar 6)))
+                   ~> ((tconShapeAt "ShapeConstructor" [] ~> listT (tconShapeAt "BoundFieldPair" []) ~> elabT (synT (CVar 5)))
+                         ~> ((tconShapeAt "ShapeConstructor" [] ~> tconShapeAt "ShapeConstructor" [] ~> elabT (synT (CVar 6)))
                                ~> elabT (synT (CVar 5))))))))
       , prim "__stringSyntax" (tyV (tStr ~> elabT (synT tStr)))
       , prim "__natSyntax" (tyV (tNat ~> elabT (synT tNat)))
@@ -924,21 +1086,319 @@ evalClosed = go []
   where
     go env = \case
       CVar i -> lookupEnv i env
-      CGlob g -> VGlobN g []
-      CPi ic q brw n a b -> VPi ic q brw n (go env a) (Closure env b)
+      CGlobal g universes -> VGlobal g universes []
+      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
+        VPiEvidenceM mode formation ic q brw n assumption origin (go env a) (Closure env b)
       CApp ic f a -> app (go env f) ic (go env a)
       CSort n -> VSort n
       CRecordT fs -> VRecordT [(n, go env t) | (n, t) <- fs]
       t -> VPrim (T.pack (show t)) []
-    app (VGlobN g sp) ic a = VGlobN g (sp ++ [(ic, a)])
+    app (VGlobI g universes sp) ic a =
+      VGlobI g universes (sp ++ [(ic, a)])
     app f _ _ = f
 
+-- | Elaborate the compiler-seeded prelude's bare universe syntax to the current
+-- §11.1.2.3A representation. Each parametric bare-@Type@ binder gets a hidden
+-- level in deterministic telescope order. A saturated seeded type-constructor
+-- reference reuses the structurally known classifier levels of its arguments,
+-- exactly as ordinary source elaboration does; genuinely unknown or partial
+-- references receive fresh levels. Explicit 'CGlobI' spines and explicit
+-- source @Type0@ remain fixed.
+floatBuiltinUniverses :: Term -> Term
+floatBuiltinUniverses source = evalState (go [] source) nextParam
+  where
+    existing = levelParamsOfTerm source
+    nextParam = case existing of
+      [] -> 0
+      _ -> maximum existing + 1
+
+    freshSort :: State Int Term
+    freshSort = CSort <$> freshLevel
+
+    freshLevel :: State Int Level
+    freshLevel = do
+      index <- get
+      put (index + 1)
+      pure (LParam index)
+
+    freshLevels :: Int -> State Int [Level]
+    freshLevels count = replicateM count freshLevel
+
+    go env = \case
+      CGlobal global [] -> do
+        universes <- freshLevels (Map.findWithDefault 0 global seededTypeUniverseArities)
+        pure (CGlobal global universes)
+      CGlobal global universes -> pure (CGlobal global universes)
+      CPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain -> do
+        domain' <- case (mode, domain) of
+          (Parametric, CSort LZero) -> freshSort
+          _ -> go env domain
+        let localClassifier = case domain' of
+              CSort level -> Just level
+              _ -> Nothing
+        CPiEvidenceM mode formation ic q borrowed name assumption origin domain'
+          <$> go (localClassifier : env) codomain
+      CLamM mode ic q name body ->
+        CLamM mode ic q name <$> go (Nothing : env) body
+      application@CApp {} -> do
+        let (headTerm, arguments) = collectApplications application
+        convertedArguments <-
+          mapM
+            (\(icit, argument) -> (icit,) <$> go env argument)
+            arguments
+        convertedHead <- case headTerm of
+          CGlobal global [] -> do
+            let arity = Map.findWithDefault 0 global seededTypeUniverseArities
+            known <-
+              mapM
+                (\(_, argument) ->
+                   maybe freshLevel pure
+                     (typeArgumentClassifier env argument))
+                (take arity convertedArguments)
+            missing <- freshLevels (arity - length known)
+            pure (CGlobal global (known ++ missing))
+          _ -> go env headTerm
+        pure
+          (foldl
+             (\function (icit, argument) -> CApp icit function argument)
+             convertedHead
+             convertedArguments)
+      CRecordTQ fields -> CRecordTQ <$> traverse (traverse (go env)) fields
+      CRecordV fields -> CRecordV <$> traverse (traverse (go env)) fields
+      CProjM mode inner field -> (\inner' -> CProjM mode inner' field) <$> go env inner
+      CProjAtM mode inner field index -> (\inner' -> CProjAtM mode inner' field index) <$> go env inner
+      CVariantT members -> CVariantT <$> traverse (go env) members
+      CSealE fields inner -> CSealE fields <$> go env inner
+      CSigT fields inner -> CSigT fields <$> go env inner
+      CThunkE inner -> CThunkE <$> go env inner
+      CLazyE inner -> CLazyE <$> go env inner
+      CForceE inner -> CForceE <$> go env inner
+      other -> pure other
+
+    collectApplications = collect []
+      where
+        collect arguments (CApp icit function argument) =
+          collect ((icit, argument) : arguments) function
+        collect arguments headTerm = (headTerm, arguments)
+
+    typeArgumentClassifier env = \case
+      CVar index -> case drop index env of
+        level : _ -> level
+        [] -> Nothing
+      -- A universe code is itself classified one level higher.
+      CSort level -> Just (levelSucc level)
+      -- A bare nominal appearing in an authenticated type-argument position
+      -- of a compiler-seeded signature denotes its principal Type0 result.
+      -- Higher sorts are represented explicitly by 'CSort'; this pass never
+      -- classifies arbitrary user terms from a readable global name.
+      CGlobal _ _ -> Just LZero
+      application@CApp {} ->
+        let (headTerm, _) = collectApplications application
+         in case headTerm of
+              CGlobal _ _ -> Just LZero
+              _ -> Nothing
+      CUniverseLift _ upper _ _ -> Just upper
+      _ -> Nothing
+
+
+-- | Bootstrap fragment for the canonical @std.typelevel@ module. It is
+-- checked before @std.prelude@ because prelude signatures mention
+-- 'TypeLevel'; the representation depends only on the compiler-seeded 'Nat'
+-- carrier. The operations are checked later by 'stdTypeLevelSource' after the
+-- ordinary prelude traits and constructors are available.
+stdTypeLevelBootstrapSource :: Text
+stdTypeLevelBootstrapSource =
+  T.unlines
+    [ "module std.typelevel"
+    , ""
+    , "opaque data TypeLevel : Type0 ="
+    , "    Level"
+    , "        (omegaCoefficient : Nat)"
+    , "        (finiteRemainder : Nat)"
+    ]
+
+-- | The ordinary source implementation of the canonical TypeLevel algebra
+-- (§11.1.2.2). These definitions are opaque only after this module is sealed;
+-- while checking the module, their bodies and the hidden 'Level' constructor
+-- are available through the same ordinary elaborator used for user code.
+stdTypeLevelSource :: Text
+stdTypeLevelSource =
+  T.unlines
+    [ "module std.typelevel"
+    , ""
+    , "typeLevelZero : TypeLevel"
+    , "opaque let typeLevelZero = Level 0 0"
+    , ""
+    , "typeLevelOne : TypeLevel"
+    , "opaque let typeLevelOne = Level 0 1"
+    , ""
+    , "typeLevelOmega : TypeLevel"
+    , "opaque let typeLevelOmega = Level 1 0"
+    , ""
+    , "typeLevelFromInteger : Nat -> TypeLevel"
+    , "opaque let typeLevelFromInteger n = Level 0 n"
+    , ""
+    , "typeLevelSucc : TypeLevel -> TypeLevel"
+    , "opaque let typeLevelSucc x ="
+    , "    match x"
+    , "    case Level c n -> Level c (n + 1)"
+    , ""
+    , "typeLevelAdd : TypeLevel -> TypeLevel -> TypeLevel"
+    , "opaque let typeLevelAdd x y ="
+    , "    match (x, y)"
+    , "    case (Level xc xn, Level yc yn) -> Level (xc + yc) (xn + yn)"
+    , ""
+    , "typeLevelCompare : TypeLevel -> TypeLevel -> Ordering"
+    , "opaque let typeLevelCompare x y ="
+    , "    match (x, y)"
+    , "    case (Level xc xn, Level yc yn) ->"
+    , "        match compare xc yc"
+    , "        case LT -> LT"
+    , "        case GT -> GT"
+    , "        case EQ -> compare xn yn"
+    , ""
+    , "typeLevelMax : TypeLevel -> TypeLevel -> TypeLevel"
+    , "opaque let typeLevelMax x y ="
+    , "    match typeLevelCompare x y"
+    , "    case LT -> y"
+    , "    case EQ -> x"
+    , "    case GT -> x"
+    , ""
+    , "omega : TypeLevel"
+    , "let omega = typeLevelOmega"
+    , ""
+    , "omegaTypeLevel : TypeLevel"
+    , "let omegaTypeLevel = typeLevelOmega"
+    , ""
+    , "instance Zero TypeLevel ="
+    , "    let zero = typeLevelZero"
+    , ""
+    , "instance One TypeLevel ="
+    , "    let one = typeLevelOne"
+    , ""
+    , "instance FromInteger TypeLevel ="
+    , "    let fromInteger n = typeLevelFromInteger n"
+    , ""
+    , "instance Successor TypeLevel ="
+    , "    let succ x = typeLevelSucc x"
+    , ""
+    , "instance Add TypeLevel ="
+    , "    let add x y = typeLevelAdd x y"
+    , ""
+    , "instance Max TypeLevel ="
+    , "    let max x y = typeLevelMax x y"
+    , ""
+    , "instance Eq TypeLevel ="
+    , "    let (==) x y ="
+    , "        match typeLevelCompare x y"
+    , "        case EQ -> True"
+    , "        case LT -> False"
+    , "        case GT -> False"
+    , ""
+    , "instance Ord TypeLevel ="
+    , "    let compare x y = typeLevelCompare x y"
+    , ""
+    , "instance IsSet TypeLevel"
+    , ""
+    , "trait Monotone (ordinary 0 f : TypeLevel -> TypeLevel) ="
+    , "    monotone : (x : TypeLevel) -> (y : TypeLevel) -> (@ordinary 0 p : x <= y) -> (f x <= f y) = True"
+    , ""
+    , "typeLevelAddAssoc : forall (x : TypeLevel) (y : TypeLevel) (z : TypeLevel). add (add x y) z = add x (add y z)"
+    , "let typeLevelAddAssoc x y z = refl"
+    , "typeLevelAddComm : forall (x : TypeLevel) (y : TypeLevel). add x y = add y x"
+    , "let typeLevelAddComm x y = refl"
+    , "typeLevelAddZero : forall (x : TypeLevel). add x typeLevelZero = x"
+    , "let typeLevelAddZero x = refl"
+    , "typeLevelSuccIsAddOne : forall (x : TypeLevel). succ x = add x typeLevelOne"
+    , "let typeLevelSuccIsAddOne x = refl"
+    , "typeLevelSuccStrict : forall (x : TypeLevel). (x < succ x) = True"
+    , "let typeLevelSuccStrict x = refl"
+    , "typeLevelLtIffSuccLe : forall (x : TypeLevel) (y : TypeLevel). (x < y) = (succ x <= y)"
+    , "let typeLevelLtIffSuccLe x y = refl"
+    , "typeLevelAddMonotone : forall (x : TypeLevel) (y : TypeLevel) (z : TypeLevel). (ordinary 0 p : (x <= y) = True) -> (add z x <= add z y) = True"
+    , "let typeLevelAddMonotone x y z p = refl"
+    , "typeLevelAddStrictMonotone : forall (x : TypeLevel) (y : TypeLevel) (z : TypeLevel). (ordinary 0 p : (x < y) = True) -> (add z x < add z y) = True"
+    , "let typeLevelAddStrictMonotone x y z p = refl"
+    , "typeLevelMaxAssoc : forall (x : TypeLevel) (y : TypeLevel) (z : TypeLevel). max (max x y) z = max x (max y z)"
+    , "let typeLevelMaxAssoc x y z = refl"
+    , "typeLevelMaxComm : forall (x : TypeLevel) (y : TypeLevel). max x y = max y x"
+    , "let typeLevelMaxComm x y = refl"
+    , "typeLevelMaxIdempotent : forall (x : TypeLevel). max x x = x"
+    , "let typeLevelMaxIdempotent x = refl"
+    , "typeLevelFiniteBelowOmega : forall (n : Nat). (typeLevelFromInteger n < typeLevelOmega) = True"
+    , "let typeLevelFiniteBelowOmega n = refl"
+    , "typeLevelOmegaPlusOmega : (typeLevelOmega < add typeLevelOmega typeLevelOmega) = True"
+    , "let typeLevelOmegaPlusOmega = refl"
+    , "typeLevelOnePlusOmega : add typeLevelOne typeLevelOmega = add typeLevelOmega typeLevelOne"
+    , "let typeLevelOnePlusOmega = refl"
+    , "typeLevelAddLeftZero : forall (x : TypeLevel). add typeLevelZero x = x"
+    , "let typeLevelAddLeftZero x = refl"
+    , "typeLevelAddMonotoneRight : forall (x : TypeLevel) (y : TypeLevel) (z : TypeLevel). (ordinary 0 p : (x <= y) = True) -> (add x z <= add y z) = True"
+    , "let typeLevelAddMonotoneRight x y z p = refl"
+    , "addRightMonotone : forall (k : TypeLevel). (x : TypeLevel) -> (y : TypeLevel) -> (@ordinary 0 p : (x <= y) = True) -> (add k x <= add k y) = True"
+    , "let addRightMonotone k x y p = typeLevelAddMonotone @x @y @k p"
+    , "instance Monotone (add k) ="
+    , "    let monotone = addRightMonotone"
+    , ""
+    , "instance AdditiveMonoid TypeLevel ="
+    , "    let addAssoc = typeLevelAddAssoc"
+    , "    let addLeftIdentity = typeLevelAddLeftZero"
+    , "    let addRightIdentity = typeLevelAddZero"
+    , "instance CommutativeAdditiveMonoid TypeLevel ="
+    , "    let addCommutative = typeLevelAddComm"
+    , "instance OrderedAdditive TypeLevel ="
+    , "    let addMonotoneLeft = typeLevelAddMonotone"
+    , "    let addMonotoneRight = typeLevelAddMonotoneRight"
+    , "instance JoinSemilattice TypeLevel ="
+    , "    let joinAssoc = typeLevelMaxAssoc"
+    , "    let joinCommutative = typeLevelMaxComm"
+    , "    let joinIdempotent = typeLevelMaxIdempotent"
+    ]
+
+-- | The bounded package families are checked after the ordinary TypeLevel
+-- operations and their standard dictionaries have entered the same module's
+-- export environment. Data headers are predeclared before term signatures in
+-- a source fragment, so keeping this as a separate @std.typelevel@ fragment
+-- makes the dependency explicit without changing any public identity.
+stdTypeLevelPackagesSource :: Text
+stdTypeLevelPackagesSource =
+  T.unlines
+    [ "module std.typelevel"
+    , ""
+    , "type LevelLe (lo : TypeLevel) (hi : TypeLevel) : Type ="
+    , "    (lo <= hi) = True"
+    , ""
+    , "type LevelLt (lo : TypeLevel) (hi : TypeLevel) : Type ="
+    , "    (lo < hi) = True"
+    , ""
+    , "data TypeBelow.{u} : Type u ="
+    , "    PackTypeBelow"
+    , "        (ordinary 0 level : TypeLevel)"
+    , "        (@0 bound : level < u)"
+    , "        (ordinary 0 T : Type level)"
+    , ""
+    , "data TypeAtMost.{u} : Type (typeLevelSucc u) ="
+    , "    PackTypeAtMost"
+    , "        (ordinary 0 level : TypeLevel)"
+    , "        (@0 bound : level <= u)"
+    , "        (ordinary 0 T : Type level)"
+    ]
 
 -- | Embedded @std.prelude@ source (§28.2 subset; see SPEC_COMPLIANCE.md).
 preludeSource :: Text
 preludeSource =
   T.unlines
-    [ "data Void : Type"
+    [ -- §11.4.1: standard equality is an ordinary source declaration. Its
+      -- explicit schema and parametric endpoints follow the same elaboration
+      -- path as every user-defined universe-polymorphic data family.
+      "data (=).{u}"
+    , "    (@parametric 0 A : Type u)"
+    , "    (parametric 0 x : A)"
+    , "    (parametric 0 y : A)"
+    , "    : Type u ="
+    , "    refl : (=) x x"
+    , ""
+    , "data Void : Type"
     , ""
     , "data Unit : Type ="
     , "    Unit"
@@ -1005,15 +1465,15 @@ preludeSource =
     , "sleepUntil : Instant -> IO Void Unit"
     , "let sleepUntil i = ioBind nowMonotonic (\\now -> sleepFor (instantDiff i now))"
     , ""
-    , "data Option (a : Type) : Type ="
+    , "data Option (0 a : Type) : Type ="
     , "    None"
     , "    Some a"
     , ""
-    , "data Result (e : Type) (a : Type) : Type ="
+    , "data Result (0 e : Type) (0 a : Type) : Type ="
     , "    Ok a"
     , "    Err e"
     , ""
-    , "data List (a : Type) : Type ="
+    , "data List (0 a : Type) : Type ="
     , "    Nil"
     , "    (::) (head : a) (tail : List a)"
     , ""
@@ -1022,19 +1482,46 @@ preludeSource =
       -- the index is fixed at construction (e.g. `bytesAsSizedArray` packs
       -- it to `bytesLength`), which is how the §29.5 propositional-length
       -- guarantee is carried.
-      "data SizedArray (n : Nat) (a : Type) : Type ="
+      "data SizedArray (n : Nat) (0 a : Type) : Type ="
     , "    MkSizedArray (elements : List a)"
     , ""
     , -- §12.4.3 canonical zipper: an opened owned focus plus a linear
       -- filler back to the whole
-      "data Zipper (whole : Type) (focus : Type) (replace : Type) : Type ="
+      "data Zipper (0 whole : Type) (0 focus : Type) (0 replace : Type) : Type ="
     , "    Zipper (focus : focus) (1 fill : replace -> whole)"
     , ""
     , "type Int = Integer"
     , "type Float = Double"
     , "type Char = UnicodeScalar" -- sanctioned alias (§28.5)
-    , "type UIO (a : Type) = IO Void a"
-    , "type __IORef (a : Type) = Ref a"
+    , "type UIO (0 a : Type) = IO Void a"
+    , "type __IORef (0 a : Type) = Ref a"
+    , ""
+    , -- §28.2 canonical Nat eliminators.  Recursion is deliberately on the
+      -- first argument, making the left equations definitional while the
+      -- commuted/right equations require explicit algebraic evidence.
+      "natAdd : Nat -> Nat -> Nat"
+    , "let natAdd left right ="
+    , "    match left"
+    , "    case Nat.Zero -> right"
+    , "    case Nat.Succ predecessor -> Nat.Succ (natAdd predecessor right)"
+    , ""
+    , "natMultiply : Nat -> Nat -> Nat"
+    , "let natMultiply left right ="
+    , "    match left"
+    , "    case Nat.Zero -> Nat.Zero"
+    , "    case Nat.Succ predecessor -> natAdd right (natMultiply predecessor right)"
+    , ""
+    , "natCompare : Nat -> Nat -> Ordering"
+    , "let natCompare left right ="
+    , "    match left"
+    , "    case Nat.Zero ->"
+    , "        match right"
+    , "        case Nat.Zero -> EQ"
+    , "        case Nat.Succ _ -> LT"
+    , "    case Nat.Succ leftPredecessor ->"
+    , "        match right"
+    , "        case Nat.Zero -> GT"
+    , "        case Nat.Succ rightPredecessor -> natCompare leftPredecessor rightPredecessor"
     , ""
     , "not : Bool -> Bool"
     , "let not b = if b then False else True"
@@ -1068,56 +1555,111 @@ preludeSource =
       "force : forall (a : Type). Thunk a -> a"
     , "let force t = force t"
     , ""
-    , "trait Show (a : Type) ="
+    , -- §11.4/§14.4 proof-classification traits.  These precede Eq because
+      -- Eq's revised contract carries IsSet as an ordinary supertrait.
+      "trait IsEmpty (0 t : Type) ="
+    , "    absurdT : t -> Void"
+    , ""
+    , "trait IsContr (0 t : Type) ="
+    , "    center : t"
+    , "    contract : (x : t) -> center = x"
+    , ""
+    , "trait IsSubsingleton (0 t : Type) ="
+    , "    allEqual : (x : t) -> (y : t) -> x = y"
+    , ""
+    , "trait IsSubsingleton p => IsProp (0 p : Type)"
+    , ""
+    , "trait IsSet (0 a : Type) ="
+    , "    pathIsProp : forall (x : a) (y : a). IsProp (x = y)"
+    , "    let pathIsProp @x @y = __eqProof"
+    , ""
+    , "trait IsGroupoid (0 a : Type) ="
+    , "    pathIsSet : forall (x : a) (y : a). IsSet (x = y)"
+    , "    let pathIsSet @x @y = __eqProof"
+    , ""
+    , "trait Show (0 a : Type) ="
     , "    show : a -> String"
     , ""
-    , "trait Eq (a : Type) ="
+    , "trait IsSet a => Eq (0 a : Type) ="
     , "    (==) : a -> a -> Bool"
+    , "    eqSound : (x : a) -> (y : a) -> (0 proof : (x == y) = True) -> x = y"
+    , "    let eqSound x y proof = __eqProof"
+    , "    eqComplete : (x : a) -> (y : a) -> (0 proof : x = y) -> (x == y) = True"
+    , "    let eqComplete x y proof = __eqProof"
     , ""
     , -- §14.1.4 (Spec 13921): in std.prelude Ord refines Eq, and its
       -- equality classes MUST agree with (==).
-      "trait Eq a => Ord (a : Type) ="
+      "trait Eq a => Ord (0 a : Type) ="
     , "    compare : a -> a -> Ordering"
     , ""
-    , "trait Add (a : Type) ="
+    , "trait Add (0 a : Type) ="
     , "    add : a -> a -> a"
     , ""
-    , "trait Mul (a : Type) ="
+    , "trait Successor (0 a : Type) ="
+    , "    succ : a -> a"
+    , ""
+    , "trait Max (0 a : Type) ="
+    , "    max : a -> a -> a"
+    , ""
+    , "trait Mul (0 a : Type) ="
     , "    multiply : a -> a -> a"
     , ""
-    , "trait Negatable (a : Type) ="
+    , "trait Negatable (0 a : Type) ="
     , "    negate : a -> a"
     , ""
-    , "trait CheckedSub (a : Type) ="
-    , "    subDefined : a -> a -> Bool"
-    , "    subtractUnchecked : a -> a -> a"
+    , "trait Zero (0 a : Type) ="
+    , "    zero : a"
     , ""
-    , "trait CheckedDiv (a : Type) ="
-    , "    divDefined : a -> a -> Bool"
-    , "    divideUnchecked : a -> a -> a"
+    , "trait One (0 a : Type) ="
+    , "    one : a"
     , ""
-    , "trait CheckedMod (a : Type) ="
-    , "    modDefined : a -> a -> Bool"
-    , "    moduloUnchecked : a -> a -> a"
+    , "(/=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
+    , "let (/=) x y = not (x == y)"
     , ""
-    , "trait FromInteger (t : Type) ="
+    , "(!=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
+    , "let (!=) x y = not (x == y)"
+    , ""
+    , "trait CheckedSub (0 a : Type) ="
+    , "    subDefined : (& x : a) -> (& y : a) -> Bool"
+    , "    subtract : (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"
+    , ""
+    , "trait (Eq a, Zero a) => CheckedDiv (0 a : Type) ="
+    , "    divDefined : (& x : a) -> (& y : a) -> Bool"
+    , "    divide : (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a"
+    , "    divDefinedOnlyNonZero : forall (x : a) (y : a). divDefined x y = True -> (y /= zero) = True"
+    , "    divDefinedForNonZero : forall (x : a) (y : a). (y /= zero) = True -> divDefined x y = True"
+    , ""
+    , "trait (Eq a, Zero a) => CheckedMod (0 a : Type) ="
+    , "    modDefined : (& x : a) -> (& y : a) -> Bool"
+    , "    modulo : (x : a) -> (y : a) -> (@_ : modDefined x y = True) -> a"
+    , "    modDefinedOnlyNonZero : forall (x : a) (y : a). modDefined x y = True -> (y /= zero) = True"
+    , "    modDefinedForNonZero : forall (x : a) (y : a). (y /= zero) = True -> modDefined x y = True"
+    , ""
+    , "trait FromInteger (0 t : Type) ="
     , "    fromInteger : Nat -> t"
     , ""
-    , "trait FromFloat (t : Type) ="
+    , "trait FromFloat (0 t : Type) ="
     , "    fromFloat : Double -> t"
     , ""
-    , "trait FromString (t : Type) =" -- §28.2 (ordinary library trait)
+    , "trait FromString (0 t : Type) =" -- §28.2 (ordinary library trait)
     , "    fromString : String -> t"
     , ""
     , "instance FromString String ="
     , "    let fromString s = s"
     , ""
-    , "trait Applicative (f : Type -> Type) ="
+    , "trait PreservesParametricForall"
+    , "    (parametric 0 G : (A : Type) -> Type) ="
+    , "    pullForall :"
+    , "        (parametric 0 F : (A : Type) -> Type) ->"
+    , "        (forall (A : Type). G (F A)) ->"
+    , "        G (forall (A : Type). F A)"
+    , ""
+    , "trait Applicative (0 f : (0 A : Type) -> Type) ="
     , "    pureA : forall (a : Type). a -> f a"
     , "    liftA2 : forall (a : Type) (b : Type) (c : Type). (a -> b -> c) -> f a -> f b -> f c"
     , ""
     , -- §14.1.4 (Spec 13923): in std.prelude Monad refines Applicative.
-      "trait Applicative m => Monad (m : Type -> Type) =" -- §28.2.2 (operational subset)
+      "trait Applicative m => Monad (0 m : (0 A : Type) -> Type) =" -- §28.2.2 (operational subset)
     , "    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b"
     , ""
     , "instance Applicative Option ="
@@ -1133,18 +1675,12 @@ preludeSource =
     , "        case None -> None"
     , "        case Some x -> f x"
     , ""
-    , "trait Releasable (m : Type -> Type) (a : Type) =" -- §29.x resources
+    , "trait Releasable (0 m : (0 A : Type) -> Type) (0 a : Type) =" -- §29.x resources
     , "    release : a -> m Unit"
     , ""
-    , "trait Zero (a : Type) ="
-    , "    zero : a"
+    , "trait Shareable (0 a : Type)" -- §12.3 marker: shared-borrow-safe
     , ""
-    , "trait One (a : Type) ="
-    , "    one : a"
-    , ""
-    , "trait Shareable (a : Type)" -- §12.3 marker: shared-borrow-safe
-    , ""
-    , "trait Lift (a : Type) =" -- §23.3 lift-based cross-stage persistence
+    , "trait Lift (0 a : Type) =" -- §23.3 lift-based cross-stage persistence
     , "    liftCode : a -> Code a"
     , ""
     , -- §18.1.13 Pointed: the minimal carrier of a distinguished 'empty'
@@ -1161,7 +1697,7 @@ preludeSource =
       -- (e.g. duplicating it in 'Monoid') would overwrite this bare-name global
       -- and mis-route every 'empty' use to the wrong trait's dictionary; so
       -- 'Monoid' INHERITS 'empty' from 'Pointed' rather than re-declaring it.
-      "trait Pointed (a : Type) ="
+      "trait Pointed (0 a : Type) ="
     , "    empty : a"
     , ""
     , -- §28.2.2 Monoid. The spec's 'Monoid' is LAWFUL BY DEFAULT: it carries
@@ -1190,190 +1726,33 @@ preludeSource =
       -- CANNOT — their propositional equality is not an h-prop (no 'IsSet (IO e
       -- a)'), and fabricating one is exactly the unsoundness this avoids. They
       -- are therefore 'Pointed' but NOT 'Monoid'.
-      "trait Pointed a => Monoid (a : Type) =" -- §28.2.2
+      "trait Pointed a => Monoid (0 a : Type) =" -- §28.2.2
     , "    append : a -> a -> a"
     , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
     , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
     , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
     , ""
-    , "trait Functor (f : Type -> Type) =" -- §28.2.2 containers
+    , "trait Functor (0 f : (0 A : Type) -> Type) =" -- §28.2.2 containers
     , "    map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b"
     , ""
-    , "trait Foldable (t : Type -> Type) ="
+    , "trait Foldable (0 t : (0 A : Type) -> Type) ="
     , "    foldr : forall (a : Type) (b : Type). (a -> b -> b) -> b -> t a -> b"
     , "    foldl : forall (a : Type) (b : Type). (b -> a -> b) -> b -> t a -> b"
     , "    foldMap : forall (a : Type) (m : Type). (@_ : Monoid m) -> (a -> m) -> t a -> m"
     , ""
-    , "trait Filterable (t : Type -> Type) ="
+    , "trait Filterable (0 t : (0 A : Type) -> Type) ="
     , "    filter : forall (a : Type). (a -> Bool) -> t a -> t a"
     , ""
-    , "trait FilterMap (t : Type -> Type) ="
+    , "trait FilterMap (0 t : (0 A : Type) -> Type) ="
     , "    filterMap : forall (a : Type) (b : Type). (a -> Option b) -> t a -> t b"
     , ""
-    , "trait Traversable (t : Type -> Type) ="
-    , "    traverse : forall (f : Type -> Type) (a : Type) (b : Type). (@_ : Applicative f) -> (a -> f b) -> t a -> f (t b)"
+    , "trait Traversable (0 t : (0 A : Type) -> Type) ="
+    , "    traverse : forall (f : (0 A : Type) -> Type) (a : Type) (b : Type). (@_ : Applicative f) -> (a -> f b) -> t a -> f (t b)"
     , ""
-    , -- §28.2.2 algebraic numeric traits. The spec declares these with
-      -- proof-producing law members (associativity, identities,
-      -- distributivity, inverse and field laws). This implementation does
-      -- not have an equational-rewriting proof system able to discharge
-      -- those obligations for neutral variables (e.g. 'add (add x y) z ='
-      -- 'add x (add y z)' does not hold definitionally on Nat/Integer),
-      -- so the algebraic traits are modelled as their checkable
-      -- structural contract: the supertrait premises (Eq/Zero/Add/Mul/...)
-      -- plus the operations they refine. The law members carry no runtime
-      -- representation under §11.1.6/§31.2 and are not modelled here; see
-      -- docs/notes/KNOWN_SPEC_ISSUES.md. The supertrait graph is exactly §28.2.2, so
-      -- name resolution and instance coherence (incl. the mandated
-      -- "MUST NOT" exclusions) behave as specified.
-      "trait (Eq a, Zero a, Add a) => AdditiveMonoid (a : Type)"
-    , ""
-    , "trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (a : Type)"
-    , ""
-    , "trait (Eq a, One a, Mul a) => MultiplicativeMonoid (a : Type)"
-    , ""
-    , "trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (a : Type)"
-    , ""
-    , "trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (a : Type)"
-    , ""
-    , "trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (a : Type)"
-    , ""
-    , "trait (Ring a, CheckedDiv a) => FieldLike (a : Type)"
-    , ""
-    , "trait (Ord a, AdditiveMonoid a) => OrderedAdditive (a : Type)"
-    , ""
-    , "trait (OrderedAdditive a, Semiring a) => OrderedSemiring (a : Type)"
-    , ""
-    , -- §28.2 Equiv: the equivalence trait providing (~=). §28.2.3 fixes
-      -- its precedence/associativity to match (==) (infix 40).
-      "trait Equiv (a : Type) ="
-    , "    (~=) : a -> a -> Bool"
-    , ""
-    , -- §14.1.1.3 / §28.2: every Eq is an Equiv (the prelude bridge
-      -- instance), so (~=) resolves for any type with an Eq instance.
-      "instance Eq a => Equiv a ="
-    , "    let (~=) x y = x == y"
-    , ""
-    , -- §28.2 Alternative (the empty/orElse choice structure)
-      "trait Alternative (f : Type -> Type) ="
-    , "    emptyA : forall (a : Type). f a"
-    , "    (<|>) : forall (a : Type). f a -> f a -> f a"
-    , ""
-    , -- §28.2 Iterator: the associated 'Item' type and the one-shot step
-      -- 'next'. 'next' references the associated 'Item' in its own
-      -- signature; §14.2.1 makes that a sibling-member projection of the
-      -- current trait evidence, now that associated static members are
-      -- supported (§14.3.4) — an instance defines both 'Item = …' and
-      -- 'let next this = …'.
-      "trait Iterator (it : Type) ="
-    , "    Item : Type"
-    , "    next : (1 this : it) -> Option (item : Item, rest : it)"
-    , ""
-    , -- §29.x runtime-effect / resource traits (§18.1.25, §18.6.1,
-      -- §19.1-19.5). Operational subset: the IO carrier instances below
-      -- and the prelude wrappers delegate to the IO primitives.
-      "trait MonadFinally (m : Type -> Type) ="
-    , "    finally : forall (a : Type). m a -> m Unit -> m a"
-    , ""
-    , "trait MonadError (m : Type -> Type) ="
-    , "    Error : Type"
-    , "    throwError : forall (a : Type). Error -> m a"
-    , "    catchError : forall (a : Type). m a -> (Error -> m a) -> m a"
-    , ""
-    , "trait MonadResource (m : Type -> Type) ="
-    , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
-    , ""
-    , "trait MonadRef (m : Type -> Type) ="
-    , "    Ref : Type -> Type"
-    , "    newRef : forall (a : Type). a -> m (Ref a)"
-    , "    readRef : forall (a : Type). Ref a -> m a"
-    , "    writeRef : forall (a : Type). Ref a -> a -> m Unit"
-    , ""
-    , -- §11.4/§28.2 proof-classification traits. IsEmpty provides the
-      -- 'absurdT' eliminator. IsContr/IsSubsingleton/IsProp/IsSet/
-      -- IsGroupoid are the h-level proof traits; their proof-producing
-      -- members (center/contract/allEqual/pathIsProp/pathIsSet) are
-      -- erased proofs over propositional equality that this
-      -- implementation cannot synthesize for neutral terms, so the
-      -- traits are surfaced as nameable markers (the supertrait graph
-      -- IsSubsingleton => IsProp is preserved). See docs/notes/KNOWN_SPEC_ISSUES.md.
-      "trait IsEmpty (t : Type) ="
-    , "    absurdT : t -> Void"
-    , ""
-    , "trait IsContr (t : Type)"
-    , ""
-    , "trait IsSubsingleton (t : Type)"
-    , ""
-    , "trait IsSubsingleton p => IsProp (p : Type)"
-    , ""
-    , "trait IsSet (a : Type)"
-    , ""
-    , "trait IsGroupoid (a : Type)"
-    , ""
-    , -- §14.4 set-truncation witness. 'IsSet a' states that every equality
-      -- '(=) x y' over 'a' is an h-prop (the §14.4 'IsSet.pathIsProp' content).
-      -- 'String' genuinely IS a set: a sequence of unicode scalars with
-      -- decidable structural equality, hence (Hedberg) UIP. The compiler-owned
-      -- IsProp-under-Pi solver consults this instance at its equality base
-      -- case, so the forall-quantified monoid laws over 'String' may be
-      -- discharged through the gated 'unsafeAssertProof' — 'String' is a
-      -- primitive with no spine to induct over, so its laws are asserted, not
-      -- proven. This is a marker (the trait has no members here).
-      -- NOTE: there is deliberately NO 'instance IsSet (List a)'. List's monoid
-      -- laws are PROVEN honestly by induction (see 'instance Monoid
-      -- (List a)' below) and need no set-ness. An unconditional 'IsSet (List a)'
-      -- would be FALSE ('List a' is a set only when 'a' is) and would let
-      -- 'unsafeAssertProof' forge a '(=) xs ys' at abstract 'a', inhabiting
-      -- 'Void'. Carriers without 'IsSet' (Bool, Integer, 'IO e a', 'STM a',
-      -- abstract 'a') cannot have their equalities asserted — correct, those
-      -- propositions are not h-props.
-      "instance IsSet String"
-    , ""
-    , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
-      -- well-founded-relation trait.  The well-foundedness witness is an
-      -- erased proof and is not modelled; see docs/notes/KNOWN_SPEC_ISSUES.md.
-      "data WellFounded (a : Type) (rel : a -> a -> Type) : Type ="
-    , "    MkWellFounded"
-    , ""
-    , "trait WellFoundedRelation (a : Type) ="
-    , "    rel : a -> a -> Type"
-    , ""
-    , -- §28.2 (export item, Spec.md line 28648; normative signatures at
-      -- the §15 `expect term` block, Spec.md line 29108-29119)
-      -- well-founded-relation combinators. 'measureRelation' lifts a
-      -- WellFoundedRelation on the codomain 'b' to a relation on 'a' via a
-      -- measure function; its body is the natural pullback of 'rel'.
-      -- 'lexRelation' is exported at the spec surface, but the current
-      -- checker does not inspect arbitrary WellFoundedRelation dictionaries
-      -- as termination evidence; see docs/notes/KNOWN_SPEC_ISSUES.md.
-      "measureRelation : forall (a b : Type). (@_ : WellFoundedRelation b) -> (a -> b) -> a -> a -> Type"
-    , "let measureRelation f x y = rel (f x) (f y)"
-    , ""
-    , "lexRelation : forall (a b : Type). (@_ : WellFoundedRelation a) -> (@_ : WellFoundedRelation b) -> WellFoundedRelation (a, b)"
-    , "let lexRelation = __eqProof"
-    , ""
-    , "(+) : forall (a : Type). (@_ : Add a) -> (& x : a) -> (& y : a) -> a"
-    , "let (+) x y = add x y"
-    , ""
-    , "(*) : forall (a : Type). (@_ : Mul a) -> (& x : a) -> (& y : a) -> a"
-    , "let (*) x y = multiply x y"
-    , ""
-    , "(-) : forall (a : Type). (@_ : CheckedSub a) -> (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"
-    , "let (-) x y = subtractUnchecked x y"
-    , ""
-    , "(/) : forall (a : Type). (@_ : CheckedDiv a) -> (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a"
-    , "let (/) x y = divideUnchecked x y"
-    , ""
-    , "(%) : forall (a : Type). (@_ : CheckedMod a) -> (x : a) -> (y : a) -> (@_ : modDefined x y = True) -> a"
-    , "let (%) x y = moduloUnchecked x y"
-    , ""
-    , "(/=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
-    , "let (/=) x y = not (x == y)"
-    , ""
-    , "(!=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
-    , "let (!=) x y = not (x == y)"
-    , ""
-    , "(<) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
+    , -- Algebraic law signatures below use the standard order relation. These
+      -- declarations precede the law-bearing traits so trait-header checking
+      -- never depends on a later value declaration.
+      "(<) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
     , "let (<) x y ="
     , "    match compare x y"
     , "    case LT -> True"
@@ -1386,6 +1765,177 @@ preludeSource =
     , "    case LT -> True"
     , "    case EQ -> True"
     , "    case GT -> False"
+    , ""
+    , -- §28.2 proof-carrying finite and refinement carriers. Their erased
+      -- evidence is checked before later representation analysis may omit it.
+      "data Refined.{u, v} (0 a : Type u) (parametric 0 predicate : a -> Type v) : Type (max u v) ="
+    , "    Refined (value : a) (@0 predicateIsProp : IsProp (predicate value)) (@0 proof : predicate value)"
+    , ""
+    , "data Fin (n : Nat) : Type 0 ="
+    , "    Fin (value : Nat) (@0 isLt : (value < n) = True)"
+    , ""
+    , -- §28.2.2 algebraic traits are law-bearing dictionaries. Their proof
+      -- members participate in interface identity and semantic hashing even
+      -- when runtime erasure later removes their values.
+      "trait (Eq a, Zero a, Add a) => AdditiveMonoid (0 a : Type) ="
+    , "    addAssoc : forall (x : a) (y : a) (z : a). add (add x y) z = add x (add y z)"
+    , "    addLeftIdentity : forall (x : a). add zero x = x"
+    , "    addRightIdentity : forall (x : a). add x zero = x"
+    , ""
+    , "trait AdditiveMonoid a => CommutativeAdditiveMonoid (0 a : Type) ="
+    , "    addCommutative : forall (x : a) (y : a). add x y = add y x"
+    , ""
+    , "trait (Eq a, Max a) => JoinSemilattice (0 a : Type) ="
+    , "    joinAssoc : forall (x : a) (y : a) (z : a). max (max x y) z = max x (max y z)"
+    , "    joinCommutative : forall (x : a) (y : a). max x y = max y x"
+    , "    joinIdempotent : forall (x : a). max x x = x"
+    , ""
+    , "trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (0 a : Type) ="
+    , "    addLeftInverse : forall (x : a). add (negate x) x = zero"
+    , "    addRightInverse : forall (x : a). add x (negate x) = zero"
+    , ""
+    , "trait (Eq a, One a, Mul a) => MultiplicativeMonoid (0 a : Type) ="
+    , "    mulAssoc : forall (x : a) (y : a) (z : a). multiply (multiply x y) z = multiply x (multiply y z)"
+    , "    mulLeftIdentity : forall (x : a). multiply one x = x"
+    , "    mulRightIdentity : forall (x : a). multiply x one = x"
+    , ""
+    , "trait (AdditiveMonoid a, MultiplicativeMonoid a) => AdditivelyNoncommutativeSemiring (0 a : Type) ="
+    , "    mulLeftZero : forall (x : a). multiply zero x = zero"
+    , "    mulRightZero : forall (x : a). multiply x zero = zero"
+    , "    leftDistribute : forall (x : a) (y : a) (z : a). multiply x (add y z) = add (multiply x y) (multiply x z)"
+    , "    rightDistribute : forall (x : a) (y : a) (z : a). multiply (add x y) z = add (multiply x z) (multiply y z)"
+    , ""
+    , "trait (CommutativeAdditiveMonoid a, AdditivelyNoncommutativeSemiring a) => Semiring (0 a : Type)"
+    , ""
+    , "trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (0 a : Type) ="
+    , "    subDefinedAlways : forall (x : a) (y : a). subDefined x y = True"
+    , "    subtractAsAddInverse : forall (x : a) (y : a) (@p : subDefined x y = True). subtract x y @p = add x (negate y)"
+    , ""
+    , "trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (0 a : Type) ="
+    , "    divAndModSameDomain : forall (x : a) (y : a). divDefined x y = modDefined x y"
+    , "    divModIdentity : forall (x : a) (y : a) (@pd : divDefined x y = True) (@pm : modDefined x y = True). add (multiply (divide x y @pd) y) (modulo x y @pm) = x"
+    , ""
+    , "trait (Ring a, CheckedDiv a) => FieldLike (0 a : Type) ="
+    , "    divisionRightInverse : forall (x : a) (y : a) (@p : divDefined x y = True). multiply (divide x y @p) y = x"
+    , ""
+    , "trait (Ord a, AdditiveMonoid a) => OrderedAdditive (0 a : Type) ="
+    , "    addMonotoneLeft : forall (x : a) (y : a) (z : a). (x <= y) = True -> (add z x <= add z y) = True"
+    , "    addMonotoneRight : forall (x : a) (y : a) (z : a). (x <= y) = True -> (add x z <= add y z) = True"
+    , ""
+    , "trait (OrderedAdditive a, Semiring a) => OrderedSemiring (0 a : Type) ="
+    , "    mulNonnegativeMonotone : forall (x : a) (y : a) (z : a). (zero <= z) = True -> (x <= y) = True -> (multiply z x <= multiply z y) = True"
+    , ""
+    , "trait RefinementView (0 t : Type) ="
+    , "    Base : Type"
+    , "    Predicate : Base -> Type"
+    , "    refinementValue : t -> Base"
+    , "    refinementPredicateIsProp : (x : t) -> IsProp (Predicate (refinementValue x))"
+    , "    refinementProof : (x : t) -> Predicate (refinementValue x)"
+    , "    refine : (x : Base) -> (@0 predicateIsProp : IsProp (Predicate x)) -> (@0 proof : Predicate x) -> t"
+    , "    valueAfterRefine : forall (x : Base) (@0 predicateIsProp : IsProp (Predicate x)) (@0 proof : Predicate x). refinementValue (refine x @predicateIsProp @proof) = x"
+    , "    refineAfterValue : forall (x : t). refine (refinementValue x) @(refinementPredicateIsProp x) @(refinementProof x) = x"
+    , ""
+    , -- §28.2 Equiv: the equivalence trait providing (~=). §28.2.3 fixes
+      -- its precedence/associativity to match (==) (infix 40).
+      "trait Equiv (0 a : Type) ="
+    , "    (~=) : a -> a -> Bool"
+    , ""
+    , -- §14.1.1.3 / §28.2: every Eq is an Equiv (the prelude bridge
+      -- instance), so (~=) resolves for any type with an Eq instance.
+      "instance Eq a => Equiv a ="
+    , "    let (~=) x y = x == y"
+    , ""
+    , -- §28.2 Alternative (the empty/orElse choice structure)
+      "trait Alternative (0 f : (0 A : Type) -> Type) ="
+    , "    emptyA : forall (a : Type). f a"
+    , "    (<|>) : forall (a : Type). f a -> f a -> f a"
+    , ""
+    , -- §28.2 Iterator: the associated 'Item' type and the one-shot step
+      -- 'next'. 'next' references the associated 'Item' in its own
+      -- signature; §14.2.1 makes that a sibling-member projection of the
+      -- current trait evidence, now that associated static members are
+      -- supported (§14.3.4) — an instance defines both 'Item = …' and
+      -- 'let next this = …'.
+      "trait Iterator (0 it : Type) ="
+    , "    Item : Type"
+    , "    next : (1 this : it) -> Option (item : Item, rest : it)"
+    , ""
+    , -- §29.x runtime-effect / resource traits (§18.1.25, §18.6.1,
+      -- §19.1-19.5). Operational subset: the IO carrier instances below
+      -- and the prelude wrappers delegate to the IO primitives.
+      "trait MonadFinally (0 m : (0 A : Type) -> Type) ="
+    , "    finally : forall (a : Type). m a -> m Unit -> m a"
+    , ""
+    , "trait MonadError (0 m : (0 A : Type) -> Type) ="
+    , "    Error : Type"
+    , "    throwError : forall (a : Type). Error -> m a"
+    , "    catchError : forall (a : Type). m a -> (Error -> m a) -> m a"
+    , ""
+    , "trait MonadResource (0 m : (0 A : Type) -> Type) ="
+    , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
+    , ""
+    , "trait MonadRef (0 m : (0 A : Type) -> Type) ="
+    , "    Ref : (0 A : Type) -> Type"
+    , "    newRef : forall (a : Type). a -> m (Ref a)"
+    , "    readRef : forall (a : Type). Ref a -> m a"
+    , "    writeRef : forall (a : Type). Ref a -> a -> m Unit"
+    , ""
+    , -- §11.1.4/§28.2 intrinsic classifiers. They are ordinary nameable
+      -- trait goals; evidence introduction remains compiler-owned.
+      "trait IsNType (level : Nat) (0 a : Type)"
+    , ""
+    , "trait RuntimeErased (0 t : Type)"
+    , ""
+    , -- §14.4 set-truncation witnesses. Primitive carriers have canonical
+      -- equality, while recursive containers below require IsSet evidence for
+      -- every element carrier; no unconditional container instance is sound.
+      "instance IsSet String"
+    , "instance IsSet Bool"
+    , "instance IsSet Double"
+    , "instance IsSet Unit"
+    , "instance IsSet UnicodeScalar"
+    , "instance IsSet Byte"
+    , "instance IsSet Bytes"
+    , "instance IsSet Grapheme"
+    , "instance IsSet Ordering"
+    , ""
+    , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
+      -- well-founded-relation trait.  The well-foundedness witness is an
+      -- erased proof and is not modelled; see docs/notes/KNOWN_SPEC_ISSUES.md.
+      "data WellFounded (0 a : Type) (rel : a -> a -> Type) : Type ="
+    , "    MkWellFounded"
+    , ""
+    , "trait WellFoundedRelation (0 a : Type) ="
+    , "    rel : a -> a -> Type"
+    , ""
+    , -- §28.2 (export item, Spec.md line 28648; normative signatures at
+      -- the §15 `expect term` block, Spec.md line 29108-29119)
+      -- well-founded-relation combinators. 'measureRelation' lifts a
+      -- WellFoundedRelation on the codomain 'b' to a relation on 'a' via a
+      -- measure function; its body is the natural pullback of 'rel'.
+      -- 'lexRelation' is exported at the spec surface, but the current
+      -- checker does not inspect arbitrary WellFoundedRelation dictionaries
+      -- as termination evidence; see docs/notes/KNOWN_SPEC_ISSUES.md.
+      "measureRelation : forall (ordinary 0 a b : Type). (@_ : WellFoundedRelation b) -> (a -> b) -> a -> a -> Type"
+    , "let measureRelation f x y = rel (f x) (f y)"
+    , ""
+    , "lexRelation : forall (a b : Type). (@_ : WellFoundedRelation a) -> (@_ : WellFoundedRelation b) -> WellFoundedRelation (a, b)"
+    , "let lexRelation = __eqProof"
+    , ""
+    , "(+) : forall (a : Type). (@_ : Add a) -> (& x : a) -> (& y : a) -> a"
+    , "let (+) x y = add x y"
+    , ""
+    , "(*) : forall (a : Type). (@_ : Mul a) -> (& x : a) -> (& y : a) -> a"
+    , "let (*) x y = multiply x y"
+    , ""
+    , "(-) : forall (a : Type). (@_ : CheckedSub a) -> (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"
+    , "let (-) x y @p = subtract x y @p"
+    , ""
+    , "(/) : forall (a : Type). (@_ : CheckedDiv a) -> (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a"
+    , "let (/) x y @p = divide x y @p"
+    , ""
+    , "(%) : forall (a : Type). (@_ : CheckedMod a) -> (x : a) -> (y : a) -> (@_ : modDefined x y = True) -> a"
+    , "let (%) x y @p = modulo x y @p"
     , ""
     , "(>) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
     , "let (>) x y = not (x <= y)"
@@ -1413,15 +1963,19 @@ preludeSource =
     , ""
     , "instance CheckedSub Integer ="
     , "    let subDefined x y = True"
-    , "    let subtractUnchecked x y = subInt x y"
+    , "    let subtract x y @p = subInt x y"
     , ""
     , "instance CheckedDiv Integer ="
     , "    let divDefined x y = not (eqInt y 0)"
-    , "    let divideUnchecked x y = divInt x y"
+    , "    let divide x y @p = divInt x y"
+    , "    let divDefinedOnlyNonZero = unsafeAssertProof \"Integer division is defined only for nonzero divisors\""
+    , "    let divDefinedForNonZero = unsafeAssertProof \"Integer division is defined for every nonzero divisor\""
     , ""
     , "instance CheckedMod Integer ="
     , "    let modDefined x y = not (eqInt y 0)"
-    , "    let moduloUnchecked x y = modInt x y"
+    , "    let modulo x y @p = modInt x y"
+    , "    let modDefinedOnlyNonZero = unsafeAssertProof \"Integer modulo is defined only for nonzero divisors\""
+    , "    let modDefinedForNonZero = unsafeAssertProof \"Integer modulo is defined for every nonzero divisor\""
     , ""
     , "instance FromInteger Integer ="
     , "    let fromInteger n = natToInt n"
@@ -1518,26 +2072,43 @@ preludeSource =
     , -- §20.2 range operators over the prelude Rangeable trait (the
       -- associated Range type is modelled as a concrete carrier; the
       -- reference prelude spells it NumericRange)
-      "data NumericRange (v : Type) : Type ="
+      "data NumericRange (0 v : Type) : Type ="
     , "    NumericRange (rangeFrom : v) (rangeTo : v) (rangeExclusive : Bool)"
     , ""
-    , "trait Rangeable (v : Type) ="
-    , "    range : v -> v -> Bool -> NumericRange v"
+    , "trait Rangeable (0 v : Type) ="
+    , "    Range : Type"
+    , "    range : v -> v -> Bool -> Range"
     , ""
-    , "(..) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> NumericRange v"
+    , "(..) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Rangeable.Range v"
     , "let (..) lo hi = range lo hi False"
     , ""
-    , "(..<) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> NumericRange v"
+    , "(..<) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Rangeable.Range v"
     , "let (..<) lo hi = range lo hi True"
     , ""
     , "instance Rangeable Integer ="
+    , "    let Range = NumericRange Integer"
     , "    let range lo hi excl = NumericRange lo hi excl"
     , ""
     , "instance Rangeable Nat ="
+    , "    let Range = NumericRange Nat"
     , "    let range lo hi excl = NumericRange lo hi excl"
     , ""
     , "instance Rangeable UnicodeScalar =" -- §6.4
+    , "    let Range = NumericRange UnicodeScalar"
     , "    let range lo hi excl = NumericRange lo hi excl"
+    , ""
+    , "trait Contains (0 container : Type) (0 item : Type) ="
+    , "    contains : (& container : container) -> (& item : item) -> Bool"
+    , ""
+    , "instance Contains (NumericRange Nat) Nat ="
+    , "    let contains r x ="
+    , "        match r"
+    , "        case NumericRange lo hi exclusive -> if lo <= x then (if exclusive then x < hi else x <= hi) else False"
+    , ""
+    , "instance Contains (NumericRange Integer) Integer ="
+    , "    let contains r x ="
+    , "        match r"
+    , "        case NumericRange lo hi exclusive -> if lo <= x then (if exclusive then x < hi else x <= hi) else False"
     , ""
     , -- §20.2: materialize a range into its ascending element list. Used
       -- by the comprehension/for lowering and by 'IntoQuery NumericRange'.
@@ -1574,6 +2145,93 @@ preludeSource =
     , ""
     , "instance Show Nat ="
     , "    let show n = showInt (natToInt n)"
+    , ""
+    , -- §28.2 logical refinement API. The proof-producing members use the
+      -- authenticated prelude equality kernel; their public types are ordinary
+      -- KCore and are rechecked like handwritten evidence.
+      "refinedValue : forall (a : Type) (predicate : a -> Type). Refined a predicate -> a"
+    , "let refinedValue x = x.value"
+    , ""
+    , "refinedPredicateIsProp : forall (a : Type) (predicate : a -> Type). (x : Refined a predicate) -> IsProp (predicate x.value)"
+    , "let refinedPredicateIsProp x = x.predicateIsProp"
+    , ""
+    , "refinedProof : forall (a : Type) (predicate : a -> Type). (x : Refined a predicate) -> predicate x.value"
+    , "let refinedProof x = x.proof"
+    , ""
+    , "refinedExt : forall (a : Type) (predicate : a -> Type) (x : Refined a predicate) (y : Refined a predicate). x.value = y.value -> x = y"
+    , "let refinedExt proof = __eqProof"
+    , ""
+    , "refinedIsSet : forall (a : Type) (predicate : a -> Type). IsSet a -> IsSet (Refined a predicate)"
+    , "let refinedIsSet evidence = __eqProof"
+    , ""
+    , "instance IsSet a => IsSet (Refined a predicate)"
+    , ""
+    , "instance Eq a => Eq (Refined a predicate) ="
+    , "    let (==) x y = x.value == y.value"
+    , ""
+    , "instance Ord a => Ord (Refined a predicate) ="
+    , "    let compare x y = compare x.value y.value"
+    , ""
+    , "instance RefinementView (Refined a predicate) ="
+    , "    let Base = a"
+    , "    let Predicate = predicate"
+    , "    let refinementValue x = x.value"
+    , "    let refinementPredicateIsProp x = x.predicateIsProp"
+    , "    let refinementProof x = x.proof"
+    , "    let refine x @predicateIsProp @proof = Refined x @predicateIsProp @proof"
+    , "    let valueAfterRefine = __eqProof"
+    , "    let refineAfterValue = __eqProof"
+    , ""
+    , "tryRefine : forall (a : Type) (predicate : a -> Type). (@0 predicateIsProp : forall (x : a). IsProp (predicate x)) -> ((x : a) -> Dec (predicate x)) -> (x : a) -> Option (Refined a predicate)"
+    , "let tryRefine @predicateIsProp decide x ="
+    , "    match decide x"
+    , "    case Dec.Yes proof -> Some (Refined x @(predicateIsProp @x) @proof)"
+    , "    case Dec.No refute -> None"
+    , ""
+    , "finValue : forall (n : Nat). Fin n -> Nat"
+    , "let finValue i = i.value"
+    , ""
+    , "finExt : forall (n : Nat) (x : Fin n) (y : Fin n). x.value = y.value -> x = y"
+    , "let finExt proof = __eqProof"
+    , ""
+    , "finZero : forall (n : Nat). Fin (natAdd n 1)"
+    , "let finZero = Fin 0 @(unsafeAssertProof \"zero is below every positive Fin bound\")"
+    , ""
+    , "finSucc : forall (n : Nat). Fin n -> Fin (natAdd n 1)"
+    , "let finSucc i = Fin (natAdd i.value 1) @(unsafeAssertProof \"successor preserves a Fin bound\")"
+    , ""
+    , "finWeaken : forall (n : Nat). Fin n -> Fin (natAdd n 1)"
+    , "let finWeaken i = Fin i.value @(unsafeAssertProof \"Fin weakening preserves the ordinal\")"
+    , ""
+    , "finLast : (n : Nat) -> Fin (natAdd n 1)"
+    , "let finLast n = Fin n @(unsafeAssertProof \"the predecessor is below a positive Fin bound\")"
+    , ""
+    , "finCases : forall (n : Nat) (parametric 0 motive : Fin (natAdd n 1) -> Type). motive finZero -> ((i : Fin n) -> motive (finSucc i)) -> (i : Fin (natAdd n 1)) -> motive i"
+    , "let finCases @n @motive zeroCase successorCase i ="
+    , "    match i.value"
+    , "    case Nat.Zero -> __transport zeroCase"
+    , "    case Nat.Succ predecessor -> __transport (successorCase (Fin predecessor @(unsafeAssertProof \"Fin successor elimination preserves the bound\")))"
+    , ""
+    , "instance IsSet (Fin n)"
+    , ""
+    , "instance Eq (Fin n) ="
+    , "    let (==) x y = x.value == y.value"
+    , ""
+    , "instance Ord (Fin n) ="
+    , "    let compare x y = compare x.value y.value"
+    , ""
+    , "instance Show (Fin n) ="
+    , "    let show i = show i.value"
+    , ""
+    , "instance RefinementView (Fin n) ="
+    , "    let Base = Nat"
+    , "    let Predicate = \\value -> (value < n) = True"
+    , "    let refinementValue i = i.value"
+    , "    let refinementPredicateIsProp i = summon (IsProp ((i.value < n) = True))"
+    , "    let refinementProof i = i.isLt"
+    , "    let refine value @predicateIsProp @proof = Fin value @proof"
+    , "    let valueAfterRefine = __eqProof"
+    , "    let refineAfterValue = __eqProof"
     , ""
     , "instance FromInteger Nat ="
     , "    let fromInteger n = n"
@@ -1696,7 +2354,7 @@ preludeSource =
     , "let acquireRelease acquire release use = bracket acquire release use"
     , ""
     , -- §18.1.4: structured-concurrency handles (check-mode support)
-      "data Fiber (e : Type) (a : Type) : Type ="
+      "data Fiber (0 e : Type) (0 a : Type) : Type ="
     , "    MkFiberHandle"
     , ""
     , -- §18.1.2 structured interruption metadata: a tag classifying why the
@@ -1738,19 +2396,20 @@ preludeSource =
       "data DefectInfo : Type ="
     , "    DefectInfo (tag : DefectTag) (message : Option String)"
     , ""
-    , "data Cause (e : Type) : Type ="
+    , "data Cause (0 e : Type) : Type ="
     , "    Fail e"
     , "    Interrupt InterruptCause"
     , "    Defect DefectInfo"
     , "    Both (Cause e) (Cause e)"
     , "    Then (Cause e) (Cause e)"
     , ""
-    , "data Exit (e : Type) (a : Type) : Type ="
+    , "data Exit (0 e : Type) (0 a : Type) : Type ="
     , "    Success a"
     , "    Failure (Cause e)"
     , ""
-    , -- §11.6 decidability witness
-      "data Dec (p : Type) : Type ="
+    , -- §11.6 decidability witness. The universe belongs to the declaration
+      -- schema; it is not a runtime TypeLevel parameter.
+      "data Dec.{u} (parametric 0 p : Type u) : Type u ="
     , "    Yes p"
     , "    No (p -> Void)"
     , ""
@@ -1848,7 +2507,7 @@ preludeSource =
     , "        __interruptForkAny (InterruptCause Requested None) fib))"
     , ""
     , -- §18.1.6 race result + the typed timeout error.
-      "data RaceResult (a : Type) (b : Type) : Type ="
+      "data RaceResult (0 a : Type) (0 b : Type) : Type ="
     , "    LeftWins a"
     , "    RightWins b"
     , ""
@@ -1857,11 +2516,11 @@ preludeSource =
     , ""
     , -- internal structured outcomes returned by the timeout/race kernels;
       -- the wrappers below perform the typed-error injection.
-      "data TimeoutOutcome (e : Type) (a : Type) : Type ="
+      "data TimeoutOutcome (0 e : Type) (0 a : Type) : Type ="
     , "    TOTimedOut"
     , "    TOExit (Exit e a)"
     , ""
-    , "data RaceOutcome (e : Type) (f : Type) (a : Type) (b : Type) : Type ="
+    , "data RaceOutcome (0 e : Type) (0 f : Type) (0 a : Type) (0 b : Type) : Type ="
     , "    ROLeft (Exit e a)"
     , "    RORight (Exit f b)"
     , ""
@@ -2068,44 +2727,90 @@ preludeSource =
       -- prelude MUST NOT define Nat subtraction as saturating.
       "instance CheckedSub Nat ="
     , "    let subDefined x y = leInt (natToInt y) (natToInt x)"
-    , "    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))"
+    , "    let subtract x y @p = natOfInt (subInt (natToInt x) (natToInt y))"
     , ""
     , -- §28.2.3 Float/Double subtraction is total (subDefined = True);
       -- it does NOT imply the algebraic FieldLike/Ring/Semiring laws.
       "instance CheckedSub Double ="
     , "    let subDefined x y = True"
-    , "    let subtractUnchecked x y = subDouble x y"
+    , "    let subtract x y @p = subDouble x y"
     , ""
     , "instance CheckedDiv Nat ="
     , "    let divDefined x y = not (eqInt (natToInt y) 0)"
-    , "    let divideUnchecked x y = natOfInt (divInt (natToInt x) (natToInt y))"
+    , "    let divide x y @p = natOfInt (divInt (natToInt x) (natToInt y))"
+    , "    let divDefinedOnlyNonZero = unsafeAssertProof \"Nat division is defined only for nonzero divisors\""
+    , "    let divDefinedForNonZero = unsafeAssertProof \"Nat division is defined for every nonzero divisor\""
     , ""
     , "instance CheckedMod Nat ="
     , "    let modDefined x y = not (eqInt (natToInt y) 0)"
-    , "    let moduloUnchecked x y = natOfInt (modInt (natToInt x) (natToInt y))"
+    , "    let modulo x y @p = natOfInt (modInt (natToInt x) (natToInt y))"
+    , "    let modDefinedOnlyNonZero = unsafeAssertProof \"Nat modulo is defined only for nonzero divisors\""
+    , "    let modDefinedForNonZero = unsafeAssertProof \"Nat modulo is defined for every nonzero divisor\""
     , ""
     , "instance CheckedDiv Double ="
     , "    let divDefined x y = not (eqDouble y 0.0)"
-    , "    let divideUnchecked x y = divDouble x y"
+    , "    let divide x y @p = divDouble x y"
+    , "    let divDefinedOnlyNonZero = unsafeAssertProof \"Double division is defined only for nonzero divisors\""
+    , "    let divDefinedForNonZero = unsafeAssertProof \"Double division is defined for every nonzero divisor\""
     , ""
-    , -- §28.2.3 mandated algebraic instances (marker form; see the trait
-      -- declarations above). Nat: NO Negatable/AdditiveGroup/Ring/FieldLike.
-      "instance AdditiveMonoid Nat"
-    , "instance MultiplicativeMonoid Nat"
+    , "instance IsSet Nat"
+    , "instance IsSet Integer"
+    , -- §28.2.3 mandated algebraic instances. Nat has no
+      -- Negatable/AdditiveGroup/Ring/FieldLike instance.
+      "instance AdditiveMonoid Nat ="
+    , "    let addAssoc = unsafeAssertProof \"Nat addition is associative\""
+    , "    let addLeftIdentity = unsafeAssertProof \"Nat zero is a left additive identity\""
+    , "    let addRightIdentity = unsafeAssertProof \"Nat zero is a right additive identity\""
+    , "instance CommutativeAdditiveMonoid Nat ="
+    , "    let addCommutative = unsafeAssertProof \"Nat addition is commutative\""
+    , "instance MultiplicativeMonoid Nat ="
+    , "    let mulAssoc = unsafeAssertProof \"Nat multiplication is associative\""
+    , "    let mulLeftIdentity = unsafeAssertProof \"Nat one is a left multiplicative identity\""
+    , "    let mulRightIdentity = unsafeAssertProof \"Nat one is a right multiplicative identity\""
+    , "instance AdditivelyNoncommutativeSemiring Nat ="
+    , "    let mulLeftZero = unsafeAssertProof \"Nat zero annihilates multiplication on the left\""
+    , "    let mulRightZero = unsafeAssertProof \"Nat zero annihilates multiplication on the right\""
+    , "    let leftDistribute = unsafeAssertProof \"Nat multiplication distributes on the left\""
+    , "    let rightDistribute = unsafeAssertProof \"Nat multiplication distributes on the right\""
     , "instance Semiring Nat"
-    , "instance OrderedAdditive Nat"
-    , "instance OrderedSemiring Nat"
-    , "instance EuclideanSemiring Nat"
+    , "instance OrderedAdditive Nat ="
+    , "    let addMonotoneLeft = unsafeAssertProof \"Nat addition is monotone on the left\""
+    , "    let addMonotoneRight = unsafeAssertProof \"Nat addition is monotone on the right\""
+    , "instance OrderedSemiring Nat ="
+    , "    let mulNonnegativeMonotone = unsafeAssertProof \"Nat multiplication by a nonnegative value is monotone\""
+    , "instance EuclideanSemiring Nat ="
+    , "    let divAndModSameDomain = unsafeAssertProof \"Nat division and modulo have the same domain\""
+    , "    let divModIdentity = unsafeAssertProof \"Nat division and modulo satisfy the Euclidean identity\""
     , ""
     , -- Integer (and therefore Int, definitionally) get the full ring
       -- tower but NOT FieldLike (integer division is not a field op).
-      "instance AdditiveMonoid Integer"
-    , "instance AdditiveGroup Integer"
-    , "instance MultiplicativeMonoid Integer"
+      "instance AdditiveMonoid Integer ="
+    , "    let addAssoc = unsafeAssertProof \"Integer addition is associative\""
+    , "    let addLeftIdentity = unsafeAssertProof \"Integer zero is a left additive identity\""
+    , "    let addRightIdentity = unsafeAssertProof \"Integer zero is a right additive identity\""
+    , "instance CommutativeAdditiveMonoid Integer ="
+    , "    let addCommutative = unsafeAssertProof \"Integer addition is commutative\""
+    , "instance AdditiveGroup Integer ="
+    , "    let addLeftInverse = unsafeAssertProof \"Integer negation is a left additive inverse\""
+    , "    let addRightInverse = unsafeAssertProof \"Integer negation is a right additive inverse\""
+    , "instance MultiplicativeMonoid Integer ="
+    , "    let mulAssoc = unsafeAssertProof \"Integer multiplication is associative\""
+    , "    let mulLeftIdentity = unsafeAssertProof \"Integer one is a left multiplicative identity\""
+    , "    let mulRightIdentity = unsafeAssertProof \"Integer one is a right multiplicative identity\""
+    , "instance AdditivelyNoncommutativeSemiring Integer ="
+    , "    let mulLeftZero = unsafeAssertProof \"Integer zero annihilates multiplication on the left\""
+    , "    let mulRightZero = unsafeAssertProof \"Integer zero annihilates multiplication on the right\""
+    , "    let leftDistribute = unsafeAssertProof \"Integer multiplication distributes on the left\""
+    , "    let rightDistribute = unsafeAssertProof \"Integer multiplication distributes on the right\""
     , "instance Semiring Integer"
-    , "instance Ring Integer"
-    , "instance OrderedAdditive Integer"
-    , "instance OrderedSemiring Integer"
+    , "instance Ring Integer ="
+    , "    let subDefinedAlways = unsafeAssertProof \"Integer subtraction is total\""
+    , "    let subtractAsAddInverse = unsafeAssertProof \"Integer subtraction is addition of the inverse\""
+    , "instance OrderedAdditive Integer ="
+    , "    let addMonotoneLeft = unsafeAssertProof \"Integer addition is monotone on the left\""
+    , "    let addMonotoneRight = unsafeAssertProof \"Integer addition is monotone on the right\""
+    , "instance OrderedSemiring Integer ="
+    , "    let mulNonnegativeMonotone = unsafeAssertProof \"Integer multiplication by a nonnegative value is monotone\""
     , ""
     , -- §28.2 Rational: the exact ratio type. It gets the full operation
       -- trait set (Eq/Ord/Show/Zero/One/Add/Mul/Negatable/CheckedSub/
@@ -2138,11 +2843,13 @@ preludeSource =
     , ""
     , "instance CheckedSub Rational ="
     , "    let subDefined x y = True"
-    , "    let subtractUnchecked x y = subRat x y"
+    , "    let subtract x y @p = subRat x y"
     , ""
     , "instance CheckedDiv Rational ="
     , "    let divDefined x y = not (eqRat y (__ratOfInt 0))"
-    , "    let divideUnchecked x y = divRat x y"
+    , "    let divide x y @p = divRat x y"
+    , "    let divDefinedOnlyNonZero = unsafeAssertProof \"Rational division is defined only for nonzero divisors\""
+    , "    let divDefinedForNonZero = unsafeAssertProof \"Rational division is defined for every nonzero divisor\""
     , ""
     , "instance FromInteger Rational ="
     , "    let fromInteger n = __ratOfInt (natToInt n)"
@@ -2150,15 +2857,37 @@ preludeSource =
     , "instance FromFloat Rational ="
     , "    let fromFloat d = ratOfDouble d"
     , ""
+    , "instance IsSet Rational"
     , -- (FromFloat Float and FromFloat Double coincide: Float = Double.)
-      "instance AdditiveMonoid Rational"
-    , "instance AdditiveGroup Rational"
-    , "instance MultiplicativeMonoid Rational"
+      "instance AdditiveMonoid Rational ="
+    , "    let addAssoc = unsafeAssertProof \"Rational addition is associative\""
+    , "    let addLeftIdentity = unsafeAssertProof \"Rational zero is a left additive identity\""
+    , "    let addRightIdentity = unsafeAssertProof \"Rational zero is a right additive identity\""
+    , "instance CommutativeAdditiveMonoid Rational ="
+    , "    let addCommutative = unsafeAssertProof \"Rational addition is commutative\""
+    , "instance AdditiveGroup Rational ="
+    , "    let addLeftInverse = unsafeAssertProof \"Rational negation is a left additive inverse\""
+    , "    let addRightInverse = unsafeAssertProof \"Rational negation is a right additive inverse\""
+    , "instance MultiplicativeMonoid Rational ="
+    , "    let mulAssoc = unsafeAssertProof \"Rational multiplication is associative\""
+    , "    let mulLeftIdentity = unsafeAssertProof \"Rational one is a left multiplicative identity\""
+    , "    let mulRightIdentity = unsafeAssertProof \"Rational one is a right multiplicative identity\""
+    , "instance AdditivelyNoncommutativeSemiring Rational ="
+    , "    let mulLeftZero = unsafeAssertProof \"Rational zero annihilates multiplication on the left\""
+    , "    let mulRightZero = unsafeAssertProof \"Rational zero annihilates multiplication on the right\""
+    , "    let leftDistribute = unsafeAssertProof \"Rational multiplication distributes on the left\""
+    , "    let rightDistribute = unsafeAssertProof \"Rational multiplication distributes on the right\""
     , "instance Semiring Rational"
-    , "instance Ring Rational"
-    , "instance OrderedAdditive Rational"
-    , "instance OrderedSemiring Rational"
-    , "instance FieldLike Rational"
+    , "instance Ring Rational ="
+    , "    let subDefinedAlways = unsafeAssertProof \"Rational subtraction is total\""
+    , "    let subtractAsAddInverse = unsafeAssertProof \"Rational subtraction is addition of the inverse\""
+    , "instance OrderedAdditive Rational ="
+    , "    let addMonotoneLeft = unsafeAssertProof \"Rational addition is monotone on the left\""
+    , "    let addMonotoneRight = unsafeAssertProof \"Rational addition is monotone on the right\""
+    , "instance OrderedSemiring Rational ="
+    , "    let mulNonnegativeMonotone = unsafeAssertProof \"Rational multiplication by a nonnegative value is monotone\""
+    , "instance FieldLike Rational ="
+    , "    let divisionRightInverse = unsafeAssertProof \"Rational division has a right inverse on its domain\""
     , ""
     , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
       -- under raw-bit Eq. They keep only the operation traits above.
@@ -2290,6 +3019,11 @@ preludeSource =
     , "    case LT -> LT"
     , "    case GT -> GT"
     , ""
+    , "instance IsSet a => IsSet (List a)"
+    , "instance IsSet a => IsSet (Array a)"
+    , "instance IsSet a => IsSet (Option a)"
+    , "instance (IsSet e, IsSet a) => IsSet (Result e a)"
+    , ""
     , "instance Eq a => Eq (List a) ="
     , "    let (==) xs ys ="
     , "        match xs"
@@ -2391,7 +3125,7 @@ preludeSource =
     , "        case Err e -> Err e"
     , "        case Ok x -> f x"
     , ""
-    , "sequence : forall (t : Type -> Type) (f : Type -> Type) (a : Type). (@_ : Traversable t) -> (@_ : Applicative f) -> t (f a) -> f (t a)"
+    , "sequence : forall (t : (0 A : Type) -> Type) (f : (0 A : Type) -> Type) (a : Type). (@_ : Traversable t) -> (@_ : Applicative f) -> t (f a) -> f (t a)"
     , "let sequence xs = traverse (\\v -> v) xs"
     , ""
     , -- §28.2: nonZero x = x /= zero
@@ -2401,23 +3135,14 @@ preludeSource =
     , -- §28.2 effectful traversal helpers over a Foldable source. 'for_'
       -- runs an applicative action for each element, discarding results;
       -- 'sequence_' runs a Foldable of actions for effect.
-      "for_ : forall (t : Type -> Type) (f : Type -> Type) (a : Type) (b : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t a -> (a -> f b) -> f Unit"
+      "for_ : forall (t : (0 A : Type) -> Type) (f : (0 A : Type) -> Type) (a : Type) (b : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t a -> (a -> f b) -> f Unit"
     , "let for_ xs act = foldr (\\x -> \\acc -> liftA2 (\\u -> \\v -> Unit) (act x) acc) (pureA Unit) xs"
     , ""
-    , "sequence_ : forall (t : Type -> Type) (f : Type -> Type) (a : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t (f a) -> f Unit"
+    , "sequence_ : forall (t : (0 A : Type) -> Type) (f : (0 A : Type) -> Type) (a : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t (f a) -> f Unit"
     , "let sequence_ xs = foldr (\\m -> \\acc -> liftA2 (\\u -> \\v -> Unit) m acc) (pureA Unit) xs"
     , ""
-    , "subtract : forall (a : Type). (@_ : CheckedSub a) -> a -> a -> a"
-    , "let subtract x y = subtractUnchecked x y"
-    , ""
-    , "divide : forall (a : Type). (@_ : CheckedDiv a) -> a -> a -> a"
-    , "let divide x y = divideUnchecked x y"
-    , ""
-    , "modulo : forall (a : Type). (@_ : CheckedMod a) -> a -> a -> a"
-    , "let modulo x y = moduloUnchecked x y"
-    , ""
-    , "summon : (goal : Type) -> (@ev : goal) -> goal" -- §14.3.2
-    , "let summon goal @ev = ev"
+    , "summon : (0 t : Type) -> (@_ : IsTrait t) -> (@evidence : t) -> t" -- §16.3.3.1
+    , "let summon (0 t : Type) (@_ : IsTrait t) (@evidence : t) = evidence"
     , ""
     , -- §28.2 proof and equality helpers over propositional equality.
       -- This implementation does not yet propagate the branch-local endpoint
@@ -2431,8 +3156,8 @@ preludeSource =
       "absurd : forall (@0 a : Type). Void -> a"
     , "let absurd v = __absurd v"
     , ""
-    , "subst : forall (@0 a : Type) (@0 p : a -> Type) (@0 x : a) (@0 y : a). x = y -> p x -> p y"
-    , "let subst eq px = __transport px"
+    , "subst.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 p : (parametric 0 z : a) -> Type v) (@parametric 0 x : a) (@parametric 0 y : a). x = y -> p x -> p y"
+    , "let subst.{u, v} eq px = __transport px"
     , ""
     , "sym : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x"
     , "let sym eq = __eqProof"
@@ -2485,8 +3210,17 @@ preludeSource =
     , ""
     , -- §11.4: dependent path induction over the motive 'c'. The base
       -- case is transported to the (proof-irrelevantly identical) goal.
-      "pathInd : forall (@0 a : Type) (@0 x : a) (@0 c : forall (@0 y : a). (@0 pp : x = y) -> Type). c x refl -> forall (@0 y : a). (p : x = y) -> c y p"
-    , "let pathInd base y p = __transport base"
+      "pathInd.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 x : a) (@parametric 0 c : forall (@parametric 0 y : a). (@parametric 0 pp : x = y) -> Type v). c @x @refl -> forall (@parametric 0 y : a). (parametric 0 p : x = y) -> c @y @p"
+    , "let pathInd.{u, v} base y p = __transport base"
+    , ""
+    , -- §10.2.1 standard Nat no-confusion projections. These are ordinary
+      -- erased proof terms exported by the authenticated prelude; callers do
+      -- not depend on checker-only constructor tags or source-name matching.
+      "natSuccInjective : forall (m : Nat) (n : Nat). Nat.Succ m = Nat.Succ n -> m = n"
+    , "let natSuccInjective proof = __eqProof"
+    , ""
+    , "natZeroNotSucc : forall (n : Nat). Nat.Zero = Nat.Succ n -> Void"
+    , "let natZeroNotSucc proof = __eqProof"
     , ""
     , -- §11.4/§14.4 h-prop closure lemmas (admitted via '__eqProof', the same
       -- magic-inhabitant mechanism as sym/trans/cong). These are the TRUE
@@ -2521,7 +3255,7 @@ preludeSource =
     , "let witness @value = value"
     , ""
     , -- §17.3: partial active patterns that thread a residue on a miss
-      "data Match (a : Type) (r : Type) : Type ="
+      "data Match (0 a : Type) (0 r : Type) : Type ="
     , "    Hit (value : a)"
     , "    Miss (residue : r)"
     , ""
@@ -2544,9 +3278,9 @@ preludeSource =
     , "    let fromInteger n = __quantityOfNat n"
     , ""
     , -- §20.9 standard first-class query aliases
-      "type Query (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) ω a"
-    , "type OnceQuery (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) ω a"
-    , "type SingletonQuery (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω a"
+      "type Query (0 a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) ω a"
+    , "type OnceQuery (0 a : Type) = QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) ω a"
+    , "type SingletonQuery (0 a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω a"
     , ""
     , -- §20 comprehension-lowering support library (internal). The
       -- pipeline argument comes first so the row type is solved before
@@ -2630,9 +3364,12 @@ preludeSource =
       -- provided. The for/comprehension lowering iterates these sources
       -- via the §20.10.11 as-if list model; toQuery is the first-class
       -- surface. See docs/notes/KNOWN_SPEC_ISSUES.md.
-      "trait IntoQuery (src : Type) ="
+      "trait IntoQuery (0 src : Type) ="
     , "    IntoItem : Type"
     , "    toQuery : src -> Query IntoItem"
+    , ""
+    , "__intoQueryToListAs : forall (src : Type) (item : Type). (@into : IntoQuery src) -> (@0 _ : into.IntoItem = item) -> src -> List item"
+    , "let __intoQueryToListAs @into source = __transport (__queryToList (into.toQuery source))"
     , ""
     , "instance IntoQuery (List a) ="
     , "    let IntoItem = a"
@@ -2693,7 +3430,7 @@ preludeSource =
     , "    Interp (@0 t : Type) (e : Syntax t)"
     , "    InterpFmt (@0 t : Type) (e : Syntax t) (fmt : String)"
     , ""
-    , "trait InterpolatedMacro (t : Type) ="
+    , "trait InterpolatedMacro (0 t : Type) ="
     , "    buildInterpolated : List SyntaxFragment -> Elab (Syntax t)"
     , ""
     , -- §6.5 prefixed single-quoted literals: the decoded payload record
@@ -2702,7 +3439,7 @@ preludeSource =
       "data QuotedLiteral : Type ="
     , "    QuotedLiteral (sourceBody : String) (text : Option String) (bytes : Option Bytes)"
     , ""
-    , "trait QuotedLiteralMacro (t : Type) ="
+    , "trait QuotedLiteralMacro (0 t : Type) ="
     , "    buildQuotedLiteral : QuotedLiteral -> Elab (Syntax t)"
     , ""
     , -- §20.9/§20.10: borrowed comprehension sources. The associated
@@ -2710,11 +3447,11 @@ preludeSource =
       -- IntoQuery (see above and docs/notes/KNOWN_SPEC_ISSUES.md) the names are
       -- surfaced with their associated item type plus a query-producing
       -- member, so 'for &'/'for? &' sources resolve.
-      "trait BorrowSourceIntoQuery (src : Type) ="
+      "trait BorrowSourceIntoQuery (0 src : Type) ="
     , "    BorrowSrcItem : Type"
     , "    toBorrowSourceQuery : src -> Query BorrowSrcItem"
     , ""
-    , "trait BorrowItemsIntoQuery (src : Type) ="
+    , "trait BorrowItemsIntoQuery (0 src : Type) ="
     , "    BorrowItem : Type"
     , "    toBorrowItemsQuery : src -> Query BorrowItem"
     , ""
@@ -2722,11 +3459,11 @@ preludeSource =
       -- an ordinary member of type 'Type'; the hook parameter is typed
       -- by the opaque carrier — the §21.8 elaboration-time evaluator
       -- passes an opaque token)
-      "trait FromComprehensionRaw (c : Type) ="
+      "trait FromComprehensionRaw (0 c : Type) ="
     , "    Item : Type"
     , "    fromComprehensionRaw : RawComprehension c -> Elab (Syntax c)"
     , ""
-    , "trait FromComprehensionPlan (c : Type) ="
+    , "trait FromComprehensionPlan (0 c : Type) ="
     , "    Item : Type"
     , "    fromComprehensionPlan : ComprehensionPlan c -> Elab (Syntax c)"
     ]
@@ -2757,10 +3494,10 @@ stdDerivingShapeSource =
     , "data ShapeConstructor : Type ="
     , "    ShapeConstructor (sourceName : String) (renderName : String) (tag : Nat) (fields : List ShapeField)"
     , ""
-    , "data AdtShape (a : Type) : Type ="
+    , "data AdtShape (0 a : Type) : Type ="
     , "    AdtShape (sourceName : String) (renderName : String) (visibility : ShapeVisibility) (kind : ShapeAdtKind) (constructors : List ShapeConstructor)"
     , ""
-    , "data RecordShape (a : Type) : Type ="
+    , "data RecordShape (0 a : Type) : Type ="
     , "    RecordShape (fields : List ShapeField)"
     , ""
     , "data BoundField : Type ="
@@ -2782,7 +3519,7 @@ stdDerivingShapeSource =
     , "let runtimeRecordFields shape = shape.fields"
     , ""
     , "requireRuntimeFieldInstances :"
-    , "    forall (tc : Type -> Type) (@0 a : Type)."
+    , "    forall (tc : (parametric 0 x : Type) -> Type) (@0 a : Type)."
     , "    (@witness : forall (x : Type). IsTrait (tc x)) ->"
     , "    AdtShape a -> Elab Unit"
     , "let requireRuntimeFieldInstances @tc @a @witness shape ="
@@ -2844,6 +3581,8 @@ stdHashSource =
     , "data HashCode : Type ="
     , "    MkHashCode (codeValue : Integer)"
     , ""
+    , "instance IsSet HashCode"
+    , ""
     , "newHashState : HashSeed -> HashState"
     , "let newHashState seed ="
     , "    match seed"
@@ -2903,7 +3642,7 @@ stdHashSource =
     , ""
     , -- §14.1.3: Hashable refines Eq — hash acceleration is meaningful
       -- only relative to equality classes (so Eq-equal values hash equal).
-      "trait Eq a => Hashable (a : Type) ="
+      "trait Eq a => Hashable (0 a : Type) ="
     , "    hashInto : (& value : a) -> (1 state : HashState) -> HashState"
     , ""
     , "hashField : forall (a : Type). (@_ : Hashable a) -> (& value : a) -> (1 state : HashState) -> HashState"
@@ -3428,7 +4167,7 @@ stdAtomicSource =
   T.unlines
     [ "module std.atomic"
     , ""
-    , "data AtomicRef (a : Type) : Type ="
+    , "data AtomicRef (0 a : Type) : Type ="
     , "    MkAtomicRef (cell : __AtomicCell a)"
     , ""
     , "data LoadOrder : Type ="
@@ -3453,13 +4192,13 @@ stdAtomicSource =
     , "    CasFailAcquire"
     , "    CasFailSeqCst"
     , ""
-    , "data CompareExchangeResult (a : Type) : Type ="
+    , "data CompareExchangeResult (0 a : Type) : Type ="
     , "    Exchanged (old : a)"
     , "    NotExchanged (current : a)"
     , ""
-    , "trait AtomicValue (a : Type)"
+    , "trait AtomicValue (0 a : Type)"
     , ""
-    , "trait AtomicInteger (a : Type)"
+    , "trait AtomicInteger (0 a : Type)"
     , ""
     , "instance AtomicValue Bool"
     , "instance AtomicValue Integer"
@@ -3599,7 +4338,7 @@ stdArrayMutableSource =
     , ""
     , "-- The opaque handle: a one-field data wrapping the runtime buffer, exactly"
     , "-- as MkAtomicRef wraps an __AtomicCell.  The element type is erased."
-    , "data MutArray (a : Type) : Type ="
+    , "data MutArray (0 a : Type) : Type ="
     , "    MkMutArray (buf : __ArrayBuf a)"
     , ""
     , "-- Allocate an n-element array, every slot initialised to `init`.  Total for"
@@ -3660,31 +4399,38 @@ stdGradualSource =
     , "data CastBlame : Type ="
     , "    MkCastBlame (message : String)"
     , ""
-    , "data DynRep (a : Type) : Type ="
+    , "opaque data DynRep (0 a : Type) : Type ="
     , "    MkDynRep (tag : String)"
     , ""
     , "data Dyn : Type ="
     , "    MkDyn (tag : String)"
     , ""
-    , "trait DynamicType (a : Type) ="
+    , "trait DynamicType (0 a : Type) ="
     , "    dynRep : DynRep a"
     , ""
-    , "toDynWith : forall (a : Type). DynRep a -> a -> Dyn"
+    , "toDynWith : forall (@0 a : Type). DynRep a -> a -> Dyn"
     , "let toDynWith rep value ="
     , "    match rep"
     , "    case MkDynRep tag -> MkDyn tag"
     , ""
-    , "checkedCastWith : forall (a : Type). DynRep a -> Dyn -> Result CastBlame a"
+    , "checkedCastWith : forall (@0 a : Type). DynRep a -> Dyn -> Result CastBlame a"
     , "let checkedCastWith rep value ="
     , "    Err (MkCastBlame \"std.gradual: dynamic payloads are not carried by this implementation\")"
     , ""
-    , "sameDynRep : forall (a : Type) (b : Type). DynRep a -> DynRep b -> Option (Dec ((=) a b))"
-    , "let sameDynRep x y = None"
+    , "sameDynRep : forall (parametric 0 a : Type) (parametric 0 b : Type). DynRep a -> DynRep b -> Dec ((=) a b)"
+    , "let sameDynRep x y ="
+    , "    match x"
+    , "    case MkDynRep xTag ->"
+    , "        match y"
+    , "        case MkDynRep yTag ->"
+    , "            if eqStr xTag yTag"
+    , "            then Yes __unsafeAssertProof"
+    , "            else No (\\_ -> __unsafeAssertProof)"
     , ""
-    , "toDyn : forall (a : Type). (@_ : DynamicType a) -> a -> Dyn"
+    , "toDyn : forall (@0 a : Type). (@_ : DynamicType a) -> a -> Dyn"
     , "let toDyn value = toDynWith dynRep value"
     , ""
-    , "checkedCast : forall (a : Type). (@_ : DynamicType a) -> Dyn -> Result CastBlame a"
+    , "checkedCast : forall (@0 a : Type). (@_ : DynamicType a) -> Dyn -> Result CastBlame a"
     , "let checkedCast value = checkedCastWith dynRep value"
     ]
 
@@ -3724,7 +4470,7 @@ stdBridgeSource =
     , "trait BridgeBindable (surface : Region -> Type) ="
     , "    bridgeContract : BridgeContract surface"
     , ""
-    , "trait BridgeHandle (h : Type) ="
+    , "trait BridgeHandle (0 h : Type) ="
     , "    bridgeOrigin : h -> UIO BridgeOrigin"
     , "    bridgeFailure : BridgeFailure -> String"
     , ""
@@ -3790,10 +4536,10 @@ stdSupervisorSource =
     , "data RestartIntensity : Type ="
     , "    RestartIntensity (maxRestarts : Nat) (within : Duration)"
     , ""
-    , "data ChildSpec (e : Type) : Type ="
+    , "data ChildSpec (0 e : Type) : Type ="
     , "    ChildSpec (label : String) (restart : RestartPolicy) (run : IO e Unit)"
     , ""
-    , "data Supervisor (e : Type) : Type ="
+    , "data Supervisor (0 e : Type) : Type ="
     , "    MkSupervisor (children : List (ChildSpec e))"
     , ""
     , "childSpec : forall (e : Type). String -> RestartPolicy -> IO e Unit -> ChildSpec e"
@@ -3833,7 +4579,8 @@ stdConfigSource =
   T.unlines
     [ "module std.config"
     , ""
-    , "data ConfigInputKey (a : Type) : Type = MkConfigInputKey (name : String)"
+    , "data ConfigInputKey (0 a : Type) : Type = MkConfigInputKey (name : String)"
+    , "configInput : forall (a : Type). String -> ConfigInputKey a"
     , "let configInput name = MkConfigInputKey name"
     ]
 

@@ -4,5 +4,5 @@ module plainsel
 -- (including its reified static-object term facet) without an alias.
 import klib.(trait Marked)
 
-useIt : Type -> Type
+useIt : (parametric 0 A : Type) -> Type
 let useIt = trait Marked

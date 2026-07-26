@@ -1,0 +1,16 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  term-node "schema-lift" {
+    family = global-ref-value(@variance.demo.SomeCode#3300);
+    from = level-value(3);
+    to = level-value(0);
+    role = string-value("covariant");
+  }
+}

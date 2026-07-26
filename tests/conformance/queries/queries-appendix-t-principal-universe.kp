@@ -1,0 +1,9 @@
+module queries.appendix_t_principal_universe
+
+choose : (ordinary A : Type0) -> Type
+let choose A = A
+
+--! mode check
+--! assertNoErrors
+--! assertPrincipalUniverse queries.appendix_t_principal_universe.choose 0
+--! assertUniverseInferenceClass queries.appendix_t_principal_universe.choose SolvedPrincipal

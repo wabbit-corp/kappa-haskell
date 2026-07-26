@@ -1,0 +1,15 @@
+-- Local declaration SCCs obey the same same-or-lower schema rule as global
+-- SCCs. An explicit upward recursive instance is rejected at the local
+-- declaration boundary.
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE
+
+module main
+
+bad.{u} : Nat -> Nat
+let bad.{u} n =
+    block
+        local.{v} : Nat -> Nat
+        let local.{v} m =
+            if m == 0 then 0 else local.{succ v} (m - 1)
+        local.{u} n

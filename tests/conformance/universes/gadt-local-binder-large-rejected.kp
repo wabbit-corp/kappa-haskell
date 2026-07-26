@@ -1,0 +1,9 @@
+-- §10.4.1 / T.10A.7: a large ordinary constructor-local GADT binder in a
+-- small result is rejected. Omitted mode would default to parametric.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data G : Type0 =
+    MkG : (ordinary 0 A : Type0) -> G

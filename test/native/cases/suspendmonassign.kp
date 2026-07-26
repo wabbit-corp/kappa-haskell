@@ -7,10 +7,13 @@
 -- So `acc` is a true running fold over the awaited results.  ≡ interpreter.
 module main
 
+import std.prelude.(type Exit(..))
+
 -- an "IO step": fork+await computing acc + i, so it suspends.
 step : Int -> Int -> UIO Int
 let step acc i = do
-    let f <- fork (ioPure (addInt acc i))
+    let action : UIO Int = ioPure (addInt acc i)
+    let f <- fork action
     let ec <- await f
     match ec
       case Success v -> ioPure v

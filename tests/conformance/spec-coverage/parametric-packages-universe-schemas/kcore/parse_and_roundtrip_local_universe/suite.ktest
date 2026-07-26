@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses local.kcore
+--! assertKCoreRoundTrips local.kcore

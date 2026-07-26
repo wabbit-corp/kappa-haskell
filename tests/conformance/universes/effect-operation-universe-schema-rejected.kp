@@ -1,0 +1,9 @@
+module effect_operation_universe_schema_rejected
+
+effect Poly =
+    op.{u} : (A : Type u) -> A -> A
+
+-- Effect operations are members of the enclosing effect interface, not
+-- independent declaration-schema owners in the v1 source grammar.
+--! mode check
+--! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED

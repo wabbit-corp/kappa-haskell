@@ -1,15 +1,15 @@
 -- A preceding total/reducible helper may be transparently normalized while
 -- discharging branch-local checked-subtraction evidence. This is deliberately
--- different from unfolding arbitrary or not-yet-total recursion.
+-- different from unfolding arbitrary or not-yet-total recursion. The helper
+-- body is `y <= x`, the exact standard `CheckedSub Nat` definedness predicate
+-- (§28.2.3: `subDefined x y = (y <= x)`), so unfolding the helper exposes the
+-- same semantic operation the standard `subDefined` uses — §15.8.1 recognizes
+-- operations "by resolved semantic identity ... never by source spelling".
 --! assertNoErrors
 --! assertNoWarnings
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 safeLe : Nat -> Nat -> Bool
-let safeLe x y = leInt (natToInt y) (natToInt x)
+let safeLe x y = y <= x
 
 helperCondition : Nat -> Nat -> Nat
 let helperCondition x y =

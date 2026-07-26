@@ -1,0 +1,46 @@
+data P (n : Nat) : Type =
+    MkP
+
+-- Spec 28.2 + 31.1.3: the exact conversion boundary for Nat data
+-- indices over the inductive `data Nat = Zero | Succ (pred : Nat)`.
+-- Closed literal arithmetic folds in both directions — `(+)`/`(*)`
+-- delegate to natAdd/natMultiply, and closed Nat computation is exact.
+a12 : P (1 + 2)
+let a12 = MkP
+
+aAsLit : P 3
+let aAsLit = a12
+
+bLit : P 4
+let bLit = MkP
+
+bAsArith : P (2 + 2)
+let bAsArith = bLit
+
+-- Spec 15.1 case 1: a non-recursive transparent user function
+-- delta-reduces at an index, on closed AND open arguments, in both
+-- directions.
+myDouble : Nat -> Nat
+let myDouble n = n + n
+
+d4 : P (myDouble 2)
+let d4 = MkP
+
+d4AsLit : P 4
+let d4AsLit = d4
+
+deltaOpen : (n : Nat) -> P (myDouble n) -> P (n + n)
+let deltaOpen n v = v
+
+deltaOpenBack : (n : Nat) -> P (n + n) -> P (myDouble n)
+let deltaOpenBack n v = v
+
+-- Commutativity is still not definitional (Spec 28.2 excludes the
+-- symmetric equations from conversion), but it is no longer a rejection
+-- boundary: the required solver discharges it from the mandated
+-- CommutativeAdditiveMonoid Nat provider evidence and Spec 16.1.8
+-- inserts the transport — pinned by positive/arithmetic-index-transport
+-- in this bundle, which supersedes the pre-revision commuteAdd negative
+-- this suite used to carry.
+
+--! assertNoErrors

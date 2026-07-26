@@ -1,0 +1,34 @@
+-- §15.1 (total-certified vs conversion-reducible): a definition accepted
+-- only by a well-founded `decreases` measure is total-certified but NOT
+-- conversion-reducible — it MUST NOT be δ-reduced during definitional
+-- equality (its unfolding lemmas are propositional, not definitional).
+-- This pins the data-INDEX-position half of that boundary (§31.1): the
+-- propositional-position half is pinned by tests/conformance/spec-coverage/
+-- proofs-deriving-totality/conversion-reducibility-status.kp. The stuck
+-- application still converts to itself syntactically.
+--! mode check
+
+module main
+
+data PI (n : Int) : Type =
+    MkPI
+
+countdown : Int -> Int
+let countdown n decreases n =
+    if leInt n 0 then 0 else countdown (subInt n 1)
+
+cd : PI (countdown 2)
+let cd = MkPI
+
+-- POSITIVE: the stuck index converts to the same stuck index (reflexivity
+-- of definitional equality does not require reduction).
+cdSame : PI (countdown 2)
+let cdSame = cd
+
+-- NEGATIVE: countdown 2 does not δ-reduce to 0 during conversion, even
+-- though countdown is total-certified via its decreases measure.
+cdAsLit : PI 0
+let cdAsLit = cd    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1

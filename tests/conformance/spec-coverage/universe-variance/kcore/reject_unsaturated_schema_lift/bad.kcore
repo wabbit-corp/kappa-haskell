@@ -1,0 +1,14 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  term-node "unsaturated-schema-lift" {
+    family = global-ref-value(@variance.demo.Box#3200.{0});
+    attemptedTarget = level-value(3);
+  }
+}

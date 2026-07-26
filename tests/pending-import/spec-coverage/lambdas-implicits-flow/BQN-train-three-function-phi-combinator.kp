@@ -34,7 +34,15 @@ let mixed = phi addTwo succ mul3
 example : Nat
 let example = mixed 5    -- (5 + 1) + (5 * 3) = 21
 
+-- §28.2: closed Nat computation is exact and "may be evaluated by an
+-- implementation primitive rather than materializing a unary constructor
+-- spine"; §34.3.2A mandates the exact non-unary runtime representation.
+-- The same train therefore stays exact above machine-word range:
+-- mixed n = (n + 1) + (n * 3) = 4n + 1, so mixed 2^62 = 2^64 + 1.
+bigExample : Nat
+let bigExample = mixed 4611686018427387904
+
 --! assertNoErrors
 --! assertType phi (forall a b c x. (a -> b -> c) -> (x -> a) -> (x -> b) -> x -> c)
-
--- STATUS(a0497523): PASS
+--! assertEval example 21
+--! assertEval bigExample 18446744073709551617

@@ -836,8 +836,12 @@ _Static_assert(KCT_IT_SCOPE_SHUTDOWN    == 24, "KCT_IT_SCOPE_SHUTDOWN must be 24
 _Static_assert(KCT_IT_TIMED_OUT         == 25, "KCT_IT_TIMED_OUT must be 25");
 _Static_assert(KCT_IT_RACE_LOST         == 26, "KCT_IT_RACE_LOST must be 26");
 _Static_assert(KCT_IT_EXTERNAL          == 27, "KCT_IT_EXTERNAL must be 27");
+_Static_assert(KCT_LT                   == 28, "KCT_LT must be 28");
+_Static_assert(KCT_EQ                   == 29, "KCT_EQ must be 29");
+_Static_assert(KCT_GT                   == 30, "KCT_GT must be 30");
+_Static_assert(KCT_TYPELEVEL_LEVEL      == 31, "KCT_TYPELEVEL_LEVEL must be 31");
 _Static_assert(KCT_USER_BASE            == 40, "KCT_USER_BASE must be 40");
-_Static_assert(KCT_USER_BASE > KCT_IT_EXTERNAL,
+_Static_assert(KCT_USER_BASE > KCT_TYPELEVEL_LEVEL,
                "user ctor ids must not collide with the pinned builtin ids");
 
 KValue *kctor(int tagid, const char *name, int argc, KValue **args) {

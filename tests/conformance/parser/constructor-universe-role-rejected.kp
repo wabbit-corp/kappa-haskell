@@ -1,0 +1,12 @@
+module main
+
+-- A constructor suffix is a universe instantiation, not a declaration
+-- universe schema. The contextual role word therefore has no role meaning
+-- here and cannot be silently discarded.
+data Box.{u} (parametric 0 A : Type u) : Type u =
+    MkBox.{covariant u} (value : A)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+--! assertDiagnosticFamily error kappa.universe.level-expression

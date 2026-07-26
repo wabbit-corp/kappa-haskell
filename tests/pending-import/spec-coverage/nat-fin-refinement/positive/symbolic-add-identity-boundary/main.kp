@@ -1,0 +1,45 @@
+data Vec (n : Nat) : Type =
+    MkVec
+
+expectsN : (n : Nat) -> Vec n -> Unit
+let expectsN n v = ()
+
+-- Spec 28.2 + 31.1.3: `0 : Nat` normalizes to Nat.Zero and the surface
+-- `(+)` delegates to natAdd (Spec 15.8.1 semantic identity), whose first
+-- defining equation `natAdd Zero n -> n` is ordinary beta/delta/iota
+-- computation — so `Vec (0 + n)` is DEFINITIONALLY `Vec n` and the
+-- application needs no evidence at all. Inverted from the pre-revision
+-- primitive-addInt boundary test, which rejected exactly this.
+zeroPlusDefinitional : (n : Nat) -> Vec (0 + n) -> Unit
+let zeroPlusDefinitional n v = expectsN n v
+
+-- Spec 11.4.1: since 0 + n converts to n, refl proves the left identity.
+zeroPlusRefl : (n : Nat) -> (=) ((0 : Nat) + n) n
+let zeroPlusRefl n = refl
+
+-- Right identity stays OUT of conversion (Spec 28.2 adds no symmetric
+-- propositional equations), but Spec 15.8.4 commutative-monoid
+-- normalization with identity removal — consuming the required
+-- CommutativeAdditiveMonoid Nat provider evidence of Spec 28.2.3 —
+-- proves `n + 0 = n`, and Spec 16.1.8 inserts the transport. The proof
+-- is RuntimeErased through `derive IsSet Nat` (Spec 14.4), satisfying
+-- the runtime-relevance restriction; verified KCore must retain the
+-- inserted subst explicitly.
+nPlusZeroTransport : (n : Nat) -> Vec (n + 0) -> Unit
+let nPlusZeroTransport n v = expectsN n v
+
+-- Conversion remains reflexive on identical still-stuck indices,
+-- independent of any solver: `n + 0` is neutral, but two occurrences of
+-- the same neutral index convert, and refl checks at syntactically
+-- identical endpoints.
+sameStuck : (n : Nat) -> Vec (n + 0) -> Unit
+let sameStuck n v = ()
+
+useSame : (n : Nat) -> Vec (n + 0) -> Unit
+let useSame n v = sameStuck n v
+
+reflStuck : (n : Nat) -> (=) (n + 0) (n + 0)
+let reflStuck n = refl
+
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

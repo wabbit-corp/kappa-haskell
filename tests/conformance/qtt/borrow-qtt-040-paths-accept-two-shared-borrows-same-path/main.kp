@@ -3,7 +3,7 @@ module main
 data Token : Type =
     Token
 
-type TokenBox = (value : Token)
+type TokenBox = (value : Token,)
 
 observe : (& t : Token) -> Unit
 let observe (& t : Token) : Unit = ()

@@ -6,7 +6,8 @@
 --               variables are well-formed binders that can be referenced
 --               in later fields' types).
 -- Spec: §10.1-§10.2 (dependent constructor telescopes), §17.1.1
---       (constructor-result refinements).
+--       (constructor-result refinements), §28.2 (inductive prelude
+--       Nat), §30.2.7 (constructorless data summarizes Empty).
 --
 -- Narya's "self variable" form is a surface convenience for declaring
 -- a record signature whose later fields reference earlier ones via
@@ -17,11 +18,16 @@
 
 --! mode check
 
-data Nat : Type =
-    Zero : Nat
-    Suc  : Nat -> Nat
+-- `Nat` below is the inductive prelude Nat of §28.2 (the pre-revision
+-- local Peano Nat was only needed while prelude Nat was a
+-- constructorless `expect data`).
 
--- An empty indexed family supplies the abstract field type required below.
+-- A deliberately CONSTRUCTORLESS indexed family supplies the abstract
+-- field type required below. Note the inhabitance consequence: under
+-- §30.2.7 a zero-constructor data type summarizes `Empty` at every
+-- index, so `SigmaN` (whose telescope demands a `Vec n` field) is
+-- itself uninhabited — the projections below are still required to
+-- typecheck; only construction is impossible.
 data Vec (n : Nat) : Type
 
 -- POSITIVE: a Sigma-like record where the second field's type depends

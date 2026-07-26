@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+-- A direct surface analogue of the code-producing Pi operation required by
+-- Hurkens-style universe encodings.  The parametric inputs may form a type
+-- expression, but that expression may not be returned as an ordinary code.
+piCode :
+    (parametric 0 A : Type) ->
+    (parametric 0 B : A -> Type) ->
+    Type
+
+let piCode A B =
+    (x : A) -> B x

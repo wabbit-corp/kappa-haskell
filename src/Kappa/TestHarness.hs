@@ -30,8 +30,9 @@ module Kappa.TestHarness
 
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
+import Control.Monad.State.Strict qualified as State
 import Data.Char (isDigit)
-import Data.List (foldl', isPrefixOf, isSuffixOf, sort, sortOn)
+import Data.List (find, foldl', isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -39,14 +40,57 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), checkModule, defaultUnsafeConfig, scriptUnsafeConfig)
+import qualified Data.Set as Set
+import Kappa.Check
+  ( AuditRecord (..)
+  , CheckState (..)
+  , CtorInfo (..)
+  , DataInfo (..)
+  , UnsafeConfig (..)
+  , checkModule
+  , declarationTypesConvertibleAtUse
+  , defaultUnsafeConfig
+  , recursiveSchemaEdgeRecorded
+  , scriptUnsafeConfig
+  , selectedUniverseEvidenceRecorded
+  , UniverseInferenceClass (..)
+  , UniverseInferenceRecord (..)
+  , universeInferenceRecord
+  )
 import Kappa.Core
+import Kappa.CoreText
+import Kappa.CoreOps (foldTerm)
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), force, quote)
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
+import Kappa.Level
+  ( ConstraintOrigin (..)
+  , Level (..)
+  , NeutralLevelAtom (..)
+  , LevelConstraint (..)
+  , PrincipalInferenceOutcome (..)
+  , assumptionsConsistent
+  , emptyAssumptions
+  , finiteLevel
+  , inferPrincipalLevelsFor
+  , insertAssumption
+  , levelAdd
+  , levelMax
+  , levelSucc
+  , normalizeLevel
+  , proveLevelLeq
+  , renderLevel
+  , SolveResult (..)
+  )
 import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
+import Kappa.NominalVariance
+  ( NominalCumulativitySummary (..)
+  , UniverseVariance (..)
+  , stableNominalHash
+  , verifyNominalCumulativitySummary
+  )
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeForWithConfig, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
@@ -153,6 +197,33 @@ data Assertion
   | AStderrFile !Text
   | AExitCode !Int
   | ATraceCount !Text !Text !Text !Int -- ^ event subject relop n
+  | AStageDumpEquals !Text !Text !Text -- ^ checkpoint, expected path, effective format
+  | AStageDumpRoundTrips !Text
+  | AKCoreParses !Text
+  | AKCoreRoundTrips !Text
+  | AKCoreRejects !Text !Text
+  | AKCoreSchemaCertificateValid !Text !Text
+  | AKCoreSemanticHashEquals !Text !Text
+  | AKCoreLevelEvidence !Text !Text ![Int]
+  | ALevelNormalForm !Text !Text
+  | ALevelEntails !Bool !Text !Text
+  | ALevelSolve !Text
+  | ALevelSolveClass !Text
+  | APrincipalUniverse !Text !Text
+  | AUniverseInferenceClass !Text !Text
+  | ARecursiveSchemaEdge !Text !Text !Text
+  | ASelectedEvidence !Text !Text
+  | AUniverseRole !Text !Int !UniverseVariance
+  | ASchemaCertificateValid !Text
+  | ASchemaLiftPresent !Text
+  | ASchemaLiftCount !Int
+  | ASemanticHashDiffers !Text !Text
+  | ASemanticHashDiffersFrom !Text
+  | ASemanticHashEquals !Text !Text
+  | ASemanticHashEqualsFrom !Text
+  | AInterfaceContainsUniverseRoles !Text !Text ![UniverseVariance]
+  | AInterfaceContainsCurrentUniverseRoles !Text ![UniverseVariance]
+  | ATotal !Text
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -166,7 +237,8 @@ data Scanned
   | SUnsupported !Text -- ^ §T.8 unsupported (requires unmet, x- extension, …)
   | SConfigKey !Text !Text -- ^ §T.6 (key, value) of a configuration directive, for duplicate-key conflict detection
   | SStdinFile !Text -- ^ §T.4 stdinFile <path>: must be a readable suite-relative file (checked in IO)
-  | SStageDump !Text -- ^ §T.5.3 assertStageDump of an unservable checkpoint: ill-formed unless 'requires capability stageDumps' gates it
+  | SSources ![Text] -- ^ §T.4 ordered, exhaustive suite source list
+  | SStageDump !Text !Text -- ^ §T.5.3 checkpoint and suite-relative expected path
   | SAssert !Assertion
 
 -- ── Directive scanning (§T.3) ────────────────────────────────────────
@@ -177,15 +249,9 @@ declKindNames =
   , "trait", "instance", "derive", "effect", "pattern", "expect"
   ]
 
--- This implementation produces no Chapter 34 stage-dump checkpoint
--- vocabulary, so @assertStageDump <checkpoint> …@ names a checkpoint the
--- harness cannot serve. Per §T.5.3 ("`<checkpoint>` must name a valid
--- compiler checkpoint") read against §T.8 (which reserves @unsupported@
--- for unmet @requires@ or unsupported @x-@ directives only), the faithful
--- classification of an *un-gated* @assertStageDump@ is a harness error,
--- not a silent downgrade. A suite that wants the soft outcome gates with
--- @requires capability stageDumps@, which is reported @unsupported@
--- earlier (§T.4). Handled explicitly in 'dispatch'.
+-- KCore is materialized as canonical KCoreText. Other conceptual Chapter 34
+-- checkpoints remain fail-closed until their serializers exist; naming one in
+-- an assertion is a harness error rather than a silent unsupported result.
 --
 -- @assertDiagnosticFixCompiles@ is implemented against the §3.1.6 fix
 -- records (apply the first machine-applicable fix, recompile, assert no
@@ -195,8 +261,8 @@ declKindNames =
 -- §T.4 portable capabilities this harness provides. @runTask@: programs
 -- are executed in-process by the tree-walking interpreter. @
 -- pipelineTrace@: portable (event, subject) counts are recorded for
--- parse\/buildKFrontIR\/lowerKCore. Not provided: @stageDumps@ (no
--- Chapter 34 checkpoint serialization) and @incremental@ (no session
+-- parse\/buildKFrontIR\/lowerKCore. @stageDumps@ currently materializes the
+-- KCore checkpoint as KCoreText. Not provided: @incremental@ (no session
 -- state survives between suite roots).
 --
 -- The corpus's nonstandard capability names are provided as documented
@@ -206,7 +272,11 @@ declKindNames =
 -- warnings (W_UNICODE_BIDI_CONTROL, W_UNICODE_CONFUSABLE_IDENTIFIER,
 -- W_UNICODE_NON_NORMALIZED_SOURCE_TEXT) are emitted by the pipeline.
 supportedCapabilities :: [Text]
-supportedCapabilities = ["runTask", "pipelineTrace", "legacyCharAlias", "unicodeSourceWarnings"]
+supportedCapabilities =
+  [ "runTask", "pipelineTrace", "stageDumps", "kcoreText"
+  , "mutualNominalVariance"
+  , "legacyCharAlias", "unicodeSourceWarnings"
+  ]
 
 -- §T.5.5 portable trace vocabulary.
 traceEventNames :: [Text]
@@ -287,6 +357,7 @@ parseDirective allLines lno body =
       "mode" -> case args of
         ["check"] -> cfg "mode" "check" (SMode "check")
         ["run"] -> cfg "mode" "run" (SMode "run")
+        ["interface"] -> cfg "mode" "interface" (SMode "interface")
         ["analyze"] -> cfg "mode" "analyze" (SUnsupported "mode analyze is not supported")
         -- mode compile: the interpreter's executable form is the
         -- evaluated KCore global environment; compiling runs the full
@@ -332,7 +403,12 @@ parseDirective allLines lno body =
       "dumpFormat" -> case args of
         ["json"] -> cfg "dumpFormat" "json" SConfigNoop
         ["sexpr"] -> cfg "dumpFormat" "sexpr" SConfigNoop
+        ["kcore"] -> cfg "dumpFormat" "kcore" SConfigNoop
         _ -> bad "malformed 'dumpFormat' directive"
+      "canonicalDumps" | null args -> cfg "canonicalDumps" "true" SConfigNoop
+      "sources"
+        | not (null args) -> ok (SSources args)
+        | otherwise -> bad "malformed 'sources' directive"
       "requires" -> case args of
         ["mode", "package"] -> ok SConfigNoop -- met: packageMode is the default
         ["mode", "script"] -> unsup "requires mode script: scriptMode unsupported"
@@ -383,14 +459,140 @@ parseDirective allLines lno body =
         [sevT, cf] | Just sev <- parseSev sevT ->
           requireCode cf (ok (SAssert (AFixCompiles sev cf)))
         _ -> bad "malformed 'assertDiagnosticFixCompiles' directive"
-      -- §T.5.3: this implementation serializes no Chapter 34 stage-dump
-      -- checkpoints, so any <checkpoint> names one the harness cannot
-      -- serve. §T.5.3 requires <checkpoint> to "name a valid compiler
-      -- checkpoint"; an un-gated assertion of an unservable checkpoint is
-      -- ill-formed (§T.8 reserves 'unsupported' for requires/x-).
       "assertStageDump" -> case args of
-        [chk, "equals", _path] -> ok (SStageDump chk)
+        [chk, "equals", path] -> ok (SStageDump chk path)
         _ -> bad "malformed 'assertStageDump' directive (expected '<checkpoint> equals <path>')"
+      "assertStageDumpRoundTrips" -> case args of
+        [checkpoint] -> ok (SAssert (AStageDumpRoundTrips checkpoint))
+        _ -> bad "malformed 'assertStageDumpRoundTrips' directive"
+      "assertKCoreParses" -> case args of
+        [path] -> ok (SAssert (AKCoreParses path))
+        _ -> bad "malformed 'assertKCoreParses' directive"
+      "assertKCoreRoundTrips" -> case args of
+        [path] -> ok (SAssert (AKCoreRoundTrips path))
+        _ -> bad "malformed 'assertKCoreRoundTrips' directive"
+      "assertKCoreRejects" -> case args of
+        [path, code] -> requireCode code (ok (SAssert (AKCoreRejects path code)))
+        _ -> bad "malformed 'assertKCoreRejects' directive"
+      "assertKCoreSchemaCertificateValid" -> case args of
+        [path, family] -> ok (SAssert (AKCoreSchemaCertificateValid path family))
+        _ -> bad "malformed 'assertKCoreSchemaCertificateValid' directive"
+      "assertKCoreSemanticHashEquals" -> case args of
+        [left, right] -> ok (SAssert (AKCoreSemanticHashEquals left right))
+        _ -> bad "malformed 'assertKCoreSemanticHashEquals' directive"
+      "assertKCoreLevelEvidence" -> case args of
+        [path, certificate, "dependencies", dependencyText]
+          | Just dependencies <- parseCommaNats dependencyText ->
+              ok (SAssert (AKCoreLevelEvidence path certificate dependencies))
+        _ -> bad "malformed 'assertKCoreLevelEvidence' directive"
+      "assertLevelNormalForm" ->
+        case splitDirectiveInfix " equals " rest of
+          Just (left, right) -> ok (SAssert (ALevelNormalForm left right))
+          Nothing -> bad "malformed 'assertLevelNormalForm' directive"
+      "assertLevelEntails" -> levelEntailment True
+      "assertLevelDoesNotEntail" -> levelEntailment False
+      "assertLevelSolve"
+        | validSolveDirective True rest -> ok (SAssert (ALevelSolve rest))
+        | otherwise -> bad "malformed 'assertLevelSolve' directive"
+      "assertLevelSolveClass"
+        | validSolveDirective False rest -> ok (SAssert (ALevelSolveClass rest))
+        | otherwise -> bad "malformed 'assertLevelSolveClass' directive"
+      "assertPrincipalUniverse" -> case args of
+        declaration : levelTokens | not (null levelTokens) ->
+          ok (SAssert (APrincipalUniverse declaration (T.unwords levelTokens)))
+        _ -> bad "malformed 'assertPrincipalUniverse' directive"
+      "assertUniverseInferenceClass" -> case args of
+        [declaration, inferenceClass]
+          | inferenceClass `elem`
+              [ "SolvedPrincipal"
+              , "Unsatisfiable"
+              , "NoPointwiseLeastSolution"
+              , "OutsidePortableInferenceFragment"
+              , "BlockedByUnselectedMetas"
+              ] -> ok (SAssert (AUniverseInferenceClass declaration inferenceClass))
+        _ -> bad "malformed 'assertUniverseInferenceClass' directive"
+      "assertRecursiveSchemaEdge" -> case args of
+        [caller, callee, relation] -> ok (SAssert (ARecursiveSchemaEdge caller callee relation))
+        _ -> bad "malformed 'assertRecursiveSchemaEdge' directive"
+      "assertSelectedEvidence" ->
+        case splitLastWord rest of
+          Just (goal, evidence) -> ok (SAssert (ASelectedEvidence goal evidence))
+          Nothing -> bad "malformed 'assertSelectedEvidence' directive"
+      "assertUniverseRole" -> case args of
+        [family, indexText, roleText]
+          | Just index <- parseNat indexText
+          , Just role <- parseUniverseVariance roleText ->
+              ok (SAssert (AUniverseRole family index role))
+        _ -> bad "malformed 'assertUniverseRole' directive"
+      "assertSchemaCertificateValid" -> case args of
+        [family] -> ok (SAssert (ASchemaCertificateValid family))
+        _ -> bad "malformed 'assertSchemaCertificateValid' directive"
+      "assertSchemaLiftPresent" -> case args of
+        [family] -> ok (SAssert (ASchemaLiftPresent family))
+        _ -> bad "malformed 'assertSchemaLiftPresent' directive"
+      "assertSchemaLiftCount" -> case args of
+        [countText] | Just count <- parseNat countText -> ok (SAssert (ASchemaLiftCount count))
+        _ -> bad "malformed 'assertSchemaLiftCount' directive"
+      "assertSemanticHashDiffers" -> case args of
+        [left, right] -> ok (SAssert (ASemanticHashDiffers left right))
+        _ -> bad "malformed 'assertSemanticHashDiffers' directive"
+      "assertSemanticHashDiffersFrom" -> case args of
+        [target] -> ok (SAssert (ASemanticHashDiffersFrom target))
+        _ -> bad "malformed 'assertSemanticHashDiffersFrom' directive"
+      "assertSemanticHashEquals" -> case args of
+        [target] -> ok (SAssert (ASemanticHashEqualsFrom target))
+        [left, right] -> ok (SAssert (ASemanticHashEquals left right))
+        _ -> bad "malformed 'assertSemanticHashEquals' directive"
+      "assertInterfaceContainsUniverseRoles" -> case args of
+        (family : roleTokens)
+          | Just roles <- parseUniverseVarianceList (T.unwords roleTokens) ->
+              ok (SAssert (AInterfaceContainsCurrentUniverseRoles family roles))
+        (path : family : roleTokens)
+          | Just roles <- parseUniverseVarianceList (T.unwords roleTokens) ->
+              ok (SAssert (AInterfaceContainsUniverseRoles path family roles))
+        _ -> bad "malformed 'assertInterfaceContainsUniverseRoles' directive"
+      "assertTotal" -> case args of
+        [declaration] -> ok (SAssert (ATotal declaration))
+        _ -> bad "malformed 'assertTotal' directive"
+      -- §T.5.2 Nat/Fin/refinement assertions remain part of the portable
+      -- directive grammar before their compiler-query capabilities land.
+      -- Validate their syntax now and classify the suite Unsupported. This is
+      -- intentionally not a test-only approximation of cardinality,
+      -- certificates, or backend representation selection.
+      "assertArithmeticCertificatesValid"
+        | null args ->
+            unsup "assertArithmeticCertificatesValid requires capability arithmeticCertificates: not provided"
+        | otherwise -> bad "malformed 'assertArithmeticCertificatesValid' directive"
+      "assertInhabitance" ->
+        case splitDirectiveInfix " for " rest of
+          Just (summary, ty)
+            | (purpose : _) <- T.words summary
+            , purpose `elem` ["SourceReachability", "Completion", "RuntimeShape", "Optimization"]
+            , not (T.null (T.strip ty)) ->
+                unsup "assertInhabitance requires capability symbolicCardinality: not provided"
+          _ -> bad "malformed 'assertInhabitance' directive"
+      "assertSymbolicCardinality" ->
+        unavailableTypeQuery "assertSymbolicCardinality" "symbolicCardinality"
+      "assertOrdinalRepresentation" ->
+        unavailableTypeQuery "assertOrdinalRepresentation" "representationCertificates"
+      "assertExactNaturalRepresentation" ->
+        case args of
+          "for" : ty
+            | not (null ty) ->
+                unsup "assertExactNaturalRepresentation requires capability representationCertificates: not provided"
+          _ -> bad "malformed 'assertExactNaturalRepresentation' directive"
+      "assertRefinementRepresentation" ->
+        unavailableTypeQuery "assertRefinementRepresentation" "representationCertificates"
+      "assertRepresentationClass" -> case args of
+        _declaration : representation
+          | not (null representation) ->
+              unsup "assertRepresentationClass requires capability representationQueries: not provided"
+        _ -> bad "malformed 'assertRepresentationClass' directive"
+      "assertRuntimeFieldAbsent" -> case args of
+        [declaration, field]
+          | not (T.null declaration), not (T.null field) ->
+              unsup "assertRuntimeFieldAbsent requires capability representationQueries: not provided"
+        _ -> bad "malformed 'assertRuntimeFieldAbsent' directive"
       "assertDiagnosticMatch"
         | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
         | otherwise -> case compileRegex rest of
@@ -574,6 +776,10 @@ parseDirective allLines lno body =
         noArgs a
           | null args = ok (SAssert a)
           | otherwise = bad ("directive '" <> name <> "' takes no arguments")
+        levelEntailment expected =
+          case splitDirectiveInfix " <= " rest of
+            Just (left, right) -> ok (SAssert (ALevelEntails expected left right))
+            Nothing -> bad ("malformed '" <> name <> "' directive")
         withCount f = case args of
           [nT] | Just n <- parseNat nT -> ok (SAssert (f n))
           _ -> bad ("malformed '" <> name <> "' directive")
@@ -605,6 +811,13 @@ parseDirective allLines lno body =
           | length args == n && all (\a -> parseNat a /= Nothing) args =
               unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
           | otherwise = bad ("malformed '" <> name <> "' directive")
+        unavailableTypeQuery directive capability =
+          case splitDirectiveInfix " for " rest of
+            Just (expected, ty)
+              | not (T.null (T.strip expected))
+              , not (T.null (T.strip ty)) ->
+                  unsup (directive <> " requires capability " <> capability <> ": not provided")
+            _ -> bad ("malformed '" <> directive <> "' directive")
 
 parseKindList :: Text -> Maybe [Text]
 parseKindList t =
@@ -667,6 +880,336 @@ parseNat t
       let v = read (T.unpack t) :: Integer
        in if v > toInteger (maxBound :: Int) then Nothing else Just (fromInteger v)
   | otherwise = Nothing
+
+parseCommaNats :: Text -> Maybe [Int]
+parseCommaNats text =
+  let pieces = map T.strip (T.splitOn "," text)
+   in if null pieces || any T.null pieces
+        then Nothing
+        else traverse parseNat pieces
+
+splitDirectiveInfix :: Text -> Text -> Maybe (Text, Text)
+splitDirectiveInfix separator input =
+  let (left, suffix) = T.breakOn separator input
+      right = T.drop (T.length separator) suffix
+   in if T.null suffix || T.null (T.strip left) || T.null (T.strip right)
+        then Nothing
+        else Just (T.strip left, T.strip right)
+
+splitLastWord :: Text -> Maybe (Text, Text)
+splitLastWord input =
+  case reverse (T.words input) of
+    evidence : reversedGoal@(_ : _) ->
+      Just (T.unwords (reverse reversedGoal), evidence)
+    _ -> Nothing
+
+validSolveDirective :: Bool -> Text -> Bool
+validSolveDirective expectsAssignments input =
+  case splitDirectiveInfix " where " input of
+    Just (selected, rest)
+      | bracketed selected ->
+          if expectsAssignments
+            then case splitDirectiveInfix " gives " rest of
+              Just (constraints, assignments) -> bracketed constraints && bracketed assignments
+              Nothing -> False
+            else case splitLastWord rest of
+              Just (constraints, outcome) ->
+                bracketed constraints
+                  && outcome `elem`
+                    [ "SolvedPrincipal"
+                    , "Unsatisfiable"
+                    , "NoPointwiseLeastSolution"
+                    , "OutsidePortableInferenceFragment"
+                    , "BlockedByUnselectedMetas"
+                    ]
+              Nothing -> False
+    _ -> False
+  where
+    bracketed text = "[" `T.isPrefixOf` T.strip text && "]" `T.isSuffixOf` T.strip text
+
+data FixtureLevelToken
+  = FLWord !Text
+  | FLMeta !Text
+  | FLNat !Integer
+  | FLPlus
+  | FLLeftParen
+  | FLRightParen
+  deriving stock (Eq, Show)
+
+data FixtureLevelParserState = FixtureLevelParserState
+  { flpTokens :: ![FixtureLevelToken]
+  , flpMetas :: !(Map.Map Text Int)
+  , flpNextMeta :: !Int
+  }
+
+type FixtureLevelParser = State.StateT FixtureLevelParserState (Either Text)
+
+parseFixtureLevels :: [Text] -> Either Text [Level]
+parseFixtureLevels inputs = fst <$> parseFixtureLevelsWithMetas inputs
+
+parseFixtureLevelsWithMetas :: [Text] -> Either Text ([Level], Map.Map Text Int)
+parseFixtureLevelsWithMetas inputs = do
+  (levels, finalState) <- State.runStateT (traverse parseOne inputs) initialState
+  pure (levels, flpMetas finalState)
+  where
+    initialState = FixtureLevelParserState [] Map.empty 0
+    parseOne input = do
+      tokens <- fixtureLift (tokenizeFixtureLevel input)
+      State.modify' (\state -> state {flpTokens = tokens})
+      level <- parseFixtureLevelExpr
+      remaining <- State.gets flpTokens
+      case remaining of
+        [] -> pure level
+        token : _ -> fixtureFail ("unexpected token " <> tshow token <> " in '" <> input <> "'")
+
+tokenizeFixtureLevel :: Text -> Either Text [FixtureLevelToken]
+tokenizeFixtureLevel = go . T.unpack
+  where
+    go [] = Right []
+    go (character : rest)
+      | character == ' ' || character == '\t' = go rest
+      | character == '+' = (FLPlus :) <$> go rest
+      | character == '(' = (FLLeftParen :) <$> go rest
+      | character == ')' = (FLRightParen :) <$> go rest
+      | character == '?' =
+          let (name, suffix) = span wordCharacter rest
+           in if null name
+                then Left "a level metavariable '?' must be followed by an identifier"
+                else (FLMeta (T.pack name) :) <$> go suffix
+      | character >= '0' && character <= '9' =
+          let (digits, suffix) = span (\c -> c >= '0' && c <= '9') (character : rest)
+           in (FLNat (read digits) :) <$> go suffix
+      | wordCharacter character =
+          let (word, suffix) = span wordCharacter (character : rest)
+           in (FLWord (T.pack word) :) <$> go suffix
+      | otherwise = Left ("unsupported character '" <> T.singleton character <> "' in level assertion")
+    wordCharacter character =
+      character == '_' || character == '.' || character == '#' || character == 'ω'
+        || (character >= 'a' && character <= 'z')
+        || (character >= 'A' && character <= 'Z')
+        || (character >= '0' && character <= '9')
+
+parseFixtureLevelExpr :: FixtureLevelParser Level
+parseFixtureLevelExpr = do
+  first <- parseFixtureLevelApplication
+  continue first
+  where
+    continue left = fixturePeek >>= \case
+      Just FLPlus -> fixturePop >> parseFixtureLevelApplication >>= continue . levelAdd left
+      _ -> pure left
+
+parseFixtureLevelApplication :: FixtureLevelParser Level
+parseFixtureLevelApplication = do
+  headLevel <- parseFixtureLevelPrefix
+  arguments <- parseArguments
+  pure $ case arguments of
+    [] -> headLevel
+    _ -> LNeutral (NeutralLevelSymbol "$apply" (headLevel : arguments))
+  where
+    parseArguments = fixturePeek >>= \case
+      Just token | fixtureStartsAtom token -> (:) <$> parseFixtureLevelPrefix <*> parseArguments
+      _ -> pure []
+
+parseFixtureLevelPrefix :: FixtureLevelParser Level
+parseFixtureLevelPrefix = fixturePeek >>= \case
+  Just (FLWord "succ") -> fixturePop >> levelSucc <$> parseFixtureLevelPrefix
+  Just (FLWord "max") -> fixturePop >> levelMax <$> parseFixtureLevelPrefix <*> parseFixtureLevelPrefix
+  _ -> parseFixtureLevelAtom
+
+parseFixtureLevelAtom :: FixtureLevelParser Level
+parseFixtureLevelAtom = fixturePop >>= \case
+  FLNat value -> pure (finiteLevel value)
+  FLWord "omega" -> pure LOmega
+  FLWord "ω" -> pure LOmega
+  FLWord name -> pure (LNeutral (NeutralLevelSymbol ("fixture:" <> name) []))
+  FLMeta name -> do
+    known <- State.gets (Map.lookup name . flpMetas)
+    case known of
+      Just meta -> pure (LMeta meta)
+      Nothing -> do
+        meta <- State.gets flpNextMeta
+        State.modify' $ \state ->
+          state
+            { flpMetas = Map.insert name meta (flpMetas state)
+            , flpNextMeta = meta + 1
+            }
+        pure (LMeta meta)
+  FLLeftParen -> do
+    level <- parseFixtureLevelExpr
+    fixturePop >>= \case
+      FLRightParen -> pure level
+      token -> fixtureFail ("expected ')', found " <> tshow token)
+  token -> fixtureFail ("expected level atom, found " <> tshow token)
+
+fixtureStartsAtom :: FixtureLevelToken -> Bool
+fixtureStartsAtom = \case
+  FLWord _ -> True
+  FLMeta _ -> True
+  FLNat _ -> True
+  FLLeftParen -> True
+  _ -> False
+
+fixturePeek :: FixtureLevelParser (Maybe FixtureLevelToken)
+fixturePeek = State.gets (listToMaybe . flpTokens)
+
+fixturePop :: FixtureLevelParser FixtureLevelToken
+fixturePop = do
+  tokens <- State.gets flpTokens
+  case tokens of
+    [] -> fixtureFail "unexpected end of level expression"
+    token : rest -> State.modify' (\state -> state {flpTokens = rest}) >> pure token
+
+fixtureFail :: Text -> FixtureLevelParser a
+fixtureFail detail = State.StateT (const (Left detail))
+
+fixtureLift :: Either Text a -> FixtureLevelParser a
+fixtureLift result = State.StateT $ \state -> (, state) <$> result
+
+checkFixtureLevelSolve :: Text -> Either Text AssertResult
+checkFixtureLevelSolve directive = do
+  (targets, constraints, expectedAssignments) <- parseFixtureSolve True directive
+  let outcome = inferPrincipalLevelsFor targets constraints
+  case outcome of
+    SolvedPrincipal assignments ->
+      pure $ requireFixture
+        (all (\(meta, expected) -> Map.lookup meta assignments == Just (normalizeLevel expected)) expectedAssignments)
+        ("principal assignments are " <> tshow assignments <> ", expected " <> tshow expectedAssignments)
+    other -> pure (AssertFail ("level inference returned " <> fixtureOutcomeName other <> ", expected SolvedPrincipal"))
+
+checkFixtureLevelSolveClass :: Text -> Either Text AssertResult
+checkFixtureLevelSolveClass directive = do
+  (targets, constraints, expectedClass) <- parseFixtureSolveClass directive
+  let actual = fixtureOutcomeName (inferPrincipalLevelsFor targets constraints)
+  pure (requireFixture (actual == expectedClass) ("level inference returned " <> actual <> ", expected " <> expectedClass))
+
+parseFixtureSolve :: Bool -> Text -> Either Text (Set.Set Int, [LevelConstraint], [(Int, Level)])
+parseFixtureSolve _ directive = do
+  (selectedText, rest) <- maybe (Left "missing 'where'") Right (splitDirectiveInfix " where " directive)
+  (constraintsText, assignmentsText) <- maybe (Left "missing 'gives'") Right (splitDirectiveInfix " gives " rest)
+  selectedNames <- parseMetaList selectedText
+  constraintPairs <- parseConstraintList constraintsText
+  assignmentPairs <- parseAssignmentList assignmentsText
+  let expressionTexts = map ("?" <>) selectedNames
+        ++ concat [[lhs, rhs] | (lhs, rhs) <- constraintPairs]
+        ++ map snd assignmentPairs
+  (levels, metaMap) <- parseFixtureLevelsWithMetas expressionTexts
+  let selectedCount = length selectedNames
+      constraintCount = length constraintPairs
+      selectedLevels = take selectedCount levels
+      constraintLevels = take (2 * constraintCount) (drop selectedCount levels)
+      expectedLevels = drop (selectedCount + 2 * constraintCount) levels
+      targets = Set.fromList [meta | LMeta meta <- selectedLevels]
+      constraints =
+        [ LevelConstraint index lhs rhs (ConstraintOrigin "Appendix T level assertion" "assertLevelSolve") emptyAssumptions
+        | (index, [lhs, rhs]) <- zip [0 ..] (chunksOfTwo constraintLevels)
+        ]
+      expected =
+        [ (meta, level)
+        | ((name, _), level) <- zip assignmentPairs expectedLevels
+        , Just meta <- [Map.lookup name metaMap]
+        ]
+  if length targets /= length selectedNames || length expected /= length assignmentPairs
+    then Left "a selected or assigned metavariable is malformed"
+    else pure (targets, constraints, expected)
+
+parseFixtureSolveClass :: Text -> Either Text (Set.Set Int, [LevelConstraint], Text)
+parseFixtureSolveClass directive = do
+  (selectedText, rest) <- maybe (Left "missing 'where'") Right (splitDirectiveInfix " where " directive)
+  (constraintsText, expectedClass) <- maybe (Left "missing inference outcome") Right (splitLastWord rest)
+  selectedNames <- parseMetaList selectedText
+  constraintPairs <- parseConstraintList constraintsText
+  let expressionTexts = map ("?" <>) selectedNames ++ concat [[lhs, rhs] | (lhs, rhs) <- constraintPairs]
+  (levels, _) <- parseFixtureLevelsWithMetas expressionTexts
+  let selectedCount = length selectedNames
+      targets = Set.fromList [meta | LMeta meta <- take selectedCount levels]
+      constraints =
+        [ LevelConstraint index lhs rhs (ConstraintOrigin "Appendix T level assertion" "assertLevelSolveClass") emptyAssumptions
+        | (index, [lhs, rhs]) <- zip [0 ..] (chunksOfTwo (drop selectedCount levels))
+        ]
+  if length targets /= length selectedNames
+    then Left "a selected metavariable is malformed"
+    else pure (targets, constraints, expectedClass)
+
+parseMetaList :: Text -> Either Text [Text]
+parseMetaList input = do
+  body <- stripFixtureBrackets input
+  traverse parseMeta (splitTopLevelCommas body)
+  where
+    parseMeta item =
+      case T.stripPrefix "?" (T.strip item) of
+        Just name | not (T.null name) -> Right name
+        _ -> Left ("expected metavariable in '" <> item <> "'")
+
+parseConstraintList :: Text -> Either Text [(Text, Text)]
+parseConstraintList input = do
+  body <- stripFixtureBrackets input
+  traverse parseConstraint (splitTopLevelCommas body)
+  where
+    parseConstraint item =
+      maybe (Left ("expected '<=' in constraint '" <> item <> "'")) Right
+        (splitDirectiveInfix " <= " item)
+
+parseAssignmentList :: Text -> Either Text [(Text, Text)]
+parseAssignmentList input = do
+  body <- stripFixtureBrackets input
+  traverse parseAssignment (splitTopLevelCommas body)
+  where
+    parseAssignment item = do
+      (metaText, value) <- maybe (Left ("expected '=' in assignment '" <> item <> "'")) Right
+        (splitDirectiveInfix " = " item)
+      name <- case T.stripPrefix "?" metaText of
+        Just value' | not (T.null value') -> Right value'
+        _ -> Left ("expected metavariable in assignment '" <> item <> "'")
+      pure (name, value)
+
+stripFixtureBrackets :: Text -> Either Text Text
+stripFixtureBrackets input =
+  case T.stripPrefix "[" (T.strip input) >>= T.stripSuffix "]" of
+    Just body -> Right body
+    Nothing -> Left ("expected bracketed list, found '" <> input <> "'")
+
+splitTopLevelCommas :: Text -> [Text]
+splitTopLevelCommas input
+  | T.null (T.strip input) = []
+  | otherwise = map (T.strip . T.pack . reverse) . reverse $ finish depth current pieces
+  where
+    (depth, current, pieces) = foldl step (0 :: Int, [], []) (T.unpack input)
+    step (nesting, chars, chunks) character = case character of
+      '(' -> (nesting + 1, character : chars, chunks)
+      ')' -> (nesting - 1, character : chars, chunks)
+      ',' | nesting == 0 -> (nesting, [], chars : chunks)
+      _ -> (nesting, character : chars, chunks)
+    finish _ chars chunks = chars : chunks
+
+chunksOfTwo :: [a] -> [[a]]
+chunksOfTwo [] = []
+chunksOfTwo (left : right : rest) = [left, right] : chunksOfTwo rest
+chunksOfTwo [_] = []
+
+fixtureOutcomeName :: PrincipalInferenceOutcome -> Text
+fixtureOutcomeName = \case
+  SolvedPrincipal _ -> "SolvedPrincipal"
+  Unsatisfiable -> "Unsatisfiable"
+  NoPointwiseLeastSolution _ -> "NoPointwiseLeastSolution"
+  OutsidePortableInferenceFragment -> "OutsidePortableInferenceFragment"
+  BlockedByUnselectedMetas -> "BlockedByUnselectedMetas"
+
+requireFixture :: Bool -> Text -> AssertResult
+requireFixture condition detail = if condition then AssertOk else AssertFail detail
+
+parseUniverseVariance :: Text -> Maybe UniverseVariance
+parseUniverseVariance = \case
+  "invariant" -> Just Invariant
+  "covariant" -> Just Covariant
+  "irrelevant" -> Just Irrelevant
+  _ -> Nothing
+
+parseUniverseVarianceList :: Text -> Maybe [UniverseVariance]
+parseUniverseVarianceList source = do
+  body <- T.stripPrefix "[" (T.strip source) >>= T.stripSuffix "]"
+  if T.null (T.strip body)
+    then pure []
+    else mapM (parseUniverseVariance . T.strip) (T.splitOn "," body)
 
 -- | Non-interpolated Kappa string literal (§T.3): @"..."@ with §6.3.1
 -- escapes.
@@ -816,13 +1359,18 @@ runSuiteWith packageMode label root files mktest preDiags = do
               entries = [e | (_, _, SEntry e) <- scanned]
               unsups = [u | (_, _, SUnsupported u) <- scanned]
               backends = [b | (_, _, SBackend b) <- scanned]
-              asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
+              asserts =
+                [(p, src, a) | (p, src, SAssert a) <- scanned]
+                  ++ [ (p, src, AStageDumpEquals checkpoint expectedPath (stageDumpFormat selectedDumpFormat expectedPath))
+                     | (p, src, SStageDump checkpoint expectedPath) <- scanned
+                     ]
               scripted = not (null [() | (_, _, SScriptMode) <- scanned])
               stdinFiles = [p | (_, _, SStdinFile p) <- scanned]
-              stageDumps = [c | (_, _, SStageDump c) <- scanned]
+              sourceDirectives = [paths | (_, _, SSources paths) <- scanned]
               -- §T.6: the same configuration key specified more than once
               -- with different values makes the suite ill-formed.
               configPairs = [(k, v) | (_, _, SConfigKey k v) <- scanned]
+              selectedDumpFormat = fromMaybe "json" (lookup "dumpFormat" configPairs)
               configConflict =
                 listToMaybe
                   [ k
@@ -837,6 +1385,18 @@ runSuiteWith packageMode label root files mktest preDiags = do
               unsafeBase = if scripted then scriptUnsafeConfig else defaultUnsafeConfig
               unsafeCfg = foldl' (\c f -> f c) unsafeBase [f | (_, _, SUnsafeConfig f) <- scanned]
               mode = case modes of m : _ -> m; [] -> "check"
+              relativeSources = map (T.pack . makeRelative root . fst) files
+              selectedFiles = case sourceDirectives of
+                [paths] -> mapMaybe (\path -> find ((== path) . T.pack . makeRelative root . fst) files) paths
+                _ -> files
+              sourceProblem = case sourceDirectives of
+                [] -> Nothing
+                [paths]
+                  | length paths /= length (dedup paths) -> Just "'sources' lists the same source more than once"
+                  | sort paths /= sort relativeSources ->
+                      Just ("'sources' must list every .kp suite source exactly once; found " <> T.unwords paths <> ", expected " <> T.unwords relativeSources)
+                  | otherwise -> Nothing
+                _ -> Just "'sources' may be specified only once per suite"
           -- §T.4: a stdinFile path must name a readable suite-relative
           -- file (§T.8: an unreadable required file is a harness error).
           missingStdin <-
@@ -854,14 +1414,10 @@ runSuiteWith packageMode label root files mktest preDiags = do
                   pure (TestReport label HarnessError "'stdinFile' is valid only for mode run (§T.4)")
               | (p : _) <- missingStdin ->
                   pure (TestReport label HarnessError ("stdinFile '" <> p <> "' is not a readable suite file (§T.4, §T.8)"))
-              -- a 'requires capability stageDumps' gate (an SUnsupported)
-              -- is honored first, so a *gated* assertStageDump is
-              -- unsupported; an *un-gated* one names a checkpoint this
-              -- implementation cannot serve and is ill-formed (§T.5.3).
+              | Just detail <- sourceProblem ->
+                  pure (TestReport label HarnessError detail)
               | (u : _) <- unsups ->
                   pure (TestReport label Unsupported u)
-              | (c : _) <- stageDumps ->
-                  pure (TestReport label HarnessError ("assertStageDump names checkpoint '" <> c <> "', which this implementation does not provide; gate with 'requires capability stageDumps' for an unsupported result (§T.5.3, §T.8)"))
               | otherwise -> do
                   -- §T.4: 'backend <profile>' selects the backend for
                   -- 'compile' and 'run' tests; a foreign profile makes
@@ -873,9 +1429,14 @@ runSuiteWith packageMode label root files mktest preDiags = do
                     _ ->
                       if not (null entries) && mode /= "run"
                         then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                        else executeSuite unsafeCfg (packageMode && not scripted) label root files mode entries asserts preDiags
+                        else executeSuite unsafeCfg (packageMode && not scripted) label root selectedFiles mode entries asserts preDiags
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
+    stageDumpFormat configured path
+      | ".json" `T.isSuffixOf` path = "json"
+      | ".sexpr" `T.isSuffixOf` path = "sexpr"
+      | ".kcore" `T.isSuffixOf` path = "kcore"
+      | otherwise = configured
 
 data RunInfo = RunInfo
   { riStdout :: !Text
@@ -913,7 +1474,13 @@ executeSuite unsafeCfg packageMode label root files mode entries asserts preDiag
       preludeErrs = [d | d <- allDiags, isError d, isPreludeInternalDiagnostic d]
       diags = [d | d <- allDiags, not (isPreludeInternalDiagnostic d)]
   if not (null preludeErrs)
-    then pure (TestReport label HarnessError "prelude failed to compile (implementation bug)")
+    then
+      pure
+        ( TestReport label HarnessError
+            ( "prelude failed to compile (implementation bug): "
+                <> T.intercalate "; " (map renderDiagnostic (take 3 preludeErrs))
+            )
+        )
     else do
       mRun <-
         if mode == "run"
@@ -1016,6 +1583,21 @@ forceResult r = case r of
   AssertOk -> r
   AssertFail t -> T.length t `seq` r
   AssertHarnessError t -> T.length t `seq` r
+
+assertKCoreRoundTripText :: (Text -> Either KCoreTextError KCoreFile) -> Text -> Text -> AssertResult
+assertKCoreRoundTripText parseVerified subject source =
+  case parseVerified source of
+    Left err -> AssertFail (subject <> " does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+    Right first ->
+      let canonical = printCanonicalKCoreText first
+       in case parseVerified canonical of
+            Left err -> AssertFail (subject <> " canonical reparse failed: " <> kcteCode err <> ": " <> kcteMessage err)
+            Right second
+              | printCanonicalKCoreText second /= canonical ->
+                  AssertFail (subject <> " is not byte-stable under canonical reprint")
+              | semanticHashKCoreText second /= semanticHashKCoreText first ->
+                  AssertFail (subject <> " changed semantic hash across round trip")
+              | otherwise -> AssertOk
 
 checkAssertion ::
   ([(FilePath, Text)] -> CompiledUnit) ->
@@ -1247,10 +1829,370 @@ checkAssertion compileWith root path src files cu diags mRun = \case
           ( "trace count " <> ev <> "/" <> subj <> " is " <> tshow actual
               <> ", expected " <> rel <> " " <> tshow n
           )
+  AStageDumpEquals checkpoint relative format
+    | checkpoint /= "KCore" ->
+        pure (AssertHarnessError ("assertStageDump names unknown or unmaterialized checkpoint '" <> checkpoint <> "'"))
+    | format /= "kcore" ->
+        pure (AssertHarnessError ("assertStageDump KCore requires KCoreText in this harness; select dumpFormat kcore or use a .kcore golden"))
+    | not (null errors) ->
+        pure (AssertFail "assertStageDump KCore: the suite has compile errors")
+    | otherwise -> withKCoreFile relative $ \expected -> do
+        let st = cuState cu
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False mempty
+        pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces of
+          Left err -> AssertFail ("generated KCore stage dump could not be emitted: " <> kcteCode err <> ": " <> kcteMessage err)
+          Right actual -> case (parseKCore actual, parseKCore expected) of
+            (Left err, _) -> AssertFail ("generated KCore stage dump does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+            (_, Left err) -> AssertFail ("KCore golden does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+            (Right actualCore, Right expectedCore)
+              | printCanonicalKCoreText actualCore == printCanonicalKCoreText expectedCore -> AssertOk
+              | otherwise -> AssertFail ("canonical KCore stage dump does not match golden file " <> relative)
+  AStageDumpRoundTrips checkpoint
+    | checkpoint /= "KCore" ->
+        pure (AssertHarnessError ("assertStageDumpRoundTrips names unknown checkpoint '" <> checkpoint <> "'"))
+    | not (null errors) ->
+        pure (AssertFail "assertStageDumpRoundTrips KCore: the suite has compile errors")
+    | otherwise ->
+        let st = cuState cu
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False mempty
+         in pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces of
+              Left err -> AssertFail ("generated KCore stage dump could not be emitted: " <> kcteCode err <> ": " <> kcteMessage err)
+              Right dump -> assertKCoreRoundTripText parseKCore "generated KCore stage dump" dump
+  AKCoreParses relative -> withKCoreFile relative $ \contents ->
+    pure $ case parseKCore contents of
+      Right _ -> AssertOk
+      Left err -> AssertFail ("assertKCoreParses: " <> kcteCode err <> ": " <> kcteMessage err)
+  AKCoreRoundTrips relative -> withKCoreFile relative $ \contents ->
+    pure (assertKCoreRoundTripText parseKCore ("KCore file " <> relative) contents)
+  AKCoreRejects relative expectedCode -> withKCoreFile relative $ \contents ->
+    pure $ case parseKCore contents of
+      Left err
+        | kcteCode err == expectedCode -> AssertOk
+        | otherwise ->
+            AssertFail
+              ( "assertKCoreRejects: rejected with " <> kcteCode err
+                  <> ", expected " <> expectedCode <> ": " <> kcteMessage err
+              )
+      Right _ -> AssertFail ("assertKCoreRejects: " <> relative <> " was accepted")
+  AKCoreSchemaCertificateValid relative family -> withKCoreFile relative $ \contents ->
+    pure $ case parseKCore contents of
+      Left err ->
+        AssertFail
+          ( "assertKCoreSchemaCertificateValid: " <> relative <> " does not verify: "
+              <> kcteCode err <> ": " <> kcteMessage err
+          )
+      Right core ->
+        if kcoreHasValidSchemaCertificate core family
+          then AssertOk
+          else AssertFail ("no independently verified schema certificate for " <> family <> " occurs in " <> relative)
+  AKCoreSemanticHashEquals left right ->
+    withKCoreFile left $ \leftContents ->
+      withKCoreFile right $ \rightContents ->
+        pure $ case (parseKCore leftContents, parseKCore rightContents) of
+          (Left err, _) -> AssertFail (left <> " does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+          (_, Left err) -> AssertFail (right <> " does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+          (Right leftCore, Right rightCore) ->
+            requirePure
+              (semanticHashKCoreText leftCore == semanticHashKCoreText rightCore)
+              ("KCore semantic hashes differ for " <> left <> " and " <> right)
+  AKCoreLevelEvidence relative certificate dependencies ->
+    withKCoreFile relative $ \contents ->
+      pure $ case parseKCore contents of
+        Left err -> AssertFail (relative <> " does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
+        Right core ->
+          requirePure
+            (kcoreLevelCertificateDependencies core certificate == Just dependencies)
+            ("level certificate " <> certificate <> " does not use canonical dependencies " <> tshow dependencies)
+  ALevelNormalForm leftText rightText ->
+    pure $ case parseFixtureLevels [leftText, rightText] of
+      Left detail -> AssertHarnessError ("assertLevelNormalForm: " <> detail)
+      Right [left, right] ->
+        requirePure
+          (normalizeLevel left == normalizeLevel right)
+          ("normal forms differ: " <> renderLevel (normalizeLevel left) <> " vs " <> renderLevel (normalizeLevel right))
+      Right _ -> AssertHarnessError "assertLevelNormalForm: internal arity mismatch"
+  ALevelEntails expected leftText rightText ->
+    pure $ case parseFixtureLevels [leftText, rightText] of
+      Left detail -> AssertHarnessError ("level entailment assertion: " <> detail)
+      Right [left, right] ->
+        let result = proveLevelLeq emptyAssumptions left right
+            accepted
+              | expected = result == Proved
+              | otherwise =
+                  result /= Proved
+                    && assumptionsConsistent
+                         (insertAssumption (levelSucc right) left emptyAssumptions)
+         in requirePure
+              accepted
+              ("level judgment " <> renderLevel left <> " <= " <> renderLevel right
+                <> if expected
+                     then " is not entailed"
+                     else " has no satisfiable strict refutation")
+      Right _ -> AssertHarnessError "level entailment assertion: internal arity mismatch"
+  ALevelSolve directive ->
+    pure $ either AssertHarnessError id (checkFixtureLevelSolve directive)
+  ALevelSolveClass directive ->
+    pure $ either AssertHarnessError id (checkFixtureLevelSolveClass directive)
+  APrincipalUniverse declaration expectedText ->
+    pure $ case (universeInferenceRecord (cuState cu) declaration, parseFixtureLevels [expectedText]) of
+      (Nothing, _) -> AssertFail ("no declaration-boundary universe inference result is recorded for " <> declaration)
+      (_, Left detail) -> AssertHarnessError ("assertPrincipalUniverse: " <> detail)
+      (Just record, Right [expected])
+        | uirClass record /= InferenceSolvedPrincipal ->
+            AssertFail
+              ("universe inference for " <> declaration <> " is " <> renderInferenceClass (uirClass record)
+                <> ", expected SolvedPrincipal")
+        | otherwise ->
+            let actual = nub (map normalizeLevel (Map.elems (uirPrincipalAssignments record)))
+             in requirePure
+                  (actual == [normalizeLevel expected])
+                  ("principal universe for " <> declaration <> " is "
+                    <> T.intercalate ", " (map renderLevel actual)
+                    <> ", expected " <> renderLevel (normalizeLevel expected))
+      (_, Right _) -> AssertHarnessError "assertPrincipalUniverse: internal arity mismatch"
+  AUniverseInferenceClass declaration expected ->
+    pure $ case universeInferenceRecord (cuState cu) declaration of
+      Nothing -> AssertFail ("no declaration-boundary universe inference result is recorded for " <> declaration)
+      Just record ->
+        requirePure
+          (renderInferenceClass (uirClass record) == expected)
+          ("universe inference for " <> declaration <> " is " <> renderInferenceClass (uirClass record)
+            <> ", expected " <> expected)
+  ARecursiveSchemaEdge caller callee relation ->
+    pure $ requirePure
+      (recursiveSchemaEdgeRecorded (cuState cu) caller callee relation)
+      ("no checked recursive schema edge " <> caller <> " -> " <> callee <> " (" <> relation <> ") was recorded")
+  ASelectedEvidence goal evidence ->
+    pure $ requirePure
+      (selectedUniverseEvidenceRecorded (cuState cu) goal evidence)
+      ("universe role inference did not record selected evidence " <> evidence <> " for " <> goal)
+  AUniverseRole family index expectedRole ->
+    pure $ case nominalSummaryFor cu family of
+      Nothing -> AssertFail ("no nominal cumulativity summary is available for " <> family)
+      Just summary ->
+        case ncsRoles summary `atMay` index of
+          Just actual | actual == expectedRole -> AssertOk
+          Just actual -> AssertFail ("universe role " <> tshow index <> " of " <> family <> " is " <> varianceText actual <> ", expected " <> varianceText expectedRole)
+          Nothing -> AssertFail ("universe role index " <> tshow index <> " is outside the role vector of " <> family)
+  ASchemaCertificateValid family ->
+    pure $ case nominalSummaryFor cu family of
+      Just summary | verifyNominalCumulativitySummary summary -> AssertOk
+      Just _ -> AssertFail ("nominal action certificate for " <> family <> " fails independent replay")
+      Nothing -> AssertFail ("no nominal action certificate is available for " <> family)
+  ASchemaLiftPresent family ->
+    pure $
+      requirePure
+        (any ((== normalizedFamilyName family) . normalizedFamilyName . gnameText) (schemaLiftFamilies cu))
+        ("no verified KCore schemaLift of " <> family <> " is present")
+  ASchemaLiftCount expectedCount ->
+    let actualCount = length (schemaLiftFamilies cu)
+     in pure $ requirePure (actualCount == expectedCount)
+          ("verified KCore schemaLift count is " <> tshow actualCount <> ", expected " <> tshow expectedCount)
+  ASemanticHashDiffers left right -> do
+    leftUnit <- compileSuiteFile left
+    rightUnit <- compileSuiteFile right
+    pure $ compareCompiledUnits "assertSemanticHashDiffers" leftUnit rightUnit $ \leftCompiled rightCompiled ->
+      requirePure
+        (nominalInterfaceHash leftCompiled /= nominalInterfaceHash rightCompiled)
+        ("semantic hashes are equal for " <> left <> " and " <> right)
+  ASemanticHashDiffersFrom target -> do
+    targetUnit <- compileSuiteFile target
+    pure $ case targetUnit of
+      Left detail -> AssertHarnessError detail
+      Right targetCompiled
+        | hasErrors (cuDiags cu) || hasErrors (cuDiags targetCompiled) ->
+            AssertFail "assertSemanticHashDiffersFrom: one of the compared artifacts does not compile"
+        | otherwise ->
+            requirePure
+              (nominalInterfaceHash cu /= nominalInterfaceHash targetCompiled)
+              ("semantic hash is equal to " <> target)
+  ASemanticHashEquals left right -> do
+    leftUnit <- compileSuiteFile left
+    rightUnit <- compileSuiteFile right
+    pure $ compareCompiledUnits "assertSemanticHashEquals" leftUnit rightUnit $ \leftCompiled rightCompiled ->
+      requirePure
+        (nominalInterfaceHash leftCompiled == nominalInterfaceHash rightCompiled)
+        ("semantic hashes differ for " <> left <> " and " <> right)
+  ASemanticHashEqualsFrom target -> do
+    targetUnit <- compileSuiteFile target
+    pure $ case targetUnit of
+      Left detail -> AssertHarnessError detail
+      Right targetCompiled
+        | hasErrors (cuDiags cu) || hasErrors (cuDiags targetCompiled) ->
+            AssertFail "assertSemanticHashEquals: one of the compared artifacts does not compile"
+        | otherwise ->
+            requirePure
+              (nominalInterfaceHash cu == nominalInterfaceHash targetCompiled)
+              ("semantic hash differs from " <> target)
+  AInterfaceContainsUniverseRoles relative family expectedRoles -> do
+    compiled <- compileSuiteFile relative
+    pure $ case compiled of
+      Left detail -> AssertHarnessError detail
+      Right unit
+        | hasErrors (cuDiags unit) -> AssertFail ("interface source " <> relative <> " does not compile")
+        | otherwise -> case interfaceArtifactRoles unit family of
+            Left detail -> AssertFail ("interface artifact for " <> relative <> " is invalid: " <> detail)
+            Right (Just roles) | roles == expectedRoles -> AssertOk
+            Right (Just roles) -> AssertFail ("interface roles for " <> family <> " are " <> renderRoles roles <> ", expected " <> renderRoles expectedRoles)
+            Right Nothing -> AssertFail ("interface artifact contains no nominal summary for " <> family)
+  AInterfaceContainsCurrentUniverseRoles family expectedRoles ->
+    pure $ case interfaceArtifactRoles cu family of
+      Left detail -> AssertFail ("current interface artifact is invalid: " <> detail)
+      Right (Just roles) | roles == expectedRoles -> AssertOk
+      Right (Just roles) -> AssertFail ("interface roles for " <> family <> " are " <> renderRoles roles <> ", expected " <> renderRoles expectedRoles)
+      Right Nothing -> AssertFail ("interface artifact contains no nominal summary for " <> family)
+  ATotal declaration ->
+    pure $ case assertionGlobal declaration of
+      Nothing -> AssertFail ("assertTotal: no typed declaration resolves as " <> declaration)
+      Just (_, definition)
+        | gdReducible definition -> AssertOk
+        | otherwise ->
+            AssertFail
+              ( "assertTotal: " <> declaration
+                  <> " is not verified conversion-safe by the checker"
+              )
   where
+    checkpointState = cuState cu
+    -- The verifier's external environment is an import environment. The
+    -- monolithic checker state also contains the module currently serialized;
+    -- feeding those declarations back as imports creates a real stable-id
+    -- collision and masks whether the artifact is source-free. Keep the full
+    -- environment for emission, but verify against imports only.
+    checkpointGlobals =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule cu)
+        (csGlobals checkpointState)
+    checkpointImportedConstructors =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule cu)
+        checkpointConstructorInterfaces
+    checkpointEval = EvalCtx (Globals checkpointGlobals) (csMetas checkpointState) False mempty
+    parseKCore = parseAndVerifyKCoreTextWithEnvironment checkpointEval checkpointGlobals checkpointImportedConstructors
+    checkpointDataInterfaces =
+      Map.map
+        (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount)
+        (csDatas checkpointState)
+    checkpointConstructorInterfaces =
+      Map.map
+        (\CtorInfo {..} ->
+           KCoreConstructorInfo
+             ciData
+             ciUniverses
+             ciType
+             (map fst ciFields))
+        (csCtors checkpointState)
     errors = filter isError diags
     warnings = filter (\d -> dSeverity d == SevWarning) diags
     require b detail = pure (if b then AssertOk else AssertFail detail)
+    requirePure b detail = if b then AssertOk else AssertFail detail
+    atMay values index = case drop index values of
+      value : _ | index >= 0 -> Just value
+      _ -> Nothing
+    renderInferenceClass = \case
+      InferenceSolvedPrincipal -> "SolvedPrincipal"
+      InferenceUnsatisfiable -> "Unsatisfiable"
+      InferenceNoPointwiseLeastSolution -> "NoPointwiseLeastSolution"
+      InferenceOutsidePortableInferenceFragment -> "OutsidePortableInferenceFragment"
+      InferenceBlockedByUnselectedMetas -> "BlockedByUnselectedMetas"
+    normalizedFamilyName name = fromMaybe name (T.stripPrefix "(" name >>= T.stripSuffix ")")
+    assertionGlobal declaration =
+      let state = cuState cu
+          (qualifiedModule, baseName) = splitQualified declaration
+          candidates =
+            [ GName (cuModule cu) declaration
+            , GName (cuModule cu) baseName
+            ]
+              ++ [GName (ModuleName segments) baseName | Just segments <- [qualifiedModule]]
+              ++ [global | Just global <- [Map.lookup declaration (csScope state)]]
+              ++ [global | Just global <- [Map.lookup baseName (csScope state)]]
+       in listToMaybe
+            [ (global, definition)
+            | global <- candidates
+            , Just definition <- [Map.lookup global (csGlobals state)]
+            ]
+    nominalSummaryFor unit family =
+      listToMaybe
+        [ summary
+        | (global, definition) <- Map.toAscList (csGlobals (cuState unit))
+        , normalizedFamilyName (gnameText global) == normalizedFamilyName family
+        , Just summary <- [gdNominalSummary definition]
+        ]
+    interfaceArtifactRoles unit family = do
+      let state = cuState unit
+          matchingOwners =
+            [ owner
+            | (GName owner name, definition) <- Map.toAscList (csGlobals state)
+            , normalizedFamilyName name == normalizedFamilyName family
+            , Just summary <- [gdNominalSummary definition]
+            , verifyNominalCumulativitySummary summary
+            ]
+          ownModule = case matchingOwners of
+            owner : _ -> owner
+            [] -> cuModule unit
+          fullEval = EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty
+          importedGlobals = Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csGlobals state)
+          importedConstructors =
+            Map.map
+              (\CtorInfo {..} ->
+                KCoreConstructorInfo
+                  ciData
+                  ciUniverses
+                  ciType
+                  (map fst ciFields))
+              (Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csCtors state))
+          dataInterfaces = Map.map (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount) (csDatas state)
+          constructorInterfaces =
+            Map.map
+              (\CtorInfo {..} ->
+                KCoreConstructorInfo
+                  ciData
+                  ciUniverses
+                  ciType
+                  (map fst ciFields))
+              (csCtors state)
+          importedEval = EvalCtx (Globals importedGlobals) (csMetas state) False mempty
+      dump <- firstKCoreError $ renderKCoreModule ownModule fullEval (csGlobals state) (csCoreBodies state) dataInterfaces constructorInterfaces
+      artifact <- firstKCoreError $ parseAndVerifyKCoreTextWithEnvironment importedEval importedGlobals importedConstructors dump
+      pure (kcoreNominalRoles artifact family)
+    firstKCoreError = either (Left . (\err -> kcteCode err <> ": " <> kcteMessage err)) Right
+    schemaLiftFamilies unit =
+      concat
+        [ foldTerm
+            (\case CSchemaLift family _ _ _ _ _ _ _ _ -> [family]; _ -> [])
+            (const [])
+            body
+        | body <- Map.elems (csCoreBodies (cuState unit))
+        ]
+    nominalInterfaceHash unit =
+      stableNominalHash . T.pack . show $
+        [ (gKey global, summary)
+        | (global@(GName owner _), definition) <- Map.toAscList (csGlobals (cuState unit))
+        , owner == cuModule unit
+        , Just summary <- [gdNominalSummary definition]
+        ]
+    compileSuiteFile relative =
+      case [(file, source) | (file, source) <- files, makeRelative root file == T.unpack relative] of
+        [source] -> pure (Right (compileWith [source]))
+        [] -> pure (Left ("suite source '" <> relative <> "' does not exist"))
+        _ -> pure (Left ("suite source '" <> relative <> "' is ambiguous"))
+    compareCompiledUnits assertion left right action = case (left, right) of
+      (Left detail, _) -> AssertHarnessError detail
+      (_, Left detail) -> AssertHarnessError detail
+      (Right leftUnit, Right rightUnit)
+        | hasErrors (cuDiags leftUnit) || hasErrors (cuDiags rightUnit) ->
+            AssertFail (assertion <> ": one of the compared sources does not compile")
+        | otherwise -> action leftUnit rightUnit
+    varianceText = \case
+      Invariant -> "invariant"
+      Covariant -> "covariant"
+      Irrelevant -> "irrelevant"
+    renderRoles roles = "[" <> T.intercalate "," (map varianceText roles) <> "]"
+    withKCoreFile relative action = do
+      let file = root </> T.unpack relative
+      exists <- doesFileExist file
+      if exists
+        then readSourceFile file >>= action
+        else pure (AssertHarnessError ("unreadable KCoreText file '" <> relative <> "' (§T.8)"))
     countIs what n actual =
       require (actual == n) ("expected " <> tshow n <> " " <> what <> ", got " <> tshow actual)
     -- error-count mismatches cite the first error, which makes failure
@@ -1554,8 +2496,8 @@ data RenderPos = RTop | RArg | ROpLeft
 -- | @assertType name typeExpr@ (§T.5.2): elaborate the expected type in
 -- the compiled unit's state through a synthetic signature declaration
 -- (checked in the origin file's module with the origin file's import
--- scope) and compare with the declaration's recorded type up to
--- definitional equality ('convertible').
+-- scope) and compare ordinary freshened occurrences of both declaration
+-- interfaces up to checker-level definitional equality.
 --
 -- If the expected type does not parse or does not elaborate in this
 -- implementation, the assertion cannot be satisfied and the test
@@ -1565,17 +2507,17 @@ assertType :: FilePath -> Text -> CompiledUnit -> Text -> Text -> AssertResult
 assertType path src cu nm tyExpr =
   case lookupTarget of
     Nothing -> AssertFail ("name '" <> nm <> "' does not resolve to a typed declaration")
-    Just gd ->
+    Just (targetName, gd) ->
       case elabExpected of
         Left err -> AssertFail err
-        Right (st', probeTy) ->
+        Right (st', probeNameGlobal, probeTy) ->
           let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False mempty
               actualR = renderTerm (quote ec 0 (gdType gd))
               probeR = renderTerm (quote ec 0 probeTy)
-           in if convertible ec 0 (gdType gd) probeTy
-                -- distinct unsolved metas in equal positions (e.g. the
-                -- inferred error parameter of a one-argument 'IO a'
-                -- assertion) still count as the same expected type
+           in if declarationTypesConvertibleAtUse st' targetName probeNameGlobal
+                -- Retain the legacy recovery for equal unresolved ordinary
+                -- metas. Hidden universe parameters are handled by the
+                -- schema-aware occurrence comparison above.
                 || stripMetaIds actualR == stripMetaIds probeR
                 then AssertOk
                 else
@@ -1594,8 +2536,8 @@ assertType path src cu nm tyExpr =
             [GName originMod nm, GName (cuModule cu) nm]
               ++ [GName (ModuleName qm) baseName | Just qm <- [qualMod]]
               ++ [g | Just g <- [Map.lookup nm (csScope st)]]
-       in case mapMaybe (`Map.lookup` csGlobals st) candidates of
-            (gd : _) -> Just gd
+       in case [(candidate, gd) | candidate <- candidates, Just gd <- [Map.lookup candidate (csGlobals st)]] of
+            (resolved : _) -> Just resolved
             [] -> Nothing
     probeName = "__assert_type_probe"
     -- The probe sees the same unqualified scope as the origin file:
@@ -1625,7 +2567,7 @@ assertType path src cu nm tyExpr =
                           [] -> ""
                     )
                 else case Map.lookup (GName originMod probeName) (csGlobals st1) of
-                  Just probe -> Right (st1, gdType probe)
+                  Just probe -> Right (st1, GName originMod probeName, gdType probe)
                   Nothing -> Left "assertType: internal probe failure"
 
 -- Fixity environment of the test file itself (its own fixity decls
@@ -1702,7 +2644,7 @@ assertParamQuantities path src nm expected =
       -- an inout parameter elaborates at quantity 1 (§18.9.3)
       | bInout b = "1"
       | otherwise =
-          let BinderPrefix mq mb = bPrefix b
+          let BinderPrefix _ mq mb = bPrefix b
               qt = case mq of
                 Nothing -> ""
                 Just QZero -> "0"
@@ -1710,7 +2652,7 @@ assertParamQuantities path src nm expected =
                 Just QOmega -> "ω"
                 Just QAtMostOne -> "<=1"
                 Just QAtLeastOne -> ">=1"
-                Just (QTerm n) -> nameText n
+                Just (QTerm _) -> "<quantity-expression>"
               bt = case mb of
                 Nothing -> ""
                 Just (BorrowMark Nothing) -> "&"
@@ -1792,7 +2734,7 @@ assertDoItemDescriptors path src nm expected =
       _ -> "_"
     -- an explicit quantity/borrow prefix is part of the descriptor
     -- (e.g. "let 1 file", "let & borrowed")
-    prefixedHead (BinderPrefix mq mb) p =
+    prefixedHead (BinderPrefix _ mq mb) p =
       let qt = case mq of
             Nothing -> ""
             Just QZero -> "0"
@@ -1800,7 +2742,7 @@ assertDoItemDescriptors path src nm expected =
             Just QOmega -> "ω"
             Just QAtMostOne -> "<=1"
             Just QAtLeastOne -> ">=1"
-            Just (QTerm n) -> nameText n
+            Just (QTerm _) -> "<quantity-expression>"
           bt = case mb of
             Nothing -> ""
             Just (BorrowMark Nothing) -> "&"

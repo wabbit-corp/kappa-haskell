@@ -2,6 +2,7 @@
 -- tags (§31.3 canonical member rendering).
 module Kappa.Pretty
   ( renderTerm
+  , renderJudgment
   , renderValueShallow
   ) where
 
@@ -9,6 +10,7 @@ import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Core
+import Kappa.Level (renderLevel)
 
 renderTerm :: Term -> Text
 renderTerm = go 0
@@ -16,17 +18,19 @@ renderTerm = go 0
     go :: Int -> Term -> Text
     go p = \case
       CVar i -> "@" <> tshow i
-      CGlob g -> gnameText g
-      CLam _ _ n b -> paren (p > 0) ("\\" <> n <> " -> " <> go 0 b)
-      CPi ic q _ n a b ->
+      CLocal i universes ->
+        "@" <> tshow i <> ".{" <> T.intercalate ", " (map renderLevel universes) <> "}"
+      CGlobal g _ -> gnameText g
+      CLamM mode _ _ n b -> paren (p > 0) ("\\" <> modeText mode <> n <> " -> " <> go 0 b)
+      CPiEvidenceM mode _ ic q _ n _ _ a b ->
         paren (p > 0) $
           binder <> " -> " <> go 0 b
         where
           binder = case ic of
-            Impl -> "(@" <> qtxt <> n <> " : " <> go 0 a <> ")"
+            Impl -> "(@" <> modeText mode <> qtxt <> n <> " : " <> go 0 a <> ")"
             Expl
-              | n == "_" && q == QW -> go 1 a
-              | otherwise -> "(" <> qtxt <> n <> " : " <> go 0 a <> ")"
+              | n == "_" && q == QW && mode == Ordinary -> go 1 a
+              | otherwise -> "(" <> modeText mode <> qtxt <> n <> " : " <> go 0 a <> ")"
           qtxt = case q of
             QW -> ""
             Q0 -> "0 "
@@ -34,36 +38,57 @@ renderTerm = go 0
             QLe1 -> "<=1 "
             QGe1 -> ">=1 "
       CApp _ f a -> paren (p > 1) (go 1 f <> " " <> go 2 a)
-      CSort 0 -> "Type"
-      CSort n -> "Type" <> tshow n
+      CSort LZero -> "Type"
+      CSort n -> "Type " <> renderLevel n
+      CLevel n -> "level{" <> renderLevel n <> "}"
+      CUniverseLift from to evidence t ->
+        paren (p > 0) $
+          "lift [" <> renderLevel from <> " <= " <> renderLevel to
+            <> " by " <> T.pack (show evidence) <> "] " <> go 1 t
+      CSchemaLift family source target roles _ certificate _ _ t ->
+        paren (p > 0) $
+          "schemaLift [" <> gnameText family <> ".{" <> renderLevels source
+            <> "} => .{" <> renderLevels target <> "}; "
+            <> T.pack (show roles) <> "; " <> T.pack (show certificate) <> "] " <> go 1 t
       CLit l -> renderLit l
-      CCtor g _ args
+      CCtorI g _ _ constructorArgs
         | null args -> gnameText g
         | otherwise -> paren (p > 1) (T.unwords (gnameText g : map (go 2) args))
+        where
+          args = [caTerm argument | argument <- constructorArgs, caPayload argument]
       CMatch s _ _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
       -- §3.1.11 / §13.2.11: internal existential labels (`⟨wit_i⟩`,
       -- `⟨payload⟩`) are not source-addressable fields. They are hidden
       -- from user-facing renderings — a record carrying only such labels
       -- renders as the stable phrase `(an existential package)`.
-      CRecordT fs ->
-        case [(n, t) | (n, t) <- fs, not (isInternalLabel n)] of
+      CRecordTQ fs ->
+        case [f | f <- fs, not (isInternalLabel (rfName f))] of
           [] | not (null fs) -> "(an existential package)"
-          fs' -> "(" <> T.intercalate ", " [n <> " : " <> go 0 t | (n, t) <- fs'] <> ")"
+          fs' -> "(" <> T.intercalate ", " [rfName f <> " : " <> go 0 (rfType f) | f <- fs'] <> ")"
       CRecordV fs ->
         case [(n, t) | (n, t) <- fs, not (isInternalLabel n)] of
           [] | not (null fs) -> "(an existential package)"
           fs' -> "(" <> T.intercalate ", " [n <> " = " <> go 0 t | (n, t) <- fs'] <> ")"
-      CProj e f
+      CProjM _ e f
         | isInternalLabel f -> "(an opened existential witness)"
         | otherwise -> go 2 e <> "." <> f
       -- P0.4: render by name, identical to CProj (the index is backend-only).
-      CProjAt e f _
+      CProjAtM _ e f _
         | isInternalLabel f -> "(an opened existential witness)"
         | otherwise -> go 2 e <> "." <> f
       CVariantT ms -> "(| " <> T.intercalate " | " (map (go 0) ms) <> " |)"
       CInject t e -> paren (p > 0) ("(| " <> go 0 e <> " : " <> t <> " |)")
-      CLet _ n _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
-      CLetRec _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetM _ _ n _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRecM _ _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetPolyM _ _ n _ _ rhs body -> paren (p > 0) ("let " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRecPolyM _ _ n _ _ rhs body -> paren (p > 0) ("let rec " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRecGroupM _ definitions body ->
+        paren (p > 0)
+          ( "let rec { "
+              <> T.intercalate "; "
+                [clrdName definition <> " = " <> go 0 (clrdRhs definition) | definition <- definitions]
+              <> " } in " <> go 0 body
+          )
       -- §3.1.11 internal-placeholder hygiene: an unsolved unification
       -- metavariable MUST NOT be shown as a raw solver id (`?m1238`).
       -- After zonking, any metavariable that survives is genuinely
@@ -83,10 +108,19 @@ renderTerm = go 0
       CForceE e -> paren (p > 1) ("force " <> go 2 e)
       CIf c t f -> paren (p > 0) ("if " <> go 0 c <> " then " <> go 0 t <> " else " <> go 0 f)
       CQuote _ slots -> "'{ ... }" <> (if null slots then "" else " [" <> tshow (length slots) <> " slots]")
+    modeText Ordinary = "ordinary "
+    modeText Parametric = "parametric "
+    renderLevels = T.intercalate ", " . map renderLevel
     paren True t = "(" <> t <> ")"
     paren False t = t
     tshow :: Show a => a -> Text
     tshow = T.pack . show
+
+-- | Verbose classifier rendering. Keeping the term and its classifier as two
+-- explicit inputs prevents the forbidden @Type : Type@ shorthand: callers
+-- must pass the checked classifier, so @Type0@ renders as @Type : Type 1@.
+renderJudgment :: Term -> Term -> Text
+renderJudgment term classifier = renderTerm term <> " : " <> renderTerm classifier
 
 -- | A §13.2.11 internal existential label (witness `⟨wit_i⟩` or the
 -- anonymous payload `⟨payload⟩`): not a source-addressable field, so it

@@ -1,0 +1,29 @@
+-- Spec 10.2.1: the standard Nat no-confusion projections are ordinary
+-- proof terms. Spec 11.3 makes their forall-bound Nat indices implicit.
+data Bit : Type =
+    BitZero
+    BitOne
+
+derive IsSet Bit
+derive Eq Bit
+
+succInjective :
+    (m : Nat) ->
+    (n : Nat) ->
+    Nat.Succ m = Nat.Succ n ->
+    m = n
+
+let succInjective m n proof =
+    natSuccInjective @m @n proof
+
+zeroNotSuccessor :
+    (n : Nat) ->
+    Nat.Zero = Nat.Succ n ->
+    Void
+
+let zeroNotSuccessor n proof =
+    natZeroNotSucc @n proof
+
+--! assertNoErrors
+--! assertType succInjective (m : Nat) -> (n : Nat) -> Nat.Succ m = Nat.Succ n -> m = n
+--! assertType zeroNotSuccessor (n : Nat) -> Nat.Zero = Nat.Succ n -> Void

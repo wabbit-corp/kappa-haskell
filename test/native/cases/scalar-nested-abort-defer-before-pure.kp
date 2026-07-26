@@ -6,7 +6,7 @@
 -- work before OP_DEFER executes and miss the cleanup.
 module main
 
-import std.prelude.(type Exit(..))
+import std.prelude.(type Cause(..), type Exit(..))
 
 spin : Int -> Int -> Int
 let spin acc n =

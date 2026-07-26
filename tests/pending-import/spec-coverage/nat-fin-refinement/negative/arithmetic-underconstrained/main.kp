@@ -1,0 +1,14 @@
+data SplitFour : Type =
+    SplitFour
+        (left : Nat)
+        (right : Nat)
+        (@0 proof : natAdd left right = 4)
+
+ambiguousSplit :
+    SplitFour
+
+let ambiguousSplit =
+    SplitFour ?left ?right refl
+
+-- The arithmetic solver must not choose one of the five possible splits.
+--! assertDiagnostic error E_HOLE_UNSOLVED

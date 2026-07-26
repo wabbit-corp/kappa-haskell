@@ -1,0 +1,39 @@
+module typelevel_certified_open_laws
+
+addAssocChecked :
+    (x : TypeLevel) ->
+    (y : TypeLevel) ->
+    (z : TypeLevel) ->
+    add (add x y) z = add x (add y z)
+
+let addAssocChecked x y z =
+    refl
+
+succStrictChecked :
+    (x : TypeLevel) ->
+    (x < succ x) = True
+
+let succStrictChecked x =
+    refl
+
+addMonotoneChecked :
+    (x : TypeLevel) ->
+    (y : TypeLevel) ->
+    (z : TypeLevel) ->
+    (@0 proof : (x <= y) = True) ->
+    (add z x <= add z y) = True
+
+let addMonotoneChecked x y z (@0 proof : (x <= y) = True) =
+    refl
+
+maxAssocChecked :
+    (x : TypeLevel) ->
+    (y : TypeLevel) ->
+    (z : TypeLevel) ->
+    max (max x y) z = max x (max y z)
+
+let maxAssocChecked x y z =
+    refl
+
+--! mode check
+--! assertNoErrors

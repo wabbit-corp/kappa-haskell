@@ -1,0 +1,23 @@
+-- §11.3: both unannotated and annotated forall binders elaborate to implicit
+-- parametric quantity-0 products. Writing the domain does not make an
+-- application argument explicit.
+--! mode check
+--! assertNoErrors
+
+unannotatedId : forall a. a -> a
+let unannotatedId (@0 A : Type) x = x
+
+annotatedId : forall (a : Type). a -> a
+let annotatedId (@0 A : Type) x = x
+
+unannotatedInferred : Int
+let unannotatedInferred = unannotatedId 1
+
+annotatedInferred : Int
+let annotatedInferred = annotatedId 1
+
+unannotatedSupplied : Int
+let unannotatedSupplied = unannotatedId @Int 1
+
+annotatedSupplied : Int
+let annotatedSupplied = annotatedId @Int 1

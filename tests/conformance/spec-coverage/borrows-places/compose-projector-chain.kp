@@ -8,9 +8,9 @@
 -- call, with the composite footprint rooted in the outermost root).
 module main
 
-type Cell = (value : Int)
-type Mid = (cell : Cell)
-type Outer = (mid : Mid)
+type Cell = (value : Int,)
+type Mid = (cell : Cell,)
+type Outer = (mid : Mid,)
 
 projection outerMid (place this : Outer) : Mid =
     yield this.mid

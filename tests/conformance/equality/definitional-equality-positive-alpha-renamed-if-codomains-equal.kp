@@ -8,8 +8,8 @@ type Branch (@0 a : Type) (@0 b : Type) : Type =
 
 sameBranchType :
     (@0 a : Type) -> (@0 b : Type) ->
-    Branch a b = ((y : Bool) -> if y then a else b)
+    Branch @a @b = ((y : Bool) -> if y then a else b)
 let sameBranchType (@0 a : Type) (@0 b : Type) = refl
 
 --! assertNoErrors
---! assertType sameBranchType (@0 a : Type) -> (@0 b : Type) -> Branch a b = ((y : Bool) -> if y then a else b)
+--! assertType sameBranchType (@0 a : Type) -> (@0 b : Type) -> Branch @a @b = ((y : Bool) -> if y then a else b)

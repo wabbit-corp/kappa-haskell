@@ -1,0 +1,11 @@
+-- §11.1.2.3A: a parametric witness at Type3 may instantiate a compatible
+-- erased Type4 binder by universe cumulativity.
+--! mode check
+--! assertNoErrors
+
+accept4 : (0 B : Type4) -> Unit
+let accept4 B = ()
+
+liftWitness : (0 A : Type3) -> Unit
+let liftWitness A = accept4 A
+

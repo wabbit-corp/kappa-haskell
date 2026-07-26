@@ -8,12 +8,14 @@ data List a : Type =
     Nil
     | Cons a (List a)
 
--- Helper measure function: list length as a Nat.
-data Nat : Type =
+-- Helper measure function: list length as a user-local Peano natural.
+-- Nat2 avoids shadowing §28.2's now-canonical inductive `Nat`, whose
+-- standard measure obligations are owned by §15.8.4.
+data Nat2 : Type =
     Z
-    | S Nat
+    | S Nat2
 
-listLen : List a -> Nat
+listLen : List a -> Nat2
 let listLen xs decreases structural xs =
     match xs
     case Nil       -> Z

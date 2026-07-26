@@ -7,7 +7,7 @@ module main
 data Box (a : Type) : Type =
     Box (value : a)
 
-F : Type -> Type
+F : (parametric 0 A : Type) -> Type
 let F = type Box
 
 unwrap : F Int -> Int
@@ -15,7 +15,7 @@ let unwrap b =
     match b
     case F.Box n -> n
 
-pkg : (T : Type -> Type, value : T Int)
+pkg : (T : (parametric 0 A : Type) -> Type, value : T Int)
 let pkg = (T = Option, value = Some 1)
 
 opened : Int

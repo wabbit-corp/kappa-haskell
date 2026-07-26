@@ -1,0 +1,10 @@
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_ARITY_MISMATCH
+--! assertErrorCount 1
+
+bad : Bool
+let bad =
+    block
+        localId.{u} : (A : Type u) -> A -> A
+        let localId.{v, w} A x = x
+        localId.{0} Bool True

@@ -1,0 +1,56 @@
+-- NOTE: bodies rely on the implicitly universalized `n` of the Spec 28.2
+-- fin declarations being solvable implicitly; the assertType spellings
+-- mirror the spec's own forall forms. The explicit applications in
+-- sameValue (finExt x y proof) track the open forall-explicitness
+-- question (OQ-1) and must be revisited with it.
+first :
+    (n : Nat) ->
+    Fin (natAdd n 1)
+
+let first n =
+    finZero
+
+next :
+    (n : Nat) ->
+    Fin n ->
+    Fin (natAdd n 1)
+
+let next n i =
+    finSucc i
+
+weaken :
+    (n : Nat) ->
+    Fin n ->
+    Fin (natAdd n 1)
+
+let weaken n i =
+    finWeaken i
+
+last :
+    (n : Nat) ->
+    Fin (natAdd n 1)
+
+let last n =
+    finLast n
+
+sameValue :
+    (n : Nat) ->
+    (x : Fin n) ->
+    (y : Fin n) ->
+    x.value = y.value ->
+    x = y
+
+let sameValue n x y proof =
+    finExt x y proof
+
+--! assertNoErrors
+--! assertType finValue forall (n : Nat). Fin n -> Nat
+--! assertType finZero forall (n : Nat). Fin (natAdd n 1)
+--! assertType finSucc forall (n : Nat). Fin n -> Fin (natAdd n 1)
+--! assertType finWeaken forall (n : Nat). Fin n -> Fin (natAdd n 1)
+-- finLast needs n as its runtime ordinal, so this binder cannot be the
+-- quantity-0 implicit introduced by forall.
+--! assertType finLast (n : Nat) -> Fin (natAdd n 1)
+--! assertType finCases forall (n : Nat) (parametric 0 motive : Fin (natAdd n 1) -> Type). motive finZero -> ((i : Fin n) -> motive (finSucc i)) -> (i : Fin (natAdd n 1)) -> motive i
+--! assertType finInduction forall (n : Nat) (parametric 0 motive : (k : Nat) -> Fin k -> Type). (forall (k : Nat). motive (natAdd k 1) finZero) -> (forall (k : Nat) (i : Fin k). motive k i -> motive (natAdd k 1) (finSucc i)) -> (i : Fin n) -> motive n i
+--! assertType sizedArrayIndex forall (n : Nat) (a : Type). SizedArray n a -> Fin n -> a

@@ -9,6 +9,8 @@
 -- only then delivered the interrupt at the post-bridge gate.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..))
+
 spin : Int -> Int -> Int
 let spin acc n =
     if leInt n 0

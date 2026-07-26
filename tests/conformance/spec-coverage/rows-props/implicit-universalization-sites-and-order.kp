@@ -1,13 +1,13 @@
 --! mode check
 --! assertNoErrors
 --! assertType constLeft forall (b : Type) (a : Type). b -> a -> b
---! assertType stay forall (f : Type -> Type). f Int -> f Int
+--! assertType stay forall (f : (A : Type0) -> Type). f Int -> f Int
 --! assertType discard forall (a : Type). a -> Int
 
 -- §11.3.3: implicitly universalized binders are ordered by first
 -- left-to-right occurrence in source order (constLeft pins b before a —
 -- not alphabetical); each binder's annotation is inferred from its uses
--- (stay pins f : Type -> Type) and defaults to Type when unconstrained
+-- (stay pins f : (A : Type) -> Type) and defaults to Type when unconstrained
 -- (discard). For instances, elaboration abstracts the ENTIRE instance
 -- declaration over the binders before premises and head are checked, so
 -- the same 'a' scopes over both premise (Small a) and head (Box a).

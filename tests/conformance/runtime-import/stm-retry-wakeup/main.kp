@@ -22,5 +22,5 @@ let main = do
     atomically (writeTVar tv 12)
     let ex <- await fiber
     match ex
-      case Success v -> printlnString ("woke:" ++ showInt v)
-      case Failure _ -> printlnString "failed"
+      case Exit.Success v -> printlnString ("woke:" ++ showInt v)
+      case Exit.Failure _ -> printlnString "failed"

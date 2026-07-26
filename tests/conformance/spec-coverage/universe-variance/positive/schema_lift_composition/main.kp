@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+--! assertSchemaLiftCount 1
+--! assertStageDumpRoundTrips KCore
+
+data Phantom.{irrelevant u} : Type0 =
+    Phantom
+
+compose : Phantom.{0} -> Phantom.{3}
+let compose x =
+    let y : Phantom.{1} = x
+    let z : Phantom.{3} = y
+    z

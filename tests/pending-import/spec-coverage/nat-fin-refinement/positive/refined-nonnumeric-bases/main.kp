@@ -1,0 +1,23 @@
+-- Spec 16.1.9 + 15.8.1 (exact closed-literal normalization): refinement
+-- bases and predicates beyond numbers. The True-subtype of Bool, a String
+-- bounded by its closed length, and a List bounded by its closed length all
+-- discharge by closed computation, not by range machinery.
+type TrueBool : Type =
+    Refined Bool (\value -> value = True)
+
+type ShortString : Type =
+    Refined String (\value -> (stringLength value <= 5) = True)
+
+type ShortList : Type =
+    Refined (List Nat) (\value -> (listLength value <= 3) = True)
+
+yes : TrueBool
+let yes = True
+
+abc : ShortString
+let abc = "abc"
+
+pair : ShortList
+let pair = [1, 2]
+
+--! assertNoErrors

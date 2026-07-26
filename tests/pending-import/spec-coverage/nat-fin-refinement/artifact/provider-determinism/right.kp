@@ -1,0 +1,13 @@
+import std.string
+
+public data ProviderCarrier : Type =
+    ProviderCarrier
+
+public stable :
+    (m : Nat) ->
+    (n : Nat) ->
+    natAdd m n = natAdd n m
+
+-- summon takes its type argument explicitly (Spec 16.3.3.1).
+let stable m n =
+    (summon (CommutativeAdditiveMonoid Nat)).addCommutative m n

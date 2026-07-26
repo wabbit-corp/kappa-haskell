@@ -5,10 +5,10 @@ module main
 rebox : forall (a : Type). a -> a
 let rebox x =
     block
-        type Box = (value : a)
+        type Box = (value : a,)
 
         pack : a -> Box
-        let pack y = (value = y)
+        let pack y = (value = y,)
 
         unpack : Box -> a
         let unpack box = box.value

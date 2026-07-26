@@ -1,0 +1,23 @@
+-- A generated declaration constraint must be published through every retained
+-- caller exactly once.  Re-entering the publication transaction used to add a
+-- second erased proof argument at each transitive hop.
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+--! assertEval value 1
+
+module main
+
+liftCode.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let liftCode A = A
+
+type Mid.{u, v} (ordinary 0 A : Type u) : Type v =
+    liftCode.{u, v} A
+
+type Top.{u, v} (ordinary 0 A : Type u) : Type v =
+    Mid.{u, v} A
+
+value : Top.{0, 0} Int
+let value = 1

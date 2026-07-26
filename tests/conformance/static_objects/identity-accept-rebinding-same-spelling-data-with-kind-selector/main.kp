@@ -3,7 +3,7 @@
 data Cell (a : Type) : Type =
     Cell (value : a)
 
-F : Type -> Type
+F : (parametric 0 A : Type) -> Type
 let F = type Cell
 
 ok : F Int

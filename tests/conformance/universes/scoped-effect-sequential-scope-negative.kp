@@ -1,0 +1,14 @@
+module main
+
+bad : Unit
+let bad =
+    block
+        let chosen = Local.inspect
+
+        scoped effect Local =
+            inspect : (parametric 0 A : Type) -> A -> A
+
+        ()
+
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED

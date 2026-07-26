@@ -1,0 +1,59 @@
+data Idx (n : Nat) : Type =
+    Idx
+
+-- Spec 15.8.4: division and modulo by positive literals and congruence
+-- classes modulo positive literals are required Presburger domains. The
+-- open index (4*n + 6) % 2 is congruent to 0 for every n, so the
+-- transport to Idx 0 is solver-proved; the checked-mod side condition
+-- (2 /= zero) = True closes by literal computation (Spec 16.3.3 step 3).
+evenResidue :
+    (n : Nat) ->
+    Idx ((natAdd (natMultiply 4 n) 6) % 2) ->
+    Idx 0
+
+let evenResidue n value =
+    value
+
+-- Division by the positive literal 2 halves the even linear form.
+halved :
+    (n : Nat) ->
+    Idx ((natAdd (natMultiply 4 n) 6) / 2) ->
+    Idx (natAdd (natMultiply 2 n) 3)
+
+let halved n value =
+    value
+
+-- Congruence entailment from a lexical assumption: n congruent to 1
+-- modulo 3 entails n + 2 congruent to 0 modulo 3.
+requiresDivisible :
+    (n : Nat) ->
+    (@0 divisible : (n % 3) = 0) ->
+    Nat
+
+let requiresDivisible n @divisible =
+    n
+
+shiftedResidue :
+    (n : Nat) ->
+    (@0 residue : (n % 3) = 1) ->
+    Nat
+
+let shiftedResidue n @residue =
+    requiresDivisible (natAdd n 2)
+
+-- Closed checked division and modulo remain exact.
+closedQuotient :
+    Nat
+
+let closedQuotient =
+    14 / 4
+
+closedResidue :
+    Nat
+
+let closedResidue =
+    14 % 4
+
+--! assertNoErrors
+--! assertEval closedQuotient 3
+--! assertEval closedResidue 2

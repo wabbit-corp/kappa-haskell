@@ -1,0 +1,12 @@
+module main
+
+import std.typelevel as TL
+
+readZero : moduleSig TL -> TypeLevel
+let readZero m = m.typeLevelZero
+
+value : TypeLevel
+let value = readZero TL
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+type Sig : Type =
+    (A : Type, value : A)
+
+copy :
+    Sig -> Sig
+
+let copy s =
+    match s
+    case (A = A, value = value) ->
+        (A = A, value = value)

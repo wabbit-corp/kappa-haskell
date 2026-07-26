@@ -1,0 +1,20 @@
+module main
+
+let inline (m : Option Int) : Int =
+    match m
+    case Some x -> x
+    case None -> 0
+
+separate : Option Int -> Int
+let separate m =
+    match m
+    case Some x -> x
+    case None -> 0
+
+--! mode check
+--! assertType inline (ordinary m : Option Int) -> Int
+--! assertType inline (ordinary _ : Option Int) -> Int
+--! assertType inline Option Int -> Int
+--! assertType separate (ordinary m : Option Int) -> Int
+--! assertType separate (ordinary _ : Option Int) -> Int
+--! assertType separate Option Int -> Int

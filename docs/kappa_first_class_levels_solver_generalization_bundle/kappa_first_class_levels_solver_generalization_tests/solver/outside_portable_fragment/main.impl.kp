@@ -1,0 +1,4 @@
+opaque let f x = x
+opaque let p = typeLevelZero
+opaque let q = typeLevelOne
+opaque let r = typeLevelOmega

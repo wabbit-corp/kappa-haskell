@@ -1,0 +1,12 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+id :
+    (A : Type) ->
+    A -> A
+
+let id A x =
+    x

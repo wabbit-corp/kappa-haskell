@@ -29,8 +29,15 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 - [`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md) — value-representation specialization (immediate tagging + worker/wrapper).
 - [`SPECIALIZATION-SCOPING.md`](docs/SPECIALIZATION-SCOPING.md) — scoping of a monomorphization/specialization pass; **verdict: not worth it** (the static niche needs whole-program mono, which §8.3 separate-compilation forbids; the already-shipped uniform wins + Perceus RC are the better levers).
 - [`UNIVERSES-PLAN.md`](docs/UNIVERSES-PLAN.md) — implementation plan for the §11.1/§11.3/§10.4.1
-  universe redesign (`TypeLevel` levels incl. `ω`, ordering solver, formation ceilings,
-  constructor universe-size rule, parametric type witnesses); closes KNOWN_SPEC_ISSUES §16/§17.
+  universe redesign (`TypeLevel` algebra incl. `ω`, stable first-class level terms, explicit/
+  inferred universe schemas, portable solver outcomes, rigid declaration generalization,
+  parametric witness packages, recursive schemas, certified nominal-family variance, explicit
+  `schemaLift`, arithmetic certificates, and versioned KCoreText); closes KNOWN_SPEC_ISSUES
+  §16/§17.
+- [`NAT-FIN-REFINEMENT-PLAN.md`](docs/NAT-FIN-REFINEMENT-PLAN.md) — staged implementation
+  plan for logical `Nat`, checked no-confusion/derivation, proof-producing value arithmetic,
+  `Fin`, `Refined`, symbolic cardinality, replayable representation certificates, and required
+  backend representation profiles.
 - [`CPS-DESIGN.md`](runtime/docs/CPS-DESIGN.md) — the do-kernel CPS / continuation rewrite (Stages 0–5, R1–R15).
 - [`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md) — the ADD/DERIVE/SKIP analysis of missing concurrency primitives.
 - [`COVERAGE.md`](runtime/docs/COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
@@ -380,9 +387,12 @@ change.
       Soundness hardened across 3 adversarial sweeps — a rigid-index hole, a
       pre-existing existential-index hole, and a de Bruijn miscompile (all caught +
       fixed: `a7fa3b1`, `60b81bd`, `aa5af7c`; conformance 1738→1755). It generalizes
-      `scrutineeEmpty` (`Check.hs:8276`) into the
-      terminating structural `InhabitanceSummary = Empty | Subsingleton |
-      Contractible | Finite n | Unknown`, keyed by `InhabitancePurpose` (Stage 1
+      `scrutineeEmpty` (`Check.hs:8276`) into a terminating structural
+      cardinality interval `InhabitanceSummary { minCount, maxCount }`, with a
+      natural lower bound and a finite-or-unbounded upper bound. The familiar
+      `Empty`/`Subsingleton`/`Contractible`/`Finite n`/`Unknown` spellings are
+      canonical exact/range patterns over that representation, not a closed
+      five-constructor lattice. The query is keyed by `InhabitancePurpose` (Stage 1
       uses only SourceReachability; Stage 4 uses RuntimeShape — they MUST NOT
       cross). Closes the SPEC_COMPLIANCE §30.2.7 gap + unblocks `case
       impossible`/§17.1.4. **Reference:** `../datatron/app-type-counting` (+ the
@@ -785,114 +795,270 @@ nor a coercion the `CRecord`/`CProj` nodes lack (unlike the deferred niche). Res
 
 ---
 
-## Track: Universes / `TypeLevel` / parametric witnesses ([`UNIVERSES-PLAN.md`](docs/UNIVERSES-PLAN.md))
+## Track: Universes / observation modes / `TypeLevel` / KCoreText ([`UNIVERSES-PLAN.md`](docs/UNIVERSES-PLAN.md))
 
-The §11.1/§11.3/§10.4.1 redesign. **Spec side DONE** (`9a29e59a`..`39207986`, plus the current
-operation-identity revision), and the proof-bounded pending suite was reconciled in
-`7965dfd5`: 28 universe fixtures, 14 pending parametric-witness fixtures, and 8 active
-acceptance fixtures. Source level operations now resolve through ordinary prelude traits and
-compiler-owned `TypeLevel` instances before canonicalizing to KCore intrinsic heads.
-**Compiler NOT STARTED**:
-`CSort`/`VSort` still carry `Int`, cumulativity is a direct integer comparison, data results
-are hardwired to `Type0`, `TypeLevel` and universe diagnostics do not exist, and the
-bare-`Type` alias-kind skip at `Check.hs:16417` makes several active tests vacuously green.
-This track closes confirmed-high KNOWN_SPEC_ISSUES **§16** and **§17**.
+**First-class-level and solver-generalization design applied 2026-07-21.** The current
+`docs/Spec.md` retains independent observation/formation modes, floating bare `Type`, explicit
+global/local universe schemas, unbounded parametric witness packages, natural-sum `TypeLevel`,
+finite-origin KCore observation checking, certified nominal-family variance, explicit
+`schemaLift`, and KCoreText verification. It now additionally admits every stable total
+first-class level term through canonical neutral identities; separates constructor NF, exact
+rigid entailment, and portable metavariable inference; represents declaration constraints as
+ordinary erased proof binders; requires rigid declaration-boundary generalization; permits
+same-or-lower recursive schema calls; and versions complete arithmetic replay.
 
-Every sub-stage is independently reviewable and keeps active conformance green. Existing
-programs must produce byte-identical native output because levels and witnesses are
-compile-time-only. The detailed file ownership, fixtures, risks, and solver invariants live in
-`docs/UNIVERSES-PLAN.md`.
+The working tree contains complete U-E and U-F support: global/local
+schemas and SCC inference, natural-sum levels, witness-package sealing, finite observation
+dependencies, structural level certificates, nominal role inference and closures,
+`NominalCumulativitySummary`, explicit `CSchemaLift`, schema certificates, and KCoreText support.
+The 47 ordinary/parametric/KCoreText suites, 71 package/schema suites, 17 strengthening suites,
+and all 42 variance suites are active; `scripts/validate_universe_contract.py` reports a clean
+`47 + 71 + 17 pre-variance, 34 current variance, 8 gated future` ledger. U-E and U-F therefore
+have clean focused owner gates. The full conformance/unit gate is also clean at 3,055 passed,
+zero failed, and eight explicitly unsupported future variance capabilities (3,063 total).
 
-### U-P — pin the contract
+The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
+positive source, 17 negative source, 13 solver, and 8 KCoreText suites. All 67 are imported and
+active with 4 implementation-strengthening contracts under
+`tests/conformance/spec-coverage/first-class-levels-solver-generalization/`, and
+`scripts/validate_universe_contract.py` reports the full clean ledger (47 + 71 + 17
+pre-variance, 34 current variance, 8 gated future, 67 first-class-level + 4 strengthening). U-G owns neutral
+level terms, the specified solver outcomes, rigid generalization, proof-binder migration,
+recursive schemas, complete arithmetic replay/versioning, schema reification, and ordinary
+`Monotone` evidence — implemented per `docs/UNIVERSES-PLAN.md` (2026-07-21) with owner gates
+green. The 2026-07-24 closeout passed the full validator/conformance, C/LLVM parity, LLVM RC,
+poison RC, TSan RC, and Railyard/Voxelcraft/Delve package gates. A quadratic installed-level
+substitution rewrite was replaced by an indexed dependency graph, reducing the Delve cold
+native build from roughly five minutes to 42.36 seconds while preserving zero Perceus
+findings.
 
-- [ ] **U-P0 — baseline and complete the pending gate.** Record active conformance/native
-      baselines; validate all pending universe/witness files; add missing fixtures for invalid
-      level expressions, first-class `TypeLevel`, inconsistent proof assumptions, explicit
-      comparison proofs, `<=` ceilings, higher-level witness cumulativity/drop, `forall`
-      explicitness, arbitrary/noncommutative ordinal addition, semantic-identity acceptance,
-      shadowed-operation rejection, forbidden user `TypeLevel` instances, negative literals,
-      module boundaries, and malformed KCore. Reconcile the two stale
-      higher-universe wording remnants identified in the plan before encoding them.
+Completed U-P through U-D detail remains trimmed. Existing programs without runtime
+`TypeLevel` observations retain the native-output non-regression requirement. Detailed file
+ownership, gates, dependencies, risks, and spec anchors live in `docs/UNIVERSES-PLAN.md`.
 
-### U-A — level substrate and solver
+### U-E — migrate to observation modes and KCoreText
 
-- [ ] **U-A0 — structured `Level`.** Replace `Int` in `CSort`/`VSort` with normalized
-      intrinsic `zero`/`omega`/`succ`/ordered-`add`/`max`/rigid/meta expressions; preserve
-      noncommutative ordinal addition; migrate Core equality, substitution, formation, and
-      rendering.
-- [ ] **U-A1 — constraints, metas, and complete ordering.** Add originated `≤` constraints,
-      level-meta solving, occurs/self-containment checks, scoped-assumption support, and a
-      documented complete decision procedure for the addition/max ordinal fragment. Pin
-      `1 + ω = ω` versus `ω + 1 > ω`; property-test open/closed semantics and constraint-order
-      independence; reconcile old generic-error pins.
-- [ ] **U-A2 — first-class `TypeLevel` and surface forms.** Add the builtin and ordinary
-      compile-time term behavior; add `Successor`/`Max`; provide compiler-owned
-      `Eq`/`Ord`/`Zero`/`One`/`FromInteger`/`Successor`/`Add`/`Max TypeLevel`; canonicalize
-      `ω`, `succ`, arbitrary `+`, `max`, and comparisons by resolved declaration/evidence
-      identity only; reject user instances, negative literals, shadowed lookalikes, and
-      noncanonical `Type (f u)`.
+- [x] **U-E0 — re-gate the active revised contract.** The 47 + 71 imported leaves and 17
+      strengthening suites are active and pass `scripts/validate_universe_contract.py`.
+      Record a clean build/full-suite result and verify that no expectation was weakened during
+      promotion.
+- [x] **U-E1 — separate observation from formation.** Keep explicit mode plumbing, allow
+      parametric observation over every well-formed domain and borrowed access, delete
+      `E_PARAMETRIC_BINDER_DOMAIN`, preserve parametric-kind defaults, add a separate Pi/Sigma
+      formation judgment, and share grouped annotations/metas.
+- [x] **U-E2 — implement the commutative `TypeLevel` algebra.** Replace ordinal addition in
+      `Level`, solver formulas, evaluator, runtime, C, LLVM, and tests with componentwise natural
+      sum; provide opaque source bodies, four checked algebraic instances, and required laws.
+- [x] **U-E3 — add explicit schemas and principal inference.** Parse/retain `.{u,v}` on every
+      semantic declaration/reference form; enforce schema arity/scope/completeness; classify
+      metas as generalizable or minimizable; compute one principal least solution per top-level
+      or local SCC; serialize local/global telescopes and constraints.
+- [x] **U-E4 — implement witness packages and standard schemas.** Accept unbounded parametric
+      witness packages while rejecting ordinary codes/payloads; preserve projection mode;
+      replace `TypeBelow`/`TypeAtMost` with schemas; implement schema-based equality/Dec/
+      eliminators with parametric endpoints; complete data/constructor/grouped-binder grammar.
+- [x] **U-E5 — implement the KCore dependency calculus.** Replace the current single-mode
+      approximation with finite parametric-origin sets and the normative application, let,
+      substitution, construction/sealing, projection, case, conversion, and reduction rules.
+- [x] **U-E6 — make assumptions and level-lift evidence replayable.** Reject recognized inconsistent
+      comparisons deterministically; require each lift to cite a scoped erased proof binder or
+      independently verified level certificate; substitute and recheck evidence with levels.
+- [x] **U-E7 — complete pre-variance KCoreText.** Remove free universe declarations; use instantiated
+      `globalUse` everywhere; add local schemas/constraints and explicit letrec bodies; type
+      generic payload values; declare extensions; parse/print/verify level certificates; apply
+      canonical SCC/stable-ID/certificate ordering.
+      **Open hardening follow-up (2026-07-26):** Core `CMatch` records the
+      scrutinee type but not the checked result type. A dependent nominal-field
+      type can therefore contain a valid constructor-projection match in a
+      context where KCoreText cannot recover its result contract. Add explicit
+      result metadata to typed Core, preserve it through every rewrite and
+      interface, and restore a generated-KCore round-trip gate for
+      `erased-named-field-projection-positive.kp`; do not infer it from source
+      names or weaken the valid source fixture.
+- [x] **U-E8 — migrate artifacts, prelude, diagnostics, and tests.** Round-trip schemas,
+      constraints, modes, dependency summaries, and verified certificate identities through
+      interfaces/hashes/stage dumps; remove stale diagnostics/declarations; promote passing
+      suites with a replacement ledger for every changed historical expectation.
+- [x] **U-E9 — adversarial audit and closeout.** Require each Hurkens/Girard attempt to fail at
+      parametric promotion or ordinary universe self-containment; audit all sinks, sealing
+      boundaries, generated helpers, instantiations, certificates, generic nodes, interfaces,
+      and lowering; run validator, unit/property, full conformance, KCoreText, interpreter,
+      C/LLVM native, sanitizer, package, and performance gates.
 
-**U-A exit:** solver properties green, self-containment and level-expression diagnostics
-correct, active conformance green, native output byte-identical.
+**U-E exit:** no pre-variance universe-design suite remains pending; no compiler path derives observation
+from quantity, treats observation as formation, computes ordinal `TypeLevel` addition, accepts
+unverified lift evidence, or serializes a free KCore universe declaration; KCoreText round-trips
+verified KCore and all intended universe soundness barriers reject.
 
-### U-B — formation, ceilings, and constructor size
+### U-F — certified nominal-family universe variance
 
-- [ ] **U-B0 — erased level assumptions.** Recognize `<`/`<=`, explicit `= True`, and
-      transparent `LevelLt`/`LevelLe` proof binders only through compiler-owned
-      `Ord TypeLevel` evidence; scope assumptions lexically and reject or ignore inconsistent
-      assumption sets rather than deriving self-containment.
-- [ ] **U-B1 — ceiling-based dependent formation.** Apply an outer, binder-independent
-      ceiling to Pi/Sigma/record/tuple/exists/package telescopes; infer a least expressible
-      ceiling where allowed; emit `E_UNIVERSE_UNBOUNDED_TELESCOPE` when none exists.
-- [ ] **U-B2 — parametric no-bump.** Make exact `Q0` binders/fields annotated `Type ρ`
-      contribute no `succ ρ`; keep later value fields mentioning the witness at level `ρ`.
-- [ ] **U-B3 — enforce declared classifiers.** Remove the bare-`Type` alias-kind skip; make
-      bare `Type` exactly `Type0`; remove hidden bare-`Type` universe metas; reconcile active
-      old-semantics fixtures and prove the parametric acceptance suite is non-vacuous.
-- [ ] **U-B4 — data universes and §10.4.1.** Elaborate declared `data ... : Type ρ`; check every
-      constructor-local annotation under header/earlier proof assumptions; exempt only the
-      parametric binder itself; emit `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE` with full payload.
+- [x] **U-F0 — re-gate the active 42-suite variance contract.** Preserve the exact 24 accepts,
+      18 rejects, direct `.kcore` fixtures, and manifest already active under
+      `tests/conformance/spec-coverage/universe-variance/`. Keep 34 current-feature leaves
+      mandatory and 8 future HIIT/HIRT/QIT/QIIT leaves honestly capability-gated.
+- [x] **U-F1 — re-gate role syntax, metadata, rendering, and diagnostics.** Parse contextual
+      `invariant`/`covariant`/`irrelevant` schema roles, preserve explicit-vs-inferred status,
+      reject roles on non-nominal declarations, add the four portable aliases and three
+      diagnostic families, and show effective roles in verbose tooling output.
+- [x] **U-F2 — re-gate nominal signature closures and inferred roles.** Normalize complete ordinary-
+      data signature closures after principal inference/size/positivity, then run the joint
+      greatest fixed point from irrelevant downward. Keep roles independent from positivity,
+      observation, quantity, formation, and erasure; force invariant for runtime transforms,
+      function domains, coupled parameters, and unsupported operations/clauses.
+- [x] **U-F3 — re-gate explicit saturated KCore `schemaLift`.** Relate only fully saturated
+      applications of the same family, recheck source/target constraints, align identical term
+      arguments left-to-right, carry covariant evidence, and reject downcasts, invariant/family/
+      argument mismatches, partial heads, and runtime mappings. Do not expand definitional
+      equality or instance-head matching.
+- [x] **U-F4 — re-gate independently verified action certificates.** Version and hash the
+      normalized closure; certify constructor/eliminator/computation-rule action, identity,
+      composition, observation/quantity preservation, and representation identity. Distinguish
+      forged/stale certificates from invalid uses of valid certificates.
+- [x] **U-F5 — re-gate variance KCoreText.** Give nominal data declarations role telescopes and mandatory
+      certificate references; add `schema-certificate` declarations and `schema-lift` terms;
+      print every role/evidence/aligned target argument; canonicalize lift composition; verify
+      all identities, hashes, clauses, saturation, and alignment at checkpoint loading.
+- [x] **U-F6 — re-gate interfaces, opacity, identity, and trait coherence.** Serialize
+      `NominalCumulativitySummary`; include roles/certificates in semantic hashes and query keys;
+      permit opaque imported lifts only through verified summaries; degrade missing support to
+      invariant; keep exact schema instantiations for instance selection.
+- [x] **U-F7 — re-gate standard and generated nominal families.** Publish equality as
+      irrelevant and `TypeBelow`/`TypeAtMost` as covariant; certify trait evidence, GADT family
+      argument alignment, constructors, patterns, projections, recursors, and iota/case
+      coherence; eta-expand partial source forms only to fully saturated erased lifts.
+- [x] **U-F8 — re-gate the future boundary, metatheory, and closeout.** Keep future nominal-extension
+      capabilities false until complete path/equation/recursive-operation naturality checkers
+      exist. Prove/replay reflexivity, transitivity, substitution, subject reduction,
+      identity/composition, opacity, and erasure; promote all 34 current leaves and run the full
+      validator/unit/conformance/interface/KCoreText/interpreter/native/sanitizer/package/perf
+      gate.
 
-**U-B exit:** all bounded/unbounded and constructor-size pending fixtures owned by B are active;
-KNOWN_SPEC_ISSUES §16/§17 repros reject; full active suite and native differential green.
+**U-F exit:** all current nominal cross-instance uses are explicit verified `schemaLift` nodes;
+no role changes judgmental equality, family arguments, instance overlap, observation, quantity,
+or runtime representation; all 34 current variance leaves are active; all 8 future leaves are
+either mandatory under an honestly implemented capability or honestly skipped.
 
-### U-C — parametric witness capability
+### U-G — first-class levels, solver generalization, and recursive schemas
 
-- [ ] **U-C0 — one capability model.** Preserve witness level, capability, and origin across
-      contexts, aliases, fields, constructors, patterns, generated projections, KCore, and
-      typed module artifacts; round-trip the same judgment across a module boundary.
-- [ ] **U-C1 — promotion enforcement.** Permit type-position use, compatible `0 Type κ`
-      application, and parametric repackaging; reject every ordinary type-code sink including
-      results, ordinary binders/fields, projection/pattern escape, static facets, and
-      reflection with `E_PARAMETRIC_TYPE_PROMOTION`.
-- [ ] **U-C2 — generalization and `forall`.** Default inferred type variables and unannotated
-      declaration parameters to parametric binders when their uses permit it; implement the
-      normative explicit `(0 a : Type)` vs implicit `(@0 a : S)` `forall` asymmetry; reconcile
-      polymorphic call sites in the same commit.
-- [ ] **U-C3 — traits, evidence, boxes, and reflection.** Keep witnesses parametric through
-      trait goals and stored polymorphic functions; allow representation only through ordinary
-      declared evidence; reject associated-member promotion.
-- [ ] **U-C4 — KCore and erasure verification.** Fail closed on witness-to-type-code use in
-      KCore/generated helpers/interfaces; distinguish erased ordinary type codes, parametric
-      witnesses, and proof/trait evidence; prove none survives as a KBackendIR runtime operand.
+All U-G stages and the combined U-E/U-F/U-G repository-wide closeout are green (see
+`docs/UNIVERSES-PLAN.md`, 2026-07-24).
 
-**U-C exit:** all parametric pending fixtures active, malformed-KCore injection rejected,
-module round trip stable, active suite and native differential green.
+- [x] **U-G0 — 67-suite contract ledger.** The exact bundle tree is
+      active under `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`
+      with 47 accepts/20 rejects and all source/solver/KCoreText category metadata preserved;
+      `validate_universe_contract.py` owns every path with no capability skips and
+      machine-checks the exact 67-base + 4-strengthening provenance partition against the
+      current `docs/Spec.md`.
+- [x] **U-G1 — admit stable total levels and canonical neutral identities.** Check level-term
+      typing, totality, lifetime stability, scope, expression lifting, serialization, and rigid
+      meta freedom before atomization; decompose only standard operations and preserve opaque
+      applications, projections, and immutable snapshots as alpha-stable neutral atoms.
+- [x] **U-G2 — separate constructor NF, rigid entailment, and portable inference.** Keep AC/ACI
+      normalization syntactic, implement exact paired QF Presburger entailment, implement only
+      the specified selected-meta assignment fragment, return all five portable outcomes with
+      checked witnesses, and diagnose out-of-fragment inference locally. Selected assignment
+      DAGs remain compact until a bounded materialization boundary; over-budget inference or
+      entailment returns `IndeterminateResourceLimit` and fails closed, with a regression that
+      prevents repeated-meta DAGs from expanding exponentially.
+- [x] **U-G3 — rigidly recheck generalized declarations and migrate constraints.** Generalize
+      only complete declaration/SCC boundaries, replace candidates with parametric binders,
+      recheck all user/generated terms and observation sinks, reject parametric escape, and
+      replace authoritative side lists/indexes with ordinary implicit erased proof binders plus
+      derived summaries.
+- [x] **U-G4 — complete and version KCoreText arithmetic replay.** Add arithmetic/max-least
+      proof forms, canonical irredundant assumption dependencies, proof-irrelevant lift identity,
+      and independent algebra/normalizer/entailment/inference/certificate version fields to
+      KCoreText, interfaces, caches, and semantic hashes.
+- [x] **U-G5 — implement same-or-lower recursive schemas.** Allow omitted identity calls,
+      require explicit complete non-identity instantiations, reject upward/incomparable and
+      implicit non-identity calls with the specified diagnostics, and feed only proved strict
+      schema decreases to termination.
+- [x] **U-G6 — bound expected-type schema transformations.** Keep direct fully saturated
+      `schemaLift` insertion from solving metas or searching intermediates; add expected-type
+      schema eta-reification without inventing explicit term arguments; require ordinary
+      `PreservesParametricForall` evidence for quantifier interchange.
+- [x] **U-G7 — make nominal monotonicity ordinary frozen evidence.** Bootstrap
+      `std.typelevel.Monotone`, standard partial-operation instances, and optional separate
+      `OrderEmbedding`; select local/global evidence before role inference, record it in the
+      closure, reject cycles, and never scan arbitrary theorem declarations.
+- [x] **U-G8 — artifacts, harness, metatheory, and closeout.** Add the four aliases, three
+      families, and twelve Appendix T assertions; serialize neutral terms, proof summaries,
+      recursive edges, selected evidence, and versions; promote all 67 bundle leaves plus 4
+      strengthening leaves at owner gates;
+      then run the combined U-E/U-F/U-G unit, conformance, interface/KCoreText, interpreter,
+      C/LLVM, sanitizer, package, and performance gate.
 
-### U-D — prelude and closeout
+**U-G exit:** every stable total level term has a deterministic serialized identity; rigid
+entailment and portable inference remain distinct replayable contracts; constraints have one
+proof-binder authority; recursive schemas, reification, and monotonicity evidence are explicit;
+all 67 bundle suites plus 4 strengthening suites are active; and the combined universe
+regression gate is clean.
 
-- [ ] **U-D0 — prelude/std re-headers.** Convert ordinary polymorphic declarations and builtin
-      contracts to `(0 t : Type)` without changing evidence or runtime erasure shapes.
-- [ ] **U-D1 — bounded packaging.** Add `TypeBelow`, `TypeAtMost`, and transparent
-      `LevelLe`/`LevelLt`; discharge their bounds through the universe solver, not trait search.
-- [ ] **U-D2 — defaulting, rendering, diagnostics, and artifacts.** Implement §11.1.3
-      order-independent least-level/default/generalize behavior; preserve normalized levels
-      and capabilities in typed artifacts; render predicative classifiers; complete normative
-      diagnostic payloads and two-module round-trip tests.
-- [ ] **U-D3 — promote and close.** Move every universe/witness fixture from `pending-import`
-      to conformance, remove stale STATUS markers, update known issues/counts/docs, and run the
-      full conformance, solver-property, validator, KCore, interface, and native differential
-      gates. Zero universe/witness pending fixtures is the completion criterion.
+## Track: Logical Nat / Fin / refinements / value arithmetic ([`NAT-FIN-REFINEMENT-PLAN.md`](docs/NAT-FIN-REFINEMENT-PLAN.md))
+
+**Specification applied and implementation contract staged 2026-07-25.**
+`docs/Spec.md` now defines canonical logical `Nat`, generated no-confusion, checked
+`derive IsSet` / `derive Eq`, the corrected semiring hierarchy, proof-producing
+value-arithmetic providers and certificates, `Fin`, `Refined`, ordinary `Contains`
+range membership, symbolic cardinality, representation certificates, and tiered
+backend obligations.
+
+The repository already has exact `Integer` evaluation and a GMP-backed C/LLVM
+fallback, exact finite bounds in `Inhabitance.hs`, a shared representation selector,
+and versioned universe evidence patterns to reuse. It does not yet have the required
+logical `Nat` constructors, derivation, value-level solver, refinement surface,
+certificate artifacts, or verified backend classes. The exact 83-suite contract (22 originally derived, 49 from the catalog-gap and
+corpus-reconciliation pass, 12 non-range refinement suites) is
+pending under `tests/pending-import/spec-coverage/nat-fin-refinement/`; the 2026-07-26 baseline is
+8 narrow/pre-existing passes, 55 failures, 0 unsupported suites, and 20 harness errors
+(the harness errors are the not-yet-implemented directives/capabilities NFR-0 converts to Unsupported).
+`scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
+capabilities, stage ownership, and T.12 coverage.
+
+- [ ] **NFR-0 - contract and harness observability.** Implement every new Appendix T
+      arithmetic/inhabitance/representation directive through production queries,
+      advertise only complete capabilities, convert certificate mutation prose
+      into executable fixtures, and add KCore/provider comparisons that distinguish
+      inserted transport from conversion and compare actual provider/certificate
+      identity rather than only nominal summaries.
+- [x] **NFR-1 - logical Nat and exact numeric substrate.** Replace the opaque Nat
+      authority with ordinary `Zero`/`Succ` semantics, preserve exact compact
+      evaluator/C/LLVM execution, make narrowing explicit, and keep propositional
+      arithmetic out of conversion. Verify the boundary with an untransported
+      KCore rejection, not by rejecting source that may insert `subst`.
+- [ ] **NFR-2 - no-confusion and checked derivation.** Generate ordinary verified
+      KCore no-confusion packages, make `Eq` refine `IsSet`, implement checked
+      `derive IsSet` / `derive Eq`, and reject unsupported shapes without UIP/K.
+- [ ] **NFR-3 - algebraic hierarchy and value arithmetic.** Land
+      `AdditivelyNoncommutativeSemiring`, coherent standard evidence, deterministic
+      provider selection, the portable proof solver, automatic explicit transports
+      at expected-type boundaries, compact certificates, and mutation-checked
+      replay. Keep this authority separate from universe-level `TypeLevel`
+      arithmetic.
+- [ ] **NFR-4 - Fin, Refined, subsumption, and ranges.** Add the proof-carrying
+      prelude surface, exactly-once proof synthesis, ownership-preserving
+      construction/projection, and ordinary `contains`; retain rejection of special
+      `in` syntax.
+- [ ] **NFR-5 - analysis and representation evidence.** Extend purpose-keyed
+      inhabitance, add canonical symbolic cardinality, and produce independently
+      checked ordinal, exact-natural, and refinement representation certificates.
+- [ ] **NFR-6 - KCoreText and artifact trust boundary.** Version, serialize, hash,
+      round-trip, and independently verify every certificate before KBackendIR;
+      reject forged, stale, context/provider, proof, erasure, and profile mutations.
+- [ ] **NFR-7 - verified backend profiles.** Require exact non-unary Nat and proof
+      erasure on every runnable backend; add certificate-backed finite-ordinal,
+      packed-field, and unboxed-refinement classes only where advertised; audit
+      dynamic, FFI, bridge, and ABI narrowing.
+- [ ] **NFR-8 - adversarial closeout and promotion.** Promote the exact 83 suites
+      only after every declared outcome and assertion passes, then run full
+      conformance/unit, KCoreText/interface/cache, interpreter/C/LLVM parity,
+      native exactness, RC/poison/TSan, package, and performance gates.
+
+**Ordering:** NFR-0 starts first; the critical implementation path is
+NFR-1 -> NFR-2/NFR-3 -> NFR-4 -> NFR-5 -> NFR-6 -> NFR-7 -> NFR-8.
+Logical source/KCore `Nat` remains authoritative throughout. Compact runtime forms
+are selected only from verified certificates and never feed back into conversion,
+trait search, proof checking, or source reachability.
 
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
@@ -1186,6 +1352,11 @@ two implementations compare on a stable key. Three strategies port from
       crash on any well-formed AST, interp ≡ compiled. Integrates into `cabal test`.
 - [ ] **Roundtrip / idempotence** — `parse ∘ print = id`; `normalize` is a fixpoint.
       Cheap; catches parser/printer + normalization asymmetries.
+- [ ] **Deep-layout parser complexity** — the balanced parenthesis lookahead now avoids the
+      former pure-nesting hang and correctly distinguishes parenthesized quantity binders,
+      including soft-newline forms, but the existing deep-nesting fixture still takes roughly
+      23 seconds and peaks near 780 MiB on the current development machine. Profile and remove
+      the remaining superlinear parser-state/backtracking cost without weakening the fixture.
 
 **Later / research:**
 - [ ] **Mutation testing** — mutate the compiler, confirm a test fails; measures

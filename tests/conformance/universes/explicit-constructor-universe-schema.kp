@@ -1,0 +1,12 @@
+module explicit_constructor_universe_schema
+
+-- A constructor's explicit universe instantiation denotes the enclosing
+-- data declaration's schema. It is not an independent constructor schema.
+data Packed.{u} (parametric 0 A : Type u) : Type u =
+    Packed.{u} (value : A)
+
+packed : Packed.{0} Int
+let packed = Packed.{0} 5
+
+--! mode check
+--! assertNoErrors

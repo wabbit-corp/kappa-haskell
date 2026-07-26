@@ -1,8 +1,8 @@
 module main
 
-bumpPure : (inout v : Int) -> (1 v : Int)
-let bumpPure (inout v : Int) : (1 v : Int) =
-    (v = addInt v 1)
+bumpPure : (inout v : Int) -> (1 v : Int,)
+let bumpPure (inout v : Int) : (1 v : Int,) =
+    (v = addInt v 1,)
 
 main : UIO Int
 let main = do

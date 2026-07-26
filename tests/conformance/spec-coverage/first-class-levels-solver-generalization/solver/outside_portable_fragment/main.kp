@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelSolveClass [?u] where [f p <= max (?u + q) r] OutsidePortableInferenceFragment
+
+expect term f : TypeLevel -> TypeLevel
+expect term p : TypeLevel
+expect term q : TypeLevel
+expect term r : TypeLevel

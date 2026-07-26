@@ -1,0 +1,21 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  schema-certificate @schema:variance.demo.RuntimeMap#2600 for @variance.demo.RuntimeMap#3600
+    [checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {
+      roles = [covariant];
+      clauseKinds = [sort_declaration, point_constructor];
+      monotoneWitnesses = [];
+    }
+
+  decl-node "certificate-runtime-action" {
+    family = global-ref-value(@variance.demo.RuntimeMap#3600);
+    action = string-value("eta-wrap-function-field");
+  }
+}

@@ -62,9 +62,9 @@ decPartial msg = Left ("E_CONFIG_PARTIAL_APPLICATION", msg)
 asCtor :: EvalCtx -> Value -> Dec (Text, [Value])
 asCtor ctx v = case force ctx v of
   VCtor g args -> Right (gnameText g, args)
-  VLam {} -> decPartial "expected a build value but found a function (a builder applied to too few arguments?) (Spec §35.2.2)"
+  VLamM {} -> decPartial "expected a build value but found a function (a builder applied to too few arguments?) (Spec §35.2.2)"
   VPrim {} -> decFail "config value did not reduce to a build constructor (stuck primitive) (Spec §35.6)"
-  VGlobN g _ -> decFail ("config value did not reduce: '" <> gnameText g <> "' is opaque or unsaturated (Spec §35.6)")
+  VGlobal g _ _ -> decFail ("config value did not reduce: '" <> gnameText g <> "' is opaque or unsaturated (Spec §35.6)")
   _ -> decFail "expected a build constructor (Spec §35.6)"
 
 asStr :: EvalCtx -> Value -> Dec Text

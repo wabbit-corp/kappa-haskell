@@ -1,0 +1,19 @@
+kcore 1;
+module @tests.lifts.same#3000 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.lifts",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom parametric @tests.lifts.A#3001 : Type 0;
+  level-certificate @certificate.tests.zeroToThree#3002 : 0 <= 3 {
+    arithmetic [];
+  }
+  def parametric @tests.lifts.value#3003 : Type 3 {
+    body = lift [0 <= 3 by certificate(@certificate.tests.zeroToThree#3002)] @tests.lifts.A#3001;
+  }
+}

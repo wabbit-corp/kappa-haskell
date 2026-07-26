@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+makeTwo :
+    Monad m => MonadRef m =>
+    m Unit
+let makeTwo = do
+    let makeCell = newRef None
+    let intCell <- makeCell
+    let strCell <- makeCell
+    writeRef intCell (Some 1)
+    writeRef strCell (Some "x")
+    pure Unit

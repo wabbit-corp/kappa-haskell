@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelNormalForm (u + 0) + (v + u) equals u + u + v
+
+expect term u : TypeLevel
+expect term v : TypeLevel

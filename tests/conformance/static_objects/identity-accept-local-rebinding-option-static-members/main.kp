@@ -1,6 +1,6 @@
 @PrivateByDefault module main
 
-F : Type -> Type
+F : (parametric 0 A : Type) -> Type
 let F = Option
 
 noneInt : F Int

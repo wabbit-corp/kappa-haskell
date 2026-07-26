@@ -2,7 +2,7 @@
 
 import std.prelude.(type Option)
 
-type Box a = (value : a)
+type Box a = (value : a,)
 
 let getValue x = x?.value
 

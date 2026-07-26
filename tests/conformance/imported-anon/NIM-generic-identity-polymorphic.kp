@@ -15,10 +15,10 @@
 module test
 
 -- POSITIVE: generic identity function.
-id : forall a. a -> a
+id : forall (a : Type). a -> a
 let id x = x
 
---! assertType id (forall a. a -> a)
+--! assertType id (forall (a : Type). a -> a)
 
 -- POSITIVE: applying identity at multiple types.
 idInt : Int
@@ -35,7 +35,7 @@ let idBool = id True
 --! assertType idBool Bool
 
 -- POSITIVE: const (K combinator) — ignores second argument.
-const : forall a b. a -> b -> a
+const : forall (a b : Type). a -> b -> a
 let const x _ = x
 
 result1 : Int
@@ -45,14 +45,14 @@ result2 : String
 let result2 = const "kept" 99
 
 -- POSITIVE: flip — reverses argument order.
-flip : forall a b c. (a -> b -> c) -> b -> a -> c
+flip : forall (a b c : Type). (a -> b -> c) -> b -> a -> c
 let flip f y x = f x y
 
 flipped : Int
 let flipped = flip const "ignored" 7
 
 -- POSITIVE: compose — function composition.
-compose : forall a b c. (b -> c) -> (a -> b) -> a -> c
+compose : forall (a b c : Type). (b -> c) -> (a -> b) -> a -> c
 let compose g f x = g (f x)
 
 double : Int -> Int
@@ -70,7 +70,7 @@ let result3 = doubleAndAdd 5
 --! assertType result3 Int
 
 -- NEGATIVE: returning wrong type variable — body returns `b` but declared `a`.
-badId : forall a b. a -> b -> a
+badId : forall (a b : Type). a -> b -> a
 let badId x y = y
 
 --! assertDiagnosticFamily error kappa.type.mismatch

@@ -2,12 +2,8 @@
 -- guard proving `x <= y` cannot discharge `x - y` (which needs `y <= x`).
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 badGuard : Nat -> Nat -> Nat
 let badGuard x y =
     match x
-      case _ if leInt (natToInt x) (natToInt y) -> x - y --!! E_UNSOLVED_IMPLICIT
+      case _ if x <= y -> x - y --!! E_UNSOLVED_IMPLICIT
       case _ -> 0

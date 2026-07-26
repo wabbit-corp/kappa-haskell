@@ -1,0 +1,9 @@
+-- §11.1.2.7/§11.1.2.8: the existential of all TypeLevel-indexed types is not
+-- classified by Typeω or any other universe without an independent ceiling.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE
+--! assertDiagnosticFamily error kappa.universe.unbounded-telescope
+
+type AllTypes =
+    exists (u : TypeLevel). Type u

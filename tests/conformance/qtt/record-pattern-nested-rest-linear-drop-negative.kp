@@ -7,7 +7,7 @@ data Token : Type =
     Token
 
 type Inner : Type = (1 tok : Token, tag : Int)
-type Outer : Type = (inner : Inner)
+type Outer : Type = (inner : Inner,)
 
 bad : (1 outer : Outer) -> Int
 let bad (1 outer : Outer) : Int =

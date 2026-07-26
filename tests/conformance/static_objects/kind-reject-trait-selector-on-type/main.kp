@@ -3,5 +3,5 @@
 data Box (a : Type) : Type =
     Box (value : a)
 
-bad : Type -> Type
+bad : (parametric 0 A : Type) -> Type
 let bad = trait Box

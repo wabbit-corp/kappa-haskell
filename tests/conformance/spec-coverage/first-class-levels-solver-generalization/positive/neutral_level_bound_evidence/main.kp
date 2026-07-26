@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+--! allow_unsafe_assert_proof
+
+expect term chooseLevel : Bool -> TypeLevel
+
+expect term chooseLevelBounded :
+    (b : Bool) ->
+    chooseLevel b < omega + 1
+
+bounded :
+    (b : Bool) ->
+    (@0 p : chooseLevel b < omega + 1) ->
+    (A : Type (chooseLevel b)) ->
+    A ->
+    A
+let bounded b p A x = x

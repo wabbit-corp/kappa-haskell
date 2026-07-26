@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+id :
+    (parametric 0 A : Type) ->
+    A ->
+    A
+
+let id A x =
+    x

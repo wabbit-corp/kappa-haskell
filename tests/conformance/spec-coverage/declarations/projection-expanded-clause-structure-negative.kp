@@ -4,7 +4,7 @@ module main
 -- one `place` binder, and each accessor clause kind (get/inout/set/sink)
 -- may appear at most once.
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection twoRoots (place p : Cell) (place q : Cell) : Int = --!! E_PROJECTION_EXPANDED_ACCESSOR_PLACE_BINDER_MISMATCH
     get -> p.value

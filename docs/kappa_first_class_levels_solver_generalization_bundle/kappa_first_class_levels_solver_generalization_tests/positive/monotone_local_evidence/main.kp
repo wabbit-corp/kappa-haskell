@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole LocalLifted 0 covariant
+--! assertSchemaCertificateValid LocalLifted
+--! assertStageDumpRoundTrips KCore
+
+expect term bump : TypeLevel -> TypeLevel
+
+data LocalLifted.{u}
+    (@0 mono : Monotone bump)
+    : Type (succ (bump u)) =
+    LocalLifted (ordinary 0 A : Type (bump u))

@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+type LevelBox =
+    (level : TypeLevel,)
+
+atBox :
+    (box : LevelBox) ->
+    (A : Type box.level) ->
+    A ->
+    A
+let atBox box A x = x

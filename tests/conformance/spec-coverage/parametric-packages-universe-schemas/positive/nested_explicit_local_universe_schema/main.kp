@@ -1,0 +1,14 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+chooseLeft.{u} :
+    (A : Type u) ->
+    A -> A
+
+let chooseLeft.{u} A x =
+    let pairLeft.{v} (B : Type v) (y : B) : A = x
+    let low : A = pairLeft.{0} Int 1
+    pairLeft.{u} A x

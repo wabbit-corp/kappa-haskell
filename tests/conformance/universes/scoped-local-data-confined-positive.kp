@@ -1,0 +1,13 @@
+module main
+
+confined : Int
+let confined =
+    block
+        scoped data Token : Type =
+            Token
+
+        let consume : Token -> Int = \_ -> 7
+        consume Token
+
+--! mode check
+--! assertNoErrors

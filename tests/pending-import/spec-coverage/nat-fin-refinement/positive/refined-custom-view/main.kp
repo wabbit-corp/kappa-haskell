@@ -1,0 +1,31 @@
+-- Spec 16.1.9: v1 recognizes REFINEMENT VIEWS only through coherent
+-- RefinementView evidence, never structural resemblance. A hand-rolled
+-- nominal wrapper with a handwritten instance participates in base->
+-- refinement insertion and refinement->base projection exactly like the
+-- standard Refined.
+data AtMost7 : Type =
+    MkAtMost7
+        (value : Nat)
+        (@0 isP : IsProp ((value <= 7) = True))
+        (@0 prf : (value <= 7) = True)
+
+instance RefinementView AtMost7 =
+    let Base = Nat
+    let Predicate = \value -> (value <= 7) = True
+    let refinementValue x = x.value
+    let refinementPredicateIsProp x = x.isP
+    let refinementProof x = x.prf
+    let refine x @predicateIsProp @proof = MkAtMost7 x @predicateIsProp @proof
+    let valueAfterRefine x @predicateIsProp @proof = refl
+    let refineAfterValue x =
+        match x
+        case MkAtMost7 v @ip @p -> refl
+
+three : AtMost7
+let three = 3
+
+back : Nat
+let back = three
+
+--! assertNoErrors
+--! assertEval back 3

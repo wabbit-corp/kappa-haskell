@@ -16,9 +16,9 @@ import std.deriving.shape.*
 fragTag : SyntaxFragment -> String
 let fragTag frag =
     match frag
-    case Lit s -> stringAppend "L<" (stringAppend s ">")
-    case Interp e -> "I"
-    case InterpFmt e fmt -> stringAppend "F<" (stringAppend fmt ">")
+    case SyntaxFragment.Lit s -> stringAppend "L<" (stringAppend s ">")
+    case SyntaxFragment.Interp e -> "I"
+    case SyntaxFragment.InterpFmt e fmt -> stringAppend "F<" (stringAppend fmt ">")
 
 summarize : List SyntaxFragment -> String
 let summarize frags =

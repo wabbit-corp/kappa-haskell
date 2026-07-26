@@ -1,0 +1,16 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+nested :
+    (A : Type) ->
+    A -> A
+
+let nested A x =
+    let outer B y =
+        let keepLeft.{v} (C : Type v) (z : C) : B = y
+        keepLeft.{1} Type0 Int
+    let low : Bool = outer Bool True
+    outer A x

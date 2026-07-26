@@ -17,7 +17,7 @@ let useLocal (& v : Box) : Int =
 -- `Unit -> Int` (empty capture set) cannot subsume `captures (rho)`.
 badExport : (& v : Box) -> (Unit -> Int)
 let badExport (& v : Box) : (Unit -> Int) =
-    makeGetter v --!! kappa.type.mismatch
+    makeGetter v --!! kappa.capture.mismatch
 
 --! assertErrorCount 1
 -- STATUS(a51e1bf): PASS

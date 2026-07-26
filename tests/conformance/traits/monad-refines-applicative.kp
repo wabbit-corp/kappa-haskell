@@ -7,7 +7,7 @@
 -- from the in-scope `Monad m` evidence.
 module main
 
-wrap : forall (m : Type -> Type). (@_ : Monad m) -> Int -> m Int
+wrap : forall (m : (0 A : Type) -> Type). (@_ : Monad m) -> Int -> m Int
 let wrap n = pureA n
 
 main : UIO Unit

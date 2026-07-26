@@ -1,0 +1,16 @@
+--! assertNoErrors
+--! assertEval result 20
+
+module main
+
+data Box (n : Nat) : Type =
+    MkBox (value : Int)
+
+type Box2 : Type = Box 2
+
+setValue : Box2 -> Box2
+let setValue box = box.{ value = 20 }
+
+result : Int
+let result = match setValue (MkBox 10)
+    case MkBox value -> value

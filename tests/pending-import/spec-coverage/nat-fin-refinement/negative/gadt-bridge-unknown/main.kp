@@ -1,0 +1,39 @@
+-- T.12.2 / Spec 30.2.7 rule 4 + Spec 15.8.4: `natMultiply m n =
+-- natMultiply n m` for neutral m, n is nonlinear, and v1 ships no
+-- commutative-multiplication law bundle (neither Semiring nor Ring may
+-- reorder multiplicative factors). The bridge for MkMulIndexed at the
+-- swapped index is therefore UnknownCompatibility: not compatible, and
+-- crucially NOT a refutation. Unknown never justifies omitting the
+-- constructor branch, so the explicit omission claim `case impossible`
+-- must be rejected; exhaustiveness demands a catch-all or a branch form
+-- that supplies the missing equality evidence.
+data MulIndexed (m : Nat) (n : Nat) (k : Nat) : Type =
+    MkMulIndexed : MulIndexed m n (natMultiply m n)
+
+-- REJECTED: an unsupported bridge stays Unknown, so the remainder is not
+-- provably empty and the omission claim fails.
+unknownBridgeIsNotEmpty :
+    (m : Nat) ->
+    (n : Nat) ->
+    MulIndexed m n (natMultiply n m) ->
+    Nat
+
+let unknownBridgeIsNotEmpty m n value =
+    match value
+    case impossible
+
+-- ACCEPTED control: a catch-all keeps the same match exhaustive without
+-- ever deciding the bridge.
+catchAllStaysExhaustive :
+    (m : Nat) ->
+    (n : Nat) ->
+    MulIndexed m n (natMultiply n m) ->
+    Nat
+
+let catchAllStaysExhaustive m n value =
+    match value
+    case _ ->
+        Nat.Zero
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_INDEXED_IMPOSSIBLE_REACHABLE

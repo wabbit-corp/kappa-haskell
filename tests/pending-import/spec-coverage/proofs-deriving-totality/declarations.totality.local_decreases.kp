@@ -1,11 +1,17 @@
 -- Source issue: Lean4 #860
 -- Spec: §9.3.1 (local signatures), §15.11 (explicit decreases),
---       §15.14 (local recursion).
+--       §15.14 (local recursion), §28.2 (canonical `data Nat`),
+--       §15.8.4 (required portable domains).
 -- Local recursive named definitions inside a `block` expression may carry an
 -- explicit `decreases` clause, exactly as top-level named definitions do.
 -- The clause appears immediately before `=` on the recursive equation (§15.11).
 -- A conforming implementation MUST accept a local recursive function whose
 -- termination is established by an explicit `decreases` measure.
+-- The measure obligations below are REQUIRED §15.8.4 domains, not optional
+-- strengthening: with §28.2's `data Nat = Zero | Succ (pred : Nat)`, a
+-- literal Nat pattern is a constructor pattern, the successor branch
+-- carries the canonical predecessor facts, and "n - 1 < n under 0 < n" is
+-- among the minimum required termination obligations.
 
 module test
 
@@ -25,6 +31,23 @@ let countdown start =
         go start
 
 --! mode check
+--! assertNoErrors
+
+-- Case 1b: the same countdown with explicit constructor patterns. §28.2
+-- ships Nat as an ordinary inductive, so `case 0` above and
+-- `case Nat.Zero` below are the same constructor pattern, and both forms
+-- must yield the §15.8.4 canonical predecessor evidence for the
+-- `decreases` obligation.
+countdownCtor : Nat -> Nat
+let countdownCtor start =
+    block
+        go : Nat -> Nat
+        let go n decreases n =
+            match n
+              case Nat.Zero   -> 0
+              case Nat.Succ p -> 1 + go p
+        go start
+
 --! assertNoErrors
 
 -- Case 2: Mutually recursive local helpers both carrying `decreases` clauses.
@@ -64,5 +87,3 @@ let sumList xs =
         loop xs
 
 --! assertNoErrors
-
--- STATUS(a0497523): FAIL (E_UNSOLVED_IMPLICIT for Nat predecessor evidence)

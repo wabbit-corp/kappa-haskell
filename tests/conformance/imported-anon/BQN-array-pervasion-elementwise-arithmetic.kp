@@ -11,7 +11,7 @@
 
 --! mode check
 
-zipWith : forall a b c. (a -> b -> c) -> List a -> List b -> List c
+zipWith : forall (a b c : Type). (a -> b -> c) -> List a -> List b -> List c
 let zipWith f xs ys =
     match xs
       case Nil       -> Nil
@@ -42,4 +42,4 @@ prodOK : List Integer
 let prodOK = zipWith (*) a4 b4
 
 --! assertNoErrors
---! assertType zipWith (forall a b c. (a -> b -> c) -> List a -> List b -> List c)
+--! assertType zipWith (forall (a b c : Type). (a -> b -> c) -> List a -> List b -> List c)

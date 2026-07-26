@@ -8,13 +8,13 @@ module main
 -- through the instance members (runPure types against Eff only, so IO results
 -- are observed via assertRunStdout).
 
-needFunctor : forall (f : Type -> Type) (a : Type). (@ev : Functor f) -> f a -> Bool
+needFunctor : forall (f : (0 A : Type) -> Type) (a : Type). (@ev : Functor f) -> f a -> Bool
 let needFunctor @ev x = True
 
-needApplicative : forall (f : Type -> Type) (a : Type). (@ev : Applicative f) -> f a -> Bool
+needApplicative : forall (f : (0 A : Type) -> Type) (a : Type). (@ev : Applicative f) -> f a -> Bool
 let needApplicative @ev x = True
 
-needMonad : forall (f : Type -> Type) (a : Type). (@ev : Monad f) -> f a -> Bool
+needMonad : forall (f : (0 A : Type) -> Type) (a : Type). (@ev : Monad f) -> f a -> Bool
 let needMonad @ev x = True
 
 needRangeable : forall (v : Type). (@ev : Rangeable v) -> v -> Bool

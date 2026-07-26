@@ -1,0 +1,15 @@
+kcore 1;
+module @tests.level.sealing#1020 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.level",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  decl-node "declared-sealing-eliminator" {
+    reason = string-value("forbidden");
+  }
+}

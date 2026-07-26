@@ -1,0 +1,9 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+trait BadReflect (0 A : Type) =
+    code : (ordinary 0 value : Type,)
+
+instance BadReflect A =
+    code = (value = A,)

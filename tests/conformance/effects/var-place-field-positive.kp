@@ -1,14 +1,14 @@
 module main
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
-bump : (inout v : Int) -> UIO (1 v : Int)
-let bump (inout v : Int) : UIO (1 v : Int) =
-    pure (v = addInt v 1)
+bump : (inout v : Int) -> UIO (1 v : Int,)
+let bump (inout v : Int) : UIO (1 v : Int,) =
+    pure (v = addInt v 1,)
 
 main : UIO Int
 let main = do
-    var cell = (value = 1)
+    var cell = (value = 1,)
     bump ~cell.value
     pure cell.value
 

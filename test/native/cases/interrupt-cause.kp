@@ -3,11 +3,15 @@
 -- natively requires the runtime-built InterruptCause/InterruptTag to carry their
 -- fixed KCT_ ids (kappart.h) — else the nested match is non-exhaustive. ≡ interp.
 module main
+
+import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
 main : UIO Unit
 let main = do
     let s <- newScope
-    let p <- newPromise
-    let f <- forkIn s (awaitPromiseExit p)
+    let createPromise : UIO (Promise Void Unit) = newPromise
+    let p <- createPromise
+    let wait : UIO (Exit Void Unit) = awaitPromiseExit p
+    let f <- forkIn s wait
     shutdownScope s
     let ex <- await f
     match ex

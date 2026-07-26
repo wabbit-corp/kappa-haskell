@@ -3,7 +3,7 @@ module main
 data Byte : Type =
     Byte
 
-data Array n a : Type =
+data Array (n : Nat) (a : Type) : Type =
     Array
 
 mkBuffer : (len : Nat) -> Array len Byte

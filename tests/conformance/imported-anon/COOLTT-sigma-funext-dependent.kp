@@ -11,54 +11,63 @@
 
 --! mode check
 
+-- Kappa's source `forall` binders are implicit (§11.3), so the universe and
+-- endpoint arguments are supplied with `@` at uses of this local eliminator.
+transport :
+    forall (A : Type) (a b : A).
+    (P : A -> Type) -> a = b -> P a -> P b
+let transport _ refl x = x
+
 -- POSITIVE: non-dependent function extensionality.
-funext : forall {A B : Type} {f g : A -> B} ->
-         (forall (x : A) -> f x = g x) ->
+funext : forall (A B : Type) (f g : A -> B).
+         ((x : A) -> f x = g x) ->
          f = g
 let funext h = ?funextAxiom    --!! kappa.hole.unsolved
 
 -- POSITIVE: dependent function extensionality.
 depFunext :
-    forall {A : Type} {B : A -> Type}
-    {f g : forall (x : A) -> B x} ->
-    (forall (x : A) -> f x = g x) ->
+    forall (A : Type) (B : A -> Type)
+    (f g : (x : A) -> B x).
+    ((x : A) -> f x = g x) ->
     f = g
 let depFunext h = ?depFunextAxiom    --!! kappa.hole.unsolved
 
 -- POSITIVE: pair extensionality (eta for sigma).
 -- Two pairs are equal if their first and second components are equal.
 pairExt :
-    forall {A : Type} {B : A -> Type}
-    (p q : (x : A, B x)) ->
-    (h1 : p.1 = q.1) ->
-    (h2 : transport B h1 p.2 = q.2) ->
+    forall (A : Type) (B : A -> Type).
+    (p q : (fst : A, snd : B this.fst)) ->
+    (h1 : p.fst = q.fst) ->
+    (h2 : transport @A @p.fst @q.fst B h1 p.snd = q.snd) ->
     p = q
 let pairExt _ _ refl refl = refl
 
 -- POSITIVE: `ap` (congruence) for dependent functions.
 apDep :
-    forall {A : Type} {B : A -> Type}
-    (f : forall (x : A) -> B x) {a b : A} (p : a = b) ->
-    transport B p (f a) = f b
+    forall (A : Type) (B : A -> Type) (a b : A).
+    (f : (x : A) -> B x) -> (p : a = b) ->
+    transport @A @a @b B p (f a) = f b
 let apDep _ refl = refl
 
 -- POSITIVE: composition of paths in a family.
 -- transport is functorial: transport (p ∘ q) = transport q ∘ transport p.
 transportComp :
-    forall {A : Type} (P : A -> Type) {a b c : A} (p : a = b) (q : b = c) ->
-    transport P (trans p q) = (\x -> transport P q (transport P p x))
+    forall (A : Type) (a b c : A).
+    (P : A -> Type) -> (p : a = b) -> (q : b = c) ->
+    transport @A @a @c P (trans @A @a @b @c p q) =
+        (\x -> transport @A @b @c P q (transport @A @a @b P p x))
 let transportComp _ refl refl = refl
 
 -- POSITIVE: a higher-order function accepting a dependent path obligation.
 useDepFunext :
-    forall {A : Type} {B : A -> Type}
-    (f g : forall (x : A) -> B x) ->
-    (forall (x : A) -> f x = g x) ->
+    forall (A : Type) (B : A -> Type).
+    (f g : (x : A) -> B x) ->
+    ((x : A) -> f x = g x) ->
     Nat
 let useDepFunext f g h = zero    -- just checking the type is well-formed
 
 -- NEGATIVE: applying funext to something that is not a pointwise equality proof.
-badFunext : forall {A B : Type} {f g : A -> B} ->
+badFunext : forall (A B : Type) (f g : A -> B).
             Nat -> f = g
 let badFunext n = funext n    --!! kappa.type.mismatch
 

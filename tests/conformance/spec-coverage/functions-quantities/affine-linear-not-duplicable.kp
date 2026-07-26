@@ -10,7 +10,7 @@ data Token : Type =
 
 type TwoTok = (x : Token, y : Token)
 
-type Box = (<=1 tok : Token)
+type Box = (<=1 tok : Token,)
 
 -- NEGATIVE: an affine binder supplied to two runtime fields.
 badAffine : (<=1 t : Token) -> TwoTok
@@ -28,7 +28,7 @@ let okRelevant (>=1 n : Int) : Int = n + n
 -- would duplicate the affine field held in the cell.
 badVarRead : UIO Unit
 let badVarRead = do
-    var cell : Box = (tok = Token)
+    var cell : Box = (tok = Token,)
     let copy = cell --!! E_VAR_READ_DUPLICATES_LINEAR_VALUE
     pure ()
 

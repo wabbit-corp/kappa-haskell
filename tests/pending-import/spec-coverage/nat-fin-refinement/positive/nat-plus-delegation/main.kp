@@ -1,0 +1,59 @@
+-- T.12.1 / Spec 28.2 + 15.8.1: the canonical Add Nat instance delegates
+-- to natAdd, and its selected dictionary projection normalizes to the
+-- same semantic operation identity before arithmetic reification.
+-- Operations are recognized by resolved semantic identity, never by
+-- source spelling, so an index written with the overloaded operator
+-- behaves exactly like the natAdd spelling.
+data Boxed (n : Nat) : Type =
+    Boxed
+
+-- Closed literal arithmetic through the overloaded operator folds by
+-- ordinary computation: `2 + 1` and `3` are the same index under
+-- conversion alone.
+closedFold :
+    Boxed (2 + 1) ->
+    Boxed 3
+
+let closedFold value =
+    value
+
+-- Right identity is NOT definitional for neutral n (Spec 28.2), so the
+-- two functions below are accepted only through solver-produced equality
+-- evidence and inserted transport. Accepting BOTH shows the operator
+-- spelling reaches the same natAdd semantic identity as the explicit
+-- spelling: the provider theory sees one operation, not two.
+operatorSpellingTransported :
+    (n : Nat) ->
+    Boxed (n + 0) ->
+    Boxed n
+
+let operatorSpellingTransported n value =
+    value
+
+canonicalSpellingTransported :
+    (n : Nat) ->
+    Boxed (natAdd n Nat.Zero) ->
+    Boxed n
+
+let canonicalSpellingTransported n value =
+    value
+
+-- The two spellings are directly interchangeable as indices: projection
+-- reduction of the selected Add Nat dictionary exposes natAdd behind
+-- (+), so no algebraic law is needed for this hop.
+crossSpelling :
+    (n : Nat) ->
+    Boxed (n + 0) ->
+    Boxed (natAdd n Nat.Zero)
+
+let crossSpelling n value =
+    value
+
+threeByOperator :
+    Nat
+
+let threeByOperator =
+    2 + 1
+
+--! assertNoErrors
+--! assertEval threeByOperator 3

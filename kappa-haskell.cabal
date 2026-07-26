@@ -10,7 +10,9 @@ description:
 license:         MIT
 license-file:    LICENSE
 build-type:      Simple
-extra-doc-files: CHANGELOG.md
+extra-doc-files:
+    CHANGELOG.md
+    third_party/ghc-typelits-presburger/LICENSE
 
 common warnings
     ghc-options:
@@ -28,6 +30,7 @@ common deps
         , filepath    >=1.4
         , mtl         >=2.2
         , process     >=1.6
+        , pretty      >=1.1
         , stm         >=2.5
         , text        >=2.0
         , time        >=1.12
@@ -55,6 +58,7 @@ library
         Kappa.Check
         Kappa.Config
         Kappa.Core
+        Kappa.CoreText
         Kappa.CoreLint
         Kappa.CoreOps
         Kappa.Diagnostic
@@ -63,6 +67,11 @@ library
         Kappa.Inhabitance
         Kappa.Interp
         Kappa.Lexer
+        Kappa.Level
+        Kappa.LevelEvidence
+        Kappa.NominalVariance
+        Kappa.Observation
+        Kappa.ObservationDeps
         Kappa.Ownership
         Kappa.Parser
         Kappa.Parser.Monad
@@ -71,15 +80,20 @@ library
         Kappa.Pretty
         Kappa.Regex
         Kappa.Resolve
+        Kappa.SemanticHash
         Kappa.Source
         Kappa.Syntax
         Kappa.SyntaxOps
         Kappa.TestHarness
         Kappa.Termination
         Kappa.Token
+        Kappa.TypeTag
         Kappa.Unicode
         Kappa.UnicodeData
         Kappa.Usage
+
+    other-modules:
+        Data.Integer.SAT
 
     hs-source-dirs:   src
     default-language: GHC2021

@@ -7,7 +7,7 @@ data File : Type =
 
 let consume (1 f : File) = unsafeConsume f
 
-let main : IO Unit = do
+let main : UIO Unit = do
     let 1 file = Handle 1
     consume file
     let & borrowed = Handle 2

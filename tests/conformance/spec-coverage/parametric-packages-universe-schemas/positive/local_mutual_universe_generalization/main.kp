@@ -1,0 +1,18 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+useMutual :
+    (A : Type) ->
+    A -> A
+
+let useMutual A x =
+    block
+        left : (B : Type) -> B -> B
+        right : (B : Type) -> B -> B
+        let left B y = right B y
+        let right B y = y
+        let low : Bool = left Bool True
+        left A x

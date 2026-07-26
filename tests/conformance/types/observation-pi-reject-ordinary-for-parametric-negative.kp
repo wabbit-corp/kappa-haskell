@@ -1,0 +1,15 @@
+module main
+
+acceptsParametric : ((parametric 0 x : Int) -> Type) -> Type
+let acceptsParametric f = f 1
+
+ordinaryFunction : (ordinary 0 x : Int) -> Type
+let ordinaryFunction x = Int
+
+bad : Type
+let bad = acceptsParametric ordinaryFunction
+
+-- The reverse direction would allow a caller to supply a parametric argument
+-- to a function whose contract permits only ordinary observation.
+--! mode check
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH

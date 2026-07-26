@@ -126,7 +126,7 @@ verifyUnit vi =
 -- "no unerased Type, universe term, row term, anonymous region, quantity-0
 -- binder, or proof-only term remains unless it has been explicitly reified as
 -- an ordinary runtime value" / "A KBackendIR legality verifier MUST reject a
--- runtime term that refers to erased Type, Universe, Quantity, Region, row,
+-- runtime term that refers to erased Type, TypeLevel, Quantity, Region, row,
 -- label, proof, syntax, … except through a specified runtime carrier".
 --
 -- We soundly check the two manifestations that exist in today's Core:
@@ -150,6 +150,9 @@ erasureViolations :: VerifyInputs -> EvalCtx -> Text -> Term -> [Diagnostic]
 erasureViolations vi ctx who = go
   where
     go t = case t of
+      CUniverseLift _ _ _ inner -> go inner
+      CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
+        concatMap go sourceArguments ++ concatMap go targetArguments ++ go inner
       CApp {} ->
         let (hd, args) = spineOfTerm t
             headDiag = case classifyHead ctx hd of
@@ -175,6 +178,7 @@ erasureViolations vi ctx who = go
       CLam _ _ _ b -> go b
       CPi _ _ _ _ a b -> go a ++ go b
       CSort _ -> []
+      CLevel _ -> []
       CLit _ -> []
       CCtor _ _ as -> concatMap go as
       CMatch s _ alts -> go s ++ concatMap goAlt alts
@@ -186,6 +190,10 @@ erasureViolations vi ctx who = go
       CInject _ e -> go e
       CLet _ _ a b c -> go a ++ go b ++ go c
       CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CLetPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecGroupM _ definitions body ->
+        concatMap (\definition -> go (clrdType definition) ++ go (clrdRhs definition)) definitions ++ go body
       CMeta _ -> []
       CDo {} -> []
       CSealE _ e -> go e
@@ -195,6 +203,7 @@ erasureViolations vi ctx who = go
       CForceE e -> go e
       CIf a b c -> go a ++ go b ++ go c
       CQuote _ slots -> concatMap go slots
+      CLocal _ _ -> []
     goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
 
 -- | Is @t@ a manifestly-erased TYPE form — something with no runtime value
@@ -275,6 +284,9 @@ arityViolations :: VerifyInputs -> Text -> Term -> [Diagnostic]
 arityViolations vi who = go
   where
     go t = case t of
+      CUniverseLift _ _ _ inner -> go inner
+      CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
+        concatMap go sourceArguments ++ concatMap go targetArguments ++ go inner
       CCtor g _ as ->
         let here = case ctorValidPayloadArities vi g of
               Just ns
@@ -288,6 +300,7 @@ arityViolations vi who = go
       CLam _ _ _ b -> go b
       CPi _ _ _ _ a b -> go a ++ go b
       CSort _ -> []
+      CLevel _ -> []
       CLit _ -> []
       CMatch s _ alts -> go s ++ concatMap goAlt alts
       CRecordT fs -> concatMap (go . snd) fs
@@ -298,6 +311,10 @@ arityViolations vi who = go
       CInject _ e -> go e
       CLet _ _ a b c -> go a ++ go b ++ go c
       CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CLetPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecPolyM _ _ _ _ a b c -> go a ++ go b ++ go c
+      CLetRecGroupM _ definitions body ->
+        concatMap (\definition -> go (clrdType definition) ++ go (clrdRhs definition)) definitions ++ go body
       CMeta _ -> []
       CDo {} -> []
       CSealE _ e -> go e
@@ -307,6 +324,7 @@ arityViolations vi who = go
       CForceE e -> go e
       CIf a b c -> go a ++ go b ++ go c
       CQuote _ slots -> concatMap go slots
+      CLocal _ _ -> []
     goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
 
 -- | Accepted saturated constructor payload arities. Runtime arity is accepted

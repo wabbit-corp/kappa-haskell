@@ -1,0 +1,3 @@
+opaque let bump (u : TypeLevel) : TypeLevel = u + 1
+
+let bumpMonotoneProof x y p = unsafeAssertProof "bump is monotone"

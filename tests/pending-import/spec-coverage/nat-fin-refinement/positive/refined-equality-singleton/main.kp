@@ -1,0 +1,15 @@
+-- Spec 28.2 (Refined) + 11.4.1 + 16.1.9: a TYPE-VALUED propositional
+-- predicate (\x -> x = 5) refines Nat to a singleton. IsProp of each fiber
+-- comes from IsSet Nat (derive IsSet Nat, 28.2); literal synthesis proves
+-- 5 = 5 by refl; projection recovers the base value.
+type ExactlyFive : Type =
+    Refined Nat (\value -> value = 5)
+
+five : ExactlyFive
+let five = 5
+
+back : Nat
+let back = five
+
+--! assertNoErrors
+--! assertEval back 5

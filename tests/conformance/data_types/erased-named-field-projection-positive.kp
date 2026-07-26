@@ -1,0 +1,24 @@
+module main
+
+data Bounded (limit : Nat) : Type 0 =
+    MkBounded
+        (value : Nat)
+        (@0 predicateIsProp : IsProp ((value <= limit) = True))
+        (@0 proof : (value <= limit) = True)
+
+boundedPredicateIsProp :
+    forall (limit : Nat) (x : Bounded limit).
+    IsProp ((x.value <= limit) = True)
+
+let boundedPredicateIsProp @limit @x =
+    x.predicateIsProp
+
+boundedProof :
+    forall (limit : Nat) (x : Bounded limit).
+    (x.value <= limit) = True
+
+let boundedProof @limit @x =
+    x.proof
+
+--! mode check
+--! assertNoErrors

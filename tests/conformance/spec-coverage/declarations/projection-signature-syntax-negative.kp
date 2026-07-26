@@ -5,7 +5,7 @@ module main
 -- contain at least one accessor clause. Both violations are grammar
 -- errors; parsing recovers and later declarations still elaborate.
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection noResultType (place p : Cell) = --!! E_RECOVERY_DECLARATION_SKIPPED
     yield p.value

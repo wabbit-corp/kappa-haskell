@@ -1,0 +1,2 @@
+let bump x = succ x
+let bumpMonotone x y p = refl

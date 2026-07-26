@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+type AnyWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)
+
+idAt :
+    (p : AnyWitness) ->
+    p.T ->
+    p.T
+let idAt p x = x

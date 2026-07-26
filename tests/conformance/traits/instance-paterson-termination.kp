@@ -9,7 +9,7 @@
 -- of `(C a, C a, ...) => C a`). A strictly-smaller premise is still accepted.
 module main
 
-trait Box (a : Type) =
+trait Box (0 a : Type) =
     unbox : a -> Int
 
 -- NEGATIVE: premise identical to the head (same trait, not smaller).
@@ -20,7 +20,7 @@ instance Box a => Box a =                 --!! kappa.termination.failure
 instance (Box a, Box a) => Box a =        --!! kappa.termination.failure
     let unbox x = 0
 
-data Stack (a : Type) : Type =
+data Stack (0 a : Type) : Type =
     Empty
     Push a (Stack a)
 

@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+
+expect let liftCode.{u, v}
+    (@0 p : u <= v)
+    (ordinary 0 A : Type u)
+    : Type v

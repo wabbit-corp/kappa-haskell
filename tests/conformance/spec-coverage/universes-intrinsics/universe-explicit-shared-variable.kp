@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE
+--! assertDiagnosticFamily error kappa.universe.unbounded-telescope
+
+-- §11.1/§11.1.2: the explicit arrow binder `(0 u : TypeLevel) -> ...`
+-- binds one erased universe-level value, so every `Type u` occurrence shares
+-- that user-written variable (no fresh metavariables). This is distinct from
+-- `forall (u : TypeLevel). ...`, whose binder is implicit. Explicit universe
+-- variables participate in ordinary constraint solving. A dependent type
+-- former that uses `Type u` must have an erased level-comparison proof bound.
+module main
+
+-- POSITIVE: both `Type u` occurrences share the same level; `u` solves at 0
+-- for value-type instantiations.
+appU :
+    (@0 u : TypeLevel) ->
+    (@0 p : u < ω) ->
+    (@0 a : Type u) ->
+    (@0 b : Type u) ->
+    (a -> b) ->
+    a ->
+    b
+let appU (@0 u : TypeLevel) (@0 p : u < ω) (@0 a : Type u) (@0 b : Type u) f x = f x
+
+atValues : Bool
+let atValues = appU (\n -> True) 5
+
+-- POSITIVE: cumulativity feeds the same constraint set — instantiating `a`
+-- with Type0 (an inhabitant of Type1) forces u >= 1 on BOTH binders.
+atTypes : Type1
+let atTypes = appU (\t -> t) Type0
+
+-- NEGATIVE: the unbounded telescope itself has no ceiling independent of `u`.
+selfTy : (u : TypeLevel) -> Type u
+let selfTy u = Unit

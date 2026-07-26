@@ -1,0 +1,9 @@
+-- §10.4.1 / T.10A.1: an ordinary constructor field `Type0` inside `Type0`
+-- is rejected. Omitted mode would default to parametric for this domain.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data U : Type0 =
+    MkU (ordinary 0 t : Type0)

@@ -13,7 +13,7 @@ projection pick2 (place this : Pair) (chooseLeft : Bool) : Int =
     else
         yield this.right
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection cellLens (place this : Cell) : Int =
     get -> this.value
@@ -28,4 +28,4 @@ main : UIO Unit
 let main = do
     printlnString (showInt (p.pick2 True))
     printlnString (showInt (p.pick2 False))
-    printlnString (showInt (readCell (value = 41)))
+    printlnString (showInt (readCell (value = 41,)))

@@ -1,0 +1,51 @@
+-- T.12.2 / Spec 30.2.7 + 17.1.7: MkSumIndexed's result pins the third
+-- family argument to `natAdd m n`. Demanding the swapped index
+-- `natAdd n m` is neither a definitional match (commutativity is not a
+-- computation rule) nor a refutation: the required commutative-monoid
+-- provider proves the bridge `natAdd m n = natAdd n m`, so the arm is
+-- PropositionallyCompatible and stays reachable. Per Spec 17.1.7 the
+-- accepted branch carries that bridge as explicit ERASED lexical
+-- equality evidence — consumable by implicit proof search, by
+-- Spec 16.1.8 transport insertion, and by an explicit `subst` — and
+-- never as a CtorIndexEq active-conversion fact, so accepting the arm
+-- does not enlarge definitional equality.
+data Slot (k : Nat) : Type =
+    Slot
+
+data SumIndexed (m : Nat) (n : Nat) (k : Nat) : Type =
+    MkSumIndexed : (payload : Slot (natAdd m n)) -> SumIndexed m n (natAdd m n)
+
+-- The scrutinee is demanded at the swapped index. Matching the single
+-- constructor is legal only through the checked bridge; inside the
+-- branch, automatic Spec 16.1.8 transport moves `payload` from
+-- `Slot (natAdd m n)` to the demanded `Slot (natAdd n m)`.
+extractAtSwappedIndex :
+    (m : Nat) ->
+    (n : Nat) ->
+    SumIndexed m n (natAdd n m) ->
+    Slot (natAdd n m)
+
+let extractAtSwappedIndex m n value =
+    match value
+    case MkSumIndexed payload ->
+        payload
+
+-- The same acceptance with the evidence made explicit: `witness`
+-- reifies the branch's erased bridge equality (branch-local lexical
+-- evidence plus the required solver, Spec 16.3.3), and `subst`
+-- transports the payload along it. The bridge is ordinary consumable
+-- proof, not compiler-private refinement state.
+extractWithExplicitSubst :
+    (m : Nat) ->
+    (n : Nat) ->
+    SumIndexed m n (natAdd n m) ->
+    Slot (natAdd n m)
+
+let extractWithExplicitSubst m n value =
+    match value
+    case MkSumIndexed payload ->
+        subst @Nat @(\k -> Slot k) @(natAdd m n) @(natAdd n m) witness payload
+
+--! requires capability arithmeticCertificates
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

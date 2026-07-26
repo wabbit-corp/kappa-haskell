@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Render 0 irrelevant
+--! assertSchemaCertificateValid Render
+--! assertInterfaceContainsUniverseRoles main.kp Render [irrelevant]
+
+trait Render.{u} (A : Type u) =
+    render : A -> String

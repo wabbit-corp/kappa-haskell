@@ -2,10 +2,10 @@
 --! assertNoErrors
 --! assertStdout "5\n"
 
-make : Integer -> (count : Integer)
-let make count = (count = count)
+make : Integer -> (count : Integer,)
+let make count = (count = count,)
 
 main : UIO Unit
 let main = do
-    let r = (count = 5)
+    let r = (count = 5,)
     printlnString (showInt r.count)

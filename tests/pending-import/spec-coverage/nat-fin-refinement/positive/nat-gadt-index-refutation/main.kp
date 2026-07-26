@@ -1,0 +1,71 @@
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec 0 a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (n + 1) a
+
+-- Construction: `n + 1 = 2` has the unique principal solution n := 1,
+-- which the required solver may assign (Spec 15.8.6).
+v2 :
+    Vec 2 Int
+
+let v2 =
+    VCons 1 (VCons 2 VNil)
+
+-- Elimination at a successor index: VNil's result Vec 0 a meets the
+-- demanded Vec (n + 1) a only through the bridge 0 = n + 1, which the
+-- required Presburger fragment refutes (Spec 15.8.4), so the four-way
+-- judgment yields Refuted and the arm contributes Empty
+-- (Spec 30.2.7 rule 3); the single VCons arm is exhaustive under the
+-- rewritten exhaustiveness MUSTs of Spec 17.1.1.
+vhead :
+    forall (@0 a : Type) (@0 n : Nat).
+    Vec (n + 1) a ->
+    a
+
+let vhead v =
+    match v
+    case VCons x _ -> x
+
+vtail :
+    forall (@0 a : Type) (@0 n : Nat).
+    Vec (n + 1) a ->
+    Vec n a
+
+let vtail v =
+    match v
+    case VCons _ t -> t
+
+-- Elimination at the ground index: VCons's result Vec (n + 1) a is
+-- refuted at Vec 0 a the same way.
+onlyNil :
+    forall (@0 a : Type).
+    Vec 0 a ->
+    Int
+
+let onlyNil v =
+    match v
+    case VNil -> 0
+
+-- Explicit unreachable spellings: only the required portable arithmetic
+-- fragment justifies the omitted arithmetic-impossible branch,
+-- `impossible`, and `case impossible` (Spec 15.8.8, 17.1.4, 17.1.5).
+onlyNilImpossibleArm :
+    forall (@0 a : Type).
+    Vec 0 a ->
+    Int
+
+let onlyNilImpossibleArm v =
+    match v
+    case VNil -> 0
+    case VCons _ _ -> impossible
+
+onlyNilEmptyRemainder :
+    forall (@0 a : Type).
+    Vec 0 a ->
+    Int
+
+let onlyNilEmptyRemainder v =
+    match v
+    case VNil -> 0
+    case impossible
+
+--! assertNoErrors

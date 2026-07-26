@@ -1,0 +1,765 @@
+{
+  "baseSpec": "Spec(100).md",
+  "name": "kappa-first-class-levels-solver-generalization-tests",
+  "schemaVersion": 1,
+  "suiteCount": 67,
+  "suites": [
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "Arithmetic replay rejects an unavailable assumption index.",
+      "expectation": "reject",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "arithmetic_certificate_bad_assumption",
+      "path": "kcore/arithmetic_certificate_bad_assumption"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "Arithmetic replay proves max-least from the selected assumptions.",
+      "expectation": "accept",
+      "files": [
+        "main.kp",
+        "proof.kcore",
+        "suite.ktest"
+      ],
+      "name": "arithmetic_certificate_valid",
+      "path": "kcore/arithmetic_certificate_valid"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "AC-equivalent level expressions have canonical KCore semantic identity.",
+      "expectation": "accept",
+      "files": [
+        "a.kcore",
+        "b.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "canonical_ac_level_hash",
+      "path": "kcore/canonical_ac_level_hash"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "Canonical lift composition makes direct and transitively composed lifts semantically identical.",
+      "expectation": "accept",
+      "files": [
+        "composed.kcore",
+        "direct.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "direct_and_composed_lift_same_hash",
+      "path": "kcore/direct_and_composed_lift_same_hash"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "Different proofs of the same lift theorem produce the same semantic hash.",
+      "expectation": "accept",
+      "files": [
+        "arithmetic.kcore",
+        "closed.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "lift_proof_identity_hash",
+      "path": "kcore/lift_proof_identity_hash"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "KCore has no generic sealing eliminator authority.",
+      "expectation": "reject",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "reject_declared_sealing_eliminator",
+      "path": "kcore/reject_declared_sealing_eliminator"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "Structural and arithmetic proofs canonicalize to the same level-evidence semantic identity.",
+      "expectation": "accept",
+      "files": [
+        "arithmetic.kcore",
+        "main.kp",
+        "structural.kcore",
+        "suite.ktest"
+      ],
+      "name": "structural_and_arithmetic_same_hash",
+      "path": "kcore/structural_and_arithmetic_same_hash"
+    },
+    {
+      "capabilities": [],
+      "category": "kcore",
+      "description": "KCoreText artifacts with an incompatible TypeLevel algebra version are rejected.",
+      "expectation": "reject",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "name": "typelevel_algebra_version_mismatch",
+      "path": "kcore/typelevel_algebra_version_mismatch"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Distinct opaque level terms are not ordered without evidence.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "distinct_neutral_atoms_need_evidence",
+      "path": "negative/distinct_neutral_atoms_need_evidence"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Universal quantification is not silently moved through a type constructor.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "forall_does_not_commute_implicitly",
+      "path": "negative/forall_does_not_commute_implicitly"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A candidate variable free in the surrounding environment is not generalized by a nested declaration.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "generalization_meta_free_in_environment",
+      "path": "negative/generalization_meta_free_in_environment"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Rigid parametric rechecking rejects a declaration that returns its generalized type witness ordinarily.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "generalization_parametric_escape",
+      "path": "negative/generalization_parametric_escape"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A covariant upward schema lift has no implicit inverse.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "inverse_schema_lift_not_implicit",
+      "path": "negative/inverse_schema_lift_not_implicit"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A monadic bind variable does not introduce fresh outer quantification.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "monadic_bound_value_not_generalized",
+      "path": "negative/monadic_bound_value_not_generalized"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A nearby theorem is not discovered unless packaged as ordinary evidence.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "monotone_theorem_not_scanned",
+      "path": "negative/monotone_theorem_not_scanned"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A mutable current-value facet is not a stable universe index in v1.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "mutable_current_level_index",
+      "path": "negative/mutable_current_level_index"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Pattern matching a parametric field preserves the parametric origin.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "pattern_match_does_not_drop_dependency",
+      "path": "negative/pattern_match_does_not_drop_dependency"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Positive self-occurrence beneath successor is rejected.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_self_containment",
+      "path": "negative/principal_self_containment"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "An upward recursive declaration-schema instantiation is rejected in v1.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_increase",
+      "path": "negative/recursive_schema_increase"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A non-increasing schema edge alone is not a strict termination argument.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_leq_not_termination",
+      "path": "negative/recursive_schema_leq_not_termination"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A non-identity recursive schema instantiation may not be inferred.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_nonidentity_implicit",
+      "path": "negative/recursive_schema_nonidentity_implicit"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Explicit schema instantiation must discharge its erased comparison proof.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_constraint_unsatisfied",
+      "path": "negative/schema_constraint_unsatisfied"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "Schema reification never supplies an omitted explicit term-level TypeLevel argument.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_reification_does_not_fill_explicit_level",
+      "path": "negative/schema_reification_does_not_fill_explicit_level"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A projected parametric witness cannot be returned as an ordinary type code.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "unbounded_parametric_package_no_code_escape",
+      "path": "negative/unbounded_parametric_package_no_code_escape"
+    },
+    {
+      "capabilities": [],
+      "category": "negative",
+      "description": "A non-TypeLevel term cannot index Type.",
+      "expectation": "reject",
+      "files": [
+        "main.kp"
+      ],
+      "name": "wrong_type_level_index",
+      "path": "negative/wrong_type_level_index"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A monadic action value may be generalized; each use instantiates before execution.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "action_value_generalizes_outer_parameter",
+      "path": "positive/action_value_generalizes_outer_parameter"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Expected-type-directed branch joining may forget an exact level through cumulativity.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "branch_expected_widening",
+      "path": "positive/branch_expected_widening"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Application to an opaque index retains Type (f x) rather than widening to a ceiling.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "exact_level_result_not_widened",
+      "path": "positive/exact_level_result_not_widened"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A user-written erased proof binder expresses a declaration-universe constraint.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "explicit_schema_constraint_proof_binder",
+      "path": "positive/explicit_schema_constraint_proof_binder"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A first-class TypeLevel argument may increase when another ordinary measure decreases.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "first_class_level_recursion_can_increase",
+      "path": "positive/first_class_level_recursion_can_increase"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Expected-type-directed quantifier interchange succeeds through PreservesParametricForall evidence.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "forall_commutes_with_selected_evidence",
+      "path": "positive/forall_commutes_with_selected_evidence"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An inferred declaration constraint is serialized as an anonymous erased proof binder.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "inferred_schema_constraint_becomes_binder",
+      "path": "positive/inferred_schema_constraint_becomes_binder"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An immutable snapshot of a mutable current value may be used in a local type.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "level_snapshot_from_var",
+      "path": "positive/level_snapshot_from_var"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A local semantic declaration may generalize a fresh universe and be instantiated independently.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "local_declaration_universe_generalization",
+      "path": "positive/local_declaration_universe_generalization"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An ordinary global Monotone instance permits covariance through an opaque TypeLevel function.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "monotone_global_instance",
+      "path": "positive/monotone_global_instance"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A local erased Monotone binder is selected before variance inference.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "monotone_local_evidence",
+      "path": "positive/monotone_local_evidence"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Ordinary erased proof evidence may bound an opaque neutral level term.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "neutral_level_bound_evidence",
+      "path": "positive/neutral_level_bound_evidence"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An explicit declaration-schema instantiation may use a stable opaque TypeLevel term.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "neutral_term_schema_instantiation",
+      "path": "positive/neutral_term_schema_instantiation"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An opaque total TypeLevel application is a valid universe index and the exact dependent result is retained.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "opaque_level_application_exact_result",
+      "path": "positive/opaque_level_application_exact_result"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Aliasing an already polymorphic value preserves its first-class polymorphic type.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "preserve_existing_forall",
+      "path": "positive/preserve_existing_forall"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A stable immutable record projection of TypeLevel may index Type.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "record_projection_level_index",
+      "path": "positive/record_projection_level_index"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An identity recursive schema call may omit its universe instantiation.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_identity",
+      "path": "positive/recursive_schema_identity"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A non-identity recursive schema call is explicit and pointwise lower-or-equal.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_lower",
+      "path": "positive/recursive_schema_lower"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A strict same-or-lower schema edge may contribute a well-founded termination decrease.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "recursive_schema_strict_level_termination",
+      "path": "positive/recursive_schema_strict_level_termination"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Definitionally identical neutral level terms receive the same rigid atom identity.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "same_neutral_term_atom_identity",
+      "path": "positive/same_neutral_term_atom_identity"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "schemaLift is inserted only against a known expected fully saturated same-family target.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_lift_expected_type_direct",
+      "path": "positive/schema_lift_expected_type_direct"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Exact same-family unification solves a bare target instance without inserting schemaLift.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_lift_not_used_for_meta_solving",
+      "path": "positive/schema_lift_not_used_for_meta_solving"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A declaration schema eta-expands into a bounded first-class level function from an expected type.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_reify_bounded_expected_type",
+      "path": "positive/schema_reify_bounded_expected_type"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "A field with an expected bounded first-class type preserves declaration-level polymorphism by eta-expansion.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_store_bounded_first_class",
+      "path": "positive/schema_store_bounded_first_class"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Without an expected level-polymorphic type, a declaration schema is instantiated once.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "schema_store_monomorphic_context",
+      "path": "positive/schema_store_monomorphic_context"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "The standard prelude provides Monotone evidence for addition by a fixed level.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "standard_add_partial_monotone",
+      "path": "positive/standard_add_partial_monotone"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An unbounded package may project its type field parametrically and use it in a dependent result.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "unbounded_parametric_package_projection",
+      "path": "positive/unbounded_parametric_package_projection"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "Ordinary construction and projection are sufficient to repack an unbounded parametric witness.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "unbounded_parametric_package_repack",
+      "path": "positive/unbounded_parametric_package_repack"
+    },
+    {
+      "capabilities": [],
+      "category": "positive",
+      "description": "An equivalent user proof binder prevents a duplicate generated constraint.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "user_constraint_reuses_generated_obligation",
+      "path": "positive/user_constraint_reuses_generated_obligation"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Addition constructor normalization is AC, zero-eliminating, sorted, and multiplicity-preserving.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "constructor_nf_add_ac",
+      "path": "solver/constructor_nf_add_ac"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Maximum constructor normalization is ACI, zero-eliminating, sorted, and duplicate-free.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "constructor_nf_max_aci",
+      "path": "solver/constructor_nf_max_aci"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Monotone evidence alone does not authorize inverse-order cancellation.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "monotone_not_order_embedding",
+      "path": "solver/monotone_not_order_embedding"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "An opaque neutral atom has no unproved relation to another atom.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "neutral_atom_not_entailed",
+      "path": "solver/neutral_atom_not_entailed"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Two metas under max have no pointwise least assignment.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "no_pointwise_least",
+      "path": "solver/no_pointwise_least"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "A minimizable symbolic context outside the portable assignment fragment requires annotation.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "outside_portable_fragment",
+      "path": "solver/outside_portable_fragment"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Common additive context cancellation solves p+1 <= ?u+1.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_additive_cancellation",
+      "path": "solver/principal_additive_cancellation"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Closed additive residuation computes the least pair solution.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_closed_residuation",
+      "path": "solver/principal_closed_residuation"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "The portable solver joins direct lower bounds by maximum.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_direct_lower_bounds",
+      "path": "solver/principal_direct_lower_bounds"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "A single-meta maximum context is solved when the other arm is rigidly insufficient.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_single_meta_max_context",
+      "path": "solver/principal_single_meta_max_context"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Common successor cancellation solves succ p <= succ ?u.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "principal_successor_cancellation",
+      "path": "solver/principal_successor_cancellation"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Rigid Presburger semantics proves distributive equality not used by stored syntax normalization.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "semantic_distribution_beyond_nf",
+      "path": "solver/semantic_distribution_beyond_nf"
+    },
+    {
+      "capabilities": [],
+      "category": "solver",
+      "description": "Rigid semantic equality recognizes dominance not performed by constructor normalization.",
+      "expectation": "accept",
+      "files": [
+        "main.kp"
+      ],
+      "name": "semantic_equality_beyond_nf",
+      "path": "solver/semantic_equality_beyond_nf"
+    }
+  ]
+}

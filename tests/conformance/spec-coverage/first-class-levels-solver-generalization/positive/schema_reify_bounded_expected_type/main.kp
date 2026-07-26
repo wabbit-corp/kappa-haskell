@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+id.{u} :
+    (A : Type u) ->
+    A -> A
+let id A x = x
+
+type BoundedId =
+    (u : TypeLevel) ->
+    (@0 p : u < omega) ->
+    (A : Type u) ->
+    A -> A
+
+let firstClass : BoundedId = id

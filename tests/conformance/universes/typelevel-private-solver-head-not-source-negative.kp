@@ -1,0 +1,7 @@
+module main
+
+bad : TypeLevel
+let bad = __typeLevelZero
+
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED

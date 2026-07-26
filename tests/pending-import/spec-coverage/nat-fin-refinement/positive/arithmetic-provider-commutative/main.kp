@@ -1,0 +1,53 @@
+commuteSelectedAddition :
+    forall (A : Type).
+    (@evidence : CommutativeAdditiveMonoid A) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+let commuteSelectedAddition @evidence x y =
+    evidence.addCommutative x y
+
+natPolynomialTransport :
+    (m : Nat) ->
+    (n : Nat) ->
+    natAdd m n = natAdd n m
+
+-- Ordinary implicit resolution selects the coherent prelude
+-- CommutativeAdditiveMonoid Nat evidence (Spec 15.8.2); `add` at Nat
+-- delegates transparently to natAdd (Spec 28.2), so the projected law
+-- has the stated natAdd type.
+let natPolynomialTransport m n =
+    commuteSelectedAddition m n
+
+-- Index payoff of the required CommutativeAdditiveMonoid Nat evidence
+-- (Spec 28.2.3): commuting a data index, in both the explicit-subst
+-- spelling and the automatic-transport spelling (Spec 16.1.8 with a
+-- Spec 15.8.2/15.8.4 commutative-monoid provider proof). The surface
+-- `+` spelling reaches natAdd through the canonical Add Nat delegation
+-- (Spec 28.2, 15.8.1: a selected dictionary projection participates
+-- only when normalization exposes the same semantic operation).
+data Commuted (n : Nat) : Type =
+    Commuted
+
+vecCommExplicit :
+    (n : Nat) ->
+    (m : Nat) ->
+    (@evidence : CommutativeAdditiveMonoid Nat) ->
+    Commuted (n + m) ->
+    Commuted (m + n)
+
+let vecCommExplicit n m @evidence value =
+    subst (evidence.addCommutative n m) value
+
+vecCommAutomatic :
+    (n : Nat) ->
+    (m : Nat) ->
+    Commuted (n + m) ->
+    Commuted (m + n)
+
+let vecCommAutomatic n m value =
+    value
+
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

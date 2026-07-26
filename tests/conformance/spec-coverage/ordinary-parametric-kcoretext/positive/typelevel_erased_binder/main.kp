@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+ignoreLevel :
+    (0 level : TypeLevel) ->
+    Int
+
+let ignoreLevel level =
+    0

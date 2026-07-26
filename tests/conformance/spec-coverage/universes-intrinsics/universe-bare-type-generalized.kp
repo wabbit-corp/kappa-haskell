@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.2.3: bare `Type` introduces a fresh generalizable universe
+-- metavariable, so the same identity may be instantiated at `Type0`.
+module main
+
+idFn : forall (a : Type). a -> a
+let idFn x = x
+
+atType0 : Type1
+let atType0 = idFn Type0

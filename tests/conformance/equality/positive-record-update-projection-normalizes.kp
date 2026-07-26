@@ -5,7 +5,7 @@ module main
 -- requiring explicit destructuring of the original record.
 -- Spec: §5.5.5, §14.3
 
-type SimpleRecord : Type = (simpleField : Bool)
+type SimpleRecord : Type = (simpleField : Bool,)
 
 updateField : SimpleRecord -> SimpleRecord
 let updateField (r : SimpleRecord) : SimpleRecord = r.{ simpleField = True }

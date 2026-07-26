@@ -1,28 +1,52 @@
--- §16.3.3 step 4 (equality reflection from ==): a goal x = y with
+-- §16.3.3 step 5 (equality reflection from ==): a goal x = y with
 -- p : (x == y) = True in the implicit context and Eq A available is
--- solved via Eq.eqSound x y p. Only Eq supports reflection — the
--- compiler never synthesizes x = y from (x ~= y) = True (Equiv).
+-- solved via Eq.eqSound x y p. "Only Eq supports equality reflection;
+-- Equiv does not" — the compiler never synthesizes x = y from
+-- (x ~= y) = True.
 module main
-
--- POSITIVE: reflection through the resolved Eq Int dictionary.
-reflectFive : (n : Int) -> (@0 p : (n == 5) = True) -> n = 5
-let reflectFive n = witness
 
 data Color : Type =
     Red
     Green
 
--- An Equiv instance with no underlying Eq: (~=) evidence must not reflect.
-instance Equiv Color =
+-- §14.5.1: the derived Eq Color carries the checkable eqSound member.
+derive Eq Color
+
+-- POSITIVE: reflection through the derived Eq Color dictionary. Color is
+-- a non-arithmetic carrier: the §16.3.3 step 4 checked proof solvers
+-- return Unknown for the abstract goal, so only eqSound reflection
+-- (step 5) can discharge it.
+reflectRed : (c : Color) -> (@0 p : (c == Red) = True) -> c = Red
+let reflectRed c = witness
+
+-- COMPANION (step 4, labelled as such — not reflection): over Int the
+-- same goal shape is inside §15.8.4's quantifier-free Presburger
+-- fragment, so the step 4 checked proof solvers may discharge it before
+-- reflection is ever consulted.
+solveFive : (n : Int) -> (@0 p : (n == 5) = True) -> n = 5
+let solveFive n = witness
+
+data Shade : Type =
+    Light
+    Dark
+
+-- An Equiv instance with no underlying Eq: (~=) evidence must not
+-- reflect. Shade deliberately has no Eq so the prelude's blanket
+-- `instance Eq a => Equiv a` bridge (§14.3) cannot apply and this
+-- instance is the only Equiv Shade candidate. (The positive above uses a
+-- separate carrier precisely because giving THIS type an Eq would make
+-- the bridge overlap the constant-True instance incoherently.)
+instance Equiv Shade =
     let (~=) a b = True
 
 -- NEGATIVE: only Equiv evidence is available, so the propositional
--- equality goal has no solution and the implicit goal must be reported
--- unsolved.
-noReflect : (a : Color) -> (b : Color) -> (@0 p : (a ~= b) = True) -> a = b
+-- equality goal has no solution: steps 1-4 fail (the small-finite-domain
+-- fragment of §15.8.4 can neither prove nor refute the abstract a = b
+-- from a constant-True (~=) premise) and step 5 rejects Equiv. The
+-- implicit goal must be reported unsolved.
+noReflect : (a : Shade) -> (b : Shade) -> (@0 p : (a ~= b) = True) -> a = b
 let noReflect a b = witness --!! E_UNSOLVED_IMPLICIT
 
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.implicit.unsolved
--- STATUS(a0497523): FAIL — the compiler accepts noReflect (0 errors). Worse, implicit resolution solves ANY propositional-equality goal a = b via witness with no evidence at all (probed separately: (a : Color) -> (b : Color) -> a = b with empty context is accepted), an unsound over-acceptance that masks the Eq-only restriction of §16.3.3 step 4; the positive reflectFive therefore passes only vacuously.

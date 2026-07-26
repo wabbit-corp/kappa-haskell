@@ -6,6 +6,6 @@ import lib.types
 
 bad : UIO Unit
 let bad = do
-    var cell : lib.types.Outer = (inner = (tok = lib.types.Token), count = 0)
+    var cell : lib.types.Outer = (inner = (tok = lib.types.Token,), count = 0)
     let copy = cell.inner
     pure ()

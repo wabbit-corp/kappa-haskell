@@ -1,0 +1,7 @@
+module top_level_signature_definition_schema_mismatch
+
+id.{u} : (A : Type u) -> A -> A
+let id.{u, v} A x = x
+
+--! mode check
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_ARITY_MISMATCH

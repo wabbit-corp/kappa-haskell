@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+opaque let chooseLevel
+    (b : Bool)
+    : TypeLevel =
+    if b then 0 else omega
+
+use :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type u) ->
+    A ->
+    A
+let use u p A x = x
+
+chooseUse :
+    (b : Bool) ->
+    (@0 p : chooseLevel b < omega + 1) ->
+    (A : Type (chooseLevel b)) ->
+    A ->
+    A
+let chooseUse b p A x =
+    use (chooseLevel b) @p A x

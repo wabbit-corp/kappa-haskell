@@ -21,9 +21,9 @@ let main = do
     shutdownScope sc
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
-      case Failure c -> printlnString "other"
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.ScopeShutdown by)) -> printlnString "scope-shutdown"
+      case Exit.Failure c -> printlnString "other"
     -- shutting down again after the scope is fully drained is also safe
     shutdownScope sc
     printlnString "idempotent-ok"

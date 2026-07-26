@@ -31,5 +31,5 @@ let main = do
     let f <- fork child
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure c -> printlnString "interrupted"
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure c -> printlnString "interrupted"

@@ -1,0 +1,13 @@
+-- §11.1.2.3A: witness capability does not permit lowering its universe.
+-- A Type3 witness cannot instantiate a Type0 binder.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
+--! assertDiagnosticFamily error kappa.universe.constraint
+--! assertDiagnosticPayload error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE /normalizedFailedConstraint "3 <= 0"
+
+accept0 : (0 B : Type0) -> Unit
+let accept0 B = ()
+
+dropWitness : (0 A : Type3) -> Unit
+let dropWitness A = accept0 A

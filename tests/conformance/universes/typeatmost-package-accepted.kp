@@ -1,0 +1,10 @@
+-- §11.1.2.8: the `TypeAtMost`-shaped schema is accepted at one level above its
+-- declaration-universe bound using erased `u <= k` proof evidence.
+--! mode check
+--! assertNoErrors
+
+data LocalTypeAtMost.{k} : Type (succ k) =
+    LocalPackTypeAtMost
+        (ordinary 0 u : TypeLevel)
+        (@0 le : u <= k)
+        (ordinary 0 T : Type u)

@@ -1,0 +1,40 @@
+data Idx (n : Nat) : Type =
+    Idx
+
+-- Portable Nat subtraction is checked: (-) demands the erased domain
+-- premise (y <= x) = True through its CheckedSub instance (Spec 28.2.3),
+-- and it is never saturating or wrapping. The lexical premise below is
+-- definitionally that domain proof, so the body typechecks.
+gap :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 within : (n <= m) = True) ->
+    Nat
+
+let gap m n @within =
+    m - n
+
+-- Spec 15.8.1: the solver may reify m - n as mathematical subtraction
+-- only together with the in-scope domain proof. With that proof it
+-- proves (m - n) + n = m and inserts the index transport.
+restores :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 within : (n <= m) = True) ->
+    Idx (natAdd (m - n) n) ->
+    Idx m
+
+let restores m n @within value =
+    value
+
+-- Closed use: the literal domain premise (4 <= 9) = True normalizes to
+-- True, implicit resolution synthesizes refl (Spec 16.3.3 step 3), and
+-- evaluation stays exact.
+closedGap :
+    Nat
+
+let closedGap =
+    gap 9 4
+
+--! assertNoErrors
+--! assertEval closedGap 5

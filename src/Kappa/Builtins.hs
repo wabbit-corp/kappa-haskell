@@ -34,15 +34,22 @@ module Kappa.Builtins
   , prelByte
   , prelGrapheme
   , prelUnicodeScalar
+  , prelSymbol
   , prelList
   , prelArray
+  , prelSet
+  , prelMap
   , prelOption
+  , prelNumericRange
   , prelMatch
   , prelThunk
   , prelNeed
   , prelZipper
+  , prelProjector
   , prelRef
   , prelRegion
+  , prelTypeLevel
+  , prelTypeLevelLevel
   , prelBorrowView
   , prelEff
   , prelEffRow
@@ -65,6 +72,8 @@ module Kappa.Builtins
     -- * Prelude constructors
   , prelTrue
   , prelFalse
+  , prelNatZero
+  , prelNatSucc
   , prelSome
   , prelNone
   , prelNil
@@ -74,6 +83,8 @@ module Kappa.Builtins
   , prelGT
   , prelRefl
   , prelEqType
+  , prelSubst
+  , prelPathInd
   , prelBoolV
   , prelOrdering
 
@@ -112,9 +123,13 @@ module Kappa.Builtins
     -- * Prelude traits
   , prelShow
   , prelOrd
+  , prelSuccessor
+  , prelMax
   , prelApplicative
   , prelMonad
   , prelMonadRef
+  , prelRangeable
+  , prelIntoQuery
   , prelReleasable
   , prelFromComprehensionRaw
   , prelFromComprehensionPlan
@@ -124,21 +139,44 @@ module Kappa.Builtins
   , prelIsProp
   , prelIsSubsingleton
   , prelIsSet
+  , prelIsNType
+  , prelRuntimeErased
 
     -- * Prelude functions/helpers consulted by name
   , prelNot
   , prelAnd
   , prelOr
   , prelCompare
+  , prelSucc
+  , prelNatAdd
+  , prelNatMultiply
+  , prelNatCompare
+  , prelMaxOp
   , prelReadRef
   , prelWriteRef
   , prelCatchIO
   , prelFinallyIO
   , prelStringAppend
+  , prelTypeLevelZero
+  , prelTypeLevelOne
+  , prelTypeLevelOmega
+  , prelTypeLevelOmegaAlias
+  , prelTypeLevelFromInteger
+  , prelTypeLevelSucc
+  , prelTypeLevelAdd
+  , prelTypeLevelMax
+  , prelCompareTypeLevel
+  , prelLevelLe
+  , prelLevelLt
+  , prelMonotone
+  , prelAddRightMonotone
+  , prelPreservesParametricForall
+  , prelPullForall
 
     -- * Wired-in intrinsics (compiler-synthesized prelude globals)
   , prelThis
   , prelCaptures
+  , prelBorrowRegionOf
   , prelSizedOf
   , prelEffPure
   , prelEffOp
@@ -160,6 +198,7 @@ module Kappa.Builtins
 
     -- * Standard-library module paths
   , modPrelude
+  , modTypeLevel
   , modDebug
   , modBytes
   , modUnicode
@@ -226,23 +265,30 @@ prelInt = gPrel "Int"
 prelInteger = gPrel "Integer"
 prelDouble = gPrel "Double"
 
-prelByte, prelGrapheme, prelUnicodeScalar :: GName
+prelByte, prelGrapheme, prelUnicodeScalar, prelSymbol :: GName
 prelByte = gPrel "Byte"
 prelGrapheme = gPrel "Grapheme"
 prelUnicodeScalar = gPrel "UnicodeScalar"
+prelSymbol = gPrel "Symbol"
 
-prelList, prelArray, prelOption, prelMatch :: GName
+prelList, prelArray, prelSet, prelMap, prelOption, prelNumericRange, prelMatch :: GName
 prelList = gPrel "List"
 prelArray = gPrel "Array"
+prelSet = gPrel "Set"
+prelMap = gPrel "Map"
 prelOption = gPrel "Option"
+prelNumericRange = gPrel "NumericRange"
 prelMatch = gPrel "Match"
 
-prelThunk, prelNeed, prelZipper, prelRef, prelRegion, prelBorrowView :: GName
+prelThunk, prelNeed, prelZipper, prelProjector, prelRef, prelRegion, prelTypeLevel, prelTypeLevelLevel, prelBorrowView :: GName
 prelThunk = gPrel "Thunk"
 prelNeed = gPrel "Need"
 prelZipper = gPrel "Zipper"
+prelProjector = gPrel "Projector"
 prelRef = gPrel "Ref"
 prelRegion = gPrel "Region"
+prelTypeLevel = GName modTypeLevel "TypeLevel"
+prelTypeLevelLevel = GName modTypeLevel "Level"
 prelBorrowView = gPrel "BorrowView"
 
 prelEff, prelEffRow, prelEffLabel, prelIO, prelSTM, prelElab :: GName
@@ -272,9 +318,11 @@ prelReusable = gPrel "Reusable"
 
 -- ── Prelude constructors ─────────────────────────────────────────────
 
-prelTrue, prelFalse, prelSome, prelNone, prelNil, prelCons :: GName
+prelTrue, prelFalse, prelNatZero, prelNatSucc, prelSome, prelNone, prelNil, prelCons :: GName
 prelTrue = gPrel "True"
 prelFalse = gPrel "False"
+prelNatZero = GName (ModuleName ["std", "prelude", "Nat"]) "Zero"
+prelNatSucc = GName (ModuleName ["std", "prelude", "Nat"]) "Succ"
 prelSome = gPrel "Some"
 prelNone = gPrel "None"
 prelNil = gPrel "Nil"
@@ -287,9 +335,11 @@ prelGT = gPrel "GT"
 
 -- | The reflexivity proof constructor (§14) and the propositional
 -- equality type head @=@ (§14).
-prelRefl, prelEqType :: GName
+prelRefl, prelEqType, prelSubst, prelPathInd :: GName
 prelRefl = gPrel "refl"
 prelEqType = gPrel "="
+prelSubst = gPrel "subst"
+prelPathInd = gPrel "pathInd"
 
 -- | The boolean constructor matching a Haskell 'Bool', for the few sites
 -- that pick @True@/@False@ at runtime.
@@ -366,12 +416,16 @@ prelRORight = gPrel "RORight"
 
 -- ── Prelude traits ───────────────────────────────────────────────────
 
-prelShow, prelOrd, prelApplicative, prelMonad, prelMonadRef, prelReleasable :: GName
+prelShow, prelOrd, prelSuccessor, prelMax, prelApplicative, prelMonad, prelMonadRef, prelRangeable, prelIntoQuery, prelReleasable :: GName
 prelShow = gPrel "Show"
 prelOrd = gPrel "Ord"
+prelSuccessor = gPrel "Successor"
+prelMax = gPrel "Max"
 prelApplicative = gPrel "Applicative"
 prelMonad = gPrel "Monad"
 prelMonadRef = gPrel "MonadRef"
+prelRangeable = gPrel "Rangeable"
+prelIntoQuery = gPrel "IntoQuery"
 prelReleasable = gPrel "Releasable"
 
 prelFromComprehensionRaw, prelFromComprehensionPlan, prelIsTraitWitness :: GName
@@ -386,25 +440,51 @@ prelIsTraitWitness = gPrel "__isTraitWitness"
 -- dependent-Pi closure step 'isPropPi'; plus the h-prop marker traits 'IsProp'
 -- and 'IsSubsingleton' whose goals the solver is gated to, and 'IsSet' whose
 -- evidence the equality base case must resolve before it may fire.
-prelIsPropEq, prelIsPropPi, prelIsProp, prelIsSubsingleton, prelIsSet :: GName
+prelIsPropEq, prelIsPropPi, prelIsProp, prelIsSubsingleton, prelIsSet, prelIsNType, prelRuntimeErased :: GName
 prelIsPropEq = gPrel "isPropEq"
 prelIsPropPi = gPrel "isPropPi"
+prelIsNType = gPrel "IsNType"
+prelRuntimeErased = gPrel "RuntimeErased"
 prelIsProp = gPrel "IsProp"
 prelIsSubsingleton = gPrel "IsSubsingleton"
 prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 
-prelNot, prelAnd, prelOr, prelCompare, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
+prelNot, prelAnd, prelOr, prelCompare, prelSucc, prelNatAdd, prelNatMultiply, prelNatCompare, prelMaxOp, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
 prelNot = gPrel "not"
 prelAnd = gPrel "&&"
 prelOr = gPrel "||"
 prelCompare = gPrel "compare"
+prelSucc = gPrel "succ"
+prelNatAdd = gPrel "natAdd"
+prelNatMultiply = gPrel "natMultiply"
+prelNatCompare = gPrel "natCompare"
+prelMaxOp = gPrel "max"
 prelReadRef = gPrel "readRef"
 prelWriteRef = gPrel "writeRef"
 prelCatchIO = gPrel "catchIO"
 prelFinallyIO = gPrel "finallyIO"
 prelStringAppend = gPrel "stringAppend"
+
+prelTypeLevelZero, prelTypeLevelOne, prelTypeLevelOmega, prelTypeLevelOmegaAlias, prelTypeLevelFromInteger, prelTypeLevelSucc, prelTypeLevelAdd, prelTypeLevelMax, prelCompareTypeLevel, prelLevelLe, prelLevelLt, prelMonotone, prelAddRightMonotone :: GName
+prelTypeLevelZero = GName modTypeLevel "typeLevelZero"
+prelTypeLevelOne = GName modTypeLevel "typeLevelOne"
+prelTypeLevelOmega = GName modTypeLevel "typeLevelOmega"
+prelTypeLevelOmegaAlias = GName modTypeLevel "omega"
+prelTypeLevelFromInteger = GName modTypeLevel "typeLevelFromInteger"
+prelTypeLevelSucc = GName modTypeLevel "typeLevelSucc"
+prelTypeLevelAdd = GName modTypeLevel "typeLevelAdd"
+prelTypeLevelMax = GName modTypeLevel "typeLevelMax"
+prelCompareTypeLevel = GName modTypeLevel "typeLevelCompare"
+prelLevelLe = GName modTypeLevel "LevelLe"
+prelLevelLt = GName modTypeLevel "LevelLt"
+prelMonotone = GName modTypeLevel "Monotone"
+prelAddRightMonotone = GName modTypeLevel "addRightMonotone"
+
+prelPreservesParametricForall, prelPullForall :: GName
+prelPreservesParametricForall = gPrel "PreservesParametricForall"
+prelPullForall = gPrel "pullForall"
 
 -- ── Wired-in intrinsics (compiler-synthesized prelude globals) ───────
 
@@ -412,6 +492,12 @@ prelThis, prelCaptures, prelSizedOf :: GName
 prelThis = gPrel "__this"
 prelCaptures = gPrel "__captures"
 prelSizedOf = gPrel "__sizedOf"
+
+-- Compiler-owned static witness for the anonymous region of a borrowed term.
+-- The generated key is not a source identifier, while keeping an ordinary
+-- prelude global preserves hidden universe spines through NbE quotation.
+prelBorrowRegionOf :: GName
+prelBorrowRegionOf = gPrel "#generated.borrowRegionOf"
 
 prelEffPure, prelEffOp, prelEffBind, prelHandleEff :: GName
 prelEffPure = gPrel "__EffPure"
@@ -448,6 +534,12 @@ prelCodeEscape = gPrel "__codeEscape"
 -- | Alias for 'preludeModule', for symmetry with the other @mod*@ names.
 modPrelude :: ModuleName
 modPrelude = preludeModule
+
+-- | Canonical owner of the ordinary opaque universe-level representation and
+-- operations (§11.1.1/§11.1.2.2). The historical @prelTypeLevel*@ names are
+-- retained as API constants, but their semantic identities live here.
+modTypeLevel :: ModuleName
+modTypeLevel = ModuleName ["std", "typelevel"]
 
 modDebug, modBytes, modUnicode, modHash, modDerivingShape :: ModuleName
 modDebug = ModuleName ["std", "debug"]
@@ -586,15 +678,21 @@ wiredInPreludeNames =
     , (prelByte, BKType)
     , (prelGrapheme, BKType)
     , (prelUnicodeScalar, BKType)
+    , (prelSymbol, BKType)
     , (prelList, BKType)
     , (prelArray, BKType)
+    , (prelSet, BKType)
+    , (prelMap, BKType)
     , (prelOption, BKType)
+    , (prelNumericRange, BKType)
     , (prelMatch, BKType)
     , (prelThunk, BKType)
     , (prelNeed, BKType)
     , (prelZipper, BKType)
+    , (prelProjector, BKType)
     , (prelRef, BKType)
     , (prelRegion, BKType)
+    , (prelTypeLevel, BKType)
     , (prelEff, BKType)
     , (prelEffRow, BKType)
     , (prelEffLabel, BKType)
@@ -614,6 +712,8 @@ wiredInPreludeNames =
     , (prelReusable, BKType)
     , (prelTrue, BKCtor)
     , (prelFalse, BKCtor)
+    , (prelNatZero, BKCtor)
+    , (prelNatSucc, BKCtor)
     , (prelSome, BKCtor)
     , (prelNone, BKCtor)
     , (prelNil, BKCtor)
@@ -621,6 +721,7 @@ wiredInPreludeNames =
     , (prelLT, BKCtor)
     , (prelEQ, BKCtor)
     , (prelGT, BKCtor)
+    , (prelTypeLevelLevel, BKCtor)
     , (prelSuccess, BKCtor)
     , (prelFailure, BKCtor)
     , (prelFail, BKCtor)
@@ -645,19 +746,40 @@ wiredInPreludeNames =
     , (prelEqType, BKType)
     , (prelShow, BKType)
     , (prelOrd, BKType)
+    , (prelSuccessor, BKType)
+    , (prelMax, BKType)
     , (prelApplicative, BKType)
     , (prelMonad, BKType)
     , (prelMonadRef, BKType)
+    , (prelRangeable, BKType)
+    , (prelIntoQuery, BKType)
     , (prelReleasable, BKType)
     , (prelFromComprehensionRaw, BKType)
     , (prelFromComprehensionPlan, BKType)
     , (prelNot, BKValue)
     , (prelCompare, BKValue)
+    , (prelSucc, BKValue)
+    , (prelNatAdd, BKValue)
+    , (prelNatMultiply, BKValue)
+    , (prelNatCompare, BKValue)
+    , (prelMaxOp, BKValue)
     , (prelReadRef, BKValue)
     , (prelWriteRef, BKValue)
     , (prelCatchIO, BKValue)
     , (prelFinallyIO, BKValue)
     , (prelStringAppend, BKValue)
+    , (prelTypeLevelZero, BKValue)
+    , (prelTypeLevelOne, BKValue)
+    , (prelTypeLevelOmega, BKValue)
+    , (prelTypeLevelFromInteger, BKValue)
+    , (prelTypeLevelSucc, BKValue)
+    , (prelTypeLevelAdd, BKValue)
+    , (prelTypeLevelMax, BKValue)
+    , (prelCompareTypeLevel, BKValue)
+    , (prelMonotone, BKType)
+    , (prelAddRightMonotone, BKValue)
+    , (prelPreservesParametricForall, BKType)
+    , (prelPullForall, BKValue)
     , (prelCaptures, BKIntrinsic)
     , (prelSizedOf, BKIntrinsic)
     , (prelEffBind, BKIntrinsic)
@@ -692,7 +814,8 @@ wiredInPreludeNames =
 -- check in "Kappa.Pipeline".
 --
 -- The order and ids here mirror @kappart.h@ byte-for-byte (KCT_OTHER=0 is a
--- never-constructed sentinel and is NOT listed; the real ids run 1..27, and
+-- never-constructed sentinel and is NOT listed; the real ids are contiguous,
+-- and
 -- user constructors begin at 'kctUserBase' = 40).
 
 -- | One runtime-pinned constructor: its 'GName' (whose 'gKey' is the lookup
@@ -735,6 +858,10 @@ runtimeCtors =
   , RuntimeCtor prelTimedOut 25 "KCT_IT_TIMED_OUT"
   , RuntimeCtor prelRaceLost 26 "KCT_IT_RACE_LOST"
   , RuntimeCtor prelExternal 27 "KCT_IT_EXTERNAL"
+  , RuntimeCtor prelLT 28 "KCT_LT"
+  , RuntimeCtor prelEQ 29 "KCT_EQ"
+  , RuntimeCtor prelGT 30 "KCT_GT"
+  , RuntimeCtor prelTypeLevelLevel 31 "KCT_TYPELEVEL_LEVEL"
   ]
 
 -- | @KCT_USER_BASE@ from @runtime/kappart.h@: the first id codegen may assign

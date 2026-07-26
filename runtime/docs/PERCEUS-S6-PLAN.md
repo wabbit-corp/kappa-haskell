@@ -1,7 +1,7 @@
 # Perceus Stage S6 — Implementation Plan (opt-in Borrowing → inferred FIP)
 
-Status: **Planned.** S0→S4 landed and reviewed sound (precise RC, free-on-zero, biased fast/slow split +
-shared reclamation). S5 has landed for the native C path: the KCore/KBackendIR split landed (Phase A, commit
+Status: **Phase A implemented; Phase B planned.** S0→S4 landed and reviewed sound (precise RC, free-on-zero,
+biased fast/slow split + shared reclamation). S5 has landed for the native C path: the KCore/KBackendIR split landed (Phase A, commit
 `0039ffa`) and drop-guided **FBIP reuse** (Phase B) is closed out with green §6 gates — the runtime primitives
 (`kdrop_reuse_ctor`/`kreuse_ctor` + the fused/early-token helpers), the reuse pass, allocation-free rebuilds
 on the rbtree/list-map fixtures, `KAPPA_PERCEUS_REUSE=0` reuse-on/off differentials, and the S5.B4 physical
@@ -68,7 +68,7 @@ dispatch. Neither alone beats hand-tuned C; together they are the endgame.
 Each sub-stage is **byte-identical / RC-neutral** (same observable output, RC-on == RC-off), exactly like the
 earlier Perceus stages; the *measurable* win is a drop in emitted `dup`/`drop` count on borrow-annotated code.
 
-- **S6.A0 — RC-elide borrowed uses.** *The problem:* today a borrowed parameter is still reference-counted as
+- **S6.A0 — RC-elide borrowed uses.** *The problem:* before S6.A, a borrowed parameter was still reference-counted as
   if owned — the callee may `dup` a read and the flow inserts `drop`s — pure waste, because the caller owns
   the value and drops it once. *The fix:* in the RC emission (driven by the KBackendIR ownership node-facts),
   a `Borrowed` use emits **no `dup`**, and a borrowed binder carries **no `drop` obligation** (the owner's
@@ -88,13 +88,21 @@ earlier Perceus stages; the *measurable* win is a drop in emitted `dup`/`drop` c
   binder ever reaches an owning sink in the lowered tree — analogous to the S5 §34.3.3 fail-closed validator.
   *Gate:* the verifier is green over the corpus; a synthetic escape (a borrowed value stored/returned owned)
   is rejected at compile time, not miscompiled.
-- **S6.A2 — borrow across the IO/call boundary (close the D6 gap).** *The problem:* borrowing is most valuable
+- **S6.A2 — borrow across the IO/call boundary (close the D6 gap). BLOCKED ON SPEC:
+  [CAPTURES-ROW-REDESIGN.md](../../docs/CAPTURES-ROW-REDESIGN.md).** *The problem:* borrowing is most valuable
   exactly where reads are hottest — through a `do` block, a borrowed `& ref` read, a borrowed record/ctor
   projection base, a value passed borrowed into a sub-call — but that is the known "borrow-through-IO" hole
-  (D6): the current flow conservatively re-owns across the IO-monad seam and across nested calls. *The fix:*
-  extend the A0 elision through the IO/`do` lowering and the call convention so a value borrowed by the caller
-  stays borrowed into the callee (the callee's parameter is `&`, so it neither dups nor drops). *Gate:*
-  RC-op reduction on the IO/borrow-heavy paths; TSan/poison clean; borrow-on == borrow-off.
+  (D6): the flow conservatively rejects a `do` action derived from a borrowed parameter
+  (`E_QTT_BORROW_ESCAPE`). **Review finding (2026-07-06): this is not an implementation bug — the current
+  §12.3.1 captures spec cannot express a sound fix.** Capture sets have no polymorphism, no data-constructor
+  lifting, no latent arrow rows, and no defined meaning for unannotated demanded types, so any change that
+  makes the D6 shape pass either launders captures through a generic seam (unsound) or special-cases IO
+  (forbidden). The redesign doc re-founds captures as an inferred coeffect row (one implicit row per type
+  former, `cap(a)` transparency, subcapturing, rank-2 scope discharge at `using`); A2 is *implemented by* its
+  C1-C3 stages. Until then the failing A2 regression is kept as the pinned D6 witness
+  (expected-fail/report-only) and no captures/escape-check changes are made outside that design. *Gate (post-
+  redesign):* the D6 regression flips to passing via the C3 discharge rule; RC-op reduction on the IO/borrow
+  paths; TSan/poison clean; borrow-on == borrow-off; laundering fixtures still rejected.
 
 ## 2. Phase B — inferred FIP (static uniqueness → guard elision → zero-alloc knowledge)
 
@@ -211,7 +219,7 @@ When all four hold, the reuse *cannot fail at run time*, so the runtime `rc==1` 
 |---|---|---|
 | **S6.A0** | RC-elide borrowed uses (no `dup`/`drop` on `Borrowed`; borrowed arg passed bare) — C backend first; LLVM joins after the LLVM-RC port | RC-on==RC-off; byte-identical; strictly fewer `dup`/`drop` on the borrow corpus; poison-clean; no leak/double-free |
 | **S6.A1** | borrow-escape fail-closed KBackendIR verifier | green on corpus; a synthetic borrowed escape is rejected at compile time |
-| **S6.A2** | borrow across the IO/`do`/call boundary (close D6) | RC-op reduction on IO/borrow paths; borrow-on==borrow-off; TSan/poison clean |
+| **S6.A2** | borrow across the IO/`do`/call boundary (close D6) — **BLOCKED on [CAPTURES-ROW-REDESIGN.md](../../docs/CAPTURES-ROW-REDESIGN.md)** (spec-first; implemented by its C1-C3) | D6 regression stays pinned expected-fail until C3 flips it; then RC-op reduction on IO/borrow paths; borrow-on==borrow-off; TSan/poison clean; laundering fixtures still rejected |
 | **S6.B0** | static-uniqueness analysis over KBackendIR (`Q1` ∧ `ucHi==1` ∧ static-non-shared ∧ non-escaping) | conservative + **sound**: never claims uniqueness where runtime `rc==1` is false (poison-assert validated) |
 | **S6.B1** | guard elision — `reuse_in_place` (no `rc==1` branch) on proven-unique sites | byte-identical; the uniqueness branch is gone on proven paths; poison-clean; perf up on the linear reuse path |
 | **S6.B2** | reuse-credit (`◇ₖ`) accounting → whole-function FIP | `reverse`/`map`/rbtree-rotation allocate zero and carry no guard |

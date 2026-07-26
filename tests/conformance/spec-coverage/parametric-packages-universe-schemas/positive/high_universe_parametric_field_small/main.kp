@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+
+type Tag : Type =
+    (parametric 0 T : Type3,
+     value : Int)

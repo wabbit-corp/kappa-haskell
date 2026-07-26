@@ -10,8 +10,8 @@
 module main
 
 -- POSITIVE: record-shaped payload, witness + payload in one record
-d : exists (a : Type). (value : Option a)
-let d = seal (a = Int, value = Some 1) as exists (a : Type). (value : Option a)
+d : exists (a : Type). (value : Option a,)
+let d = seal (a = Int, value = Some 1) as exists (a : Type). (value : Option a,)
 
 -- the payload field is projectable as usual
 let projected = d.value

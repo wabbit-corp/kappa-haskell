@@ -57,7 +57,7 @@ let wrongWrapperReverse = formatFahrenheit (Celsius 20)
 -- POSITIVE: a generic wrapper and its correct usage.
 data Tagged (tag : Type) (a : Type) : Type = Tagged a
 
-getTagged : forall tag a. Tagged tag a -> a
+getTagged : forall (tag a : Type). Tagged tag a -> a
 let getTagged t =
     match t
     case Tagged v -> v

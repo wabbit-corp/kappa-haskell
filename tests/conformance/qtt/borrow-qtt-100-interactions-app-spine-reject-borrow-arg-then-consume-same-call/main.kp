@@ -2,7 +2,7 @@
 
 --! allow_unsafe_consume
 
-type Box : Type = (value : Int)
+type Box : Type = (value : Int,)
 
 readBox : (& b : Box) -> Int
 let readBox (& b : Box) : Int = b.value

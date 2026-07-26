@@ -12,7 +12,7 @@ module main
 -- project a FiberId back to its raw Integer for comparison/printing
 let fidInt f =
     match f
-      case MkFiberId n -> n
+      case FiberId.MkFiberId n -> n
 
 let showBool b = if b then "true" else "false"
 
@@ -38,9 +38,9 @@ let main = do
     -- the id seen from INSIDE a fiber agrees with fiberId of its handle
     let exa <- await fa
     match exa
-      case Success innerA ->
+      case Exit.Success innerA ->
         printlnString (stringAppend "agree " (showBool (eqInt innerA ida)))
-      case Failure _ -> printlnString "agree false"
+      case Exit.Failure _ -> printlnString "agree false"
     -- drain the second fiber so the program ends cleanly
     let _ <- await fb
     pure ()

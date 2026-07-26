@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+polyId :
+    forall A.
+    A -> A
+
+let polyId A x =
+    x

@@ -1,0 +1,14 @@
+module main
+
+-- Spec §11.1.4 / §28.2: the intrinsic h-level and erasure classifiers are
+-- ordinary nameable trait goals even though their introduction is compiler-owned.
+usesIntrinsicClassifiers :
+    (n : Nat) ->
+    (0 A : Type) ->
+    IsNType n A ->
+    RuntimeErased A ->
+    Unit
+let usesIntrinsicClassifiers n A hn erased = ()
+
+--! mode check
+--! assertNoErrors

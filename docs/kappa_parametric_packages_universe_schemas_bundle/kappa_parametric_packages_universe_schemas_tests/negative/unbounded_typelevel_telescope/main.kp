@@ -1,0 +1,8 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE
+--! assertDiagnosticFamily error kappa.universe.unbounded-telescope
+
+type AllTypes =
+    (ordinary 0 level : TypeLevel,
+     ordinary 0 T : Type level)

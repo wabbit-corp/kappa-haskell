@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | The native foreign-ABI lowering vocabulary (§26.1.1/§26.1.4, §27.1.1).
 --
@@ -32,7 +33,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Numeric (showHex)
 import Kappa.Build.Types (CType (..), FfiClass (..))
-import Kappa.Core (GName (..), Icit (..), Q (..), Term (..))
+import Kappa.Core (FormationMode (..), GName (..), Icit (..), ObservationMode (..), Q (..), Term (..), pattern CPiFormedM)
 import Kappa.Source (ModuleName (..))
 
 -- | A native symbol resolved from the manifest, ready for direct-call
@@ -89,26 +90,27 @@ cAbiType = \case
   CtF64 -> "double"
 
 -- | The Kappa surface type a 'CType' is presented as (conservative typing,
--- §26.1.4). Integer-class C scalars surface as @Integer@; handles/pointers
--- as the abstract @std.ffi@ types (the runtime boxes them as opaque K_FGN).
-ctypeKappaTerm :: CType -> Term
-ctypeKappaTerm ty = case ty of
-  CtUnit -> gp "Unit"
-  CtBool -> gp "Bool"
-  CtDouble -> gp "Double" -- = std.ffi.F64 (§26.2: F64 MAY be Double)
-  CtString -> gp "String"
-  CtInt -> gp "Integer" -- C `int` (not exact-width); ergonomic Integer surface
+-- §26.1.4). The caller supplies the authenticated global-head constructor so
+-- generated host interfaces use the same declaration-universe schemas as
+-- source occurrences instead of manufacturing empty universe spines.
+ctypeKappaTerm :: (GName -> Term) -> CType -> Term
+ctypeKappaTerm globalHead ty = case ty of
+  CtUnit -> gp globalHead "Unit"
+  CtBool -> gp globalHead "Bool"
+  CtDouble -> gp globalHead "Double" -- = std.ffi.F64 (§26.2: F64 MAY be Double)
+  CtString -> gp globalHead "String"
+  CtInt -> gp globalHead "Integer" -- C `int` (not exact-width); ergonomic Integer surface
   -- §26.1.1:27307-27309: a RawPtr we cannot prove non-null MUST surface as
   -- `Option RawPtr`.
-  CtRawPtr -> CApp Expl (gp "Option") (ffi "RawPtr")
+  CtRawPtr -> CApp Expl (gp globalHead "Option") (ffi globalHead "RawPtr")
   -- §27.1.1:27316: a raw host.native binding MAY expose bare OpaqueHandle for
   -- a resource whose release is supplied out of band (the binding's close op).
-  CtHandle -> ffi "OpaqueHandle"
+  CtHandle -> ffi globalHead "OpaqueHandle"
   -- §26.1.2:26114: exact-width / pointer-width / float scalars MUST surface as
   -- the corresponding std.ffi nominal types.
   _ -> case ffiScalar ty of
-    Just (tyName, _) -> ffi tyName
-    Nothing -> gp "Integer"
+    Just (tyName, _) -> ffi globalHead tyName
+    Nothing -> gp globalHead "Integer"
 
 -- | The std.ffi nominal scalar a CType surfaces as (type name, ctor gKey), for
 -- the exact-width / pointer-width / float classes (§26.1.2). 'Nothing' for the
@@ -155,9 +157,12 @@ rnsCollectCtors rns =
 -- the conservative §26.1.4 framing (no host effect escapes into a pure
 -- value). The normal form matches "Kappa.Backend.NativeCatalog"'s former
 -- hand-written surface but is now DERIVED from the manifest's ABI signature.
-nativeMemberType :: [CType] -> CType -> Term
-nativeMemberType ps r =
-  foldr (\p acc -> ctypeKappaTerm p ~> acc) (uio (ctypeKappaTerm r)) ps
+nativeMemberType :: (GName -> Term) -> [CType] -> CType -> Term
+nativeMemberType globalHead ps r =
+  foldr
+    (\p acc -> ctypeKappaTerm globalHead p ~> acc)
+    (uio globalHead (ctypeKappaTerm globalHead r))
+    ps
 
 -- ── direct-call codegen (§27.1.1) ─────────────────────────────────────
 
@@ -277,19 +282,22 @@ cStrLit s = "\"" <> s <> "\""
 
 -- ── small Core helpers (canonical, δ-unfold to an `expect`'s defeq) ────
 
-gp :: Text -> Term
-gp = CGlob . GName (ModuleName ["std", "prelude"])
+gp :: (GName -> Term) -> Text -> Term
+gp globalHead name =
+  globalHead (GName (ModuleName ["std", "prelude"]) name)
 
-ffi :: Text -> Term
-ffi = CGlob . GName (ModuleName ["std", "ffi"])
+ffi :: (GName -> Term) -> Text -> Term
+ffi globalHead name =
+  globalHead (GName (ModuleName ["std", "ffi"]) name)
 
 infixr 5 ~>
 (~>) :: Term -> Term -> Term
-a ~> b = CPi Expl QW False "_" a b
+a ~> b = CPiFormedM Ordinary FormationOrdinary Expl QW False "_" a b
 
 -- | @IO Void a@ — the normal form of the prelude's @UIO a@ alias.
-uio :: Term -> Term
-uio a = CApp Expl (CApp Expl (gp "IO") (gp "Void")) a
+uio :: (GName -> Term) -> Term -> Term
+uio globalHead a =
+  CApp Expl (CApp Expl (gp globalHead "IO") (gp globalHead "Void")) a
 
 renderMod :: ModuleName -> Text
 renderMod (ModuleName segs) = T.intercalate "." segs

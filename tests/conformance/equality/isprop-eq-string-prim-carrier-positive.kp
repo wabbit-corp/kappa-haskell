@@ -19,7 +19,7 @@ module main
 -- isprop-eq-foreign-carrier-rigid-rejected.kp and
 -- isprop-eq-requires-isset-bool-subst-rejected.kp.
 
-descrLaw : (=) String (__debugRender 1) ""
+descrLaw : (=) @String (__debugRender 1) ""
 let descrLaw = unsafeAssertProof "a String law over a primitive equand"
 
 --! mode check

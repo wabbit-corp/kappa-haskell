@@ -3,17 +3,11 @@ module main
 -- §8 h-level — arbitrary / symbolic h-level goals must NOT be solved by
 -- unbounded proof search.
 --
--- The doc's symbolic case is 'IsNType n Bool' over a free 'n : Nat', expected
--- to fail with an unsolved implicit.  'IsNType' is not a trait in this
--- implementation, so the directly-analogous test is an h-level goal over an
--- ABSTRACT carrier: 'IsSet a' for a rigid 'a : Type'.  No instance head matches
--- a variable carrier and there is no intrinsic rule, so resolution does not
--- embark on unbounded search — it terminates with UNSOLVED.  This pins the
--- §13 "do not infer 'IsSet A' for arbitrary A" / "deterministic, terminating
--- h-level solving" requirement.
+-- A symbolic h-level is not guessed by unbounded proof search. IsNType is an
+-- intrinsic trait, but no intrinsic introduction rule can decide a rigid n.
 
-arbitrarySet : forall (a : Type). IsSet a
-let arbitrarySet = summon (IsSet a)
+arbitraryNType : (n : Nat) -> IsNType n Bool
+let arbitraryNType n = summon (IsNType n Bool)
 
 --! mode check
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT

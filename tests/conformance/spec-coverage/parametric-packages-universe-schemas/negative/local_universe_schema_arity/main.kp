@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.universe.schema-arity
+
+bad : Int
+let bad =
+    let localId.{u} (A : Type u) (x : A) = x
+    localId.{0, 1} Int 1

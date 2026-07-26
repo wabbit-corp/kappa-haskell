@@ -13,13 +13,13 @@ module main
 tagName : DefectTag -> String
 let tagName t =
     match t
-    case Panic -> "panic"
-    case OtherDefect -> "other"
+    case DefectTag.Panic -> "panic"
+    case DefectTag.OtherDefect -> "other"
     case _ -> "?"
 
 -- §28.2 DefectInfo new shape: ctor `DefectInfo (tag) (Option String)`.
 di : DefectInfo
-let di = DefectInfo OtherDefect (Some "boom")
+let di = DefectInfo DefectTag.OtherDefect (Some "boom")
 
 diMsg : DefectInfo -> Option String
 let diMsg d = match d case DefectInfo tag msg -> msg
@@ -29,13 +29,13 @@ let diTag d = match d case DefectInfo tag msg -> tag
 
 -- §28.2 InterruptCause ctor spelled `InterruptCause` (matches the type).
 ic : InterruptCause
-let ic = InterruptCause Requested None
+let ic = InterruptCause InterruptTag.Requested None
 
 icTag : InterruptCause -> InterruptTag
 let icTag c = match c case InterruptCause tag by -> tag
 
 isRequested : InterruptTag -> Bool
-let isRequested t = match t case Requested -> True case _ -> False
+let isRequested t = match t case InterruptTag.Requested -> True case _ -> False
 
 -- §28.2 n-ary boolean folds.
 ands : Bool

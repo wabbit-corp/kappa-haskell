@@ -1,0 +1,22 @@
+--! assertNoErrors
+--! assertEval result 7
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertStageDumpRoundTrips KCore
+
+-- §11.1.2.3B/§17.1: constructor-local existentials retain their independent
+-- observation modes through pattern elaboration. The hidden ordinary type code
+-- and parametric type witness both erase dynamically, but they are not the same
+-- static contract and must occupy distinct, correctly-modeled Core scope slots.
+module main
+
+data Mixed : Type1 =
+    MkMixed : forall (ordinary 0 A : Type0). forall (parametric 0 B : Type0). A -> B -> Mixed
+
+value : Mixed
+let value = MkMixed @Int @Bool 7 True
+
+result : Int
+let result =
+    match value
+    case MkMixed _ _ -> 7

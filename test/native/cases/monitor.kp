@@ -6,6 +6,8 @@
 -- later await still sees the same result.
 module main
 
+import std.prelude.(type Exit(..))
+
 worker : UIO Int
 let worker = ioPure 5
 

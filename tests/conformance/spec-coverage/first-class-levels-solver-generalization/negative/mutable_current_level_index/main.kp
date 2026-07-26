@@ -1,0 +1,12 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_VAR_IN_STATIC_POSITION
+
+bad :
+    Monad m =>
+    MonadRef m =>
+    m TypeLevel
+let bad = do
+    var u = 0
+    type Bad = Type u
+    pure u

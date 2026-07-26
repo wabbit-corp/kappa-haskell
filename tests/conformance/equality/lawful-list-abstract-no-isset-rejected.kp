@@ -1,18 +1,30 @@
 module main
 
--- §14.4 soundness (NEGATIVE): with `instance IsSet (List a)` deliberately
--- removed (it is FALSE — `List a` is a set only when `a` is), a generic
--- equality `(=) xs ys` over an ABSTRACT element type `a` is NOT an h-prop, so
--- `unsafeAssertProof` cannot construct it: the IsProp-under-Pi closure solver
--- reaches `IsProp ((=) xs ys)` over carrier `List a`, finds no
--- `IsSet (List a)` evidence, refuses to fabricate set-ness, and the assertion
--- is REJECTED (E_UNSOLVED_IMPLICIT).
+-- §14.4 soundness (NEGATIVE): a generic equality `(=) xs ys` over an
+-- ABSTRACT element type `a` is NOT an h-prop, so `unsafeAssertProof`
+-- cannot construct it: the IsProp-under-Pi closure solver reaches
+-- `IsProp ((=) xs ys)` over carrier `List a`, finds no `IsSet (List a)`
+-- evidence, refuses to fabricate set-ness, and the assertion is REJECTED
+-- (E_UNSOLVED_IMPLICIT).
 --
--- Were `IsSet (List a)` reinstated, `bogus` below would type-check and a
--- `subst` over a discriminator type family would transport `Unit` into `Void`,
--- inhabiting `Void` — the same soundness catastrophe pinned closed for `Bool`
--- in `isprop-eq-requires-isset-bool-subst-rejected.kp`. List's monoid laws are
--- instead PROVEN by honest structural induction (see `listAppendAssoc`).
+-- Under §14.1.1's `trait IsSet a => Eq` supertrait, the standard
+-- `Eq a => Eq (List a)` instance forces the CONDITIONAL
+-- `IsSet a => IsSet (List a)` to exist (a well-formed instance must
+-- discharge its supertrait), so at set-carriers like `List Bool` the
+-- IsSet goal IS solvable — see tests/pending-import/spec-coverage/
+-- nat-fin-refinement/positive/isset-supertrait-closure. What must stay
+-- absent is the UNCONDITIONAL `IsSet (List a)`: this test is red only
+-- because `a` here is abstract with no `Eq a`/`IsSet a` premise in scope,
+-- so no conditional instance or supertrait projection can fire.
+--
+-- Were an unconditional `IsSet (List a)` admitted, `bogus` below would
+-- type-check and a `subst` over a discriminator type family would
+-- transport `Unit` into `Void`, inhabiting `Void` — the soundness
+-- catastrophe pinned closed for carriers with no `Eq` in their supertrait
+-- closure by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- negative/unsafe-assert-no-isset-function-carrier. List's monoid laws
+-- are instead PROVEN by honest structural induction (see
+-- `listAppendAssoc`).
 
 bogus : forall (a : Type) (xs : List a) (ys : List a). (=) xs ys
 let bogus = unsafeAssertProof "spec-forbidden: List a is not a set at abstract a"

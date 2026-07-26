@@ -1,7 +1,12 @@
--- §14.5 (Spec L15007-L15009): the Eq instance derived inside lib for the
--- opaque data type is usable outside only through the trait interface; it
--- grants no constructor access, pattern-matching access, or definitional
--- transparency for Secret outside its defining module.
+-- §14.5 (opacity clause) + §14.5.1: the Eq instance derived inside lib
+-- for the opaque data type is usable outside only through the trait
+-- interface ("the resulting exported instances expose only their
+-- declared trait interfaces"); it grants no constructor access,
+-- pattern-matching access, or definitional transparency for Secret
+-- outside its defining module. §10.2.1's visibility clause backs the
+-- negative half independently: outside an `opaque data` declaration's
+-- defining scope, hidden-constructor no-confusion metadata is not
+-- available for new source proofs.
 --! mode check
 --! assertErrorCount 2
 module main
@@ -12,6 +17,11 @@ import lib.(Secret, mkSecret)
 sameSecret : Bool
 let sameSecret = mkSecret 1 == mkSecret 1
 
+-- POSITIVE: the exported instance also exposes IsSet Secret by ordinary
+-- supertrait projection (§14.5.1) without revealing the constructor.
+secretIsSet : IsSet Secret
+let secretIsSet = summon (IsSet Secret)
+
 -- NEGATIVE: the derived instance does not leak the constructor. Both
 -- errors are direct consequences of opacity: the constructor name is not
 -- in scope, so its pattern binder 'n' never binds either.
@@ -20,7 +30,3 @@ let peek s =
     match s
     case MkSecret n -> n --!! kappa.name.unresolved
     case _ -> 0
-
--- STATUS(a0497523): FAIL — derive is unsupported (E_UNSUPPORTED in lib), so
--- no Eq Secret instance is ever published and main additionally gets an
--- unsolved (==) implicit: 4 errors instead of the 2 opacity errors.

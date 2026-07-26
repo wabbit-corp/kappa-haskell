@@ -22,7 +22,7 @@ let getName (@0 r : RecRow) (& rec : (name : String | r)) : String = rec.name
 -- needs RecTailSatisfies r 0, which is unavailable
 forgetExtras : forall (r : RecRow). (1 rec : (name : String | r)) -> (name : String,)
 let forgetExtras (@0 r : RecRow) (1 rec : (name : String | r)) : (name : String,) =  --!! E_ROW_TAIL_QUANTITY_UNSATISFIED
-    (name = rec.name)
+    (name = rec.name,)
 
 -- unrestricted receiver duplicating the whole record (tail included):
 -- fine at the definition site, the tail obligation moves to call sites

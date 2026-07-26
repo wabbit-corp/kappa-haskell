@@ -23,7 +23,7 @@ let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (
 
 -- exact closed record: the residual row is empty
 n1 : String
-let n1 = readName (name = "x")
+let n1 = readName (name = "x",)
 
 -- closed record with extra fields: they become the residual row
 grown : (city : String, name : String, age : Int)

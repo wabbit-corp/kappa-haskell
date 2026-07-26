@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | KBackendIR Stage 2: the shared compile-time representation/layout table.
 --
 -- This module is the SINGLE source of truth for how a value head is
@@ -49,6 +51,7 @@ module Kappa.Backend.Repr
   , runtimeErasedParam
   , runtimeRelevantParam
   , runtimeConstructorField
+  , valueDomainIsKind
   , erasedParamMask
   , erasedSpinePositions
   , erasedSpinePositionsForArgs
@@ -79,9 +82,10 @@ module Kappa.Backend.Repr
   , ctorLayoutByArity
   , ctorBoxedFootprintBytes
 
-    -- * S1.3 ctor layout authority (observe-only; S5 Phase B reuse substrate)
+  -- * S1.3 ctor layout authority (observe-only; S5 Phase B reuse substrate)
   , CtorLayoutInfo (..)
   , ctorLayoutOf
+  , ctorLayoutOfAt
 
     -- * Constructor tag ids (the single authority)
   , tagId
@@ -111,12 +115,19 @@ import Kappa.Builtins
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
+  , CoreLocalRecDef (..)
+  , ConstructorArg (..)
   , CorePat (..)
   , GName (..)
   , Icit (..)
   , Q (..)
+  , RecordField (..)
   , Term (..)
+  , pattern CLam
+  , pattern CPi
+  , pattern CRecordT
   , Value (..)
+  , pattern VPi
   , gKey
   )
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
@@ -162,7 +173,7 @@ data Rep
 -- scalar-worker eligibility is unchanged.
 scalarRep :: Value -> Rep
 scalarRep = \case
-  VGlobN g [] | Just r <- primScalarRep g -> r
+  VGlobal g _ [] | Just r <- primScalarRep g -> r
   _ -> RepBoxed
 
 -- | The scalar representation of a primitive type's DECLARATION-SYMBOL IDENTITY.
@@ -419,7 +430,7 @@ resultIsProofTerm heads hypHeads lvl propLvls ty = case ty of
 hypProofVarLevel :: [GName] -> Int -> Term -> Maybe Int
 hypProofVarLevel heads lvl dom =
   case coreSpine dom of
-    (CGlob h, [(_, CVar j)])
+    (CGlobal h _, [(_, CVar j)])
       | h `elem` heads ->
           Just (lvl - 1 - j)
     _ -> Nothing
@@ -440,8 +451,8 @@ proofBodyHeads =
 
 coreHeadGlob :: Term -> Maybe GName
 coreHeadGlob t = case fst (coreSpine t) of
-  CGlob h -> Just h
-  CCtor h _ _ -> Just h
+  CGlobal h _ -> Just h
+  CCtorI h _ _ _ -> Just h
   _ -> Nothing
 
 coreSpine :: Term -> (Term, [(Icit, Term)])
@@ -531,9 +542,8 @@ argConv q borrowed
 -- | The shared runtime-erasure classifier for one telescope binder. A
 -- quantity-0 binder is erased by quantity; any binder whose domain is itself a
 -- kind (@Type@, @Type -> Type@, …) is erased by phase; and domains explicitly
--- known runtime-erased by proposition evidence are erased. The classifier
--- inspects the semantic 'Value' directly, so code generation no longer performs
--- the old @quote . force@ readback just to rediscover kind-domain status.
+-- known runtime-erased by proposition evidence are erased. Runtime-capable
+-- index data such as @TypeLevel@ is not a kind and is retained when demanded.
 runtimeErasedParam :: EvalCtx -> Int -> Q -> Value -> Bool
 runtimeErasedParam ctx lvl q dom =
   q == Q0 || valueDomainIsKind ctx lvl dom || resultIsProofValue ctx lvl dom
@@ -685,23 +695,36 @@ valueDomainIsKind ctx lvl v =
 maxVar :: Term -> Int
 maxVar = \case
   CVar i -> i
-  CGlob _ -> -1
-  CLam _ _ _ b -> maxVar b - 1
-  CPi _ _ _ _ a b -> max (maxVar a) (maxVar b - 1)
+  CLocal i _ -> i
+  CGlobal _ _ -> -1
+  CLamM _ _ _ _ b -> maxVar b - 1
+  CPiEvidenceM _ _ _ _ _ _ _ _ a b -> max (maxVar a) (maxVar b - 1)
   CApp _ f a -> max (maxVar f) (maxVar a)
   CSort _ -> -1
+  CLevel _ -> -1
+  CUniverseLift _ _ _ t -> maxVar t
+  CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t ->
+    maximum (maxVar t : map maxVar (sourceArguments ++ targetArguments))
   CLit _ -> -1
-  CCtor _ _ as -> maximum (-1 : map maxVar as)
+  CCtorI _ _ _ arguments -> maximum (-1 : map (maxVar . caTerm) arguments)
   CMatch s _ alts ->
     maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
-  CRecordT fs -> maximum (-1 : map (maxVar . snd) fs)
+  CRecordTQ fs -> maximum (-1 : map (maxVar . rfType) fs)
   CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
-  CProj e _ -> maxVar e
-  CProjAt e _ _ -> maxVar e
+  CProjM _ e _ -> maxVar e
+  CProjAtM _ e _ _ -> maxVar e
   CVariantT ms -> maximum (-1 : map maxVar ms)
   CInject _ e -> maxVar e
-  CLet _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
-  CLetRec _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
+  CLetM _ _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
+  CLetRecM _ _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
+  CLetPolyM _ _ _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
+  CLetRecPolyM _ _ _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
+  CLetRecGroupM _ definitions body ->
+    let count = length definitions
+     in maximum
+          ( maxVar body - count
+              : [max (maxVar (clrdType definition)) (maxVar (clrdRhs definition) - count) | definition <- definitions]
+          )
   CMeta _ -> -1
   CDo _ _ -> -1
   CSealE _ e -> maxVar e
@@ -718,15 +741,15 @@ maxVar = \case
 patBinders :: CorePat -> Int
 patBinders = \case
   CPWild -> 0
-  CPVar _ -> 1
+  CPVarM _ _ -> 1
   CPLit _ -> 0
-  CPCtor _ nEx ps -> nEx + sum (map patBinders ps)
+  CPCtorM existentialModes _ _ ps -> length existentialModes + sum (map patBinders ps)
   CPTuple ps -> sum (map patBinders ps)
-  CPRecord fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
+  CPRecordM fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
   CPInject _ p -> patBinders p
-  CPInjectRest _ -> 1
+  CPInjectRestM _ _ -> 1
   CPOr ps _ -> maximum (0 : map patBinders ps)
-  CPAs _ p -> 1 + patBinders p
+  CPAsM _ _ p -> 1 + patBinders p
 
 -- ── Static constructor layout ────────────────────────────────────────
 --
@@ -874,9 +897,16 @@ data CtorLayoutInfo = CtorLayoutInfo
 -- nothing in S1 acts on it. A telescope whose codomain closure escapes its
 -- environment (the same shape 'repSelect' rejects) yields 'Nothing'.
 ctorLayoutOf :: EvalCtx -> Maybe Term -> Maybe CtorLayoutInfo
-ctorLayoutOf _ Nothing = Nothing
-ctorLayoutOf ctx (Just ty) =
-  case ctorFieldReps ctx (eval ctx [] ty) of
+ctorLayoutOf ctx = ctorLayoutOfAt ctx 0
+
+-- | Classify an occurrence-local constructor telescope under its checked
+-- surrounding Core scope. Generated intrinsic constructors may mention local
+-- type parameters in their payload domains, so treating every annotation as
+-- closed would either lose layout authority or evaluate an out-of-scope term.
+ctorLayoutOfAt :: EvalCtx -> Int -> Maybe Term -> Maybe CtorLayoutInfo
+ctorLayoutOfAt _ _ Nothing = Nothing
+ctorLayoutOfAt ctx depth (Just ty) =
+  case ctorFieldRepsAt depth ctx (eval ctx (rigidEnv depth) ty) of
     Nothing -> Nothing
     Just fieldReps ->
       let layout = ctorLayout fieldReps
@@ -892,6 +922,8 @@ ctorLayoutOf ctx (Just ty) =
                     LayoutBoxed -> Just (ctorBoxedFootprintBytes arity)
               , clFieldReps = fieldReps
               }
+  where
+    rigidEnv n = [VRigid (n - 1 - i) [] | i <- [0 .. n - 1]]
 
 -- | Walk a constructor's (whnf-forced) type telescope and return the 'scalarRep'
 -- of every __RUNTIME__ field, in field order — the field set the backend
@@ -910,7 +942,10 @@ ctorLayoutOf ctx (Just ty) =
 -- rejects (a codomain closure escaping its environment); a non-Pi head ends the
 -- walk with the fields gathered so far.
 ctorFieldReps :: EvalCtx -> Value -> Maybe [Rep]
-ctorFieldReps ctx = walk 0 []
+ctorFieldReps = ctorFieldRepsAt 0
+
+ctorFieldRepsAt :: Int -> EvalCtx -> Value -> Maybe [Rep]
+ctorFieldRepsAt baseLevel ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
@@ -918,9 +953,10 @@ ctorFieldReps ctx = walk 0 []
           if not (closureHasBoundEnv env body)
             then Nothing
             else
-              let x = VRigid lvl []
+              let absoluteLevel = baseLevel + lvl
+                  x = VRigid absoluteLevel []
                   cod = closApplyV x clo
-                  acc' = if runtimeConstructorField ctx lvl ic q dom then scalarRep dom : acc else acc
+                  acc' = if runtimeConstructorField ctx absoluteLevel ic q dom then scalarRep dom : acc else acc
                in walk (lvl + 1) acc' cod
         _ -> Just (reverse acc)
     closApplyV v (Closure env body) = eval ctx (v : env) body

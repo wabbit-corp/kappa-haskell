@@ -1,0 +1,24 @@
+-- §11.1.2.5: TypeLevel is an ordinary compile-time value. It can be passed,
+-- returned, stored, projected, sealed, and opened without making a universe
+-- expression canonical merely by doing so.
+--! mode check
+--! assertNoErrors
+
+idLevel : TypeLevel -> TypeLevel
+let idLevel u = u
+
+type LevelBox : Type = (level : TypeLevel,)
+
+box : LevelBox
+let box = (level = idLevel 1,)
+
+projected : TypeLevel
+let projected = box.level
+
+type PackedLevel : Type = exists (u : TypeLevel). Unit
+
+packed : PackedLevel
+let packed = seal exists (u = projected). () as PackedLevel
+
+opened : TypeLevel
+let opened = open packed as exists (u). payload in u

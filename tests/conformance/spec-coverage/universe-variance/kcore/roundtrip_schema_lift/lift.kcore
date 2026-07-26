@@ -1,0 +1,36 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  schema-certificate @schema:variance.demo.Phantom#2000 for @variance.demo.Phantom#3000
+    [checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {
+      roles = [irrelevant];
+      clauseKinds = [sort_declaration, point_constructor, eliminator, computation_rule];
+      monotoneWitnesses = [];
+    }
+
+  data @variance.demo.Phantom#3000 .{irrelevant ^u#0} : Type 0
+    certificate @schema:variance.demo.Phantom#2000 {
+      constructor @variance.demo.Phantom.Phantom#3001 : @variance.demo.Phantom#3000.{^u#0};
+    }
+
+  def ordinary @variance.demo.up#4000 :
+    ((ordinary ordinary omega explicit value %x#0 : @variance.demo.Phantom#3000.{0}) ->
+      @variance.demo.Phantom#3000.{3}) {
+    body = lambda (ordinary ordinary omega explicit value %x#0 : @variance.demo.Phantom#3000.{0}) {
+      schema-lift [
+        family = @variance.demo.Phantom#3000,
+        from = .{0},
+        to = .{3},
+        certificate = @schema:variance.demo.Phantom#2000,
+        roles = [irrelevant],
+        targetArgs = ()
+      ] %x#0
+    };
+  }
+}

@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+opaque let chooseLevel (b : Bool) : TypeLevel =
+    if b then 0 else omega
+
+id.{u} : (A : Type u) -> A -> A
+let id A x = x
+
+use :
+    (b : Bool) ->
+    (A : Type (chooseLevel b)) ->
+    A -> A
+let use b A x =
+    id.{chooseLevel b} A x

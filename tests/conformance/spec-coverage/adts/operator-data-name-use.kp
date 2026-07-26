@@ -8,14 +8,14 @@ module main
 --! mode check
 
 data (~=~) (@0 a : Type) (x : a) (y : a) : Type =
-    MkSame : (~=~) a x x
+    MkSame : (~=~) @a x x
 
 -- POSITIVE: prefix use in a type position, including partial application.
-refl1 : (~=~) Integer 1 1
+refl1 : (~=~) @Integer 1 1
 let refl1 = MkSame
 
 SameInt : Integer -> Integer -> Type
-let SameInt = (~=~) Integer
+let SameInt = (~=~) @Integer
 
 refl2 : SameInt 2 2
 let refl2 = MkSame

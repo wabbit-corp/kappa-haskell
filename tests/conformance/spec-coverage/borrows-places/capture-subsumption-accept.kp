@@ -25,8 +25,8 @@ let pureAtBroad (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
 -- also applies to a capture-annotated record field
 packWide :
     forall (s : Region) (t : Region).
-    (&[s] x : Int) -> (&[t] y : Int) -> (getter : (Unit -> Int) captures (s, t))
-let packWide (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : (getter : (Unit -> Int) captures (s, t)) =
-    (getter = \() -> x)
+    (&[s] x : Int) -> (&[t] y : Int) -> (getter : (Unit -> Int) captures (s, t),)
+let packWide (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : (getter : (Unit -> Int) captures (s, t),) =
+    (getter = \() -> x,)
 
 -- STATUS(a51e1bf): PASS

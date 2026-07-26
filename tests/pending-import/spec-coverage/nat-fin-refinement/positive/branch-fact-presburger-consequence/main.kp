@@ -1,0 +1,29 @@
+-- Spec 16.4.1 branch facts feed the required arithmetic solver: the
+-- then-branch of `if n < 5` carries `(n < 5) = True`, and the erased
+-- goal `(n < 10) = True` follows as a non-negative affine combination
+-- of accepted inequalities (Spec 15.8.4 quantifier-free Presburger;
+-- Spec 16.3.3 step 4 proves the goal from the current lexical
+-- assumptions and typechecks the produced proof term). The discharge is
+-- CROSS-shaped — the fact and the goal are different comparisons —
+-- which the pre-revision same-shape-only discharge could not accept
+-- (that half stays pinned by tests/conformance/spec-coverage/
+-- lambdas-implicits-flow/comparison-fact-exact-discharge.kp, whose
+-- no-fact negative also survives: with no assumption in scope the goal
+-- is neither provable nor refutable and remains unsolved).
+
+smallInt : (n : Int) -> (@0 p : (n < 10) = True) -> Int
+let smallInt n @p = 1
+
+useIntConsequence : Int -> Int
+let useIntConsequence n = if n < 5 then smallInt n else 0
+
+-- The Nat twin exercises the same fragment over the inductive Nat of
+-- Spec 28.2, whose Ord instance delegates to natCompare (Spec 15.8.1
+-- recognizes the comparison by resolved semantic identity).
+smallNat : (n : Nat) -> (@0 p : (n < 10) = True) -> Nat
+let smallNat n @p = 1
+
+useNatConsequence : Nat -> Nat
+let useNatConsequence n = if n < 5 then smallNat n else 0
+
+--! assertNoErrors

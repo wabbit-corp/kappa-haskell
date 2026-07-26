@@ -1,6 +1,6 @@
 @PrivateByDefault module main
 
-mkPkg : Unit -> (F : Type -> Type,)
+mkPkg : Unit -> (F : (0 A : Type) -> Type,)
 let mkPkg () = (F = Option,)
 
 ok : (mkPkg ()).F Int

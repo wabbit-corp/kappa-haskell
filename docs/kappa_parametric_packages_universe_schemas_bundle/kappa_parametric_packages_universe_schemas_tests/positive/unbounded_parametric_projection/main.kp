@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+type AnyTypeWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)
+
+useWitness :
+    (p : AnyTypeWitness) ->
+    ((U : Type p.level) -> Int) ->
+    Int
+
+let useWitness p k =
+    k p.T

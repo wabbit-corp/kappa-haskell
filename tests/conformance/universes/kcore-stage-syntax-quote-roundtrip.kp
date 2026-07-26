@@ -1,0 +1,15 @@
+-- Spec §§21.1/21.4/30.2.0A: finalized syntax quotes are typed KCore values.
+-- Their surface AST, hygiene captures, origin, and splice slots must survive
+-- the canonical checkpoint; a display-only or omitted quote is not complete.
+module main
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+quoted : Syntax Int
+let quoted = '{ 1 }

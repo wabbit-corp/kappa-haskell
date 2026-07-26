@@ -1,0 +1,19 @@
+-- Spec 15.8.4 + 16.1.9: the solver REFUTES (3 % 2 == 0) = True, so an odd
+-- literal never receives the even refinement; and widening from a bound
+-- fact to a DIFFERENT congruence ((value % 3 == 0)) is not implied, so the
+-- target predicate goal fails rather than being silently assumed.
+type EvenNat : Type =
+    Refined Nat (\value -> (value % 2 == 0) = True)
+
+badOdd : EvenNat
+let badOdd = 3
+
+widenWrong :
+    EvenNat ->
+    Refined Nat (\value -> (value % 3 == 0) = True)
+
+let widenWrong value =
+    value
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_TYPE_MISMATCH

@@ -1,0 +1,13 @@
+module main
+
+Small : Type0
+let Small = Int
+
+widen : Type1
+let widen = Small
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

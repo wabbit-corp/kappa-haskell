@@ -16,7 +16,7 @@
 --! mode check
 
 -- A two-parameter base class whose method mentions both parameters.
-trait Container (f : Type -> Type) (item : Type) =
+trait Container (f : (A : Type) -> Type) (item : Type) =
     empty   : f item
     insert  : item -> f item -> f item
     toList  : f item -> List item
@@ -39,7 +39,7 @@ let buildAndList =
 --! assertType buildAndList (List Int)
 
 -- A subclass that inherits Container's constraint and adds a lookup method.
-trait Container f item => SearchContainer (f : Type -> Type) (item : Type) =
+trait Container f item => SearchContainer (f : (A : Type) -> Type) (item : Type) =
     contains : item -> f item -> Bool
 
 instance Eq Int => SearchContainer List Int =

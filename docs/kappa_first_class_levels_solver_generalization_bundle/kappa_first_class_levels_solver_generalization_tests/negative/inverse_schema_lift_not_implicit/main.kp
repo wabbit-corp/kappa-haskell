@@ -1,0 +1,9 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_LIFT_INVALID
+
+data Code.{covariant u} : Type (succ u) =
+    Code (ordinary 0 A : Type u)
+
+down : Code.{3} -> Code.{0}
+let down x = x

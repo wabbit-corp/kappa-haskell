@@ -1,0 +1,13 @@
+-- Spec §§11.1.2.8/30.2.0A: lexical level-comparison evidence may justify a
+-- cumulative ceiling. Its KCoreText lift must cite replayable local authority,
+-- never an opaque solver identity.
+module main
+
+type BoundedForall : Typeω =
+    forall (u : TypeLevel). forall (@0 p : u < ω). Type u
+
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

@@ -1,0 +1,12 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+bad :
+    Monad m => MonadRef m =>
+    m Unit
+let bad = do
+    let r <- newRef None
+    writeRef r (Some 1)
+    writeRef r (Some "x")
+    pure Unit

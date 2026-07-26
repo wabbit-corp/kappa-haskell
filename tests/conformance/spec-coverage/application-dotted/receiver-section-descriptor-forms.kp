@@ -8,7 +8,7 @@
 -- §§16.1.5-16.1.6 — here the non-consuming position selects the get facet.
 module main
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection cellValue (place this : Cell) : Int =
     yield this.value
@@ -18,7 +18,7 @@ readViaSection : Cell -> Int
 let readViaSection = (.cellValue)
 
 useIt : Int
-let useIt = readViaSection (value = 9)
+let useIt = readViaSection (value = 9,)
 
 projection cellLens (place this : Cell) : Int =
     get -> this.value
@@ -32,4 +32,4 @@ readViaLensSection : Cell -> Int
 let readViaLensSection = (.cellLens)
 
 useLens : Int
-let useLens = readViaLensSection (value = 10)
+let useLens = readViaLensSection (value = 10,)

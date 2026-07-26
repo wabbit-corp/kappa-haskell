@@ -1,0 +1,21 @@
+-- Spec 14.4 soundness — carrier-recovery integrity in the IsProp
+-- solver. The carrier of an equality is the equands' OWN homogeneous
+-- type; here that is `Bool -> Bool`, which has no Eq and hence no IsSet
+-- in its supertrait closure (Spec 28.2.3). The stuck equand
+-- additionally mentions a String rigid `s`, and `IsSet String` exists.
+-- A solver that recovered the carrier from a foreign type merely
+-- OCCURRING in the equand could grab that evidence and incorrectly
+-- certify the equality as an h-proposition. The IsProp obligation over
+-- the TRUE carrier must stay unsolved, rejecting the assertion.
+--
+-- The pre-revision vehicle used `List Bool` as the honest carrier; that
+-- no longer discriminates, because `trait IsSet a => Eq` (Spec 14.1)
+-- plus the standard `Eq a => Eq (List a)` force `IsSet (List Bool)` to
+-- resolve (see positive/isset-supertrait-closure).
+
+falseLaw : forall (s : String) (f : String -> (Bool -> Bool)). (=) (f s) (\ (b : Bool) -> b)
+let falseLaw = unsafeAssertProof "forge via a foreign set-typed carrier"
+
+--! allow_unsafe_assert_proof
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT

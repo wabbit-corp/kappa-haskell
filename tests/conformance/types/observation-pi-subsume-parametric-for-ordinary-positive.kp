@@ -1,0 +1,16 @@
+module main
+
+acceptsOrdinary : ((ordinary 0 x : Int) -> Type) -> Type
+let acceptsOrdinary f = f 1
+
+parametricFunction : (parametric 0 x : Int) -> Type
+let parametricFunction x = Int
+
+result : Type
+let result = acceptsOrdinary parametricFunction
+
+-- A function that accepts parametric arguments may stand where a function
+-- accepting only ordinary arguments is expected (§30.2.0 one-way
+-- ordinary-to-parametric observation subsumption).
+--! assertNoErrors
+--! assertType result Type

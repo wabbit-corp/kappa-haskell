@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+
+expect term platformValue : Int
+
+answer : Int
+let answer = platformValue

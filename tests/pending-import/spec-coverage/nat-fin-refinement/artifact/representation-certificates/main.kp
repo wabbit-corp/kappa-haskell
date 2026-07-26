@@ -1,0 +1,53 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+sampleFin :
+    Fin 5
+
+let sampleFin =
+    3
+
+sampleRefined :
+    NatBetween 2 30
+
+let sampleRefined =
+    3
+
+-- Closed enum and finite product per the pseudotests procedure: both
+-- receive required structural ordinal certificates (Spec 30.2.7B —
+-- nullary-constructor enums and mixed-radix finite products), and the
+-- enum's constructor mapping feeds the MUTATION.md constructor-mapping
+-- mutation step.
+data Compass : Type =
+    North
+    East
+    South
+    West
+
+sampleCompass :
+    Compass
+
+let sampleCompass =
+    East
+
+data CompassStep : Type =
+    CompassStep
+        (direction : Compass)
+        (step : Fin 5)
+
+sampleCompassStep :
+    CompassStep
+
+let sampleCompassStep =
+    CompassStep East sampleFin
+
+--! requires capability representationCertificates
+--! assertNoErrors
+--! assertOrdinalRepresentation 5 for Fin 5
+--! assertOrdinalRepresentation 4 for Compass
+--! assertOrdinalRepresentation 20 for CompassStep
+--! assertExactNaturalRepresentation for Nat
+--! assertRefinementRepresentation Nat for NatBetween 2 30

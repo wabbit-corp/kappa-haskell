@@ -1,0 +1,34 @@
+module lib
+
+-- Spec 10.2.1 visibility and opacity: the generated no-confusion package
+-- may mention only constructors visible in the current environment.
+-- Inside this defining scope Go and Halt are visible, so distinct-
+-- constructor disjointness proves `go = halt` empty and the theorem
+-- below checks by ordinary generated no-confusion. The module interface
+-- serializes what is needed to RECHECK this exported theorem, but must
+-- not reveal the hidden constructor structure to importers.
+opaque data Signal : Type =
+    Go
+    Halt
+
+go :
+    Signal
+
+let go =
+    Go
+
+halt :
+    Signal
+
+let halt =
+    Halt
+
+-- Exported checked theorem: usable downstream through its declared
+-- interface without exposing Go/Halt.
+goIsNotHalt :
+    go = halt ->
+    Void
+
+let goIsNotHalt proof =
+    match proof
+    case impossible

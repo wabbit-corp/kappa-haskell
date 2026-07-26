@@ -9,6 +9,8 @@
 -- post-loop print observes the final value.  Deterministic ⇒ ≡ interpreter.
 module main
 
+import std.prelude.(type Exit(..))
+
 -- "handle a connection": print its id.
 handle : Int -> UIO Unit
 let handle c = printlnString (stringAppend "handled " (showInt c))
@@ -19,7 +21,8 @@ let main = do
     var next = 0
     while running do
         -- "accept": a forked fiber yields the next connection id; await it.
-        let af <- fork (ioPure next)
+        let accepted : UIO Int = ioPure next
+        let af <- fork accepted
         let ec <- await af
         match ec
           case Success c -> do

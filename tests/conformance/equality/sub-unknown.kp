@@ -1,15 +1,14 @@
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
--- A CheckedSub instance whose definedness predicate does not reduce on
--- symbolic arguments: the (@_ : subDefined x y = True) obligation stays
--- open and must be reported.
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
+-- §28.2.3: the standard `CheckedSub Nat` definedness predicate is
+-- `subDefined x y = (y <= x)` over the standard `Ord Nat`. For symbolic
+-- x and y the (@_ : subDefined x y = True) obligation is neither provable
+-- nor refutable — §15.8.4's Presburger fragment cannot decide `y <= x`
+-- for arbitrary naturals — so it stays open and must be reported.
 f : Nat -> Nat -> Nat
 let f x y = x - y --!! E_UNSOLVED_IMPLICIT
 
--- Concrete arguments reduce and discharge the proof by conversion.
+-- Closed arguments discharge the proof by exact closed comparison
+-- (§15.8.4; equivalently ordinary conversion on the closed predicate).
 ok : Nat
 let ok = 5 - 3

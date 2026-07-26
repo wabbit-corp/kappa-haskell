@@ -1,0 +1,15 @@
+-- A discarded action with a constrained function payload is droppable.
+-- Diagnostic type transport must preserve the checked Pi type instead of
+-- treating an unsupported delaboration shape as a linear payload.
+module main
+
+makeFunction : UIO (Int -> Int)
+let makeFunction = pure (\x -> x)
+
+discardFunction : UIO Unit
+let discardFunction = do
+    makeFunction
+    pure ()
+
+--! mode check
+--! assertNoErrors

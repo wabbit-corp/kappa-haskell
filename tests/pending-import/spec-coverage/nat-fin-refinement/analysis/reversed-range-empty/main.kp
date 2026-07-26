@@ -1,0 +1,26 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+-- Canonical ranges are ascending; when hi < lo the range has no members
+-- (Spec 20.2.1). The runtime membership function agrees with the static
+-- refutation.
+membershipAtSample :
+    Bool
+
+let membershipAtSample =
+    contains (5 .. 4) 4
+
+-- T.12.7: a reversed canonical numeric range is empty and has symbolic
+-- cardinality zero. The T.12.8 conditional cardinality
+-- `if lo <= hi then hi - lo + 1 else 0` specializes to 0 here, and the
+-- refinement contributes Empty source reachability.
+--! requires capability symbolicCardinality
+--! requires capability representationCertificates
+--! assertNoErrors
+--! assertEval membershipAtSample False
+--! assertSymbolicCardinality 0 for NatBetween 5 4
+--! assertInhabitance SourceReachability Empty for NatBetween 5 4
+--! assertOrdinalRepresentation 0 for NatBetween 5 4

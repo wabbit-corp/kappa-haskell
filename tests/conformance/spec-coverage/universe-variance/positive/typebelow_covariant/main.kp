@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole TypeBelow 0 covariant
+--! assertSchemaLiftPresent TypeBelow
+
+up : TypeBelow.{1} -> TypeBelow.{3}
+let up x = x

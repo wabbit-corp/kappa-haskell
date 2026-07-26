@@ -12,7 +12,7 @@
 data Buffer : Type =
     Buffer
 
-type Pair = (1 buf : Buffer)
+type Pair = (1 buf : Buffer,)
 
 consumeWhole : (1 p : Pair) -> Pair
 let consumeWhole (1 p : Pair) : Pair = p

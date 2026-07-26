@@ -4,7 +4,7 @@
 
 module main
 
-data Wrap (a : Type) : Type =
+data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =

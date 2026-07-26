@@ -11,10 +11,10 @@ module main
 resize : (image : Int) -> (width : Int) -> Int
 let resize (image : Int) (width : Int) : Int = image + width
 
-type Ops = (doIt : (image : Int) -> (width : Int) -> Int)
+type Ops = (doIt : (image : Int) -> (width : Int) -> Int,)
 
 ops : Ops
-let ops = (doIt = resize)
+let ops = (doIt = resize,)
 
 -- POSITIVE: named call through a record-field projection.
 fieldCall : Int

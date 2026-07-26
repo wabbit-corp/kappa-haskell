@@ -1,0 +1,5 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+
+type Bad = Type True

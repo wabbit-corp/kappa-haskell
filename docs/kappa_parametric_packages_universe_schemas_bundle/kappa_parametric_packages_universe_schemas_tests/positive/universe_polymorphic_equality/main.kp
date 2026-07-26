@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+
+    EqualRefl : Equal x x
+
+same :
+    forall a.
+    Equal a a
+
+let same a =
+    EqualRefl

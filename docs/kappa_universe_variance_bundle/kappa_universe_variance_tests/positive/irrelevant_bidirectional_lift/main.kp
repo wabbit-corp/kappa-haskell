@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+--! assertSchemaLiftCount 2
+
+data Phantom.{irrelevant u} : Type0 =
+    Phantom
+
+up : Phantom.{0} -> Phantom.{3}
+let up x = x
+
+down : Phantom.{3} -> Phantom.{0}
+let down x = x

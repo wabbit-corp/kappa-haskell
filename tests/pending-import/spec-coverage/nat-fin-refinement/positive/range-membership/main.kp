@@ -1,0 +1,25 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+type NatUntil
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo ..< hi) value) = True)
+
+inclusive :
+    NatBetween 2 30
+
+let inclusive =
+    30
+
+exclusive :
+    NatUntil 2 30
+
+let exclusive =
+    29
+
+--! assertNoErrors

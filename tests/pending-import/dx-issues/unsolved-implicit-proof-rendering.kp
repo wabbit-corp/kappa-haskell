@@ -1,10 +1,29 @@
--- DX EXPECTATION (diagnostic rendering), not necessarily spec-required.
--- Statically rejecting `10 / 0` and unguarded `x / y` is CORRECT (§28.2.3:
--- (/) carries an implicit (@_ : divDefined x y = True) proof). This test pins
--- the minimum readability of the resulting kappa.implicit.unsolved message:
--- the unresolved obligation should be printed in surface syntax —
+-- DX EXPECTATION (diagnostic rendering). Statically rejecting `10 / 0` and
+-- unguarded `x / y` is CORRECT (§28.2.3: (/) carries an implicit
+-- (@_ : divDefined x y = True) proof; §15.8.6 forbids guessing for the
+-- unconstrained y; §16.3.3 ends in the unsolved-implicit error when every
+-- step fails). This test pins the minimum readability of the resulting
+-- kappa.implicit.unsolved message: the unresolved obligation should be
+-- printed in surface syntax —
 --     divDefined 10 0 = True        and        divDefined x y = True
--- — ideally with a hint that the divisor must be provably nonzero.
+-- — with the transparently-reduced shape `y /= 0` (§15.8.1 delta +
+-- selected trait-projection reduction over §28.2.3's
+-- divDefined x y = (y /= zero)) as the hint's spelling, never the internal
+-- `divDefined Integer __inst_CheckedDiv_12 @1 @0` form.
+-- New with the 2026-07-25 Nat/Fin revision, the two errors are
+-- semantically DIFFERENT kinds and the diagnostic must be able to say so:
+--   * §3.2's kappa.implicit.unsolved payload MUST now report
+--     "boolean-normalization, no-confusion, arithmetic/index-solver,
+--     normalization-provider, certificate-validation, or
+--     equality-reflection attempts when relevant";
+--   * §16.3.3 step 4 REQUIRES the §15.8 solver to be consulted for this
+--     goal shape;
+--   * for the closed case the solver does not merely fail: §15.8.4 exact
+--     closed comparison plus §30.2.7A ("a checked refutation of an
+--     equality or Boolean proposition [has] source summary Empty") make
+--     `divDefined 10 0 = True` REFUTED (provably false: the divisor is
+--     zero), while naiveDiv's obligation is merely UNKNOWN and should
+--     carry the guard-the-divisor hint.
 -- What currently happens (a0497523): the obligation is rendered as internal
 -- Core in prefix form, leaking the gensym'd prelude evidence binder and
 -- printing the user's own variables as de Bruijn indices:
@@ -13,11 +32,16 @@
 --       = Bool (divDefined Integer __inst_CheckedDiv_12 @1 @0) True
 -- Nothing names the actual problem (unproven nonzero divisor), `__inst_*` is
 -- meaningless to users, and `@1 @0` is unreadable for `x y`.
+-- Companion: positive-guard-division-discharge.kp — the guarded sibling of
+-- naiveDiv must now SUCCEED, so this file's second error is exactly the
+-- unguarded remainder.
 --! mode check
 --! assertErrorCount 2
 --! assertDiagnosticFamily error kappa.implicit.unsolved
 --! assertDiagnosticMatch divDefined 10 0 = True
 --! assertDiagnosticMatch divDefined x y = True
+--! assertDiagnosticMatch refuted
+--! assertDiagnosticMatch divisor
 module main
 
 litDiv : Int
@@ -29,3 +53,5 @@ let naiveDiv x y = x / y           --!! kappa.implicit.unsolved
 -- STATUS(a0497523): FAIL — both obligations render as internal Core:
 -- "= Bool (divDefined Integer __inst_CheckedDiv_12 10 0) True" and
 -- "= Bool (divDefined Integer __inst_CheckedDiv_12 @1 @0) True".
+-- (Recorded before the refuted/divisor wording asserts were added
+-- 2026-07-25.)

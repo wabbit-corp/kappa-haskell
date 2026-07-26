@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Vec 0 irrelevant
+
+data Vec.{u}
+    (n : Nat)
+    (A : Type u)
+    : Type u =
+    VNil  : Vec 0 A
+    VCons : (head : A) -> (tail : Vec n A) -> Vec (n + 1) A
+
+up :
+    (n : Nat) ->
+    (A : Type0) ->
+    Vec.{0} n A ->
+    Vec.{3} n A
+let up n A xs = xs

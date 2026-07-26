@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | Surface abstract syntax (Spec Part II–IV): the tree the parser builds
 -- and that nearly every later phase matches on. The tiers nest
 -- 'Module' ⊃ 'Decl' ⊃ 'Expr' \/ 'Pattern'.
@@ -11,10 +13,18 @@
 --      'Kappa.Resolve'. Fixity is block-scoped and import-sensitive
 --      (§5.5.2), so a single parse pass cannot know precedence.
 module Kappa.Syntax
-  ( Name (..)
+  ( Name
+  , pattern Name
+  , pattern NameWithUniverseSchema
+  , nameText
+  , nameSpan
+  , nameUniverseSchema
+  , UniverseSchema (..)
+  , UniverseInstantiation (..)
   , ModPath (..)
   , modPathName
   , Quantity (..)
+  , ObservationMode (..)
   , BorrowMark (..)
   , BinderPrefix (..)
   , emptyPrefix
@@ -26,6 +36,8 @@ module Kappa.Syntax
   , OpElem (..)
   , DotMember (..)
   , RecItem (..)
+  , pattern RecItem
+  , pattern RecItemQ
   , RecTypeField (..)
   , PatchItem (..)
   , PatchValue (..)
@@ -80,15 +92,47 @@ module Kappa.Syntax
 import Data.Data (Data)
 import Data.List (nub)
 import Data.Text (Text)
+import Kappa.Observation (ObservationMode (..))
+import Kappa.NominalVariance (UniverseVariance)
 import Kappa.Source (Span (..))
 import Kappa.Token (QuotedLit, StringLit)
 
--- | An identifier occurrence with its source span.
-data Name = Name
+-- | An identifier occurrence with its source span. Declaration-name
+-- occurrences may additionally carry the explicit static universe telescope
+-- written immediately after the token; that annotation is not part of the
+-- symbol's textual identity and does not create an object-language binder.
+data Name = NameData
   { nameText :: !Text
   , nameSpan :: !Span
+  , nameUniverseSchema :: !(Maybe UniverseSchema)
   }
   deriving stock (Eq, Show, Data)
+
+data UniverseSchema = UniverseSchema
+  { usParameters :: ![Name]
+  , usRoles :: ![Maybe UniverseVariance]
+  , usSpan :: !Span
+  }
+  deriving stock (Eq, Show, Data)
+
+-- | A constructor declaration may restate the enclosing declaration's
+-- universe arguments. Unlike 'UniverseSchema', these are level expressions,
+-- never binders and never variance-role annotations.
+data UniverseInstantiation = UniverseInstantiation
+  { uiLevels :: ![Expr]
+  , uiSpan :: !Span
+  }
+  deriving stock (Show, Data)
+
+pattern Name :: Text -> Span -> Name
+pattern Name text span <- NameData text span _
+  where
+    Name text span = NameData text span Nothing
+
+pattern NameWithUniverseSchema :: Text -> Span -> UniverseSchema -> Name
+pattern NameWithUniverseSchema text span schema = NameData text span (Just schema)
+
+{-# COMPLETE NameWithUniverseSchema, Name #-}
 
 newtype ModPath = ModPath [Name]
   deriving stock (Eq, Show, Data)
@@ -96,29 +140,31 @@ newtype ModPath = ModPath [Name]
 modPathName :: ModPath -> [Text]
 modPathName (ModPath ns) = map nameText ns
 
--- | Surface quantities (§12.1.1). @QTerm@ is a quantity expression
--- (a variable of classifier @Quantity@).
+-- | Surface quantities (§12.1.1). @QTerm@ retains the complete source
+-- expression: portable v1 accepts statically classified quantity values but
+-- rejects expressions that depend on object-phase runtime values (§12.2.10).
 data Quantity
   = QZero
   | QOne
   | QOmega
   | QAtMostOne -- ^ @<=1@
   | QAtLeastOne -- ^ @>=1@
-  | QTerm !Name
-  deriving stock (Eq, Show, Data)
+  | QTerm !Expr
+  deriving stock (Show, Data)
 
 -- | @&@ or @&[region]@.
 newtype BorrowMark = BorrowMark (Maybe Name)
   deriving stock (Eq, Show, Data)
 
 data BinderPrefix = BinderPrefix
-  { bpQuantity :: !(Maybe Quantity)
+  { bpObservation :: !(Maybe ObservationMode)
+  , bpQuantity :: !(Maybe Quantity)
   , bpBorrow :: !(Maybe BorrowMark)
   }
-  deriving stock (Eq, Show, Data)
+  deriving stock (Show, Data)
 
 emptyPrefix :: BinderPrefix
-emptyPrefix = BinderPrefix Nothing Nothing
+emptyPrefix = BinderPrefix Nothing Nothing Nothing
 
 data Suspension = SuspThunk | SuspLazy
   deriving stock (Eq, Show, Data)
@@ -172,13 +218,28 @@ data DotMember
   | DotOperator !Name -- ^ @d.(==)@
   deriving stock (Show, Data)
 
--- | Record-literal item: @x = e@, punning @x@, or implicit @\@ok = e@.
-data RecItem = RecItem
-  { riImplicit :: !Bool
+-- | Record-literal item: @x = e@, quantity-qualified @0 A = e@,
+-- punning @x@, or implicit @\@ok = e@.
+data RecItem = RecItemNode
+  { riQuantity :: !(Maybe Quantity)
+  , riImplicit :: !Bool
   , riName :: !Name
   , riValue :: !(Maybe Expr)
   }
   deriving stock (Show, Data)
+
+-- Compatibility pattern for the overwhelmingly common unqualified form.
+-- It deliberately matches qualified items too so syntax consumers that do
+-- not care about field quantity remain exhaustive.
+pattern RecItem :: Bool -> Name -> Maybe Expr -> RecItem
+pattern RecItem implicit name value <- RecItemNode _ implicit name value
+  where
+    RecItem implicit name value = RecItemNode Nothing implicit name value
+
+pattern RecItemQ :: Quantity -> Bool -> Name -> Maybe Expr -> RecItem
+pattern RecItemQ quantity implicit name value = RecItemNode (Just quantity) implicit name value
+
+{-# COMPLETE RecItem #-}
 
 -- | Record-type field (§13.2.1).
 data RecTypeField = RecTypeField
@@ -237,6 +298,8 @@ data Expr
   | EApp !Expr ![Arg]
   | EDot !Expr !DotMember
   | EQDot !Expr !DotMember
+  | EUniverseInstantiation !Expr ![Expr] !Span
+  -- ^ Explicit static declaration-universe instantiation, e.g. @Box.{0}@.
   | ERecordPatch !Expr ![PatchItem] !Span
   | EReceiverSection ![DotMember] ![Arg] !Span -- ^ @(.f args)@
   | ESectionLeft !Expr !Name !Span -- ^ @(e op)@
@@ -500,6 +563,7 @@ data DataDecl = DataDecl
 
 data CtorDecl = CtorDecl
   { cdName :: !Name
+  , cdUniverseInstantiation :: !(Maybe UniverseInstantiation)
   , cdBinders :: ![Binder] -- ^ positional fields become unnamed binders
   , cdGadtType :: !(Maybe Expr) -- ^ GADT-style result signature (§10.2)
   , cdSpan :: !Span
@@ -520,7 +584,8 @@ data TraitMember
   deriving stock (Show, Data)
 
 data InstanceDecl = InstanceDecl
-  { inPremises :: ![Expr] -- ^ @Eq a =>@ premises
+  { inUniverseSchema :: !(Maybe UniverseSchema)
+  , inPremises :: ![Expr] -- ^ @Eq a =>@ premises
   , inHead :: !Expr
   , inMembers :: ![Decl] -- ^ member signatures and definitions
   }
@@ -663,6 +728,7 @@ surfaceThisRefs = nub . go
                 PatchPun _ -> []
             | it <- items
             ]
+      EUniverseInstantiation e levels _ -> go e ++ concatMap go levels
       _ -> []
     goArg = \case
       ArgExplicit e -> go e
@@ -757,6 +823,7 @@ exprSpan = \case
     _ -> exprSpan f `spanTo` lastArgSpan (last args)
   EDot e m -> exprSpan e `spanTo` memberSpan m
   EQDot e m -> exprSpan e `spanTo` memberSpan m
+  EUniverseInstantiation _ _ sp -> sp
   ERecordPatch _ _ sp -> sp
   EReceiverSection _ _ sp -> sp
   ESectionLeft _ _ sp -> sp

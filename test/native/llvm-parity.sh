@@ -120,6 +120,17 @@ KP
   CORPUS+=("test/native/cases/defer-sleep.kp")
   CORPUS+=("test/native/cases/monadref-user-evidence.kp")
   CORPUS+=("test/native/cases/record-erased-field-proj.kp")
+  CORPUS+=("test/native/cases/record-q0-field-pattern.kp")
+  CORPUS+=("test/native/cases/tuple-erased-field-pattern.kp")
+  CORPUS+=("test/native/cases/ctor-erased-tail-pattern.kp")
+  CORPUS+=("test/native/cases/ctor-erased-field-patch.kp")
+  CORPUS+=("test/native/cases/ctor-hidden-evidence-pattern.kp")
+  CORPUS+=("test/native/cases/poly-lambda-erased-arg.kp")
+  # Universe closeout: runtime TypeLevel algebra and statically erased local
+  # declaration schemas must agree across the interpreter and both native
+  # backends. These are semantic parity anchors, not C-only smoke tests.
+  CORPUS+=("test/native/cases/typelevel-runtime.kp")
+  CORPUS+=("test/native/cases/local-universe-recursive.kp")
   # S5.B: C/default has FBIP reuse enabled, LLVM still has RC/reuse emission
   # disabled, so these deterministic programs are a free reuse-vs-no-reuse
   # semantic differential.

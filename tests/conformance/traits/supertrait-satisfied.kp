@@ -3,10 +3,10 @@
 -- §14.1.4: supertrait premises are satisfied by a global instance
 -- (ground head) or by the instance's own premises (premise instance).
 
-trait MyEq (a : Type) =
+trait MyEq (0 a : Type) =
     myEq : a -> a -> Bool
 
-trait MyEq a => MyOrd (a : Type) =
+trait MyEq a => MyOrd (0 a : Type) =
     myLt : a -> a -> Bool
 
 instance MyEq Integer =
@@ -15,7 +15,7 @@ instance MyEq Integer =
 instance MyOrd Integer =
     let myLt x y = ltInt x y
 
-data Box (a : Type) : Type =
+data Box (0 a : Type) : Type =
     Box a
 
 instance MyEq a => MyEq (Box a) =

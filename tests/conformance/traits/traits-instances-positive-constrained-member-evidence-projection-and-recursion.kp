@@ -16,7 +16,7 @@ module main
 --    projected member 'empty'" (applied projections like `mon.append x y`
 --    already worked).
 
-trait MyFold (f : Type -> Type) =
+trait MyFold (f : (A : Type) -> Type) =
     myFoldMap : forall (a : Type) (m : Type). (@_ : Monoid m) -> (a -> m) -> f a -> m
 
 myFoldMapList : forall (a : Type) (m : Type). (@mon : Monoid m) -> (a -> m) -> List a -> m

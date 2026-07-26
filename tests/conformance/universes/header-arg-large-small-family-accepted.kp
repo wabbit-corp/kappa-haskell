@@ -1,0 +1,7 @@
+-- §10.4.1 / T.10A.6: a large HEADER argument on a small indexed family is
+-- accepted — header binders are not constructor-local payload fields.
+--! mode check
+--! assertNoErrors
+
+data Tagged (A : Type0) : Type0 =
+    Tagged

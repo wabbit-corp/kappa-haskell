@@ -1,0 +1,7 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole SomeCode 0 covariant
+--! assertSchemaCertificateValid SomeCode
+
+data SomeCode.{u} : Type (succ u) =
+    SomeCode (ordinary 0 A : Type u)

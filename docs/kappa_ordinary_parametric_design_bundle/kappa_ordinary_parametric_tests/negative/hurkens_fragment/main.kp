@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+type Pow A =
+    A -> Type
+
+type Pow2 A =
+    Pow A -> Type
+
+forallCode :
+    (A : Type) ->
+    (Pow2 A -> A) ->
+    Pow2 A
+
+let forallCode A intro predicate =
+    A

@@ -11,10 +11,16 @@
 -- @Meters`, control `m` below) is accepted today; the trait-qualified
 -- projection the spec example uses is rejected with E_UNRESOLVED_MEMBER
 -- ("'fromInteger' has no receiver-marked binder, so it is not eligible
--- for method-call sugar (§7.4)"). Either Trait.member projection must
--- resolve as §6.1.6 (and the pervasive `Eq.eqSound` spelling of
--- §14.2.4/§16.1.8) assume, or the spec example is unimplementable as
--- written.
+-- for method-call sugar (§7.4)").
+--
+-- The Trait.member spelling is no longer merely a §6.1.6 example idiom.
+-- §14.2 now declares `eqSound`/`eqComplete` as REQUIRED Eq members ("An
+-- Eq instance participates in equality reflection only because eqSound
+-- and eqComplete are required members"), §16.3.3's equality-reflection
+-- step elaborates through the spelling `Eq.eqSound`, and §28.2 mandates
+-- `derive Eq Nat` — so if Trait.member projection does not resolve, the
+-- prelude's own required Eq members are unreachable at their specified
+-- spelling (probe `sound` below), not just the §6.1.6 example.
 module main
 
 data Meters : Type =
@@ -41,4 +47,13 @@ let m = fromInteger @Meters
 
 gotBare : Int
 let gotBare = unwrap 5m
--- STATUS(a0497523): FAIL — `FromInteger.fromInteger @Meters` rejected: E_UNRESOLVED_MEMBER "no receiver-marked binder, not eligible for method-call sugar (§7.4)" plus cascading E_APPLICATION_ARGUMENT_MISMATCH on @Meters; bare `fromInteger @Meters` control passes
+
+-- the same spelling at the prelude's own mandatory API: Eq.eqSound at
+-- the derived Eq Nat (§14.2 member type instantiated at a = Nat)
+sound :
+    (& x : Nat) ->
+    (& y : Nat) ->
+    ((x == y) = True) ->
+    x = y
+
+let sound = Eq.eqSound @Nat

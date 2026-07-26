@@ -1,31 +1,33 @@
--- Spec: §10.1 (L8320-8322, L8331-8340). Constructor parameters may use the
--- ordinary quantity/implicit machinery, e.g. (@0 p : P); 'inout' binders
--- are NOT permitted in constructor declarations, and default clauses are
--- not permitted on implicit constructor binders.
+-- Spec: §10.1. Constructor parameters may use the ordinary
+-- quantity/implicit machinery, e.g. (@0 p : P); 'inout' binders are NOT
+-- permitted in constructor declarations, and default clauses are not
+-- permitted on implicit constructor binders.
+--
+-- The carrier is the inductive prelude Nat of §28.2. Note the
+-- qualification detail: `Zero` is NOT in §28.1's fixed
+-- implicitly-unqualified constructor subset (True, False, None, Some,
+-- Ok, Err, Nil, (::), LT, EQ, GT, refl), so use sites must spell
+-- `Nat.Zero` (or the literal `0`, which normalizes to it per §31.1.3).
 
 module main
 
 --! mode check
-
-data Nat : Type =
-    Zero
-    Succ (n : Nat)
 
 -- POSITIVE: an erased implicit binder among constructor parameters.
 data Sized : Type =
     MkSized (@0 bound : Nat) (value : Nat)
 
 small : Sized
-let small = MkSized { value = Zero }
+let small = MkSized { value = Nat.Zero }
 
 -- NEGATIVE: 'inout' is not permitted in a constructor declaration.
 data BadInout : Type =
     MkBadInout (inout cell : Nat) --!! E_QTT_INOUT_BINDER_CONTEXT
 
 -- NEGATIVE: a default clause on an implicit constructor binder written
--- with '@' is not permitted (L8331-8337).
+-- with '@' is not permitted (§10.1).
 data BadImplicitDefault : Type =
-    MkBadImplicitDefault (@w : Nat = Zero) (x : Nat)
+    MkBadImplicitDefault (@w : Nat = Nat.Zero) (x : Nat)
 
 --! assertErrorCount 2
 

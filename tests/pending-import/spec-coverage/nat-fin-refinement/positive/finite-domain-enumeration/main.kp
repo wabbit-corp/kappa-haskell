@@ -1,0 +1,38 @@
+-- Spec 15.8.4 (small finite domains): Fin 4 has verified ordinal
+-- cardinality 4 <= 256, and every enumerated application of the
+-- predicates below closes by exact literal computation, so complete
+-- enumeration proves the universally quantified goals during implicit
+-- resolution (Spec 16.3.3 step 4). The squaring predicate is not
+-- linear, so nothing short of enumeration places it in the required
+-- fragment.
+allSquaresWithinNine :
+    (@0 bounded : (i : Fin 4) -> ((natMultiply i.value i.value) <= 9) = True) ->
+    Nat
+
+let allSquaresWithinNine @bounded =
+    0
+
+enumeratesSquares :
+    Nat
+
+let enumeratesSquares =
+    allSquaresWithinNine
+
+-- The product of two consecutive naturals is even at every enumerated
+-- point of Fin 3: 0*1, 1*2, and 2*3 all leave residue 0 modulo 2. The
+-- checked-mod side condition (2 /= zero) = True closes by literal
+-- computation.
+consecutiveProductsEven :
+    (@0 even : (i : Fin 3) -> ((natMultiply i.value (natAdd i.value 1)) % 2) = 0) ->
+    Nat
+
+let consecutiveProductsEven @even =
+    0
+
+enumeratesResidues :
+    Nat
+
+let enumeratesResidues =
+    consecutiveProductsEven
+
+--! assertNoErrors

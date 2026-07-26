@@ -1,3 +1,6 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+
 -- | Core calculus (a pragmatic KCore subset, Spec §30.2) and its
 -- normalization-by-evaluation machinery (§31.1).
 --
@@ -35,7 +38,58 @@ module Kappa.Core
   , primModule
   , Icit (..)
   , Q (..)
-  , Term (..)
+  , ObservationMode (..)
+  , FormationMode (..)
+  , BinderOrigin (..)
+  , RecordField (..)
+  , ConstructorArg (..)
+  , ConstructorValueArg (..)
+  , CoreLocalRecDef (..)
+  , Level (..)
+  , NeutralLevelAtom (..)
+  , NeutralLevelTerm (..)
+  , NeutralLevelLiteral (..)
+  , neutralLevelTermAtom
+  , neutralLevelTermDigest
+  , mapNeutralLevelTermLevels
+  , mapNeutralLevelAtomLevels
+  , neutralLevelTermLocals
+  , UniverseConstraint (..)
+  , DeclarationUniverseTelescope (..)
+  , UniverseEvidence (..)
+  , UniverseEvidenceStep (..)
+  , SchemaRoleEvidence (..)
+  , UniverseVariance (..)
+  , SchemaActionCertificateId (..)
+  , emptyDeclarationUniverseTelescope
+  , finiteLevel
+  , levelSucc
+  , levelAdd
+  , levelMax
+  , solverUniverseEvidence
+  , mapUniverseEvidenceLevels
+  , universeLift
+  , validateUniverseLiftEvidence
+  , validateUniverseLiftEvidenceUnder
+  , Term (.., CCtor)
+  , pattern CPiM
+  , pattern CPiBoundM
+  , pattern CPiFormedM
+  , pattern CPiBoundFormedM
+  , pattern CGlob
+  , pattern CGlobI
+  , pattern CLam
+  , pattern CPi
+  , pattern CProj
+  , pattern CProjAt
+  , pattern CLet
+  , pattern CLetRec
+  , pattern CRecordT
+  , pattern CPVar
+  , pattern CPCtor
+  , pattern CPRecord
+  , pattern CPInjectRest
+  , pattern CPAs
   , CaseAlt (..)
   , CorePat (..)
   , KItem (..)
@@ -45,7 +99,17 @@ module Kappa.Core
   , RefActionWitness (..)
   , Literal (..)
   , Telescope
-  , Value (..)
+  , TelescopeEntry (..)
+  , Value (.., VCtor)
+  , pattern VPiM
+  , pattern VPiBoundM
+  , pattern VPiFormedM
+  , pattern VPiBoundFormedM
+  , pattern VGlobN
+  , pattern VGlobI
+  , pattern VLam
+  , pattern VPi
+  , pattern VRecordT
   , Closure (..)
   , Env
   , Spine
@@ -59,10 +123,43 @@ import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (TVar)
 import Data.Array.IO (IOArray)
 import Data.ByteString (ByteString)
+import Data.List (nub, sort)
 import Data.IORef (IORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
+import Kappa.Level
+  ( DeclarationUniverseTelescope (..)
+  , Assumptions
+  , Level (..)
+  , NeutralLevelAtom (..)
+  , NeutralLevelTerm (..)
+  , NeutralLevelLiteral (..)
+  , SolveResult (..)
+  , UniverseConstraint (..)
+  , assumptionsConsistent
+  , assumptionsList
+  , emptyDeclarationUniverseTelescope
+  , emptyAssumptions
+  , finiteLevel
+  , levelAdd
+  , levelMax
+  , levelSucc
+  , levelFields
+  , levelMetas
+  , levelParams
+  , levelVars
+  , normalizeLevel
+  , neutralLevelTermAtom
+  , neutralLevelTermDigest
+  , neutralLevelTermLocals
+  , mapNeutralLevelTermLevels
+  , mapNeutralLevelAtomLevels
+  , proveLevelLeq
+  , insertAssumption
+  )
+import Kappa.Observation (FormationMode (..), ObservationMode (..))
+import Kappa.NominalVariance (SchemaActionCertificateId (..), UniverseVariance (..))
 import Kappa.Source (ModuleName (..), Span)
 import Kappa.Syntax (Expr)
 
@@ -87,9 +184,180 @@ gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
 data Icit = Expl | Impl
   deriving stock (Eq, Ord, Show)
 
+-- | Provenance of a dependent binder in the typed interface. Generated
+-- declaration-universe constraints are inserted ahead of the source term
+-- telescope and may be discharged before a source-written explicit implicit
+-- argument. A source-written proof binder remains directly applicable.
+data BinderOrigin
+  = BinderSourceWritten
+  | BinderGenerated
+  deriving stock (Eq, Ord, Show)
+
 -- | Core quantities (§12.2). The five portable interval quantities.
 data Q = Q0 | Q1 | QW | QLe1 | QGe1
   deriving stock (Eq, Ord, Show)
+
+-- | A dependent record field retains its quantity in KCore.  This is required
+-- both for parametric-witness capability and for erasure justification; a
+-- plain @(name, type)@ pair cannot distinguish an ordinary static type-code
+-- field from a quantity-zero witness field.
+data RecordField a = RecordField
+  { rfName :: !Text
+  , rfMode :: !ObservationMode
+  , rfFormation :: !FormationMode
+  , rfQ :: !Q
+  , rfLevelAssumption :: !(Maybe (Level, Level))
+  -- ^ Authenticated lexical level bound introduced by this field when it is
+  -- an erased comparison proof. This is proof-interface metadata, not a
+  -- source-shape inference performed by later phases.
+  , rfType :: !a
+  }
+  deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+-- | One replayable universe-ordering derivation used by KCore.  The scoped
+-- assumptions are part of the certificate rather than ambient checker state:
+-- substitution and serialization therefore cannot retain a stale proof while
+-- changing only its endpoint levels (§11.1.2.8, §30.2.1A).
+data UniverseEvidenceStep = UniverseEvidenceStep
+  { uesLower :: !Level
+  , uesUpper :: !Level
+  , uesAssumptions :: ![(Level, Level)]
+  }
+  deriving stock (Eq, Ord, Show)
+
+-- | One independently replayable obligation of a nominal schema lift.
+data SchemaRoleEvidence
+  = SchemaInvariantEvidence
+  | SchemaCovariantEvidence !UniverseEvidence
+  | SchemaIrrelevantEvidence
+  deriving stock (Eq, Ord, Show)
+
+-- | Canonical evidence for one cumulative lift.  More than one step records a
+-- composed lift; retaining the chain preserves every proof dependency.
+newtype UniverseEvidence = UniverseEvidence
+  { ueSteps :: [UniverseEvidenceStep]
+  }
+  deriving stock (Eq, Ord, Show)
+
+-- | Freeze a successful solver judgment into KCore evidence.
+solverUniverseEvidence :: Assumptions -> Level -> Level -> UniverseEvidence
+solverUniverseEvidence assumptions lower upper =
+  UniverseEvidence [canonicalUniverseEvidenceStep lower upper (assumptionsList assumptions)]
+
+canonicalUniverseEvidenceStep :: Level -> Level -> [(Level, Level)] -> UniverseEvidenceStep
+canonicalUniverseEvidenceStep lower upper assumptions =
+  UniverseEvidenceStep normalizedLower normalizedUpper proofDependencies
+  where
+    normalizedLower = normalizeLevel lower
+    normalizedUpper = normalizeLevel upper
+    normalizedAssumptions =
+      sort (nub [(normalizeLevel a, normalizeLevel b) | (a, b) <- assumptions])
+    normalizedContext = assumptionsFrom normalizedAssumptions
+    proofDependencies
+      | assumptionsConsistent normalizedContext
+      , proveLevelLeq normalizedContext normalizedLower normalizedUpper == Proved =
+          minimizeDependencies normalizedAssumptions
+      | otherwise = normalizedAssumptions
+    minimizeDependencies dependencies =
+      case
+          [ candidate
+          | candidate <- removeOne dependencies
+          , let context = assumptionsFrom candidate
+          , assumptionsConsistent context
+          , proveLevelLeq context normalizedLower normalizedUpper == Proved
+          ] of
+        candidate : _ -> minimizeDependencies candidate
+        [] -> dependencies
+    removeOne [] = []
+    removeOne (first : rest) = rest : map (first :) (removeOne rest)
+    assumptionsFrom = foldr (uncurry insertAssumption) emptyAssumptions
+
+mapUniverseEvidenceLevels :: (Level -> Level) -> UniverseEvidence -> UniverseEvidence
+mapUniverseEvidenceLevels f (UniverseEvidence steps) =
+  UniverseEvidence
+    [ canonicalUniverseEvidenceStep
+        (f uesLower)
+        (f uesUpper)
+        [(f a, f b) | (a, b) <- uesAssumptions]
+    | UniverseEvidenceStep {..} <- steps
+    ]
+
+-- | Construct a canonical cumulative lift. Identity lifts disappear and
+-- adjacent nested lifts compose while preserving their evidence steps.
+universeLift :: UniverseEvidence -> Term -> Term
+universeLift evidence term = case evidenceEndpoints evidence of
+  Just (from, to)
+    | from == to -> term
+    | CUniverseLift innerFrom innerTo innerEvidence inner <- term
+    , innerTo == from ->
+        CUniverseLift innerFrom to (composeEvidence innerEvidence evidence) inner
+    | otherwise -> CUniverseLift from to evidence term
+  Nothing -> CUniverseLift LZero LZero evidence term
+  where
+    composeEvidence (UniverseEvidence left) (UniverseEvidence right) =
+      UniverseEvidence (left ++ right)
+
+evidenceEndpoints :: UniverseEvidence -> Maybe (Level, Level)
+evidenceEndpoints (UniverseEvidence steps) = case steps of
+  [] -> Nothing
+  first : rest -> Just (uesLower first, uesUpper (last (first : rest)))
+
+-- | Replay the evidence attached to a single lift node. The caller supplies
+-- the in-scope term-binder depth and hidden declaration-universe arity. An
+-- empty result is valid; messages are intentionally stable enough for the
+-- typed-checkpoint diagnostic bridge.
+validateUniverseLiftEvidence :: Int -> Int -> Term -> [Text]
+validateUniverseLiftEvidence = validateUniverseLiftEvidenceUnder emptyAssumptions
+
+-- | Replay lift evidence against assumptions supplied by the typed owner and
+-- lexical proof context. Evidence records which assumptions its derivation
+-- used, but those records are dependencies, not authorities: an assumption
+-- absent from this trusted context invalidates the certificate.
+validateUniverseLiftEvidenceUnder :: Assumptions -> Int -> Int -> Term -> [Text]
+validateUniverseLiftEvidenceUnder trusted depth universeArity = \case
+  CUniverseLift from0 to0 evidence@(UniverseEvidence steps) _ ->
+    endpointErrors ++ chainErrors ++ concatMap validateStep steps
+    where
+      from = normalizeLevel from0
+      to = normalizeLevel to0
+      endpointErrors = case evidenceEndpoints evidence of
+        Nothing -> ["cumulative lift is missing universe evidence"]
+        Just (eFrom, eTo) ->
+          ["cumulative lift evidence endpoints do not match the lift" | (normalizeLevel eFrom, normalizeLevel eTo) /= (from, to)]
+      chainErrors =
+        [ "cumulative lift evidence steps are not composable"
+        | (left, right) <- zip steps (drop 1 steps)
+        , normalizeLevel (uesUpper left) /= normalizeLevel (uesLower right)
+        ]
+      validateStep UniverseEvidenceStep {..} =
+        let normalizedTrusted =
+              sort (nub [(normalizeLevel a, normalizeLevel b) | (a, b) <- assumptionsList trusted])
+            normalizedDependencies =
+              sort (nub [(normalizeLevel a, normalizeLevel b) | (a, b) <- uesAssumptions])
+            levels = uesLower : uesUpper : concatMap (\(a, b) -> [a, b]) uesAssumptions
+            scopeErrors = concatMap validateLevel levels
+            authorityErrors =
+              [ "universe evidence depends on an assumption not supplied by its typed scope; evidence uses "
+                  <> T.pack (show normalizedDependencies)
+                  <> ", scope supplies " <> T.pack (show normalizedTrusted)
+              | any (`notElem` normalizedTrusted) normalizedDependencies
+              ]
+            proofErrors =
+              ["universe evidence assumptions are inconsistent" | not (assumptionsConsistent trusted)]
+                ++ [ "universe evidence does not prove "
+                       <> T.pack (show (normalizeLevel uesLower))
+                       <> " <= " <> T.pack (show (normalizeLevel uesUpper))
+                       <> " under " <> T.pack (show normalizedTrusted)
+                   | assumptionsConsistent trusted
+                   , proveLevelLeq trusted uesLower uesUpper /= Proved
+                   ]
+         in scopeErrors ++ authorityErrors ++ proofErrors
+      validateLevel level =
+        ["universe evidence contains an out-of-scope local level" | any (>= depth) (levelVars level)]
+          ++ ["universe evidence contains an out-of-scope declaration universe" | any (\p -> p < 0 || p >= universeArity) (levelParams level)]
+          ++ ["universe evidence contains an escaped record-field level" | not (null (levelFields level))]
+          ++ ["universe evidence contains an unsolved level metavariable" | not (null (levelMetas level))]
+  _ -> []
 
 type MetaId = Int
 
@@ -129,19 +397,80 @@ data Literal
   deriving stock (Eq, Ord, Show)
 
 -- | Core terms, de Bruijn indexed. Grouped into families below for reading.
+-- | One typed constructor argument. 'caPayload' records membership in the
+-- evaluator/source-pattern payload view; every argument remains in KCore, but
+-- implicit erased type/proof arguments are absent from 'VCtor' and are later
+-- erased by KBackendIR. 'caIcit' is part of the checked application spine.
+data ConstructorArg = ConstructorArg
+  { caIcit :: !Icit
+  , caPayload :: !Bool
+  , caName :: !(Maybe Text)
+  , caTerm :: !Term
+  }
+  deriving stock (Eq, Show)
+
+-- | Semantic counterpart of 'ConstructorArg'.  Keeping the complete typed
+-- spine in the value domain makes normalization-by-evaluation lossless for
+-- hidden constructor universes and erased arguments; the 'VCtor' compatibility
+-- view below exposes only the historical evaluator payload.
+data ConstructorValueArg = ConstructorValueArg
+  { cvaIcit :: !Icit
+  , cvaPayload :: !Bool
+  , cvaName :: !(Maybe Text)
+  , cvaValue :: !Value
+  }
+
+-- | One member of a local mutually recursive declaration SCC. All members of
+-- a 'CLetRecGroupM' share its declaration-universe telescope, while every
+-- 'CLocal' occurrence still supplies a fresh specialization of that shared
+-- schema. Member types are outside the term-level recursive scope; every RHS
+-- and the group body are under all members (last member is de Bruijn index 0).
+data CoreLocalRecDef = CoreLocalRecDef
+  { clrdMode :: !ObservationMode
+  , clrdQuantity :: !Q
+  , clrdName :: !Text
+  , clrdType :: !Term
+  , clrdRhs :: !Term
+  }
+  deriving stock (Eq, Show)
+
 data Term
   = -- Lambda-calculus core ------------------------------------------------
     CVar !Int -- ^ a bound variable, as a de Bruijn /index/ (0 = nearest binder)
-  | CGlob !GName
-  | CLam !Icit !Q !Text !Term
+  | CLocal !Int ![Level]
+    -- ^ A local declaration occurrence specialized at a fresh declaration-
+    -- universe spine.  Unlike 'CVar', this is not a term application: the
+    -- levels are static identity and erase before runtime lowering.
+  | CGlobal !GName ![Level]
+  | CLamM !ObservationMode !Icit !Q !Text !Term
   -- | Dependent function type. The 'Bool' is the binder's borrow marker
   -- (§12.3: @(& x : A) -> …@) — part of the binder information carried in
   -- core so usage analysis reads it from the type, not the surface AST. It
   -- is metadata for the quantity/borrow checker: conversion ignores it
   -- (borrow on a parameter is not part of definitional type identity here).
-  | CPi !Icit !Q !Bool !Text !Term !Term
+  | CPiEvidenceM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !Term !Term
+    -- ^ A dependent function type plus the authenticated level assumption
+    -- introduced by this binder, when any. The proposition remains the
+    -- ordinary domain term; this metadata is the designated universe-proof
+    -- interface and is never reconstructed from a rendered source shape.
+    -- 'BinderOrigin' distinguishes user evidence from declaration-solver
+    -- evidence; explicit implicit application depends on that provenance.
   | CApp !Icit !Term !Term
-  | CSort !Int -- ^ @Type u@
+  | CSort !Level -- ^ @Type u@
+  | CLevel !Level
+    -- ^ A static declaration-universe identity used while checking a level
+    -- expression. It is neither a term binder nor a runtime TypeLevel value.
+  | CUniverseLift !Level !Level !UniverseEvidence !Term
+    -- ^ Explicit cumulative subsumption (§30.2.1A). Evaluation and runtime
+    -- representation are transparent; typed checkpoints validate evidence
+    -- before KBackendIR erases the node.
+  | CSchemaLift !GName ![Level] ![Level] ![UniverseVariance]
+      ![SchemaRoleEvidence] !SchemaActionCertificateId ![Term] ![Term] !Term
+    -- ^ Certified cumulative subsumption between two fully saturated
+    -- instances of one nominal family (§30.2.1B). The aligned terms are the
+    -- complete source and aligned target family argument spines, including
+    -- generated erased proof arguments. This node is representation identity
+    -- and erases before KBackendIR only after independent verification.
   | CLit !Literal
   -- Data and pattern matching --------------------------------------------
   -- | Saturated constructor application. The optional 'Term' is the
@@ -152,7 +481,10 @@ data Term
   -- site. It is observe-only metadata: NO backend reads it, and
   -- conversion\/'Eq' must ignore it (see 'Eq' instance note below), so
   -- it can never change tag ids, codegen, or evaluation.
-  | CCtor !GName !(Maybe Term) ![Term]
+  | CCtorI !GName ![Level] !(Maybe Term) ![ConstructorArg]
+    -- ^ Saturated typed constructor occurrence: declaration-universe
+    -- instantiation, observe-only checked head type, and the full constructor
+    -- Pi spine. Runtime/evaluator consumers select only 'caPayload' arguments.
   -- | Pattern match. The optional 'Term' is the KBackendIR Stage 0
   -- annotation: the scrutinee's monomorphic type as a quoted Core type
   -- term (populated from the elaborator's @sTy1@). Like 'CCtor's
@@ -160,9 +492,9 @@ data Term
   -- conversion drop it.
   | CMatch !Term !(Maybe Term) ![CaseAlt]
   -- Records --------------------------------------------------------------
-  | CRecordT ![(Text, Term)] -- ^ canonical (lexicographic) field order
+  | CRecordTQ ![RecordField Term] -- ^ canonical dependency-respecting field order
   | CRecordV ![(Text, Term)]
-  | CProj !Term !Text
+  | CProjM !ObservationMode !Term !Text
   | -- | @CProjAt e f i@: a projection of field @f@ from a record of a
     -- statically-known CLOSED layout, where @i@ is @f@'s index in the
     -- lexicographically-sorted field list (= the @K_REC@ slot order).
@@ -171,13 +503,24 @@ data Term
     -- offset (@krec_at@) instead of a name scan.  Emitted only by the closed
     -- @VRecordT@ projection branch in elaboration; every other projection
     -- stays a plain @CProj@.
-    CProjAt !Term !Text !Int
+    CProjAtM !ObservationMode !Term !Text !Int
   -- Variants -------------------------------------------------------------
   | CVariantT ![Term] -- ^ canonical member order
   | CInject !Text !Term -- ^ member-identity tag + payload
   -- Binding and metavariables --------------------------------------------
-  | CLet !Q !Text !Term !Term !Term -- ^ q, name, type, rhs, body
-  | CLetRec !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
+  | CLetM !ObservationMode !Q !Text !Term !Term !Term -- ^ mode, q, name, type, rhs, body
+  | CLetRecM !ObservationMode !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
+  | CLetPolyM !ObservationMode !Q !Text !DeclarationUniverseTelescope !Term !Term !Term
+    -- ^ Universe-polymorphic non-recursive local declaration.  The type and
+    -- rhs are closed over the telescope's 'LParam's; only the body is under
+    -- the term binder.
+  | CLetRecPolyM !ObservationMode !Q !Text !DeclarationUniverseTelescope !Term !Term !Term
+    -- ^ Universe-polymorphic recursive local declaration.  Both rhs and body
+    -- are under the term binder, as for 'CLetRecM'.
+  | CLetRecGroupM !DeclarationUniverseTelescope ![CoreLocalRecDef] !Term
+    -- ^ A local mutually recursive declaration SCC. The group has one shared
+    -- static universe telescope; each member remains a distinct recursive
+    -- identity and every RHS/body is under all member term binders.
   | CMeta !MetaId -- ^ an unsolved unification variable (a "hole" the checker will fill)
   -- Effectful do-kernel --------------------------------------------------
   | CDo !(Maybe Text) ![KItem] -- ^ §18.8 do kernel (optional scope label, §18.7); executed natively
@@ -204,26 +547,43 @@ data Term
 -- compared field-by-field exactly as the derived instance would.
 instance Eq Term where
   CVar a == CVar a' = a == a'
-  CGlob a == CGlob a' = a == a'
-  CLam a b c d == CLam a' b' c' d' = a == a' && b == b' && c == c' && d == d'
-  CPi a b c d e f == CPi a' b' c' d' e' f' =
-    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
+  CLocal a us == CLocal a' us' = a == a' && us == us'
+  CGlobal a us == CGlobal a' us' = a == a' && us == us'
+  CLamM m a b c d == CLamM m' a' b' c' d' = m == m' && a == a' && b == b' && c == c' && d == d'
+  CPiEvidenceM m fm a b c d p o e f == CPiEvidenceM m' fm' a' b' c' d' p' o' e' f' =
+    m == m' && fm == fm' && a == a' && b == b' && c == c' && d == d' && p == p' && o == o' && e == e' && f == f'
   CApp a b c == CApp a' b' c' = a == a' && b == b' && c == c'
   CSort a == CSort a' = a == a'
+  CLevel a == CLevel a' = a == a'
+  CUniverseLift a b c d == CUniverseLift a' b' c' d' =
+    a == a' && b == b' && c == c' && d == d'
+  CSchemaLift a b c d e f g h i == CSchemaLift a' b' c' d' e' f' g' h' i' =
+    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
+      && g == g' && h == h' && i == i'
   CLit a == CLit a' = a == a'
-  -- annotation (the 'Maybe Term') is intentionally NOT compared
-  CCtor g _ as == CCtor g' _ as' = g == g' && as == as'
+  -- The occurrence-local head annotation is fresh-elaboration metadata and is
+  -- intentionally ignored. Hidden universes, explicitness, payload marks,
+  -- and erased arguments are typed constructor identity and must survive every
+  -- structural equality/checkpoint comparison.
+  CCtorI g us _ as == CCtorI g' us' _ as' =
+    g == g' && us == us' && as == as'
   CMatch s _ alts == CMatch s' _ alts' = s == s' && alts == alts'
-  CRecordT a == CRecordT a' = a == a'
+  CRecordTQ a == CRecordTQ a' = a == a'
   CRecordV a == CRecordV a' = a == a'
-  CProj a b == CProj a' b' = a == a' && b == b'
-  CProjAt a b c == CProjAt a' b' c' = a == a' && b == b' && c == c'
+  CProjM a b c == CProjM a' b' c' = a == a' && b == b' && c == c'
+  CProjAtM a b c d == CProjAtM a' b' c' d' = a == a' && b == b' && c == c' && d == d'
   CVariantT a == CVariantT a' = a == a'
   CInject a b == CInject a' b' = a == a' && b == b'
-  CLet a b c d e == CLet a' b' c' d' e' =
-    a == a' && b == b' && c == c' && d == d' && e == e'
-  CLetRec a b c d e == CLetRec a' b' c' d' e' =
-    a == a' && b == b' && c == c' && d == d' && e == e'
+  CLetM a b c d e f == CLetM a' b' c' d' e' f' =
+    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
+  CLetRecM a b c d e f == CLetRecM a' b' c' d' e' f' =
+    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
+  CLetPolyM a b c u d e f == CLetPolyM a' b' c' u' d' e' f' =
+    a == a' && b == b' && c == c' && u == u' && d == d' && e == e' && f == f'
+  CLetRecPolyM a b c u d e f == CLetRecPolyM a' b' c' u' d' e' f' =
+    a == a' && b == b' && c == c' && u == u' && d == d' && e == e' && f == f'
+  CLetRecGroupM telescope definitions body == CLetRecGroupM telescope' definitions' body' =
+    telescope == telescope' && definitions == definitions' && body == body'
   CMeta a == CMeta a' = a == a'
   CDo a b == CDo a' b' = a == a' && b == b'
   CSealE a b == CSealE a' b' = a == a' && b == b'
@@ -274,9 +634,10 @@ data CaseAlt = CaseAlt
 
 data CorePat
   = CPWild
-  | CPVar !Text
+  | CPVarM !ObservationMode !Text
   | CPLit !Literal
-  | -- | A constructor pattern @C p₁ … pₖ@. The @Int@ is the number of EXISTENTIAL
+  | -- | A constructor pattern @C p₁ … pₖ@. The mode list describes the
+    -- EXISTENTIAL
     -- GADT-index skolems the unpack binds (§17.1): @MkP : forall s. Tag s -> P@
     -- binds an existential @s@ not pinned by the result type, which the checker
     -- promotes to a rigid skolem occupying a real de Bruijn slot in the arm's
@@ -286,14 +647,20 @@ data CorePat
     -- — otherwise every index in the arm body referring to an outer-bound variable
     -- is inflated by N with no matching Core environment slot. The placeholders are never
     -- read (a skolem is an erased type); the slots only keep the OTHER indices
-    -- correct. @0@ for an ordinary (non-existential) constructor pattern.
-    CPCtor !GName !Int ![CorePat]
+    -- correct. An empty list denotes an ordinary (non-existential)
+    -- constructor pattern. Per-binder modes are required because one GADT
+    -- constructor may quantify over both ordinary and parametric existentials.
+    -- The declaration-universe spine is the exact instantiation selected while
+    -- elaborating this occurrence.  It is identity-bearing checkpoint data:
+    -- later passes validate/specialize it and never reconstruct it from the
+    -- scrutinee result type.
+    CPCtorM ![ObservationMode] !GName ![Level] ![CorePat]
   | CPTuple ![CorePat]
-  | CPRecord ![(Text, CorePat)] !(Maybe Text)
+  | CPRecordM ![(Text, CorePat)] !(Maybe (ObservationMode, Text))
   -- ^ fields, optional rest binder (binds the remaining fields; @Just ""@
   -- discards them)
   | CPInject !Text !CorePat -- ^ variant member pattern
-  | CPInjectRest ![Text] -- ^ residual-row pattern: excluded tags
+  | CPInjectRestM !ObservationMode ![Text] -- ^ residual-row pattern: excluded tags
   | -- | An or-pattern @p₁ | … | pₖ@ (§17.2.3). All alternatives bind the same
     -- set of names; the BODY uses the first alternative's binder order
     -- (canonical). The parallel @[[Int]]@ holds, per alternative, the
@@ -304,7 +671,7 @@ data CorePat
     -- matched, even when alternatives list the shared binders in different
     -- positions (e.g. @A p q | B q p@).
     CPOr ![CorePat] ![[Int]]
-  | CPAs !Text !CorePat -- ^ as-pattern: binds the whole value, then inner
+  | CPAsM !ObservationMode !Text !CorePat -- ^ as-pattern: binds the whole value, then inner
   deriving stock (Eq, Show)
 
 -- | do-kernel items (typed during elaboration, executed by Interp).
@@ -340,7 +707,19 @@ data KCond
   | KCondAction !Term
   deriving stock (Eq, Show)
 
-type Telescope = [(Icit, Q, Text, Term)]
+data TelescopeEntry = TelescopeEntry
+  { teIcit :: !Icit
+  , teMode :: !ObservationMode
+  , teFormation :: !FormationMode
+  , teQ :: !Q
+  , teBorrow :: !Bool
+  , teName :: !Text
+  , teDomain :: !Term
+  , teLevelAssumption :: !(Maybe (Level, Level))
+  }
+  deriving stock (Eq, Show)
+
+type Telescope = [TelescopeEntry]
 
 -- ── Values (NbE domain) ──────────────────────────────────────────────
 
@@ -363,18 +742,22 @@ data Closure = Closure !Env !Term
 data Value
   = VRigid !Int !Spine -- ^ neutral: a bound variable as a de Bruijn /level/ (0 = outermost) + its args
   | VFlex !MetaId !Spine -- ^ neutral: an unsolved metavariable + its args
-  | VGlobN !GName !Spine -- ^ neutral global (opaque or not yet unfolded)
-  | VLam !Icit !Q !Text !Closure
-  | VPi !Icit !Q !Bool !Text !Value !Closure -- ^ 'Bool': binder borrow marker (§12.3), see 'CPi'
-  | VSort !Int
+  | VGlobal !GName ![Level] !Spine -- ^ neutral global plus hidden universe instantiation
+  | VLamM !ObservationMode !Icit !Q !Text !Closure
+  | VPiEvidenceM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !Value !Closure
+    -- ^ Semantic Pi carrying the same checked level-assumption authority as
+    -- 'CPiEvidenceM'. 'Bool' is the binder borrow marker (§12.3).
+  | VSort !Level
+  | VLevel !Level
   | VLit !Literal
-  | VCtor !GName ![Value]
-  | VRecordT ![(Text, Value)]
+  | VCtorI !GName ![Level] ![ConstructorValueArg]
+  | VRecordTQ ![RecordField Value]
   | VRecordV ![(Text, Value)]
   | VVariantT ![Value]
   | VInject !Text !Value
-  | VMatchN !Value ![CaseAlt] !Env -- ^ stuck match
-  | VProjN !Value !Text -- ^ stuck projection
+  | VMatchN !Value !(Maybe Value) ![CaseAlt] !Env -- ^ stuck match retaining its checked scrutinee type
+  | VProjN !ObservationMode !Value !Text -- ^ stuck projection with its checked field mode
+  | VAppN !Icit !Value !Value -- ^ stuck application preserving its typed application shape
   | VSealV ![Text] !Value -- ^ §13.2.10 sealed package (opaque member projections stick)
   | VSigT ![Text] !Value -- ^ §13.2.10 signature type (opaque labels + record type)
   | VDoV !(Maybe Text) ![KItem] !Env -- ^ suspended do block (optional scope label, §18.7)
@@ -394,3 +777,201 @@ data Value
 
 instance Show Value where
   show _ = "<value>"
+
+-- | Compatibility view for consumers that do not need field quantities.
+-- New elaboration sites that own source field declarations must construct
+-- 'CRecordTQ'/'VRecordTQ' directly so capability information is not erased.
+pattern CRecordT :: [(Text, Term)] -> Term
+pattern CRecordT fs <- CRecordTQ (recordFieldPairs -> fs)
+  where
+    CRecordT fs = CRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing t | (n, t) <- fs]
+
+pattern VRecordT :: [(Text, Value)] -> Value
+pattern VRecordT fs <- VRecordTQ (recordFieldPairs -> fs)
+  where
+    VRecordT fs = VRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing t | (n, t) <- fs]
+
+-- | Compatibility view for global references. Pattern matches preserve the
+-- semantic global identity while clients that need declaration-universe
+-- instances use 'CGlobI'/'VGlobI'. New polymorphic references must construct
+-- the explicit forms.
+pattern CGlob :: GName -> Term
+pattern CGlob g <- CGlobal g _
+  where
+    CGlob g = CGlobal g []
+
+pattern CGlobI :: GName -> [Level] -> Term
+pattern CGlobI g universes = CGlobal g universes
+
+pattern VGlobN :: GName -> Spine -> Value
+pattern VGlobN g spine <- VGlobal g _ spine
+  where
+    VGlobN g spine = VGlobal g [] spine
+
+pattern VGlobI :: GName -> [Level] -> Spine -> Value
+pattern VGlobI g universes spine = VGlobal g universes spine
+
+-- | Payload compatibility view for constructor values.  Primitive and test
+-- producers may construct monomorphic payload-only values; typed evaluation
+-- uses 'VCtorI' so quoting can reproduce the complete constructor occurrence.
+pattern VCtor :: GName -> [Value] -> Value
+pattern VCtor constructor payload <-
+  VCtorI constructor _ (constructorPayloadValues -> payload)
+  where
+    VCtor constructor payload =
+      VCtorI constructor []
+        [ConstructorValueArg Expl True Nothing argument | argument <- payload]
+
+constructorPayloadValues :: [ConstructorValueArg] -> [Value]
+constructorPayloadValues arguments =
+  [cvaValue argument | argument <- arguments, cvaPayload argument]
+
+-- | Payload compatibility view used by evaluator/runtime analyses and by
+-- synthetic monomorphic constructors. Typed constructor production uses
+-- 'CCtorI' directly so erased arguments and universe instantiations survive to
+-- KCoreText.
+pattern CCtor :: GName -> Maybe Term -> [Term] -> Term
+pattern CCtor constructor annotation payload <-
+  CCtorI constructor _ annotation (constructorPayloadTerms -> payload)
+  where
+    CCtor constructor annotation payload =
+      CCtorI constructor [] annotation
+        [ConstructorArg Expl True Nothing argument | argument <- payload]
+
+constructorPayloadTerms :: [ConstructorArg] -> [Term]
+constructorPayloadTerms arguments = [caTerm argument | argument <- arguments, caPayload argument]
+
+-- Read-only views for analyses where observation mode is provably irrelevant.
+-- KCore producers must construct 'CLamM' and one of the formed Pi constructors
+-- explicitly.
+pattern CLam :: Icit -> Q -> Text -> Term -> Term
+pattern CLam ic q n body <- CLamM _ ic q n body
+
+-- | Read-only compatibility view for Pi binders that introduce no level
+-- assumption. Formation is independent evidence and therefore cannot be
+-- reconstructed from observation mode by a compatibility constructor.
+pattern CPiM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Term -> Term -> Term
+pattern CPiM mode ic q borrowed name domain codomain <-
+  CPiEvidenceM mode _ ic q borrowed name _ _ domain codomain
+
+pattern CPiBoundM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Term -> Term -> Term
+pattern CPiBoundM mode ic q borrowed name assumption domain codomain <-
+  CPiEvidenceM mode _ ic q borrowed name assumption _ domain codomain
+
+pattern CPiFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Term -> Term -> Term
+pattern CPiFormedM mode formation ic q borrowed name domain codomain <-
+  CPiEvidenceM mode formation ic q borrowed name _ _ domain codomain
+  where
+    CPiFormedM mode formation ic q borrowed name domain codomain =
+      CPiEvidenceM mode formation ic q borrowed name Nothing BinderSourceWritten domain codomain
+
+pattern CPiBoundFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Term -> Term -> Term
+pattern CPiBoundFormedM mode formation ic q borrowed name assumption domain codomain =
+  CPiEvidenceM mode formation ic q borrowed name assumption BinderSourceWritten domain codomain
+
+pattern CPi :: Icit -> Q -> Bool -> Text -> Term -> Term -> Term
+pattern CPi ic q borrowed n dom cod <- CPiM _ ic q borrowed n dom cod
+
+pattern CProj :: Term -> Text -> Term
+pattern CProj value field <- CProjM _ value field
+
+pattern CProjAt :: Term -> Text -> Int -> Term
+pattern CProjAt value field index <- CProjAtM _ value field index
+
+pattern CLet :: Q -> Text -> Term -> Term -> Term -> Term
+pattern CLet q name ty rhs body <- CLetM _ q name ty rhs body
+
+pattern CLetRec :: Q -> Text -> Term -> Term -> Term -> Term
+pattern CLetRec q name ty rhs body <- CLetRecM _ q name ty rhs body
+
+pattern CPVar :: Text -> CorePat
+pattern CPVar name <- CPVarM _ name
+
+pattern CPCtor :: GName -> Int -> [CorePat] -> CorePat
+pattern CPCtor constructor existentialCount fields <- CPCtorM (length -> existentialCount) constructor _ fields
+
+pattern CPRecord :: [(Text, CorePat)] -> Maybe Text -> CorePat
+pattern CPRecord fields rest <- CPRecordM fields (patternRestName -> rest)
+
+pattern CPInjectRest :: [Text] -> CorePat
+pattern CPInjectRest excluded <- CPInjectRestM _ excluded
+
+pattern CPAs :: Text -> CorePat -> CorePat
+pattern CPAs name inner <- CPAsM _ name inner
+
+pattern VLam :: Icit -> Q -> Text -> Closure -> Value
+pattern VLam ic q n body <- VLamM _ ic q n body
+
+pattern VPiM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Value -> Closure -> Value
+pattern VPiM mode ic q borrowed name domain codomain <-
+  VPiEvidenceM mode _ ic q borrowed name _ _ domain codomain
+
+pattern VPiBoundM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Value -> Closure -> Value
+pattern VPiBoundM mode ic q borrowed name assumption domain codomain <-
+  VPiEvidenceM mode _ ic q borrowed name assumption _ domain codomain
+
+pattern VPiFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Value -> Closure -> Value
+pattern VPiFormedM mode formation ic q borrowed name domain codomain <-
+  VPiEvidenceM mode formation ic q borrowed name _ _ domain codomain
+  where
+    VPiFormedM mode formation ic q borrowed name domain codomain =
+      VPiEvidenceM mode formation ic q borrowed name Nothing BinderSourceWritten domain codomain
+
+pattern VPiBoundFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Value -> Closure -> Value
+pattern VPiBoundFormedM mode formation ic q borrowed name assumption domain codomain =
+  VPiEvidenceM mode formation ic q borrowed name assumption BinderSourceWritten domain codomain
+
+pattern VPi :: Icit -> Q -> Bool -> Text -> Value -> Closure -> Value
+pattern VPi ic q borrowed n dom cod <- VPiM _ ic q borrowed n dom cod
+
+patternRestName :: Maybe (ObservationMode, Text) -> Maybe Text
+patternRestName = fmap snd
+
+{-# COMPLETE CPWild, CPVar, CPLit, CPCtor, CPTuple, CPRecord, CPInject,
+  CPInjectRest, CPOr, CPAs #-}
+
+{-# COMPLETE CVar, CLocal, CGlob, CLam, CPiBoundM, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CLit,
+  CCtor, CMatch, CRecordT, CRecordV, CProj, CProjAt, CVariantT, CInject,
+  CLet, CLetRec, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE, CLazyE, CForceE,
+  CIf, CQuote #-}
+
+-- Total traversals that preserve all typed metadata should match the real
+-- constructors rather than a compatibility view. This COMPLETE set prevents
+-- GHC from selecting one of the lossy read-only pattern-synonym sets above.
+{-# COMPLETE CVar, CLocal, CGlobal, CLamM, CPiEvidenceM, CApp, CSort, CLevel,
+  CUniverseLift, CSchemaLift, CLit, CCtorI, CMatch, CRecordTQ, CRecordV, CProjM, CProjAtM,
+  CVariantT, CInject, CLetM, CLetRecM, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE,
+  CLazyE, CForceE, CIf, CQuote #-}
+
+{-# COMPLETE CVar, CLocal, CGlob, CLam, CPiM, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CLit,
+  CCtor, CMatch, CRecordT, CRecordV, CProj, CProjAt, CVariantT, CInject,
+  CLet, CLetRec, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE, CLazyE, CForceE,
+  CIf, CQuote #-}
+
+{-# COMPLETE CVar, CLocal, CGlob, CLam, CPi, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CLit,
+  CCtor, CMatch, CRecordT, CRecordV, CProj, CProjAt, CVariantT, CInject,
+  CLet, CLetRec, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE, CLazyE, CForceE,
+  CIf, CQuote #-}
+
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiBoundM, VSort, VLevel, VLit, VCtor,
+  VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
+  VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
+  VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
+
+{-# COMPLETE VRigid, VFlex, VGlobal, VLamM, VPiEvidenceM, VSort, VLevel, VLit,
+  VCtorI, VRecordTQ, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
+  VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar, VFiber,
+  VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
+
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiM, VSort, VLevel, VLit, VCtor,
+  VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
+  VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
+  VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
+
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPi, VSort, VLevel, VLit, VCtor,
+  VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
+  VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
+  VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
+
+recordFieldPairs :: [RecordField a] -> [(Text, a)]
+recordFieldPairs = map (\RecordField {..} -> (rfName, rfType))

@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+type Sig : Type =
+    (A : Type, value : A)
+
+copy :
+    Sig -> Sig
+
+let copy s =
+    (A = s.A, value = s.value)

@@ -1,0 +1,14 @@
+module main
+
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+type Pair = (left : Int, right : Int)
+
+readLeft : Pair -> Int
+let readLeft value =
+    match value
+    case (left = x, ..rest) -> x

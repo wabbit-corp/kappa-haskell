@@ -5,13 +5,14 @@
 -- mutable read. The negation of a `var`-read condition is therefore NOT pushed
 -- as a discharging fact, so `subDefined x y`
 -- stays REQUIRED. Over-rejection is safe; an unsound discharge would be a bug.
+-- NOTE: the condition keeps the primitive comparison spelling because the
+-- current negation-fact bridge operates on that layer; the standard
+-- `Ord Nat` spelling of negated-condition facts (§28.2.3 + §15.8.4) is
+-- pinned by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- positive/branch-negation-checked-sub.
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
 module main
-
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
 
 consume : Nat -> Nat
 let consume n = n

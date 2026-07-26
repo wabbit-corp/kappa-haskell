@@ -1,0 +1,25 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §30.2.0A: generated constructor uses carry the declaration-universe
+-- instantiation selected by source elaboration.
+module main
+
+data Box.{u} (A : Type u) : Type u =
+    Box (value : A)
+
+boxed : Box.{0} Int
+let boxed = Box 7
+
+unbox.{u} : (A : Type u) -> Box.{u} A -> A
+let unbox.{u} A box =
+    match box
+    case Box value -> value
+
+seven : Int
+let seven = unbox Int boxed

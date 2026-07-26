@@ -1,0 +1,5 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Empty 0 covariant
+
+data Empty.{covariant u} : Type u

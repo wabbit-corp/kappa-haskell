@@ -1,0 +1,4 @@
+public opaque data HiddenBox.{irrelevant u}
+    (A : Type u)
+    : Type u =
+    HiddenBox (value : A)

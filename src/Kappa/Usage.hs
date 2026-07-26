@@ -181,6 +181,10 @@ data VInfo = VInfo
   , vMutable :: !Bool
   -- ^ Surface @var@ binding: ordinary value occurrences are current-value
   -- reads, not stable-place moves.
+  , vStaticKind :: !Bool
+  -- ^ The checker proved this binder's elaborated domain is a parametric kind.
+  -- Quantity-zero occurrences are static type-code uses rather than runtime
+  -- moves; surface spelling alone never establishes this flag.
   , vStoredTypeText :: !(Maybe Text)
   -- ^ Source-rendered stored type when Usage can derive it from an explicit
   -- annotation/ascription. Used only for structured diagnostics; Usage does not
@@ -209,7 +213,7 @@ data VInfo = VInfo
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False Nothing Nothing [] [] [] Nothing sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False False Nothing Nothing [] [] [] Nothing sp
 
 -- | Expand a borrow lock over a field path with the §12.4 dependency
 -- rule: borrowing a dependent field also locks the fields its type
@@ -300,10 +304,31 @@ fieldPatternQuantity vi path =
       else Nothing
 
 nonDupQuantity :: Maybe Quantity -> Bool
-nonDupQuantity q = q `elem` [Just QOne, Just QAtMostOne]
+nonDupQuantity = \case
+  Just QOne -> True
+  Just QAtMostOne -> True
+  _ -> False
 
 positiveLowerQuantity :: Maybe Quantity -> Bool
-positiveLowerQuantity q = q `elem` [Just QOne, Just QAtLeastOne]
+positiveLowerQuantity = \case
+  Just QOne -> True
+  Just QAtLeastOne -> True
+  _ -> False
+
+zeroQuantity :: Maybe Quantity -> Bool
+zeroQuantity = \case
+  Just QZero -> True
+  _ -> False
+
+atMostOnceQuantity :: Maybe Quantity -> Bool
+atMostOnceQuantity = nonDupQuantity
+
+positiveCountedQuantity :: Maybe Quantity -> Bool
+positiveCountedQuantity = \case
+  Just QOne -> True
+  Just QAtMostOne -> True
+  Just QAtLeastOne -> True
+  _ -> False
 
 -- | Field names that cannot be duplicated. This intentionally includes affine
 -- fields; 'linPaths' tracks the separate positive-lower "must consume" axis.
@@ -489,6 +514,7 @@ freshKey nm = do
 data Env = Env
   { eVars :: !(Map Text VInfo)
   , eFns :: !(Map Text [PInfo])
+  , eLocalFns :: !(Map Text [PInfo])
   , eInoutResults :: !(Map Text [FieldShape])
   , eResultTypes :: !(Map Text Expr)
   , eValueResultTypes :: !(Map Text Expr)
@@ -496,6 +522,8 @@ data Env = Env
   , eRecognizedRefOps :: !(Map Span RefOp)
   , eRecognizedMultishotOps :: !(Map Span Text)
   , eHandlerOpQuantities :: !(Map Span Quantity)
+  , ePatternBinderQuantities :: !(Map Span Quantity)
+  , ePatternBinderBorrows :: !(Set.Set Span)
   , eBorrows :: ![(Text, [Text], Span)]
   -- ^ live lexical borrows: root key, path, and the §3.1.1A
   -- borrow-introduction site (the @let &@ binding span) so the
@@ -532,6 +560,12 @@ data Env = Env
   -- lambda has claimed them (or on any non-lambda step).
   , eMutableBindingFields :: !(Map Span [(Text, Text)])
   -- ^ Checker-captured mutable-binding payloads keyed by source binding span.
+  , eDiscardedResultTypes :: !(Map Span Expr)
+  -- ^ Checker-finalized payload types for non-final do expression items.
+  -- Source syntax is not an authority for inferred monadic result types.
+  , eStaticKindBinders :: !(Set.Set Span)
+  , eErasedArgumentSpans :: !(Set.Set Span)
+  -- ^ Checker-proven kind-domain binders, keyed by source identity.
   , eMonadicResultHeads :: !(Set.Set Text)
   -- ^ Source type heads that import resolution / instance registration proved
   -- denote monadic action carriers. Usage may unwrap action result types only
@@ -568,6 +602,7 @@ bindVars :: [(Text, VInfo)] -> Env -> Env
 bindVars bs env =
   env
     { eVars = foldr (uncurry Map.insert) (eVars env) bs
+    , eLocalFns = foldr (Map.delete . fst) (eLocalFns env) bs
     , eDescs = foldr (Map.delete . fst) (eDescs env) bs
     }
 
@@ -603,6 +638,9 @@ flatR r = (wrUsage r `seqU` wrLatent r, wrTaint r)
 usageDiagnostics ::
   Map Span Expr ->
   Map Span [(Text, Text)] ->
+  Map Span Expr ->
+  Set.Set Span ->
+  Set.Set Span ->
   Map Text [PInfo] ->
   Map Text [FieldShape] ->
   Map Text Expr ->
@@ -614,6 +652,8 @@ usageDiagnostics ::
   Map Span RefOp ->
   Map Span Text ->
   Map Span Quantity ->
+  Map Span Quantity ->
+  Set.Set Span ->
   Set.Set Text ->
   Set.Set Text ->
   Map Text ProjUse ->
@@ -622,7 +662,7 @@ usageDiagnostics ::
   Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -666,6 +706,8 @@ usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutR
         projs
         topEffOps
         mutableBindingFields
+        staticKindBinders
+        erasedArgumentSpans
         borrowViewHeads
         monadicResultHeads
         duplicableStorageHeads
@@ -680,7 +722,7 @@ usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutR
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
     localDuplicableAliasHeads =
       fixedAliasHeads Set.empty (length localAliasDecls + 1)
@@ -836,6 +878,8 @@ moduleUsageResultStorage ::
   Map Text ProjUse ->
   Map Text [(Text, Quantity)] ->
   Map Span [(Text, Text)] ->
+  Set.Set Span ->
+  Set.Set Span ->
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
@@ -843,7 +887,7 @@ moduleUsageResultStorage ::
   Set.Set Text ->
   Module ->
   Map Text VInfo
-moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads m =
+moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields staticKindBinders erasedArgumentSpans borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads m =
   fixedPoint (length lets + 1) Map.empty
   where
     decls = modDecls m
@@ -872,6 +916,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
             Env
               (Map.fromList binds)
               fns
+              Map.empty
               inoutResults
               resultTypes
               valueResultTypes
@@ -879,6 +924,8 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               recognizedRefOps
               recognizedMultishotOps
               Map.empty
+              Map.empty
+              Set.empty
               []
               aliases
               recordShapes
@@ -893,6 +940,9 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               Map.empty
               []
               mutableBindingFields
+              Map.empty
+              staticKindBinders
+              erasedArgumentSpans
               monadicResultHeads
               duplicableStorageHeads
               unaryStorageHeads
@@ -904,9 +954,9 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
       Map.map storageSummaryKey a == Map.map storageSummaryKey b
 
     storageSummaryKey vi =
-      ( vQ vi
-      , vFields vi
-      , vPathFields vi
+      ( quantitySummaryKey (vQ vi)
+      , [(field, quantitySummaryKey quantity) | (field, quantity) <- vFields vi]
+      , [(path, quantitySummaryKey quantity) | (path, quantity) <- vPathFields vi]
       , vNonDupValue vi
       , vNonDupFields vi
       , vDeps vi
@@ -915,10 +965,19 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
       , renderExprSrc <$> vStoredTypeExpr vi
       )
 
+    quantitySummaryKey = \case
+      Nothing -> Nothing
+      Just QZero -> Just "0"
+      Just QOne -> Just "1"
+      Just QOmega -> Just "omega"
+      Just QAtMostOne -> Just "at-most-one"
+      Just QAtLeastOne -> Just "at-least-one"
+      Just (QTerm expression) -> Just ("term:" <> renderExprSrc expression)
+
     paramBindPure (b, ms) = do
       n <- bName b
-      let BinderPrefix mq mb = bPrefix b
-          BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
+      let BinderPrefix _ mq mb = bPrefix b
+          BinderPrefix _ sq sb = maybe emptyPrefix bPrefix ms
           q = mq `orElse` sq
           mark = mb `orElse` sb
           ty = bType b `orElse` (bType =<< ms)
@@ -930,7 +989,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
           pathDeps = maybe [] (recordPathDepsWith recordShapes) ty
           openTail
             | isNothing mark
-            , q `elem` [Just QOne, Just QAtLeastOne]
+            , positiveLowerQuantity q
             , Just rowVar <- (hasAbstractTail aliases =<< ty) =
                 Just (rowVar, bSpan b)
             | otherwise = Nothing
@@ -938,6 +997,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
         ( nameText n
         , (plainV ("$param:" <> nameText n) (bSpan b))
             { vQ = q
+            , vStaticKind = binderIsStaticKind staticKindBinders b ms
             , vBorrowed = isJust mark || borrowViewed
             , vAnonBorrow = anon
             , vFields = fields
@@ -1064,16 +1124,12 @@ binderParamNames :: [Binder] -> [Text]
 binderParamNames =
   mapMaybe (fmap nameText . bName)
 
--- | Surface @(field : T)@ is ambiguous with expression ascription in the
--- parser, but in type position the checker treats a lower-case field as a
--- singleton record type (§13.1). Usage consumes declaration/type shapes after
--- parsing, so it must preserve the same interpretation.
+-- | Extract the fields of an explicit record type. A singleton record is an
+-- 'ERecordType' because §13.1.1 requires its trailing comma; a parenthesized
+-- ascription remains an ascription at every later compiler stage.
 recordTypeFieldsOf :: Expr -> Maybe [RecTypeField]
 recordTypeFieldsOf = \case
   ERecordType fs _ _ -> Just fs
-  EAscription (EVar n) ty _
-    | isLowerName (nameText n) ->
-        Just [RecTypeField False False emptyPrefix Nothing n ty]
   ECaptures e _ _ -> recordTypeFieldsOf e
   _ -> Nothing
 
@@ -1089,8 +1145,6 @@ resolveFields aliases = go
     go = \case
       ERecordType fs _ _ ->
         [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
-      EAscription (EVar n) _ _
-        | isLowerName (nameText n) -> [(nameText n, Nothing)]
       e
         | Just hd <- typePathHead e
         , Just fs <- Map.lookup hd aliases -> fs
@@ -1124,9 +1178,6 @@ recordPathFieldsWithStorage duplicableHeads unaryHeads binaryHeads shapesByName 
       | otherwise = case e of
           ERecordType fs _ _ ->
             shapePaths depth seen [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
-          EAscription (EVar n) ty _
-            | isLowerName (nameText n) ->
-                shapePaths depth seen [FieldShape (nameText n) Nothing (Just ty)]
           EAscription e' _ _ -> go depth seen e'
           ECaptures e' _ _ -> go depth seen e'
           e'
@@ -1179,9 +1230,6 @@ typeStorageQuantityWithDepth duplicableHeads unaryHeads binaryHeads shapesByName
             case ty of
               ERecordType fs _ _ ->
                 shapeQuantities depth seen [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
-              EAscription (EVar n) fieldTy _
-                | isLowerName (nameText n) ->
-                    shapeQuantities depth seen [FieldShape (nameText n) Nothing (Just fieldTy)]
               EAscription e _ _ -> [go depth seen e]
               ECaptures e _ _ -> [go depth seen e]
               EVariant arms mtail _ ->
@@ -1270,9 +1318,6 @@ recordShapeFieldsWith :: Map Text RecordShape -> Expr -> [FieldShape]
 recordShapeFieldsWith shapesByName = \case
   ERecordType fs _ _ ->
     [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
-  EAscription (EVar n) ty _
-    | isLowerName (nameText n) ->
-        [FieldShape (nameText n) Nothing (Just ty)]
   EAscription e _ _ -> recordShapeFieldsWith shapesByName e
   ECaptures e _ _ -> recordShapeFieldsWith shapesByName e
   e -> fromMaybe [] (shapeFieldsForType shapesByName e)
@@ -1403,15 +1448,20 @@ pathUsage vi p u =
 
 joinFieldQuantities :: [Maybe Quantity] -> Maybe Quantity
 joinFieldQuantities qs
-  | Just QOne `elem` qs = Just QOne
-  | Just QAtMostOne `elem` qs && Just QAtLeastOne `elem` qs = Just QOne
-  | Just QAtLeastOne `elem` qs = Just QAtLeastOne
-  | Just QAtMostOne `elem` qs = Just QAtMostOne
-  | Just QZero `elem` qs = Just QZero
-  | Just QOmega `elem` qs = Just QOmega
+  | any isOne qs = Just QOne
+  | any isAtMostOne qs && any isAtLeastOne qs = Just QOne
+  | any isAtLeastOne qs = Just QAtLeastOne
+  | any isAtMostOne qs = Just QAtMostOne
+  | any zeroQuantity qs = Just QZero
+  | any isOmega qs = Just QOmega
   | otherwise = case [q | q@(Just (QTerm _)) <- qs] of
       (q : _) -> q
       [] -> Nothing
+  where
+    isOne = \case Just QOne -> True; _ -> False
+    isAtMostOne = \case Just QAtMostOne -> True; _ -> False
+    isAtLeastOne = \case Just QAtLeastOne -> True; _ -> False
+    isOmega = \case Just QOmega -> True; _ -> False
 
 joinVInfo :: VInfo -> VInfo -> VInfo
 joinVInfo a b =
@@ -2091,7 +2141,7 @@ transfersLinear env e = case placeOf env e of
 
 transfersNonDuplicable :: Env -> Expr -> Bool
 transfersNonDuplicable env e = case placeOf env e of
-  Just (vi, [], _) -> vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi))
+  Just (vi, [], _) -> nonDupQuantity (vQ vi) || vNonDupValue vi || not (null (nonDupFields vi))
   Just (vi, path, _) -> isNonDupPath vi path
   Nothing -> case e of
     ERecordLit items _ -> any (maybe False (transfersNonDuplicable env) . riValue) items
@@ -2106,7 +2156,7 @@ transfersNonDuplicable env e = case placeOf env e of
 
 valueMayContainNonDuplicable :: VInfo -> Bool
 valueMayContainNonDuplicable vi =
-  vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi))
+  nonDupQuantity (vQ vi) || vNonDupValue vi || not (null (nonDupFields vi))
 
 isActionStorageType :: Env -> Expr -> Bool
 isActionStorageType env ty =
@@ -2230,9 +2280,6 @@ resolveDeps depAliases = go
   where
     go = \case
       ERecordType fs _ _ -> fieldDepsOf fs
-      EAscription (EVar n) ty _
-        | isLowerName (nameText n) ->
-            fieldDepsOf [RecTypeField False False emptyPrefix Nothing n ty]
       e
         | Just hd <- typePathHead e -> Map.findWithDefault [] hd depAliases
       EAscription e _ _ -> go e
@@ -2345,6 +2392,11 @@ remainingSig (b : bs) sbs = case sbs of
       (Just nx, Just ny) -> nameText nx == nameText ny
       _ -> False
 
+binderIsStaticKind :: Set.Set Span -> Binder -> Maybe Binder -> Bool
+binderIsStaticKind staticKinds binder sigBinder =
+  bSpan binder `Set.member` staticKinds
+    || maybe False ((`Set.member` staticKinds) . bSpan) sigBinder
+
 -- | Explicit-argument demand of a definition, signature preferred.
 fnParams :: Maybe Expr -> LetDef -> [PInfo]
 fnParams msig ld =
@@ -2360,7 +2412,7 @@ fnParams msig ld =
    in if null (ldBinders ld) then fromSig else fromLet
   where
     binderP b =
-      let BinderPrefix mq mb = bPrefix b
+      let BinderPrefix _ mq mb = bPrefix b
        in defaultP
             { pName = nameText <$> bName b
             , pQuantity = if bInout b then Just QOne else mq
@@ -2407,6 +2459,9 @@ fnParams msig ld =
 analyzeLet ::
   Map Span Expr ->
   Map Span [(Text, Text)] ->
+  Map Span Expr ->
+  Set.Set Span ->
+  Set.Set Span ->
   Map Text [PInfo] ->
   Map Text [FieldShape] ->
   Map Text Expr ->
@@ -2415,6 +2470,8 @@ analyzeLet ::
   Map Span RefOp ->
   Map Span Text ->
   Map Span Quantity ->
+  Map Span Quantity ->
+  Set.Set Span ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
@@ -2429,7 +2486,7 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
+analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -2443,7 +2500,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
   let env =
-          (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
+          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
           {ePendingSig = pendingSig}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
@@ -2471,8 +2528,8 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
     paramBind (b, ms) = case bName b of
       Nothing -> pure Nothing
       Just n -> do
-        let BinderPrefix mq mb = bPrefix b
-            BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
+        let BinderPrefix _ mq mb = bPrefix b
+            BinderPrefix _ sq sb = maybe emptyPrefix bPrefix ms
             q = mq `orElse` sq
             mark = mb `orElse` sb
             ty = bType b `orElse` (bType =<< ms)
@@ -2491,7 +2548,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
             -- is rejected
             openTail
               | isNothing mark
-              , q `elem` [Just QOne, Just QAtLeastOne]
+              , positiveLowerQuantity q
               , Just rowVar <- (hasAbstractTail aliases =<< ty) =
                   Just (rowVar, bSpan b)
               | otherwise = Nothing
@@ -2501,6 +2558,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
                 ( nameText n
                 , (plainV k (bSpan b))
                     { vQ = q
+                    , vStaticKind = binderIsStaticKind staticKindBinders b ms
                     , vBorrowed = isJust mark || borrowViewed
                     , vAnonBorrow = anon
                     , vFields = fields
@@ -2555,7 +2613,9 @@ checkInoutResult aliases monadicResultHeads msig ld =
     orElse Nothing y = y
     sigResult = dropBinders
     threadsField nm ty =
-      any (\(field, q) -> field == nm && q == Just QOne) (resolveFields aliases ty)
+      any (\(field, q) -> field == nm && isOne q) (resolveFields aliases ty)
+      where
+        isOne = \case Just QOne -> True; _ -> False
 
 -- | Close one binding's scope: enforce its quantity interval, including
 -- per-path consumption of its quantity-1 record fields (§12.4).
@@ -2582,7 +2642,7 @@ closeVarWith mctx vi u = do
   -- so re-reading the value afterwards is sound — e.g. `let q = p` then
   -- `p.value` for a plain (ω) record `p` (§12.4, §16.4.3 stable alias).
   let definiteConsume bp =
-        vQ vi `elem` [Just QOne, Just QAtMostOne, Just QAtLeastOne]
+        positiveCountedQuantity (vQ vi)
           || isLinearPath vi bp
   forM_ (dedupViols viols) $ \(bp, bsp) ->
     when (definiteConsume bp) $
@@ -2948,7 +3008,7 @@ checkBorrowOverlap env vi path sp =
 -- quantity-1 field path), checked against live borrows.
 movePlace :: Env -> VInfo -> [Text] -> Span -> Analysis Usage
 movePlace env vi path sp = do
-  when (vQ vi == Just QZero) $
+  when (zeroQuantity (vQ vi)) $
     emit "E_QTT_ERASED_RUNTIME_USE" "kappa.quantity.unsatisfied" sp
       ("erased (quantity 0) binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' is used at runtime (§12.2.1)")
   checkBorrowOverlap env vi path sp
@@ -3051,6 +3111,7 @@ walkE :: Env -> Expr -> Analysis WalkResult
 walkE env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
     Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
+    Just vi | zeroQuantity (vQ vi) && vStaticKind vi -> pure rNone
     Just vi -> do
       u <- movePlace env vi [] (nameSpan n)
       pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
@@ -3062,6 +3123,10 @@ walkE env e0 = case e0 of
   EUnit {} -> pure rNone
   ETuple es _ -> walks es
   ERecordLit items _ -> walks [v | RecItem _ _ (Just v) <- items]
+  -- Declaration-universe arguments are static schema instantiations. They are
+  -- checked by the universe elaborator but are not runtime QTT uses; only the
+  -- instantiated term is executed.
+  EUniverseInstantiation base _ _ -> walkE env base
   EApp f args -> walkApp env f args
   EDot {}
     | Just (vi, path, sp) <- varPlaceOf env e0 ->
@@ -3137,17 +3202,28 @@ walkE env e0 = case e0 of
   EHandle _ _ scrut cases _ -> do
     r0 <- walkE env scrut
     let bindPats sp nms = mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
+        bindCheckedPats pats =
+          forM (concatMap patternBinderNames pats) $ \n -> do
+            key <- freshKey (nameText n)
+            let q = Map.lookup (nameSpan n) (ePatternBinderQuantities env)
+                vi =
+                  (plainV key (nameSpan n))
+                    { vQ = countedQ =<< q
+                    , vBorrowed = nameSpan n `Set.member` ePatternBinderBorrows env
+                    }
+            pure (nameText n, vi)
     crs <- forM cases $ \case
       HandlerReturn pat body sp -> do
         shadow <- bindPats sp (patVars pat)
         fst . flatR <$> walkE (bindVars shadow env) body
-      HandlerOp _ argPats kN body sp -> do
-        shadow <- bindPats sp (concatMap patVars argPats)
+      HandlerOp _ argPats kN body _sp -> do
+        shadow <- bindCheckedPats argPats
         kKey <- freshKey (nameText kN)
         let q = Map.findWithDefault QOne (nameSpan kN) (eHandlerOpQuantities env)
             kvi = (plainV kKey (nameSpan kN)) {vQ = countedQ q}
-            env' = bindVars (shadow ++ [(nameText kN, kvi)]) env
+            env' = bindResumption kN (bindVars (shadow ++ [(nameText kN, kvi)]) env)
         u <- fst . flatR <$> walkE env' body
+        forM_ shadow $ \(_, vi) -> closeVar vi u
         closeVar kvi u
         pure u
     pure (rPlain (fst (flatR r0) `seqU` altUs crs))
@@ -3371,8 +3447,8 @@ lamBind :: Env -> (Binder, Maybe Binder) -> Analysis (Maybe (Text, VInfo))
 lamBind env (b, ms) = case bName b of
   Nothing -> pure Nothing
   Just n -> do
-    let BinderPrefix mq mb = bPrefix b
-        BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
+    let BinderPrefix _ mq mb = bPrefix b
+        BinderPrefix _ sq sb = maybe emptyPrefix bPrefix ms
         q = mq `orElse` sq
         mark = mb `orElse` sb
         ty = bType b `orElse` (bType =<< ms)
@@ -3384,7 +3460,7 @@ lamBind env (b, ms) = case bName b of
         -- abstract residual tail, exactly as an equation-head receiver
         openTail
           | isNothing mark
-          , q `elem` [Just QOne, Just QAtLeastOne]
+          , positiveLowerQuantity q
           , Just rowVar <- (hasAbstractTail (eAliases env) =<< ty) =
               Just (rowVar, bSpan b)
           | otherwise = Nothing
@@ -3394,6 +3470,7 @@ lamBind env (b, ms) = case bName b of
           ( nameText n
               , (plainV k (bSpan b))
                   { vQ = q
+                  , vStaticKind = binderIsStaticKind (eStaticKindBinders env) b ms
                   , vBorrowed = isJust mark
                   , vAnonBorrow = mark == Just (BorrowMark Nothing)
                   , vFields = fields
@@ -3560,6 +3637,29 @@ patVars = \case
   POpChain p chain _ -> patVars p ++ concatMap (patVars . snd) chain
   PVariant mb _ _ mrest _ ->
     [nameText n | Just n <- [mb]] ++ [nameText n | Just n <- [mrest]]
+  _ -> []
+
+-- | The source identities of variables bound by one pattern. Unlike
+-- 'patVars', this retains spans so the usage pass can consume the checker's
+-- resolved slot quantities instead of reconstructing handler contracts from
+-- operation names or source shape. Or-pattern alternatives bind one logical
+-- variable set; the first alternative is the canonical binding layout.
+patternBinderNames :: Pattern -> [Name]
+patternBinderNames = \case
+  PVar n -> [n]
+  PAs n p -> n : patternBinderNames p
+  PCtor _ ps _ -> concatMap patternBinderNames ps
+  PCtorNamed _ fs _ -> concatMap patternBinderNames [p | (_, Just p) <- fs]
+  PTuple ps _ -> concatMap patternBinderNames ps
+  PRecord fs rest _ ->
+    concatMap patternBinderNames [p | (_, _, Just p) <- fs]
+      ++ [f | (_, f, Nothing) <- fs]
+      ++ [n | Just (PatRestBind n) <- [rest]]
+  PTyped p _ _ -> patternBinderNames p
+  POr (p : _) _ -> patternBinderNames p
+  POr [] _ -> []
+  POpChain p chain _ -> patternBinderNames p ++ concatMap (patternBinderNames . snd) chain
+  PVariant mb _ _ mrest _ -> catMaybes [mb, mrest]
   _ -> []
 
 -- | A @..@ rest that silently discards a quantity-1 field of a tracked
@@ -3846,8 +3946,6 @@ typeStorageFactsUnknown env = go (0 :: Int) Set.empty
       | otherwise =
           case ty of
             ERecordType {} -> False
-            EAscription (EVar n) _ _
-              | isLowerName (nameText n) -> False
             EAscription e _ _ -> go depth seen e
             ECaptures e _ _ -> go depth seen e
             EVariant arms mtail _ ->
@@ -4055,7 +4153,10 @@ walkApp env f args
 walkApp env f args = do
   hr <- walkE env f
   let (hu, _ht) = flatR hr -- an application calls its head exactly once
-      params = maybe [] (\n -> Map.findWithDefault [] n (eFns env)) (calleeDemandName env f)
+      params =
+        fromMaybe [] $
+          ((`Map.lookup` eLocalFns env) =<< localCallableName f)
+            <|> ((`Map.lookup` eFns env) =<< calleeDemandName env f)
       liftLike = case appHeadVar env f of
         Just n -> maybe False buLiftLike (Map.lookup n builtinUsage)
         Nothing -> False
@@ -4153,11 +4254,12 @@ walkArg env params resultCarried arg p = case arg of
           "call-site '~' marker on an argument whose parameter is not declared inout (§18.9.3)"
         (,[]) <$> walkE env e
   ArgExplicit e
+    | exprSpan e `Set.member` eErasedArgumentSpans env -> pure (rNone, [])
     | pInout p -> do
         emit "E_QTT_INOUT_MARKER_REQUIRED" "kappa-hs.qtt.inout-marker" (exprSpan e)
           "this argument flows into an inout parameter and must be marked '~place' (§18.9.3)"
         (,[]) <$> walkE env e
-    | pQuantity p == Just QZero -> pure (rNone, []) -- erased argument
+    | zeroQuantity (pQuantity p) -> pure (rNone, []) -- erased argument
     | pBorrow p -> borrowish e
     -- a projection call argument touches its yield leaves: a move per
     -- leaf under a consuming parameter (§30.2.2.3 MoveProjector), a
@@ -4219,7 +4321,7 @@ walkArg env params resultCarried arg p = case arg of
             | pKnown p
             , pEscapingParam p
             , pCaptureBound p == CapAny
-            , pQuantity p `notElem` [Just QOne, Just QAtMostOne] ->
+            , not (atMostOnceQuantity (pQuantity p)) ->
                 -- §3.1.1A: cite the borrow-capturing closure formation
                 -- site (primary) and the escape site where it flows out.
                 emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
@@ -4265,7 +4367,7 @@ walkArg env params resultCarried arg p = case arg of
             | pKnown p
             , pEscapingParam p
             , pCaptureBound p == CapAny
-            , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
+            , not (atMostOnceQuantity (pQuantity p)) -> do
                 -- §3.1.1A (line 602-603): cite the borrow-capturing
                 -- closure formation site carried by the composite value's
                 -- taint (RoleBorrowStart) and the escape site where that
@@ -4279,7 +4381,7 @@ walkArg env params resultCarried arg p = case arg of
                 pure (rPlain (u' `seqU` l'), [])
           _ -> pure (WalkResult (u' `seqU` l') t Map.empty, [])
   where
-    consuming = pQuantity p `elem` [Just QOne, Just QAtLeastOne]
+    consuming = positiveLowerQuantity (pQuantity p)
     placeUse vi path sp =
       case path of
         [] -> Map.singleton (vKey vi) (oneUC sp)
@@ -4403,6 +4505,16 @@ usageAnonBorrowIntro env u =
   where
     touches vi (k, c) = ucTouched c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
 
+-- | Resolve a callable introduced in the current lexical scope. This is kept
+-- separate from 'calleeDemandName', whose static-path contract intentionally
+-- excludes locals and is also used for global result/storage metadata.
+localCallableName :: Expr -> Maybe Text
+localCallableName = \case
+  EVar n -> Just (nameText n)
+  EApp f _ -> localCallableName f
+  EAscription e _ _ -> localCallableName e
+  _ -> Nothing
+
 calleeDemandName :: Env -> Expr -> Maybe Text
 calleeDemandName env = \case
   e | Just headKey <- staticPathHead env e -> Just headKey
@@ -4457,7 +4569,7 @@ coreUsageTypeExpr binders = \case
     let binder =
           Binder
             { bImplicit = ic == Core.Impl
-            , bPrefix = BinderPrefix (coreQuantity q) (if brw then Just (BorrowMark Nothing) else Nothing)
+            , bPrefix = BinderPrefix Nothing (coreQuantity q) (if brw then Just (BorrowMark Nothing) else Nothing)
             , bSusp = Nothing
             , bReceiver = NoReceiver
             , bInout = False
@@ -4517,7 +4629,7 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
       _ -> False
     go envc [] = pure ([], envc)
     go envc (LetBind _ prefix pat mty rhs bsp : rest) = do
-      let BinderPrefix mq mb = prefix
+      let BinderPrefix _ mq mb = prefix
           borrowed = isJust mb
           anon = mb == Just (BorrowMark Nothing)
           place = placeOf envc rhs
@@ -4592,7 +4704,8 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
             Just (vi, path, _)
               | not borrowed, isLinearPath vi path -> Just QOne
               | not borrowed, null path, not (isWildBinder pat)
-              , Just inheritedQ <- vQ vi, inheritedQ `elem` [QOne, QAtLeastOne] -> Just inheritedQ
+              , Just inheritedQ <- vQ vi
+              , positiveLowerQuantity (Just inheritedQ) -> Just inheritedQ
             _ -> Nothing
           q = if single then mq `orElse` inherited else Nothing
           -- §13.2.1: a record literal that places a linear value into a
@@ -4715,6 +4828,20 @@ countedQ = \case
   QOne -> Just QAtMostOne
   q -> Just q
 
+-- | A handler resumption is a scoped callable whose sole argument is consumed
+-- exactly once by the captured continuation. Recording that callable contract
+-- is essential for borrow checking: an unknown callee has the same demand
+-- interval, but does not prove that the demand is consuming.
+bindResumption :: Name -> Env -> Env
+bindResumption n env =
+  env
+    { eLocalFns =
+        Map.insert
+          (nameText n)
+          [defaultP {pQuantity = Just QOne, pKnown = True}]
+          (eLocalFns env)
+    }
+
 -- | Is this right-hand side an invocation of a resolved effect operation whose
 -- checker-selected operation metadata permits multi-shot resumption
 -- (§18.1.17)? Returns the operation's span and name for diagnostics.
@@ -4791,6 +4918,7 @@ multishotOpsInExecutedExpr env = go
       ETuple es _ -> concatMap go es
       ERecordLit items _ -> concatMap (\(RecItem _ _ mv) -> maybe [] go mv) items
       ERecordType {} -> []
+      EUniverseInstantiation base _ _ -> go base
       eApp@(EApp f args) -> hit (exprSpan eApp) ++ go f ++ concatMap goArg args
       EDot recv member -> hitMember member ++ go recv
       EQDot recv member -> hitMember member ++ go recv
@@ -5115,7 +5243,23 @@ walkItems env0 items0 = go env0 items0
     go env [] = pure (Flow (Just (PathState Map.empty (eVars env))) Nothing [] [])
     go env (item : rest) = case item of
       DoExpr e -> do
+        diagnosticsBefore <- gets (length . sDiags)
         (u, t, envAction) <- walkExecutedAction env e
+        diagnosticsAfter <- gets (length . sDiags)
+        -- Validate the action itself before diagnosing the consequence of
+        -- discarding its result. An invalid call (for example, a missing
+        -- inout marker) owns the primary diagnostic; reporting a linear drop
+        -- for the hypothetical result would be a cascade from an action that
+        -- never typechecks. A valid action still receives the structural
+        -- droppability check below.
+        when (not (null rest) && diagnosticsAfter == diagnosticsBefore) $
+          forM_ (Map.lookup (exprSpan e) (eDiscardedResultTypes env)) $ \resultType ->
+            when (typeMayContainPositive env resultType) $
+              emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (exprSpan e)
+                ( "the discarded do-item result of type '"
+                    <> renderExprSrc resultType
+                    <> "' may contain a quantity-1 or relevant component; bind and consume or transfer it (§12.2.6, §18.2)"
+                )
         (restoreU, restored, envStable) <- applyStableExprVarInoutWrites envAction e
         let env' = applyExprVarInoutWrites envStable e
         fl <- go env' rest
@@ -5143,7 +5287,7 @@ walkItems env0 items0 = go env0 items0
         -- §19.5: the bound resource is borrowed for the rest of scope
         -- and may not itself escape the do-scope
         (rhsU, _, envAction) <- walkExecutedAction env rhs
-        (segs, env') <- walkBindsWith (\_ _ -> pure rNone) envAction [LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
+        (segs, env') <- walkBindsWith (\_ _ -> pure rNone) envAction [LetBind False (BinderPrefix Nothing Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
         let bound = concat [b | (_, b, _) <- segs]
             u = rhsU `seqU` foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
             markUsing = foldr (\(nm, _) -> Map.adjust (\vi -> vi {vUsing = True}) nm) (eVars env') bound
@@ -5369,12 +5513,22 @@ walkItems env0 items0 = go env0 items0
                 let envBody = restoreScopedEnv envScrut (map fst shadow) envBody0
                 forM_ shadow $ \(_, vi) -> closeVar vi bu
                 pure (bu, bt, envBody)
-              HandlerOp _ argPats kN body sp -> do
-                shadow <- shadowVars (concatMap patVars argPats) sp
+              HandlerOp _ argPats kN body _sp -> do
+                shadow <- forM (concatMap patternBinderNames argPats) $ \n -> do
+                  key <- freshKey (nameText n)
+                  let q = Map.lookup (nameSpan n) (ePatternBinderQuantities envc)
+                      vi =
+                        (plainV key (nameSpan n))
+                          { vQ = countedQ =<< q
+                          , vBorrowed = nameSpan n `Set.member` ePatternBinderBorrows envc
+                          }
+                  pure (nameText n, vi)
                 kKey <- freshKey (nameText kN)
                 let q = Map.findWithDefault QOne (nameSpan kN) (eHandlerOpQuantities envc)
                     kvi = (plainV kKey (nameSpan kN)) {vQ = countedQ q}
-                    envBody0 = bindVars (shadow ++ [(nameText kN, kvi)]) envScrut
+                    envBody0 =
+                      bindResumption kN $
+                        bindVars (shadow ++ [(nameText kN, kvi)]) envScrut
                 (bu, bt, envBody1) <- walkExecutedAction envBody0 body
                 closeVar kvi bu
                 forM_ shadow $ \(_, vi) -> closeVar vi bu
@@ -5493,7 +5647,7 @@ walkItems env0 items0 = go env0 items0
             [] -> pure ()
         captureKind vi
           | vBorrowed vi = Just "a borrowed binding"
-          | vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi)) =
+          | nonDupQuantity (vQ vi) || vNonDupValue vi || not (null (nonDupFields vi)) =
               Just "a non-duplicable binding"
           | otherwise = Nothing
 
@@ -5505,7 +5659,7 @@ residueLinear env pat = case headCtor pat of
     [ cn'
     | (cn', ps) <- Map.findWithDefault [] cn (eCtors env)
     , cn' /= cn
-    , any (\p -> cpiQuantity p `elem` [Just QOne, Just QAtLeastOne]) ps
+    , any (positiveLowerQuantity . cpiQuantity) ps
     ]
   Nothing -> []
   where

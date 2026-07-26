@@ -5,19 +5,15 @@
 
 module main
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 risky : IO String Nat
 let risky = do
     raise "boom"
-    pure (natOfInt 0)
+    pure (0 : Nat)
 
 handlerLeak : Nat -> Nat -> IO String Nat
 let handlerLeak x y = do
     try risky
-    except _ if leInt (natToInt y) (natToInt x) ->
-        pure (natOfInt 0)
+    except _ if y <= x ->
+        pure (0 : Nat)
     except _ ->
         pure (x - y) --!! E_UNSOLVED_IMPLICIT

@@ -200,8 +200,14 @@ run_expected_fail_case() {
 
 run_native_expected_stdout_case() {
   local name="$1"; local want="$2"; local src="$CASES/$name.kp"
-  echo "-- case: $name (native erased-layout regression must print $want)"
-  local exe out rc
+  echo "-- case: $name (interpreter and native backends must print $want)"
+  local exe out rc interp_out interp_rc
+  interp_out="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; interp_rc=$?
+  if [ "$interp_rc" -ne 0 ] || [ "$interp_out" != "$want" ]; then
+    echo "   FAIL: interpreter rc=$interp_rc stdout=$(printf '%s' "$interp_out" | tr '\n' '|')"
+    fails=$((fails+1))
+    return
+  fi
   exe="$WORK/$name.expected.c"
   cleanup_generated_for_source "$src"
   if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.expected.c.build.log" 2>&1; then
@@ -267,11 +273,12 @@ run_reuse_on_off_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read tail-loop-owned-projection interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct perceus-s5-reuse-move perceus-s5-reuse-mixed-branch perceus-s5-reuse-branch-replace-boxed perceus-s5-reuse-as-pattern perceus-s5-direct-projection-failclosed perceus-s5-reuse-let-scope perceus-s5-maypack-failclosed; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read tail-loop-owned-projection interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec local-universe-recursive perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct perceus-s5-reuse-move perceus-s5-reuse-mixed-branch perceus-s5-reuse-branch-replace-boxed perceus-s5-reuse-as-pattern perceus-s5-direct-projection-failclosed perceus-s5-reuse-let-scope perceus-s5-maypack-failclosed; do run_diff_case "$c"; done
 run_native_expected_stdout_case ctor-erased-tail-pattern 20
 run_native_expected_stdout_case tuple-erased-field-pattern 5
 run_native_expected_stdout_case poly-lambda-erased-arg 5
 run_native_expected_stdout_case ctor-erased-field-patch 30
+run_native_expected_stdout_case typelevel-runtime 11233
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="
@@ -1593,17 +1600,17 @@ rtmp="$WORK/rc-read-nonlast"; mkdir -p "$rtmp"
 rcsrc="$rtmp/rc_read_nonlast.kp"
 cat > "$rcsrc" <<'KP'
 module main
-type Box = (v : Int)
+type Box = (v : Int,)
 type PeekBox = (& x : Box) -> Int
 peekBox : (& x : Box) -> Int
 let peekBox x = x.v
 useBorrowTwice : Box -> Int
 let useBorrowTwice y = peekBox y + y.v
-type RecAlias = (f : PeekBox)
+type RecAlias = (f : PeekBox,)
 useProjectedTwice : RecAlias -> Box -> Int
 let useProjectedTwice r y = r.f y + y.v
 main : UIO Unit
-let main = printInt (useBorrowTwice (v = 41) + useProjectedTwice (f = peekBox) (v = 1))
+let main = printInt (useBorrowTwice (v = 41,) + useProjectedTwice (f = peekBox,) (v = 1,))
 KP
 if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$rcsrc" --emit-c -o "$rtmp/rc_read_nonlast" >"$rtmp/build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$rtmp/build.log"
@@ -1667,13 +1674,13 @@ offtmp="$WORK/rc-off-owned-use"; mkdir -p "$offtmp"
 offsrc="$offtmp/rc_off_owned_use.kp"
 cat > "$offsrc" <<'KP'
 module main
-type Box = (v : Int)
+type Box = (v : Int,)
 consume : Box -> Box
 let consume x = x
 use : Box -> Box
 let use x = consume x
 main : UIO Unit
-let main = printInt (use (v = 7)).v
+let main = printInt (use (v = 7,)).v
 KP
 if KAPPA_PERCEUS_RC=0 timeout 120 $KAPPA build "$offsrc" --emit-c -o "$offtmp/rc_off_owned_use" >"$offtmp/build.log" 2>&1; then
   offc="$offtmp/rc_off_owned_use.kappa.c"
@@ -1709,7 +1716,7 @@ data Box : Type =
     MkBox (value : Int)
 data Holder : Type =
     Holder (box : Box)
-type RHolder : Type = (box : Box)
+type RHolder : Type = (box : Box,)
 consumeBox : Box -> Int
 let consumeBox b =
     match b
@@ -1762,14 +1769,14 @@ let branchBorrowedAlias c =
     else peekHolder h
 branchBorrowedRecordAlias : Bool -> Int
 let branchBorrowedRecordAlias c =
-    let h : RHolder = (box = MkBox 9)
+    let h : RHolder = (box = MkBox 9,)
     let y = h.box
     if c
     then consumeBox y
     else peekRHolder h
 branchBorrowedNestedAlias : Bool -> Int
 let branchBorrowedNestedAlias c =
-    let h : RHolder = (box = MkBox 12)
+    let h : RHolder = (box = MkBox 12,)
     let y = let z = 0 in h.box
     if c
     then consumeBox y
@@ -1941,14 +1948,14 @@ mtmp="$WORK/rc-mixed-scalar"; mkdir -p "$mtmp"
 msrc="$mtmp/rc_mixed_scalar.kp"
 cat > "$msrc" <<'KP'
 module main
-type Box = (v : Int)
+type Box = (v : Int,)
 sumBox : Box -> Int -> Int
 let sumBox b n =
     if leInt n 0
     then b.v
     else sumBox b (subInt n 1)
 main : UIO Unit
-let main = printInt (sumBox (v = 7) 3)
+let main = printInt (sumBox (v = 7,) 3)
 KP
 if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$msrc" --emit-c -o "$mtmp/rc_mixed_scalar" >"$mtmp/build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$mtmp/build.log"

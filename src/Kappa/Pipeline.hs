@@ -29,6 +29,7 @@ module Kappa.Pipeline
   , preludeState
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad.State.Strict (evalState)
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
@@ -42,6 +43,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import Kappa.Backend.C (primRegistryDiagnostics)
+import Kappa.Backend.IR
+  ( BackendIRViolation (..)
+  , validateCoreCapabilities
+  )
 import Kappa.Backend.NativeFfi
   ( ResolvedNativeSymbol (..)
   , nativeMemberType
@@ -49,15 +54,24 @@ import Kappa.Backend.NativeFfi
 import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
-import Kappa.Core (GName (..), Icit (..), Q (..), Term (..), gnameText)
+import Kappa.Core (DeclarationUniverseTelescope (..), GName (..), Icit (..), Q (..), Term (..), gnameText)
 import Kappa.CoreLint (lintCoreBodies)
+import Kappa.CoreOps (mapTermWithDepth, zonkTermWith)
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
-import Kappa.Ownership (annotateOwnership, refineOwnership)
+import Kappa.Eval (EvalCtx (..), GlobalDef (gdUniverses), Globals (..), eval, quote)
+import Kappa.Level (Level (LZero), substituteLevelMetas)
+import Kappa.Ownership
+  ( OwnershipCtorType (..)
+  , annotateOwnershipWithUniverses
+  , refineOwnershipWithUniverses
+  )
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
   ( builtinState
   , preludeSource
+  , stdTypeLevelBootstrapSource
+  , stdTypeLevelPackagesSource
+  , stdTypeLevelSource
   , stdAtomicSource
   , stdArrayMutableSource
   , stdBridgeSource
@@ -114,13 +128,26 @@ data CompiledUnit = CompiledUnit
 -- standard-library modules (currently @std.hash@).
 preludeState :: (CheckState, Diagnostics)
 preludeState =
-  case parseModule "<std.prelude>" preludeSource of
-    Left ds -> (builtinState, ds)
+  let (typeLevelBootstrapState, typeLevelBootstrapDiags) =
+        stdModule modTypeLevel "<std.typelevel.bootstrap>" stdTypeLevelBootstrapSource builtinState
+      preludeInput =
+        typeLevelBootstrapState
+          { csModule = preludeModule
+          , csScope = Map.singleton "TypeLevel" prelTypeLevel
+          , csScopeAmbig = Map.empty
+          , csModuleAliases = Map.empty
+          , csDiags = []
+          , csScopeNameCache = Nothing
+          }
+   in case parseModule "<std.prelude>" preludeSource of
+    Left ds -> (typeLevelBootstrapState, typeLevelBootstrapDiags ++ ds)
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
-          (st, diags) = checkModule builtinState m'
+          (st, diags) = checkModule preludeInput m'
           stdSources =
-            [ (modDerivingShape, "<std.deriving.shape>", stdDerivingShapeSource)
+            [ (modTypeLevel, "<std.typelevel>", stdTypeLevelSource)
+            , (modTypeLevel, "<std.typelevel.packages>", stdTypeLevelPackagesSource)
+            , (modDerivingShape, "<std.deriving.shape>", stdDerivingShapeSource)
             , (modHash, "<std.hash>", stdHashSource)
             , (modDebug, "<std.debug>", stdDebugSource)
             , (modBytes, "<std.bytes>", stdBytesSource)
@@ -155,7 +182,15 @@ preludeState =
           -- forgets to reset the flag inherits 'False', not the exemption. Only
           -- a user module with @AllowUnsafeIntrinsics re-enables it.
           st' = stStd {csAllowUnsafeIntrinsics = False, csEmbeddedLoad = False}
-       in (st', recovered ++ rdiags ++ diags ++ sdiags ++ builtinContractDiags st')
+       in
+        ( st'
+        , typeLevelBootstrapDiags
+            ++ recovered
+            ++ rdiags
+            ++ diags
+            ++ sdiags
+            ++ builtinContractDiags st'
+        )
 
 -- | §28: the prelude must define every name the compiler wires in (see
 -- "Kappa.Builtins"). Any name the compiler spells but the prelude does not
@@ -216,11 +251,26 @@ stdModule mn path src st0 =
     Left ds -> (st0, ds)
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
-          ie = buildImportsInWithScope [] (preludeAllMemberScope st0) st0 m'
-          stIn =
+          fragmentExports = moduleExportNames m'
+          stVisible =
             st0
+              { csModuleExports =
+                  Map.insertWith
+                    (\new old -> nub (old ++ new))
+                    mn
+                    fragmentExports
+                    (csModuleExports st0)
+              }
+          ie = buildImportsInWithScope [] (preludeAllMemberScope stVisible) stVisible m'
+          ownScope =
+            Map.fromList
+              [ (name, GName mn name)
+              | name <- fragmentExports
+              ]
+          stIn =
+            stVisible
               { csModule = mn
-              , csScope = ieScope ie
+              , csScope = Map.union ownScope (ieScope ie)
               , csScopeAmbig = ieAmbig ie
               , csModuleAliases = ieAliases ie
               , csDiags = []
@@ -229,7 +279,15 @@ stdModule mn path src st0 =
                 csScopeNameCache = Nothing
               }
           (st1, diags) = checkModule stIn m'
-          st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
+          st2 =
+            st1
+              { csModuleExports =
+                  Map.insertWith
+                    (\new old -> nub (old ++ new))
+                    mn
+                    fragmentExports
+                    (csModuleExports st1)
+              }
        in (st2, recovered ++ rdiags ++ ieDiags ie ++ diags)
 
 
@@ -243,7 +301,7 @@ preludeScope st =
   Map.fromList
     [ (gnameText g, g)
     | g@(GName m _) <- Map.keys (csGlobals st)
-    , m == preludeModule
+    , m == preludeModule || m == modTypeLevel
     , not ("__inst_" `T.isPrefixOf` gnameText g)
     , not (constructorOnlyGlobal st g)
     ]
@@ -258,10 +316,15 @@ preludeAllMemberScope :: CheckState -> Map.Map Text GName
 preludeAllMemberScope st =
   Map.fromList
     [ (gnameText g, g)
-    | g@(GName m _) <- Map.keys (csGlobals st) ++ Map.keys (csCtors st)
-    , m == preludeModule
+    | g@(GName m _) <- Map.keys (csGlobals st)
+    , m == preludeModule || m == modTypeLevel
     , not ("__inst_" `T.isPrefixOf` gnameText g)
     ]
+    <> Map.fromList
+      [ (gnameText g, g)
+      | g@(GName m _) <- Map.keys (csCtors st)
+      , m == preludeModule
+      ]
 
 preludeWildcardMemberNames :: CheckState -> [Text]
 preludeWildcardMemberNames st =
@@ -380,7 +443,17 @@ applyNativeModules syms st0 =
         foldl' (\m s -> Map.insertWith (++) (s.moduleName) [s] m) Map.empty syms
     addMod st (mn, ss) =
       let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-          gdOf s = GlobalDef (eval ec [] (nativeMemberType (s.params) (s.result))) Nothing False
+          groundHead global =
+            CGlobal global
+              ( replicate
+                  (maybe 0 (dutParameterCount . gdUniverses) (Map.lookup global (csGlobals st)))
+                  LZero
+              )
+          gdOf s =
+            GlobalDef
+              (eval ec [] (nativeMemberType groundHead (s.params) (s.result)))
+              Nothing
+              False
           gs =
             foldl'
               (\g s -> Map.insert (GName mn (s.member)) (gdOf s) g)
@@ -668,6 +741,9 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                     usageDiagnostics
                       (csExpansions st1)
                       (csMutableBindingFields st1)
+                      (csDiscardedResultTypes st1)
+                      (csStaticKindBinders st1)
+                      (csErasedArgumentSpans st1)
                       (usageImportedParams byName st1 ie)
                       (usageImportedInoutResults byName st1 ie)
                       (usageImportedResultTypes byName st1 ie)
@@ -679,6 +755,8 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (usageRecognizedRefOps st1)
                       (usageRecognizedMultishotOps st1)
                       (usageHandlerOpQuantities st1)
+                      (usagePatternBinderQuantities st1)
+                      (csPatternBinderBorrows st1)
                       (usageImportedBorrowViewHeads st1 ie)
                       (usageVisibleMonadicResultHeads st1 ie m')
                       (usageImportedProjections byName st1 ie)
@@ -768,10 +846,118 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       finalSt'0 =
         finalSt
           { csCoreBodies =
-              MapLazy.map
-                (\tm -> evalState (zonkTermM 0 tm) finalSt)
+              MapLazy.mapWithKey
+                (\global ->
+                   canonicalizeFinalReferences
+                     . specializeFinalizedDeclarationLevels global
+                     . \tm -> evalState (zonkTermM 0 tm) finalSt)
                 (csCoreBodies finalSt)
           }
+      -- Universe generalization can precede final evidence commitment: proof
+      -- metas must see the principal SCC solution before they are selected.
+      -- When such a proof is materialized by the final term-meta zonk, it may
+      -- still contain the declaration's provisional source level identities.
+      -- Apply the already-recorded source-to-telescope map here, where both
+      -- the proof term and its owning declaration are known. This is a stable
+      -- identity substitution, not a second inference/defaulting pass.
+      specializeFinalizedDeclarationLevels global =
+        let levelMap =
+              Map.findWithDefault Map.empty global
+                (csFinalizedGlobalUniverseMetaMaps finalSt)
+         in zonkTermWith
+              (\_ _ -> Nothing)
+              (substituteLevelMetas levelMap)
+              0
+      -- Same-module references can be captured while a dependency still has
+      -- an all-meta provisional universe interface. A final arity of zero is
+      -- a complete proof that none of those provisional arguments survived;
+      -- strip exactly that obsolete spine. Nonzero mismatches remain visible
+      -- to the fail-closed Core validator because retained positions cannot be
+      -- reconstructed by guessing at this boundary.
+      canonicalizeFinalReferences =
+        mapTermWithDepth
+          (\_ -> \case
+             CGlobal global universes
+               | not (null universes)
+               , finalUniverseArity global == Just 0 -> Just (CGlobal global [])
+             CCtorI constructor universes annotation arguments
+               | not (null universes)
+               , finalUniverseArity constructor == Just 0 ->
+                   Just (CCtorI constructor [] annotation arguments)
+             _ -> Nothing)
+          0
+      finalUniverseArity global =
+        (dutParameterCount . gdUniverses <$> Map.lookup global (csGlobals finalSt))
+          <|> (dutParameterCount . ciUniverses <$> Map.lookup global (csCtors finalSt))
+      -- §30.2.2.9: capability legality is a typed-Core invariant, not a
+      -- backend accident. Run the target-neutral erasure planner before
+      -- ownership or target selection and fail the unit if a parametric
+      -- witness would survive into a runtime value position.
+      coreCapabilityDiags =
+        if any ((== SevError) . dSeverity) allDiags
+          then []
+          else
+            map coreInvariantDiagnostic (validateCoreCapabilities finalSt'0)
+
+      coreInvariantDiagnostic v = case bivCode v of
+        "E_UNSOLVED_METAVARIABLE" ->
+          withPayload
+            ( withPayloadField "metavariableKind" "universe-level"
+                $ withPayloadField "observableIn" (gnameText (bivBody v))
+                $ payloadKind "unsolved-metavariable"
+            )
+            $ diag SevError StageElaborate "E_UNSOLVED_METAVARIABLE"
+              (Just "kappa.type.unsolved-metavariable") noSpan (bivMessage v)
+        "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" ->
+          withPayload
+            ( withPayloadField "normalizedFailedConstraint" (bivMessage v)
+                $ withPayloadField "levelAssumptions" "finalized-module-boundary"
+                $ withPayloadField "constraintOrigin" (gnameText (bivBody v))
+                $ payloadKind "universe-constraint"
+            )
+            $ diag SevError StageElaborate "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
+              (Just "kappa.universe.constraint") noSpan (bivMessage v)
+        "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE" ->
+          withPayload
+            ( foldr
+                (\(key, value) payload -> withPayloadField key value payload)
+                (payloadKind "proof-relevant-transport-not-lowerable")
+                (bivPayloadFields v)
+            )
+            $ diag SevError StageElaborate
+              "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE"
+              (Just "kappa.equality.transport-not-lowerable")
+              noSpan
+              (bivMessage v)
+        "E_BACKENDIR_OBSERVATION_ANALYSIS" ->
+          withPayload
+            ( foldr
+                (\(key, value) payload -> withPayloadField key value payload)
+                ( withPayloadField "declaration" (gnameText (bivBody v))
+                    $ withPayloadField "checkpoint" "finalized-kcore"
+                    $ payloadKind "backendir-observation-analysis"
+                )
+                (bivPayloadFields v)
+            )
+            $ diag SevError StageElaborate
+              "E_BACKENDIR_OBSERVATION_ANALYSIS"
+              (Just "kappa.internal.compiler")
+              noSpan
+              (bivMessage v)
+        _ ->
+          withPayload
+            ( foldr
+                (\(key, value) payload -> withPayloadField key value payload)
+                ( withPayloadField "witnessOrigin" (gnameText (bivBody v))
+                    $ withPayloadField "expectedCapability" "compile-time-only"
+                    $ withPayloadField "actualCapability" "runtime-value"
+                    $ withPayloadField "generatedUse" "true"
+                    $ payloadKind "parametric-type-promotion"
+                )
+                (bivPayloadFields v)
+            )
+            $ diag SevError StageElaborate "E_PARAMETRIC_TYPE_PROMOTION"
+              (Just "kappa.type.parametric-promotion") noSpan (bivMessage v)
       -- Perceus RC Stage S1.1/S1.4: populate the ownership side-table right
       -- after 'csCoreBodies' is finalized (mirroring the @gsSuspenders@
       -- precedent, which derives from the same core bodies). 'annotateOwnership'
@@ -793,15 +979,15 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           (csMetas finalSt'0)
           False
           (csFacts finalSt'0)
-      ctorTypes = Map.map ciType (csCtors finalSt'0)
+      ctorTypes = Map.map (\ci -> OwnershipCtorType (ciUniverses ci) (ciType ci)) (csCtors finalSt'0)
       finalSt' =
         finalSt'0
           { csOwnership =
-              refineOwnership
+              refineOwnershipWithUniverses
                 ownCtx
                 ctorTypes
                 (csCoreBodies finalSt'0)
-                (annotateOwnership ownCtx ctorTypes (csCoreBodies finalSt'0))
+                (annotateOwnershipWithUniverses ownCtx ctorTypes (csCoreBodies finalSt'0))
           }
       -- KBackendIR Stage 0: an OBSERVE-ONLY lint over the elaborated,
       -- zonked Core. It only appends 'SevWarning' diagnostics — it never
@@ -811,7 +997,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- @kapp(unit, …)@ crash class) as a diagnostic rather than a crash.
       lintDiags =
         lintCoreBodies (csGlobals finalSt') (csMetas finalSt') (csCoreBodies finalSt')
-   in CompiledUnit finalSt' (allDiags ++ lintDiags) lastName allTrace
+   in CompiledUnit finalSt' (allDiags ++ coreCapabilityDiags ++ lintDiags) lastName allTrace
 
 renderModuleName :: ModuleName -> Text
 renderModuleName (ModuleName segs) = T.intercalate "." segs
@@ -957,7 +1143,12 @@ moduleExportNames m =
     otherNames = concatMap go (modDecls m)
     go = \case
       DData mods (DataDecl n _ _ ctors) _
-        | vis mods -> nameText n : [nameText cn | CtorDecl cn _ _ _ <- ctors]
+        | vis mods ->
+            nameText n
+              : [ nameText cn
+                | not (dmOpaque mods)
+                , CtorDecl cn _ _ _ _ <- ctors
+                ]
       -- §8.5: a trait declaration also binds each member name at module
       -- scope (the §14.2.1 overloaded-member projection), and those are
       -- ordinary top-level named items — exported by default with the
@@ -1382,9 +1573,9 @@ coreCtorParamInfos :: Term -> [CtorParamInfo]
 coreCtorParamInfos = go [] []
   where
     go env dataParams = \case
-      CPi Impl _ _ nm _ body ->
+      CPiEvidenceM _ _ Impl _ _ nm _ _ _ body ->
         go (nm : env) (nm : dataParams) body
-      CPi Expl q _ nm dom body ->
+      CPiEvidenceM _ _ Expl q _ nm _ _ dom body ->
         CtorParamInfo
           (if nm == "_" then Nothing else Just nm)
           (coreQuantityExpr q)
@@ -1395,13 +1586,13 @@ coreCtorParamInfos = go [] []
 
 coreDropBinders :: [Text] -> Term -> ([Text], Term)
 coreDropBinders env = \case
-  CPi _ _ _ nm _ body -> coreDropBinders (nm : env) body
+  CPiEvidenceM _ _ _ _ _ nm _ _ _ body -> coreDropBinders (nm : env) body
   ty -> (env, ty)
 
 coreUnwrapActionType :: Set.Set GName -> Term -> Term
 coreUnwrapActionType monadicCarriers ty =
   case coreSpine ty of
-    (CGlob g, args)
+    (CGlobal g _, args)
       | isMonadicCarrier g
       , (arg : _) <- reverse [arg | (Expl, arg) <- args] ->
           arg
@@ -1415,7 +1606,7 @@ coreUnwrapActionType monadicCarriers ty =
 coreUsageTypeExpr :: [Text] -> Term -> Maybe Expr
 coreUsageTypeExpr binders = \case
   CSort _ -> Just (EVar (Name "Type" noSpan))
-  CGlob g -> Just (exprForGName g)
+  CGlobal g _ -> Just (exprForGName g)
   CVar i
     | i >= 0
     , i < length binders ->
@@ -1554,7 +1745,7 @@ usageSourceCtors byName =
 resolvedCtorAliasTarget :: CheckState -> GName -> Maybe GName
 resolvedCtorAliasTarget st g =
   case Map.lookup g (csCoreBodies st) of
-    Just (CGlob target)
+    Just (CGlobal target _)
       | Map.member target (csCtors st) -> Just target
     _ -> Nothing
 
@@ -1868,13 +2059,18 @@ usageRecognizedMultishotOps st =
 usageHandlerOpQuantities :: CheckState -> Map.Map Span Quantity
 usageHandlerOpQuantities =
   Map.map coreQuantity . csHandlerOpQuantities
-  where
-    coreQuantity = \case
-      Q0 -> QZero
-      Q1 -> QOne
-      QW -> QOmega
-      QLe1 -> QAtMostOne
-      QGe1 -> QAtLeastOne
+
+usagePatternBinderQuantities :: CheckState -> Map.Map Span Quantity
+usagePatternBinderQuantities =
+  Map.map coreQuantity . csPatternBinderQuantities
+
+coreQuantity :: Q -> Quantity
+coreQuantity = \case
+  Q0 -> QZero
+  Q1 -> QOne
+  QW -> QOmega
+  QLe1 -> QAtMostOne
+  QGe1 -> QAtLeastOne
 
 usageImportedBorrowViewHeads :: CheckState -> ImportEnv -> Set.Set Text
 usageImportedBorrowViewHeads st ie =
@@ -1917,7 +2113,7 @@ monadicCarrierHead [] = Nothing
 
 coreTypeHeadGName :: Term -> Maybe GName
 coreTypeHeadGName = \case
-  CGlob g -> Just g
+  CGlobal g _ -> Just g
   CApp _ f _ -> coreTypeHeadGName f
   CForceE t -> coreTypeHeadGName t
   _ -> Nothing

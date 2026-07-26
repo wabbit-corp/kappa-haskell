@@ -1,0 +1,19 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §18.1.15 and §30.2.0: operation argument binders retain observation
+-- mode, quantity, explicitness, and access independently. Selecting an
+-- operation must expose exactly the declared Pi telescope rather than
+-- reconstructing every explicit argument as an ordinary omega value.
+module main
+
+effect Inspect =
+    1 inspect : (parametric 0 A : Type) -> (1 x : Int) -> Int
+
+selected : (parametric 0 A : Type) -> (1 x : Int) -> Eff <[Inspect : Inspect]> Int
+let selected = Inspect.inspect

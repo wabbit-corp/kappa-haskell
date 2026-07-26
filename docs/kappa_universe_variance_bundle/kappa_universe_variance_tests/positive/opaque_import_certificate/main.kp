@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole HiddenBox 0 irrelevant
+--! assertSchemaCertificateValid HiddenBox
+
+import lib exposing HiddenBox
+
+up : HiddenBox.{0} Int -> HiddenBox.{3} Int
+let up x = x

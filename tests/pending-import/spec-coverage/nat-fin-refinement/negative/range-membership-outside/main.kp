@@ -1,0 +1,14 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+outside :
+    NatBetween 2 30
+
+let outside =
+    31
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH

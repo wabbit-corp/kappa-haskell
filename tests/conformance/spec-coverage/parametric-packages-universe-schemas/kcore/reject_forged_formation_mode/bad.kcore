@@ -1,0 +1,11 @@
+kcore 1;
+module @tests.kcore.badformation#1201 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "tests.kcore.badformation",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.badformation.f#2201 .{^u#0} :
+    ((parametric ordinary 0 explicit value %A#0 : Type ^u#0) -> %A#0);
+}

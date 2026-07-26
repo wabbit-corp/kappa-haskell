@@ -1,0 +1,24 @@
+-- An omitted recursive reference inside an inferred local SCC denotes the
+-- SCC's current shared universe instance. Every telescope coordinate is
+-- preserved even when the callee's own signature does not mention it.
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+choose : (A : Type) -> A -> A
+let choose A value =
+    block
+        left : (B : Type) -> B -> B
+        right : (C : Type) -> C -> C
+        let left B x =
+            if True then x else right B x
+        let right C y =
+            if True then y else left C y
+        let low : Bool = left Bool True
+        if low then right A value else value

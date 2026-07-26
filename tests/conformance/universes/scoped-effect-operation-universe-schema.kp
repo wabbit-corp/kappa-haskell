@@ -1,0 +1,21 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §9.3.1.1, §11.1.2.3A, and §18.1.15: operation-only universe
+-- dependencies of a scoped effect belong to that scoped interface's schema,
+-- exactly as for a top-level effect.
+module main
+
+selected : (parametric 0 A : Type 1) -> (x : A) -> Unit
+let selected A x =
+    block
+        scoped effect Local =
+            inspect : (parametric 0 B : Type) -> (y : B) -> B
+
+        let chosen : (parametric 0 B : Type 1) -> (y : B) -> Eff <[Local : Local.{1}]> B = Local.inspect
+        ()

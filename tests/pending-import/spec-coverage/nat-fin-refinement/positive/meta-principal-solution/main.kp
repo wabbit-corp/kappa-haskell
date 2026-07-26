@@ -1,0 +1,25 @@
+data OnePlus : Type =
+    OnePlus
+        (rest : Nat)
+        (@0 proof : natAdd rest 1 = 4)
+
+-- Spec 15.8.6: arithmetic automation may assign a metavariable exactly
+-- when the assignment is the unique principal solution under the
+-- current constraints. natAdd ?rest 1 = 4 pins ?rest := 3, so the
+-- erased constructor proof is accepted and the stored payload
+-- evaluates to the solved literal. The underconstrained two-hole
+-- variant stays rejected in negative/arithmetic-underconstrained.
+principal :
+    OnePlus
+
+let principal =
+    OnePlus ?rest @refl
+
+principalRest :
+    Nat
+
+let principalRest =
+    principal.rest
+
+--! assertNoErrors
+--! assertEval principalRest 3

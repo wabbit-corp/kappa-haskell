@@ -18,8 +18,8 @@ instance Box Int =
     Content = Int
     let wrap x = x
 
-contentOf : forall (a : Type). (@d : Box a) -> Type
-let contentOf = d.Content
+contentId : forall (a : Type). (@d : Box a) -> d.Content -> d.Content
+let contentId x = x
 
 r : Int
 let r = wrap 5

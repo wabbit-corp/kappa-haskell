@@ -3,7 +3,7 @@ module main
 data File : Type =
     Handle Int
 
-let step (inout file : File) : IO (1 file : File) = pure file
+let step (inout file : File) : IO (1 file : File,) = pure file
 
 let main : IO Unit = do
     let file = Handle 1

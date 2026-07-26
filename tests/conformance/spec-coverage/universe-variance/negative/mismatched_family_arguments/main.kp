@@ -1,0 +1,12 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SCHEMA_LIFT_INVALID
+--! assertDiagnosticFamily error kappa.universe.schema-lift
+
+data Box.{irrelevant u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)
+
+bad : Box.{0} Int -> Box.{3} String
+let bad x = x

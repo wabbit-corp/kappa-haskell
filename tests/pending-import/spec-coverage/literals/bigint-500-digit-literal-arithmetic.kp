@@ -1,6 +1,11 @@
 --! mode run
+--! requires capability representationQueries
+--! requires capability representationCertificates
 --! assertNoErrors
 --! assertStdout "True\nTrue\nTrue\nTrue\nmatched\n12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567891\n"
+--! assertEval bigCmp GT
+--! assertExactNaturalRepresentation for Nat
+--! assertRepresentationClass bigNat ExactNatural
 
 -- SPEC COVERAGE (robust literals): 500-digit integer literals.
 -- Spec 6.1.1: decimal and hex integer literal forms with no stated size
@@ -8,9 +13,24 @@
 -- mathematical integer type and `Int` is a transparent alias of it, so
 -- portable arithmetic on 500-digit literal values MUST be exact
 -- mathematical arithmetic (no wraparound, no precision loss), literals
--- this large MUST be accepted at `Integer`/`Nat`, MUST work as match
--- patterns (Spec 17.2.1 literal patterns), and show/println MUST render
--- the exact value.
+-- this large MUST work as match patterns (Spec 17.2.1 literal
+-- patterns), and show/println MUST render the exact value.
+--
+-- The Nat arm is the strong half. Under the revised Spec 28.2, `Nat`
+-- is the ordinary inductive `data Nat = Zero | Succ (pred : Nat)`; the
+-- arbitrary-precision guarantee lives in 34.3.2A ("every mathematical
+-- natural number is represented exactly"; storage "asymptotically
+-- proportional to its binary magnitude, not to its unary Succ depth";
+-- a backend "MUST NOT represent an ordinary Nat value as one allocated
+-- successor node per numeric unit") together with 28.2's "Closed Nat
+-- computation is exact and may be evaluated by an implementation
+-- primitive rather than materializing a unary constructor spine". A
+-- 500-digit `natAdd bigNat 1` therefore doubles as a non-unary pin:
+-- 28.2's natAdd recurses on its LEFT argument, so a unary spine would
+-- need ~10^500 steps. Both the delegating trait path (`bigNat + 1 >
+-- bigNat`; 28.2: "The canonical Add Nat, Mul Nat, and Ord Nat
+-- instances delegate to these definitions") and the canonical
+-- definitions (`natAdd`/`natCompare`) are exercised.
 
 big : Integer
 let big = 12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890
@@ -20,6 +40,14 @@ let bigNat = 1234567890123456789012345678901234567890123456789012345678901234567
 
 bigHex : Integer
 let bigHex = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+
+-- canonical-definition spelling of the same arithmetic (28.2 natAdd /
+-- natCompare, not the Add/Ord trait members)
+bigSucc : Nat
+let bigSucc = natAdd bigNat 1
+
+bigCmp : Ordering
+let bigCmp = natCompare bigSucc bigNat
 
 classify : Integer -> String
 let classify n =
@@ -35,4 +63,3 @@ let main = do
     println (bigNat + 1 > bigNat)
     println (classify big)
     println (big + 1)
--- STATUS(a0497523): PASS

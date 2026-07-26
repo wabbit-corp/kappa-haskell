@@ -10,7 +10,7 @@
 -- identical seals agree; the transparent member also unfolds to Int.
 module main
 
-type Mixed : Type = (Pub : Type, opaque Priv : Type, pub : this.Pub, priv : this.Priv)
+type Mixed : Type1 = (Pub : Type, opaque Priv : Type, pub : this.Pub, priv : this.Priv)
 
 p1 : Mixed
 let p1 = seal (Pub = Int, Priv = Int, pub = 1, priv = 2) as Mixed

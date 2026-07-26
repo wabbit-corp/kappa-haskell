@@ -1,0 +1,18 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §30.2.0A: canonical KCoreText must structurally serialize and verify
+-- ordinary Core forms, not replace them with a display-only fallback node.
+module main
+
+type Pair = (left : Int, right : Int)
+
+choose : Bool -> Int
+let choose flag =
+    let pair : Pair = (left = 10, right = 20) in
+    if flag then pair.left else pair.right

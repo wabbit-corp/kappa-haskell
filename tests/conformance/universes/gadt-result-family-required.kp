@@ -1,0 +1,7 @@
+-- §10.1/§10.4.1: a GADT constructor result must be an application of the
+-- data family being declared, not merely any well-formed type.
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+data G : Type =
+    MkG : Int

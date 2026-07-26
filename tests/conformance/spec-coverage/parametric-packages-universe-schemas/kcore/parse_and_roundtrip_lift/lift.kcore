@@ -1,0 +1,34 @@
+kcore 1;
+
+module @tests.kcore.lift#1002 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.lift",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  extension impl.kappa 1;
+
+  axiom parametric @tests.kcore.lift.le#3001 .{^u#0, ^v#1} :
+    apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65
+      (explicit term-node "impl.kappa.level-value" {
+        level = level-value(^u#0);
+      },
+       explicit term-node "impl.kappa.level-value" {
+        level = level-value(^v#1);
+      });
+
+  def ordinary @tests.kcore.lift.raise#2002 .{^u#0, ^v#1} :
+    ((ordinary ordinary omega explicit value %A#0 : Type ^u#0) ->
+      Type ^v#1)
+  {
+    body =
+      lambda (ordinary ordinary omega explicit value %A#0 : Type ^u#0) {
+        lift [^u#0 <= ^v#1 by @tests.kcore.lift.le#3001.{^u#0, ^v#1}] %A#0
+      };
+  }
+}
+

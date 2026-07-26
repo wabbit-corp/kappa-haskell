@@ -21,6 +21,83 @@ static inline void kassert_args_live(KValue **a, int n) {
   for (int i = 0; i < n; i++) kassert_live(a[i]);
 }
 
+/* §11.1.1 runtime TypeLevel representation. The public source type is opaque;
+ * both ordinary source construction and intrinsic operations use the pinned
+ * private Level constructor, denoting omega*coefficient + remainder below
+ * omega^2. There is deliberately no second record-shaped ABI. */
+static KValue *ktypelevel(KValue *omega_coefficient, KValue *finite_remainder) {
+  KValue *fields[2] = {omega_coefficient, finite_remainder};
+  return kctor(KCT_TYPELEVEL_LEVEL, "std.typelevel.Level", 2, fields);
+}
+
+static void ktypelevel_parts(KValue *level, KValue **omega_coefficient,
+                             KValue **finite_remainder) {
+  kassert_live(level);
+  if (kctor_tagid(level) != KCT_TYPELEVEL_LEVEL || kctor_argc(level) != 2)
+    krt_fail("TypeLevel: invalid private runtime representation");
+  *omega_coefficient = kctor_arg(level, 0);
+  *finite_remainder = kctor_arg(level, 1);
+  if (!kis_int_any(*omega_coefficient) || !kis_int_any(*finite_remainder)
+      || kint_cmp(*omega_coefficient, kint(0)) < 0
+      || kint_cmp(*finite_remainder, kint(0)) < 0)
+    krt_fail("TypeLevel: private components must be nonnegative integers");
+}
+
+static int ktypelevel_cmp(KValue *left, KValue *right) {
+  KValue *lc, *ln, *rc, *rn;
+  ktypelevel_parts(left, &lc, &ln);
+  ktypelevel_parts(right, &rc, &rn);
+  int coefficient_order = kint_cmp(lc, rc);
+  return coefficient_order == 0 ? kint_cmp(ln, rn) : coefficient_order;
+}
+
+KValue *kpf___typeLevelZero(KValue **a) {
+  (void)a;
+  return ktypelevel(kint(0), kint(0));
+}
+
+KValue *kpf___typeLevelOmega(KValue **a) {
+  (void)a;
+  return ktypelevel(kint(1), kint(0));
+}
+
+KValue *kpf___typeLevelFromNat(KValue **a) {
+  if (kint_cmp(a[0], kint(0)) < 0)
+    krt_fail("TypeLevel: negative finite level");
+  return ktypelevel(kint(0), kdup(a[0]));
+}
+
+KValue *kpf___typeLevelSucc(KValue **a) {
+  KValue *coefficient, *remainder;
+  ktypelevel_parts(a[0], &coefficient, &remainder);
+  return ktypelevel(kdup(coefficient), kp_addInt(remainder, kint(1)));
+}
+
+KValue *kpf___typeLevelAdd(KValue **a) {
+  KValue *lc, *ln, *rc, *rn;
+  ktypelevel_parts(a[0], &lc, &ln);
+  ktypelevel_parts(a[1], &rc, &rn);
+  return ktypelevel(kp_addInt(lc, rc), kp_addInt(ln, rn));
+}
+
+KValue *kpf___typeLevelMax(KValue **a) {
+  KValue *coefficient, *remainder;
+  KValue *selected = ktypelevel_cmp(a[0], a[1]) >= 0 ? a[0] : a[1];
+  ktypelevel_parts(selected, &coefficient, &remainder);
+  return ktypelevel(kdup(coefficient), kdup(remainder));
+}
+
+KValue *kpf___eqTypeLevel(KValue **a) {
+  return kbool(ktypelevel_cmp(a[0], a[1]) == 0);
+}
+
+KValue *kpf___compareTypeLevel(KValue **a) {
+  int order = ktypelevel_cmp(a[0], a[1]);
+  if (order < 0) return kctor0(KCT_LT, "LT");
+  if (order > 0) return kctor0(KCT_GT, "GT");
+  return kctor0(KCT_EQ, "EQ");
+}
+
 /* §34.5.3 IO builtin direct entry points (codegen calls these via K_NATIVE,
  * never by name).  The pure builtins are the kp_ and kpf_ helpers below; these
  * kpf_io_ entries are the effectful ones the do-kernel sequences. */

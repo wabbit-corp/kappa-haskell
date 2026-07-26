@@ -1,0 +1,16 @@
+--! mode compile
+--! assertErrorCount 1
+--! assertDiagnostic error E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE
+--! assertDiagnosticFamily error kappa.equality.transport-not-lowerable
+--! assertDiagnosticExplainExists E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE
+
+-- §11.4.1: the proof and result are runtime-relevant, but the abstract proof
+-- is not definitionally refl and no computational path extension is active.
+module main
+
+data VecB (parametric 0 n : Nat) : Type =
+    MkVecB
+
+castAbs : forall (@0 n : Nat) (@0 m : Nat). (p : n = m) -> VecB n -> VecB m
+let castAbs (@0 n : Nat) (@0 m : Nat) (p : n = m) (v : VecB n) : VecB m =
+    subst @Nat @VecB @n @m p v

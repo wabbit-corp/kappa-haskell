@@ -1,0 +1,8 @@
+--! mode check
+--! assertNoErrors
+
+sameUniverse :
+    Type0 = Type0
+
+let sameUniverse =
+    refl

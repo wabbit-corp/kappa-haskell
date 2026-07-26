@@ -1,0 +1,14 @@
+-- §11.1.2.3/§11.1.3/§15.16: forcing a later data-family header while checking
+-- an earlier constructor field must elaborate the later family's terminal
+-- result classifier in its own declaration context. The caller's binder-domain
+-- provenance must not turn the later bare `Type` into a spurious generalized
+-- or unsolved universe.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+data HoldsLater : Type =
+    HoldsLater (value : Later)
+
+data Later : Type =
+    Later

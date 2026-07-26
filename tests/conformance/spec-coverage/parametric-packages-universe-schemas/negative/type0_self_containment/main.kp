@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
+--! assertDiagnosticFamily error kappa.universe.constraint
+
+bad : Type0
+let bad = Type0

@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "6\n"
+
+module main
+
+data Bag (a : Type) : Type =
+    Bag (List a)
+
+instance IntoQuery (Bag a) =
+    let IntoItem = a
+    let toQuery bag =
+        match bag
+        case Bag items -> __queryFromList items
+
+values : List Integer
+let values = [for value in Bag (1 :: 2 :: 3 :: Nil), yield value]
+
+main : UIO Unit
+let main = printlnString (showInt (foldl addInt 0 values))

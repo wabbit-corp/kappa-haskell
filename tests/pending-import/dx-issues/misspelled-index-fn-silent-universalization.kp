@@ -1,21 +1,36 @@
 -- DX EXPECTATION — §11.3.3, §3.1: there is no `max` in scope, so per
 -- §11.3.3 the free lowercase head in the index of `m3` is implicitly
 -- universalized (spec-mandated; the same universalization that makes
--- `useId : id Nat` legal).  The DX gap is everything around it: the
--- resulting mismatch renders the universalized head as a bare hole —
--- "actual: P (_ 2 3) / expected: P 3" — with no mention of the name
--- `max`, no unresolved-name hint, and no note that the name was
--- universalized, while the identical TERM-level `max 2 3` gets a
--- proper E_NAME_UNRESOLVED with "did you mean 'map'?".  A typo in an
--- index function thus becomes a fresh binder and surfaces as a
--- baffling remote mismatch.  Expected: the mismatch renders the
--- source name (`P (max 2 3)`) and carries a help noting that `max`
--- is not in scope and was implicitly universalized (with the
--- term-level did-you-mean candidates).
+-- `useId : id Nat` legal).  The 2026-07-25 Nat/Fin revision does not add
+-- a prelude `max` for Nat/Integer (§28.2.1 declares Max but exports no
+-- term-level max; §28.2.3 requires no Max Nat), so the universalization
+-- and the mismatch both still stand.  The DX gap is everything around
+-- it: the resulting mismatch renders the universalized head as a bare
+-- hole — "actual: P (_ 2 3) / expected: P 3" — with no mention of the
+-- name `max`, no not-in-scope hint, and no note that the name was
+-- universalized, while the identical TERM-level `max 2 3` gets a proper
+-- E_NAME_UNRESOLVED with "did you mean 'map'?".  A typo in an index
+-- function thus becomes a fresh binder and surfaces as a baffling
+-- remote mismatch.  Expected: the mismatch renders the source name
+-- (`P (max 2 3)`) and carries a help noting that `max` is not in scope
+-- and was implicitly universalized (with the term-level did-you-mean
+-- candidates).
+-- Second rendering hazard, new with §28.2's inductive Nat: the expected
+-- index 3 has a unary source normal form, and §34.3.2A forbids the unary
+-- representation only at RUNTIME — nothing stops a renderer from
+-- printing `P (Succ (Succ (Succ Zero)))`.  The payload assert pins the
+-- numeral spelling `P 3`.
+-- Cross-reference: prelude-min-max-unavailable.kp — §15.8.4 now REQUIRES
+-- piecewise-linear min/max/clamp/abs solver reasoning while the prelude
+-- still exports no min/max, so the solver can reason about an operation
+-- users cannot name; the two files should be fixed together.
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.mismatch
 --! assertDiagnosticMatch max
+--! assertDiagnosticMatch not in scope
+--! assertDiagnosticMatch universalized
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected P 3
 
 module main
 
@@ -28,3 +43,5 @@ let m3 = MkP
 m3AsLit : P 3
 let m3AsLit = m3                --!! kappa.type.mismatch
 -- STATUS(a0497523): FAIL — the single kappa.type.mismatch renders "actual: P (_ 2 3) / expected: P 3": the misspelled head became an anonymous universalized binder with no mention of 'max', no unresolved-name hint, and no universalization note (term-level `max 2 3` gets E_NAME_UNRESOLVED with "did you mean 'map'?")
+-- (Recorded before the not-in-scope/universalized/payload asserts were
+-- added 2026-07-25.)

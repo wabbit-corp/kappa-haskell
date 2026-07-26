@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+-- The completed §30.2.0A grammar has no bare solver-identity evidence form.
+--! assertKCoreRejects bad.kcore E_KCORE_TEXT_INVALID

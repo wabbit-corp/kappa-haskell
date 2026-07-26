@@ -1,13 +1,13 @@
 module main
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection cellValue (place this : Cell) : Int =
     yield this.value
 
 bad : UIO Unit
 let bad = do
-    let cell = (value = 1)
+    let cell = (value = 1,)
     let proj = cellValue
     let _ <- pure (proj ~cell)
     pure ()

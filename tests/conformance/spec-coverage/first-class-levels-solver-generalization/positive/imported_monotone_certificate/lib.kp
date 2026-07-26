@@ -1,0 +1,12 @@
+expect term bump : TypeLevel -> TypeLevel
+
+expect term bumpMonotone :
+    (x y : TypeLevel) ->
+    (@0 p : x <= y) ->
+    (bump x <= bump y) = True
+
+instance Monotone bump =
+    monotone = bumpMonotone
+
+public opaque data Lifted.{u} : Type (succ (bump u)) =
+    Lifted (ordinary 0 A : Type (bump u))

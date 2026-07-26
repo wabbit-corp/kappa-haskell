@@ -8,10 +8,10 @@
 -- check accepts the owned temporary here.
 module main
 
-type Holder = (value : Int)
+type Holder = (value : Int,)
 
 mkHolder : Unit -> Holder
-let mkHolder () = (value = 3)
+let mkHolder () = (value = 3,)
 
 peek : (& h : Holder) -> Int
 let peek (& h : Holder) : Int = h.value
@@ -22,4 +22,4 @@ let fromCall = peek (mkHolder ())
 
 -- POSITIVE: record-literal argument, not a stable place.
 fromLiteral : Int
-let fromLiteral = peek (value = 4)
+let fromLiteral = peek (value = 4,)

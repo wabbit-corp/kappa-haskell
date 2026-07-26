@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertSelectedEvidence (Monotone (\x -> x + k)) std.typelevel.addRightMonotone
+
+expect term k : TypeLevel
+
+needsMonotone : Monotone (\x -> x + k) => Unit
+let needsMonotone = Unit
+
+selected : Unit
+let selected = needsMonotone

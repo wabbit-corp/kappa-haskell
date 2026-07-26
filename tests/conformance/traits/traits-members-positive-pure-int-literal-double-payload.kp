@@ -23,7 +23,7 @@ module main
 
 data Box a = MkBox a
 
-trait Pure (f : Type -> Type) =
+trait Pure (f : (A : Type) -> Type) =
     pure : forall (a : Type). a -> f a
 
 instance Pure Box =

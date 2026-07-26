@@ -4,14 +4,25 @@
 -- at runtime the match gets STUCK: `case 0` neither matches nor fails
 -- against the internal `__rat 0 1` value and run mode dies with
 -- "unhandled IO primitive: printlnString/1 args=if match __rat 0 1 ...".
--- The spec does not pin literal-pattern typing, but an accepted,
+-- The spec pins literal patterns only at `Nat` (2026-07-25 Nat/Fin
+-- revision: §28.2's `data Nat = Zero | Succ (pred : Nat)` makes the
+-- accept-then-stuck failure mode impossible at Nat by construction,
+-- with §10.2.1 no-confusion behind the constructors and §34.3.2A's
+-- mandatory exact non-unary runtime representation; the Nat case is
+-- covered by ../spec-coverage/nat-fin-refinement/positive/
+-- nat-constructors-computation). Literal-pattern typing remains
+-- UNPINNED for the other FromInteger carriers — Rational here, plus the
+-- `Meters` user-type rejection quoted below — so this file's scope is
+-- those non-Nat carriers. Whatever the eventual rule, an accepted,
 -- exhaustive match (wildcard present) must take a branch — accept-then-
 -- stuck is wrong under every reading. Note the same compiler already
 -- REJECTS literal patterns at user FromInteger types at check time
 -- ("a literal pattern cannot match a scrutinee of type 'Meters'
 -- (§17.2.1)"), so Rational is accepted by one rule and unsupported by
--- the other. Expected-good behavior pinned here: the literal pattern
--- matches the literal's elaborated value, as at Double.
+-- the other. (Integer would be another control: Integer literals ARE in
+-- §15.8.4's exact-closed-literal domain while Rational is not.)
+-- Expected-good behavior pinned here: the literal pattern matches the
+-- literal's elaborated value, as at Double.
 --! mode run
 --! assertNoErrors
 --! assertStdout "True\nFalse\n"

@@ -278,6 +278,8 @@ registry =
       "A §22.4 field-constraint reflection action found a field with no instance satisfying the required runtime trait obligation."
   , ent "E_INTERNAL" Nothing
       "Internal compiler invariant violation. This is an implementation bug, not an error in the source program."
+  , ent "E_INTERNAL_REFL_GOAL" Nothing
+      "The equality prover requested a reflexivity witness for a goal that is not a canonical equality application. This is an implementation bug, not an error in the source program."
   , ent "E_INTERNAL_BUILTIN_MISSING" (Just "kappa-hs.internal.builtin-missing")
       "The bundled prelude does not define a name the compiler wires in (see Kappa.Builtins). This is an implementation bug — a drift between the compiler and its prelude — not an error in the source program."
   , ent "E_INTERNAL_CTOR_TAG" (Just "kappa-hs.internal.ctor-tag")
@@ -361,6 +363,8 @@ registry =
       "A kind-qualified name expression's selector does not agree with the named declaration's facet (e.g. 'trait' on a data type)."
   , ent "E_QTT_BORROW_ESCAPE" (Just "kappa.borrow.escape")
       "A closure or value capturing a borrowed binding (or a reified BorrowView) escapes the borrow's scope through the result."
+  , ent "E_CAPTURE_SET_MISMATCH" (Just "kappa.capture.mismatch")
+      "A value's inferred hidden region environment is not contained in the demanded capture annotation (§3.2.7, §12.3.1)."
   , ent "E_REFUTABLE_LET_PATTERN" (Just "kappa-hs.pattern.refutable-binding")
       "A 'let' binding uses a refutable pattern; only irrefutable patterns may appear in plain let bindings."
   , ent "E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION" (Just "kappa.type.mismatch")
@@ -381,6 +385,50 @@ registry =
       "A horizontal tab appears in source text where the active source profile forbids it."
   , ent "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
       "The inferred type of an expression is not definitionally equal to (or coercible to) the expected type."
+  , ent "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" (Just "kappa.universe.constraint")
+      "A generated universe-level ordering constraint is unsatisfiable under the lexically scoped level assumptions (§11.1.2.1-§11.1.2.2)."
+  , ent "E_UNIVERSE_SELF_CONTAINMENT" (Just "kappa.universe.constraint")
+      "Universe checking would require a level to contain its own successor, violating predicativity (§11.1.2)."
+  , ent "E_UNIVERSE_LEVEL_EXPRESSION" (Just "kappa.universe.level-expression")
+      "A Type index does not normalize through compiler-owned TypeLevel operations to the canonical level grammar (§11.1.1)."
+  , ent "E_UNIVERSE_SCHEMA_ARITY_MISMATCH" (Just "kappa.universe.schema-arity")
+      "An explicit declaration-universe instantiation supplies a different number of levels than the declaration schema requires (§11.1.2.3A.1)."
+  , ent "E_UNIVERSE_SCHEMA_SCOPE" (Just "kappa.universe.schema-scope")
+      "A declaration-universe parameter is used outside a static universe-level position (§11.1.2.3A.1)."
+  , ent "E_UNIVERSE_VARIANCE_TOO_PERMISSIVE" (Just "kappa.universe.variance")
+      "An explicit nominal declaration-universe role is more permissive than the independently inferred role (§11.1.2.3A.2)."
+  , ent "E_UNIVERSE_VARIANCE_NOT_APPLICABLE" (Just "kappa.universe.variance")
+      "A declaration-universe role is written on a declaration that does not introduce a nominal signature block (§11.1.2.3A.2)."
+  , ent "E_UNIVERSE_SCHEMA_LIFT_INVALID" (Just "kappa.universe.schema-lift")
+      "A cumulative nominal-family use fails saturation, role, constraint, argument-alignment, or certificate verification (§30.2.1B)."
+  , ent "E_UNIVERSE_NO_PRINCIPAL_SOLUTION" (Just "kappa.universe.no-principal-solution")
+      "Declaration-universe inference has no unique least solution independent of traversal order (§11.1.2.4A)."
+  , ent "E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION" (Just "kappa.universe.inference-requires-annotation")
+      "A minimizable universe metavariable lies outside the portable principal-inference fragment and requires an explicit annotation or schema."
+  , ent "E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE" (Just "kappa.universe.recursive-schema")
+      "A recursive declaration-schema call requests a universe instance that is not proved less than or equal to the caller's current instance."
+  , ent "E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT" (Just "kappa.universe.recursive-schema")
+      "A recursive declaration-schema call changes universe instance without an explicit universe instantiation and a complete recursive signature."
+  , ent "E_GENERALIZATION_PARAMETRIC_ESCAPE" (Just "kappa.generalization.parametric-escape")
+      "A proposed declaration-level parametric generalization would be observed in an ordinary position."
+  , ent "E_UNIVERSE_UNBOUNDED_TELESCOPE" (Just "kappa.universe.unbounded-telescope")
+      "A dependent type former has no universe ceiling well-formed outside its own telescope (§11.1.2.8)."
+  , ent "E_DATA_CONSTRUCTOR_FIELD_UNIVERSE" (Just "kappa.universe.constructor-size")
+      "A constructor-local non-parametric binder exceeds the universe declared by its data family (§10.4.1)."
+  , ent "E_PARAMETRIC_TYPE_PROMOTION" (Just "kappa.type.parametric-promotion")
+      "A parametric type witness is used where an ordinary inspectable type-code value is required (§11.1.2.3A)."
+  , ent "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE" (Just "kappa.equality.transport-not-lowerable")
+      "A runtime-relevant equality transport has no verified computational lowering rule (§11.4.1)."
+  , ent "E_KCORE_TEXT_INVALID" (Just "kappa.kcore.text-invalid")
+      "A KCoreText artifact is malformed or fails ordinary KCore checkpoint verification."
+  , ent "E_KCORE_TEXT_UNSUPPORTED_VERSION" (Just "kappa.kcore.unsupported-version")
+      "A KCoreText artifact declares a well-formed schema version that this compiler does not support."
+  , ent "E_KCORE_LEVEL_CERTIFICATE_INVALID" (Just "kappa.kcore.level-certificate-invalid")
+      "A KCoreText level certificate is malformed, out of scope, or does not prove its claimed universe relation."
+  , ent "E_KCORE_SCHEMA_CERTIFICATE_INVALID" (Just "kappa.kcore.schema-certificate-invalid")
+      "A KCoreText nominal action certificate is missing, stale, forged, unsupported, or fails independent replay (§30.2.1B)."
+  , ent "E_UNSOLVED_METAVARIABLE" (Just "kappa.type.unsolved-metavariable")
+      "A type or universe metavariable remained observable without a principal solution at its elaboration boundary (§11.1.3)."
   , ent "E_TERMINATION_INVALID_STRUCTURAL_TARGET" (Just "kappa.termination.invalid_structural_target")
       "A 'decreases structural' certificate names something that is not an explicit parameter of the recursive definition."
   , ent "E_UNEXPECTED_CHARACTER" Nothing
@@ -449,6 +497,8 @@ registry =
       "A top-level or expression splice's operand is not an elaboration-time 'Syntax' value (§21.2)."
   , ent "E_SYNTAX_SCOPE_ESCAPE" (Just "kappa-hs.syntax.scope-escape")
       "Spliced syntax refers to a binding that is not in scope at the splice site; hygienic expansion forbids the reference from escaping its scope (§21.3)."
+  , ent "E_LOCAL_NOMINAL_SCOPE_ESCAPE" (Just "kappa-hs.local-nominal.scope-escape")
+      "A block result transparently exposes a scoped local nominal family or its hidden nominal-scope token outside the lexical declaration scope (§9.3.1.1, §30.1.1)."
   , -- Do blocks and control (§18)
     ent "E_DEFER_ABRUPT_CONTROL" (Just "kappa-hs.do.defer")
       "A deferred action returns, breaks, or continues out of itself; abrupt control flow may not escape a 'defer' (§18.7)."
@@ -546,6 +596,8 @@ registry =
       "A linear or relevant (quantity 1 / >=1) binding may complete unused on some path (§12.2.5)."
   , ent "E_QTT_LINEAR_OVERUSE" (Just "kappa.quantity.unsatisfied")
       "A linear or affine (quantity 1 / <=1) binding or field path is consumed more often than its quantity permits (§12.2)."
+  , ent "E_QTT_QUANTITY_UNSATISFIED" (Just "kappa.quantity.unsatisfied")
+      "A declaration uses a quantity forbidden by the construct's static contract."
   , ent "E_QTT_PATH_CONSUMED" (Just "kappa.path.consumed")
       "A place is borrowed or re-projected after the path was already consumed at quantity 1, without an intervening restoring record update (§12.4, §3.2.6)."
   , ent "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
@@ -680,6 +732,44 @@ registry =
       "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a data-layout inconsistency: two constructors of one datatype share a runtime tag id (non-injective assignment), a constructor a datatype lists does not point back to it, or a constructor declares more explicit fields than its type's runtime arity (so its layout would under-reserve slots) — Spec §34.3.3 layout-consistency, §§31.3-31.4. This warning surfaces it without changing codegen."
   , ent "E_BACKENDIR_ERASED_RUNTIME_TERM" (Just "kappa-hs.backendir.erased-runtime-term")
       "KCore-to-KBackendIR lowering found an erased source entity (type/proof term, erased binder, erased index, or unsolved compile-time meta) that would still be needed by a runtime-relevant backend value. Native emission rejects this rather than silently substituting a unit placeholder (§31.2, §34.3)."
+  , ent "E_DERIVE_HEAD" (Just "kappa.derive.invalid-head")
+      "A derive declaration does not name a supported derivable trait applied to exactly one target type (§14.5.1-§14.5.2)."
+  , ent "E_DERIVE_UNSUPPORTED" (Just "kappa.derive.unsupported")
+      "A well-formed derive declaration requests a trait or checked target shape outside the portable derivation fragment (§14.5.1-§14.5.2)."
+  , ent "E_BACKENDIR_RETURN_CONTRACT" (Just "kappa-hs.backendir.return-contract")
+      "KCore-to-KBackendIR lowering found a return value that does not satisfy the finalized function return contract. Native emission rejects the body rather than changing the declared result representation."
+  , ent "E_BACKENDIR_OBSERVATION_ANALYSIS" (Just "kappa.internal.compiler")
+      "The finalized KCore return path violates its declared observation contract: a value depending on a parametric origin would escape through an ordinary result. KBackendIR rejects the body before erasure rather than dropping the dependency (§30.2.0, §31.2)."
+  , ent "E_BACKENDIR_BINDER_METADATA" (Just "kappa-hs.backendir.binder-metadata")
+      "KCore-to-KBackendIR lowering could not reconcile a runtime binder with its typed ownership metadata. Native emission rejects the body rather than guessing a quantity, access mode, or ownership convention (§30.2.5, §31.2, §34.3)."
+  , ent "E_BACKENDIR_CONSTRUCTOR_INTERFACE" (Just "kappa.internal.compiler")
+      "Finalized Core references a constructor whose exact semantic telescope is unavailable or whose compiler-owned intrinsic telescope failed validation."
+  , ent "E_BACKENDIR_CONSTRUCTOR_ARITY" (Just "kappa.internal.compiler")
+      "A finalized constructor application does not match the arity or explicitness of its semantic telescope."
+  , ent "E_BACKENDIR_CONSTRUCTOR_PATTERN_ALIGNMENT" (Just "kappa.internal.compiler")
+      "A finalized constructor pattern cannot be aligned with the checked constructor telescope and scrutinee type."
+  , ent "E_BACKENDIR_CONSTRUCTOR_SCOPE" (Just "kappa.internal.compiler")
+      "A finalized constructor argument is outside the local telescope recorded for its occurrence."
+  , ent "E_INTERNAL_CONSTRUCTOR_ARITY" (Just "kappa.internal.compiler")
+      "A compiler-generated constructor application supplies an argument spine inconsistent with the declared constructor interface."
+  , ent "E_INTERNAL_CONSTRUCTOR_INTERFACE" (Just "kappa.internal.compiler")
+      "A compiler-generated constructor occurrence has no declared constructor interface."
+  , ent "E_INTERNAL_GENERATED_APPLICATION" (Just "kappa.internal.compiler")
+      "A compiler-generated application does not match the checked dependent telescope from which its argument spine was derived."
+  , ent "E_INTERNAL_ANONYMOUS_REGION" (Just "kappa.internal.compiler")
+      "The compiler could not construct the typed lexical-region witness required for an anonymous borrow."
+  , ent "E_INTERNAL_MISSING_PRELUDE_DECLARATION" (Just "kappa.internal.compiler")
+      "A compiler-generated use requires a checked prelude declaration or trait member that is absent from the semantic environment."
+  , ent "E_INTERNAL_EFFECT_PURE_TYPE" (Just "kappa.internal.compiler")
+      "The compiler attempted to construct an effect-tree pure node without an Eff result type."
+  , ent "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+      "A resolved trait member has a parameter or dictionary telescope that cannot be specialized according to its checked trait interface."
+  , ent "E_TERMINATION_UNVERIFIED" (Just "kappa.termination.failure")
+      "The termination checker could not verify a recursive declaration-schema SCC that requires a checked strict static decrease or an ordinary well-founded measure."
+  , ent "E_LOCAL_DECLARATION_CAPTURE_INTERFACE" (Just "kappa.internal.compiler")
+      "A finalized local declaration interface does not contain the implicit binder required for one of its semantic captures."
+  , ent "E_LOCAL_DECLARATION_CAPTURE_SCOPE" (Just "kappa.name.unresolved")
+      "A local declaration reference requires a declaration-site capture that is no longer in lexical scope."
   , ent "W_BACKENDIR_MISSING_BINDER" (Just "kappa-hs.backendir.missing-binder")
       "The KBackendIR tree validator found a runtime binder or parameter without the ownership binder metadata that backend emitters require once they consume KBackendIR directly (§31.2, §34.3)."
   , ent "W_BACKENDIR_MISSING_USE" (Just "kappa-hs.backendir.missing-use")
@@ -704,6 +794,10 @@ registry =
       "The KBackendIR tree validator found a constructor pattern whose lowered runtime payload pattern count does not equal the constructor layout's runtime field count. Constructor pattern offsets must index the same runtime-kept field list that constructor allocation built (§31.2, §34.3.3, §34.3.7)."
   , ent "W_BACKENDIR_CTOR_PATTERN_LAYOUT_MISSING" (Just "kappa-hs.backendir.ctor-pattern-layout-missing")
       "The KBackendIR tree validator found a constructor pattern without a matching layout metadata entry on its enclosing match. Match-side constructor layout facts must be present before S5 reuse can trust destructuring offsets (§31.2, §34.3.3, §34.3.7)."
+  , ent "W_BACKENDIR_PATTERN_FIELD_INDEX_INVALID" (Just "kappa-hs.backendir.pattern-field-index-invalid")
+      "The KBackendIR tree validator found a positional record or tuple pattern field index outside its runtime-kept field arity. Native emission rejects this because pattern offsets must index the same erased layout that allocation produced (§31.2, §34.3.3)."
+  , ent "W_BACKENDIR_PATTERN_FIELD_INDEX_DUPLICATE" (Just "kappa-hs.backendir.pattern-field-index-duplicate")
+      "The KBackendIR tree validator found a positional record or tuple pattern that binds the same runtime-kept field index more than once. Native emission rejects the ambiguous physical layout rather than reading one payload slot through multiple source positions (§31.2, §34.3.3)."
   , ent "W_BACKENDIR_BRANCH_DROP_UNEMITTED_ITEM" (Just "kappa-hs.backendir.branch-drop-unemitted-item")
       "The KBackendIR tree validator found branch-dead-drop metadata attached to a do-item node. Native emission drains branch drops only from term and alternative emission points, so item-level branch-drop metadata is rejected fail-closed rather than silently ignored (§31.2, §34.3)."
   , ent "W_BACKENDIR_BRANCH_DROP_UNRESOLVED" (Just "kappa-hs.backendir.branch-drop-unresolved")

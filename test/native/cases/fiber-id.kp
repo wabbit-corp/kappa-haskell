@@ -9,10 +9,12 @@
 -- id observed from inside a fiber AGREES with `fiberId` of its handle.
 module main
 
+import std.prelude.(type Exit(..))
+
 -- project a FiberId back to its raw Integer for comparison/printing
 let fidInt f =
     match f
-      case MkFiberId n -> n
+      case FiberId.MkFiberId n -> n
 
 let showBool b = if b then "true" else "false"
 

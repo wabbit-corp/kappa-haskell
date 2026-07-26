@@ -16,6 +16,8 @@
 -- ordering.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..))
+
 -- a long interruptible spin, then an OBSERVABLE side effect in the same do-block.
 spinThenPrint : UIO Unit
 let spinThenPrint = do

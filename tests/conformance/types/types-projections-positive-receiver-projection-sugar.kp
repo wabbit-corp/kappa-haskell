@@ -2,7 +2,7 @@ module main
 
 -- Source issue: KT-475
 -- Spec: §2.8.4, §6.1.1
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection doubled (place this : Cell) : Int =
     get -> this.value + this.value

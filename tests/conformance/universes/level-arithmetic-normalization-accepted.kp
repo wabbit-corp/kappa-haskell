@@ -1,0 +1,14 @@
+-- §11.1.2.1-§11.1.2.2: standard level operations normalize by selected
+-- semantic identity, preserve commutative natural addition, and accept open
+-- addition/max expressions under an independent proof ceiling.
+--! mode check
+--! assertNoErrors
+
+type OnePlusOmega : Type(ω+2) = Type(1 + ω)
+type OmegaPlusOne : Type(ω+2) = Type(ω + 1)
+
+type OpenArithmetic : Typeω =
+    (u : TypeLevel) ->
+    (v : TypeLevel) ->
+    (@0 bound : max (u + v) (succ u) < ω) ->
+    Type(max (u + v) (succ u))

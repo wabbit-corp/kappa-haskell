@@ -9,7 +9,7 @@ data Box : Type =
     Empty
     Full (1 tok : Token)
 
-bad : forall (m : Type -> Type). (@mon : Monad m) -> (@mr : MonadRef m) -> m Unit
+bad : forall (m : (0 A : Type) -> Type). (@mon : Monad m) -> (@mr : MonadRef m) -> m Unit
 let bad (@mon : Monad m) (@mr : MonadRef m) : m Unit = do
     var cell = Full Token
     mr.writeRef @Box (ref cell) Empty

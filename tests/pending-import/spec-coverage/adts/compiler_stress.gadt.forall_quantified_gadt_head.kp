@@ -1,6 +1,13 @@
 -- Stress test: GADT constructor with forall-quantified erased implicit; inferred at application sites
 -- Spec: §10.2 (GADT constructors), §12.1-§12.2 (erased parameters),
 --       §17.1.1 (GADT branch refinement).
+--
+-- The equality GADT is named `EqT`/`ReflT` (matching
+-- adts/gadt-result-constraint-refinement.kp): `Eq` is now a prelude
+-- TRAIT with an `IsSet a` supertrait and required `eqSound`/`eqComplete`
+-- members (§18, §14.5.1) and must not be shadowed by test fixtures —
+-- shadowing it would make `derive Eq`, `instance Eq ...`, and
+-- `IsSet`/`Eq` supertrait obligations unwritable in this module.
 
 --! mode check
 
@@ -8,26 +15,26 @@ data Pair (0 a : Type) (0 b : Type) : Type =
     MkPair : a -> b -> Pair a b
 
 -- Propositional equality as a GADT; erased implicit x inferred from application context.
-data Eq (0 a : Type) (0 x : a) (0 y : a) : Type =
-    Refl : forall (@0 x : a). Eq a x x
+data EqT (0 a : Type) (0 x : a) (0 y : a) : Type =
+    ReflT : forall (@0 x : a). EqT a x x
 
--- Construct Refl for a known element; erased x is inferred from the return type.
-eqInt : Eq Int 42 42
-let eqInt = Refl
+-- Construct ReflT for a known element; erased x is inferred from the return type.
+eqInt : EqT Int 42 42
+let eqInt = ReflT
 
-eqBool : Eq Bool True True
-let eqBool = Refl
+eqBool : EqT Bool True True
+let eqBool = ReflT
 
--- cong: if x = y then f x = f y.  Erased implicit in Refl inferred at both uses.
-cong : forall (a : Type) (b : Type) (x : a) (y : a). (f : a -> b) -> Eq a x y -> Eq b (f x) (f y)
+-- cong: if x = y then f x = f y.  Erased implicit in ReflT inferred at both uses.
+cong : forall (a : Type) (b : Type) (x : a) (y : a). (f : a -> b) -> EqT a x y -> EqT b (f x) (f y)
 let cong f pf = match pf
-  case Refl -> Refl
+  case ReflT -> ReflT
 
--- trans: transitivity; erased implicits inferred at each Refl.
-trans : forall (a : Type) (x : a) (y : a) (z : a). Eq a x y -> Eq a y z -> Eq a x z
+-- trans: transitivity; erased implicits inferred at each ReflT.
+trans : forall (a : Type) (x : a) (y : a) (z : a). EqT a x y -> EqT a y z -> EqT a x z
 let trans p q = match p
-  case Refl -> match q
-    case Refl -> Refl
+  case ReflT -> match q
+    case ReflT -> ReflT
 
 --! assertNoErrors
 

@@ -1,0 +1,20 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+useMutualExplicit.{u} :
+    (A : Type u) ->
+    A -> A
+
+let useMutualExplicit.{u} A x =
+    block
+        left.{v} : (B : Type v) -> B -> B
+        right.{w} : (C : Type w) -> C -> C
+        let left.{x} B y =
+            if True then y else right.{x} B y
+        let right.{y} C z =
+            if True then z else left.{y} C z
+        let low : Bool = left.{0} Bool True
+        right.{u} A x

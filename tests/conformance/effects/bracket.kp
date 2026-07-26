@@ -38,16 +38,16 @@ let main = do
     let f1 <- fork (bracket acquireS releaseS useOk)
     let r1 <- await f1
     match r1
-      case Success v -> printlnString (showInt v)
-      case Failure c -> printlnString "unexpected"
+      case Exit.Success v -> printlnString (showInt v)
+      case Exit.Failure c -> printlnString "unexpected"
     let f2 <- fork (bracket acquireS releaseS useFail)
     let r2 <- await f2
     match r2
-      case Success v -> printlnString "unexpected"
-      case Failure c -> printlnString "failed"
+      case Exit.Success v -> printlnString "unexpected"
+      case Exit.Failure c -> printlnString "failed"
     let f3 <- fork (bracket (ioPure 1) relInt useSleep)
     interrupt f3
     let r3 <- await f3
     match r3
-      case Success v -> printlnString "completed"
-      case Failure c -> printlnString "interrupted"
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure c -> printlnString "interrupted"

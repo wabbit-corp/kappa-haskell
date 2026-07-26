@@ -4,8 +4,9 @@ import std.prelude.(type Cause(..), type Exit(..), type InterruptCause(..), type
 
 childBody : UIO Unit
 let childBody = do
-    let f = finallyIO
-    f (__reraiseCause (Interrupt (InterruptCause Requested None))) (printlnString "cleanup")
+    let f : UIO Unit -> UIO Unit -> UIO Unit = finallyIO
+    let cause : Cause Void = Interrupt (InterruptCause Requested None)
+    f (__reraiseCause cause) (printlnString "cleanup")
     printlnString "unreachable"
 
 main : UIO Unit

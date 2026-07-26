@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+data Some : Type =
+    Some (A : Type) (value : A)
+
+bad :
+    Some -> Type
+
+let bad x =
+    match x
+    case Some A value ->
+        A

@@ -1,11 +1,20 @@
 --! mode check
---! assertNoErrors
+--! assertErrorCount 1
 
 -- §31.1.3: a numeric literal at a user type with a total transparent
 -- FromInteger reduces by δ to its canonical value during definitional-
 -- equality checking; literals appearing as type indices are normalized
--- before comparison. §30.2.2.11: matching an index-forcing constructor
--- makes the forced index equality available in the branch.
+-- before comparison. (Wording nit worth reporting upstream: §31.1.3
+-- still says "fromInteger @T n with n : Integer" while §6.1.5 declares
+-- fromInteger : Nat -> t.)
+--
+-- §30.2.7 ConstructorCompatibility: matching an index-forcing
+-- constructor is the DefinitionallyCompatible leg — the forced index
+-- equality enters the active refinement context as a CtorIndexEq
+-- conversion fact (§30.2.2.11), so refl closes it (§17.1.1). The
+-- PropositionallyCompatible leg is the contrast: a §15.8 bridge proof
+-- keeps the arm reachable but arrives only as erased lexical evidence
+-- for subst/§16.1.8/implicit search, never as a conversion fact.
 module main
 
 data Meters : Type =
@@ -41,8 +50,10 @@ let usedRev r = 1
 revOk : Int
 let revOk = usedRev canonicalVal
 
--- constructor-forced index equality: in the TagSeven branch the family
--- argument m is forced equal to the (normalized) literal index
+-- constructor-forced index equality, DefinitionallyCompatible leg
+-- (§30.2.7 rule 1): in the TagSeven branch the family argument m is
+-- forced equal to the (normalized) literal index as a CtorIndexEq
+-- conversion fact, so refl succeeds
 data Tag (m : Meters) : Type =
     TagSeven : Tag 7
 
@@ -51,4 +62,83 @@ let forced t =
     match t
     case TagSeven -> refl
 
--- STATUS(a0497523): FAIL — integer literals in TYPE-INDEX position never resolve the user FromInteger instance: they elaborate to a stuck `__stuck_app _.fromInteger n` and E_NUMERIC_LITERAL_DOMAIN_MISMATCH claims "Meters has no FromInteger witness" (term-position control works)
+-- ============================================================
+-- Prelude-Nat mirror: since §28.2 made Nat inductive, the same
+-- literal-index question exists at the prelude's own numeric type —
+-- the literal spelling and the Zero/Succ spine spelling are the same
+-- value (§31.1.3 normalization × §28.2 constructors × §34.3.2A
+-- exactness).
+-- ============================================================
+
+data VecN (n : Nat) : Type =
+    MkVecN
+
+natLit : VecN 3
+let natLit = MkVecN
+
+natCanonical : VecN (Nat.Succ (Nat.Succ (Nat.Succ Nat.Zero))) -> Int
+let natCanonical v = 0
+
+natUsed : Int
+let natUsed = natCanonical natLit
+
+natCanonicalVal : VecN (Nat.Succ (Nat.Succ Nat.Zero))
+let natCanonicalVal = MkVecN
+
+natUsedRev : VecN 2 -> Int
+let natUsedRev v = 1
+
+natRevOk : Int
+let natRevOk = natUsedRev natCanonicalVal
+
+-- ============================================================
+-- PropositionallyCompatible leg (§30.2.7 rule 2): natAdd k Nat.Zero is
+-- STUCK for open k (natAdd recurses on its left argument, §28.2), so
+-- unifying the constructor result index with a demanded neutral index
+-- is not definitional. The required §15.8 solver produces the unique
+-- principal assignment k := m plus the bridge natAdd m Nat.Zero = m;
+-- the arm stays reachable and exhaustive.
+-- ============================================================
+
+data TagN (n : Nat) : Type =
+    TagAdd : forall (k : Nat). TagN (natAdd k Nat.Zero)
+
+bridgeReachable : forall (m : Nat). TagN m -> Nat
+let bridgeReachable t =
+    match t
+    case TagAdd -> Nat.Zero
+
+-- the bridge is usable by §16.1.8 automatic transport at a value
+-- boundary (no user-written subst) ...
+bridgeTransport : forall (m : Nat). TagN m -> VecN (natAdd m Nat.Zero) -> VecN m
+let bridgeTransport t v =
+    match t
+    case TagAdd -> v
+
+-- ... and by EXPLICIT subst through implicit proof search: the branch's
+-- erased lexical bridge evidence discharges the named implicit premise.
+-- (Direction pin: the bridge is oriented result-index = demanded-index,
+-- i.e. natAdd m Nat.Zero = m after k := m.)
+vecSubst :
+    (@0 m : Nat) ->
+    (@0 bridge : natAdd m Nat.Zero = m) ->
+    VecN (natAdd m Nat.Zero) ->
+    VecN m
+
+let vecSubst @m @bridge v =
+    subst @Nat @VecN @(natAdd m Nat.Zero) @m bridge v
+
+bridgeSubst : forall (m : Nat). TagN m -> VecN (natAdd m Nat.Zero) -> VecN m
+let bridgeSubst t v =
+    match t
+    case TagAdd -> vecSubst v
+
+-- the asymmetry against the TagSeven leg: the bridge equality is NOT a
+-- CtorIndexEq conversion fact (§30.2.2.11: "They are not represented as
+-- CtorIndexEq active-conversion facts"), so plain refl — which needs
+-- the endpoints to convert — is rejected in the very branch whose
+-- transport arms above succeed
+bridgeNotConversion : forall (m : Nat). TagN m -> natAdd m Nat.Zero = m
+let bridgeNotConversion t =
+    match t
+    case TagAdd -> refl --!! E_TYPE_MISMATCH

@@ -1,18 +1,20 @@
 -- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDeriving.curry
 --   (showOfRead x = read (show x) -=- x; showOfReadNat / TreeColor / ...).
--- Spec: §14.5 (deriving; `derive Eq T` requires synthesizable
---       eqSound/eqComplete), §10.1 (`data` declarations).
--- NOTE: overlaps with tests/pending-import/spec-coverage/proofs-deriving-totality/derive-eq-proof-members.kp
+-- Spec: §14.5 + §14.5.1 (compiler-owned `derive IsSet T` / `derive Eq T`;
+--       `derive Eq T` is permitted only if eqSound, eqComplete, AND the
+--       IsSet T supertrait can be synthesized), §14.5.2 (derived
+--       exact-natural representation), §10.1 (`data` declarations).
+-- NOTE: overlaps with tests/pending-import/spec-coverage/nat-fin-refinement/positive/derive-eq-enumeration
 --       (ground derive Eq acceptance); this file adds recursive and
 --       multi-field derive targets with evaluated equality witnesses.
 --
 -- The Curry `read . show = id` round-trip has no portable counterpart:
--- Kappa's spec defines no Read trait, and §14.5 Phase 0 standardizes
--- only the Eq (and §14.5.1 Hashable) derivation constraints. Reduced
--- here to derived-Eq structural-equality witnesses over an enum, a
--- recursive ADT, and a multi-field constructor — all first-order, so
--- §14.5's eqSound/eqComplete synthesis obligation is satisfiable and
--- each derivation MUST be accepted.
+-- Kappa's spec defines no Read trait, and §14.5.1/§14.5.3 standardize
+-- only the IsSet/Eq (and std.hash Hashable) derivations. Reduced here to
+-- derived-Eq structural-equality witnesses over an enum, a recursive
+-- ADT, and a multi-field constructor — all first-order, inside §14.5.1's
+-- required conservative structural fragment, so every derivation below
+-- MUST be accepted.
 
 module test
 
@@ -22,6 +24,10 @@ data Color : Type =
     Red
     Blue
 
+-- §14.5.1: `derive IsSet` and `derive Eq` in the same coherent scope
+-- share one canonical generated IsSet Color evidence object; no
+-- duplicate competing instances are published.
+derive IsSet Color
 derive Eq Color
 
 data NatLike : Type =
@@ -30,10 +36,22 @@ data NatLike : Type =
 
 derive Eq NatLike
 
+-- §14.5.2: NatLike has exactly one nullary constructor and one unary
+-- constructor whose sole retained field is one strict recursive
+-- occurrence of NatLike, so `derive ExactNaturalRepresentation` MUST be
+-- accepted (constructor names, spelling, and declaration order do not
+-- determine eligibility).
+derive ExactNaturalRepresentation NatLike
+
 data ColorPair : Type =
     ColorPair (fst : Color) (snd : NatLike)
 
 derive Eq ColorPair
+
+-- §14.5.1: the derived Eq ColorPair exposes IsSet ColorPair by ordinary
+-- supertrait projection (no direct IsSet ColorPair derivation exists).
+pairIsSet : IsSet ColorPair
+let pairIsSet = summon (IsSet ColorPair)
 
 --! assertNoErrors
 
@@ -73,5 +91,3 @@ let pairsDiffer = ColorPair Red threeNat == ColorPair Blue threeNat
 --! assertNoErrors
 --! assertEval pairsEqual True
 --! assertEval pairsDiffer False
-
--- STATUS(a0497523): FAIL — derive declarations are wholly unsupported (E_UNSUPPORTED on every derive), so no Eq evidence exists and each == witness is stuck; §14.5 requires these first-order derivations to be accepted.

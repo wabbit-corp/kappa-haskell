@@ -1,0 +1,14 @@
+-- §13.2.11 / §11.1.2.8: opening an existential preserves the witness's
+-- declared observation mode. An explicitly ordinary erased witness remains
+-- an ordinary type-code value and may be returned from an ordinary result.
+--! mode check
+--! assertNoErrors
+
+type PackedType : Type1 =
+    exists (ordinary 0 A : Type). Unit
+
+getType :
+    PackedType -> Type
+
+let getType packed =
+    open packed as exists (A). payload in A

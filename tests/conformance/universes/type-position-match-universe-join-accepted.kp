@@ -1,0 +1,18 @@
+-- Type-position match arms contribute symmetrically to the principal result
+-- ceiling. Swapping a small and a higher-universe arm must remain valid.
+
+module main
+
+type Choose (@0 a : Type) (@0 b : Type) (@0 flag : Bool) : Type =
+    match flag
+    case True -> a
+    case False -> b
+
+leftHigh : Choose @Type @Int @True
+let leftHigh = Bool
+
+rightHigh : Choose @Int @Type @False
+let rightHigh = Bool
+
+--! mode check
+--! assertNoErrors

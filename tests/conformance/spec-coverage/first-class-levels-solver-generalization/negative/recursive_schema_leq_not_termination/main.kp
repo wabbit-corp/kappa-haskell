@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.termination.failure
+
+loop.{u} :
+    (v : TypeLevel) ->
+    (@0 p : v <= u) ->
+    Nat
+let loop v p =
+    loop.{v} v

@@ -7,7 +7,7 @@
 -- checks that async scalar abort also runs ordinary defers.
 module main
 
-import std.prelude.(type Exit(..))
+import std.prelude.(type Cause(..), type Exit(..))
 
 data Res : Type = MkRes (rid : Integer)
 

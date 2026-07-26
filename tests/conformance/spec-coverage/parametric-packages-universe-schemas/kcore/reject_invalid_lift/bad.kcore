@@ -1,0 +1,14 @@
+kcore 1;
+module @tests.kcore.badlift#1005 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "tests.kcore.badlift",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.badlift.notProof#2006 : Type 0;
+  def ordinary @tests.kcore.badlift.bad#2005 : Type 0 {
+    body = lift [1 <= 0 by @tests.kcore.badlift.notProof#2006] @std.prelude.Int#9001;
+  }
+}
+

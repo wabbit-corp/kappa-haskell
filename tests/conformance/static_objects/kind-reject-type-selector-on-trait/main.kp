@@ -3,5 +3,5 @@
 trait Pretty (a : Type) =
     pretty : a -> String
 
-bad : Type -> Type
+bad : (parametric 0 A : Type) -> Type
 let bad = type Pretty

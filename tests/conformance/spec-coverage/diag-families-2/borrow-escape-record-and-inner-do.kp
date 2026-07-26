@@ -19,11 +19,11 @@ data Box : Type =
 read : (& b : Box) -> Int
 let read b = 0
 
-type Holder = (getter : Unit -> Int)
+type Holder = (getter : Unit -> Int,)
 
 badRecord : (& b : Box) -> Holder
 let badRecord b =
-    (getter = \_ -> read b)
+    (getter = \_ -> read b,)
 
 badInnerDo : (& b : Box) -> UIO (Unit -> Int)
 let badInnerDo b = do

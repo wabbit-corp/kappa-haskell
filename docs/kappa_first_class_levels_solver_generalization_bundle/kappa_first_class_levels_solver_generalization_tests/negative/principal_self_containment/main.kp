@@ -1,0 +1,7 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
+--! assertLevelSolveClass [?u] where [succ ?u <= ?u] Unsatisfiable
+
+bad : Type0
+let bad = Type0

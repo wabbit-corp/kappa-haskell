@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+chooseType :
+    Bool -> Type
+
+let chooseType b =
+    if b then Int else String
+
+type Chosen : Type0 =
+    chooseType True

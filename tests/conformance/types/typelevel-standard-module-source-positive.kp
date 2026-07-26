@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.1/§11.1.2.2: TypeLevel and its canonical operations are ordinary
+-- declarations exported by std.typelevel, not compiler-seeded public names.
+module main
+
+import std.typelevel.(type TypeLevel)
+import std.typelevel.(term typeLevelZero, term typeLevelOne, term typeLevelOmega)
+import std.typelevel.(term typeLevelSucc, term typeLevelAdd, term typeLevelCompare, term typeLevelMax)
+
+zeroLevel : TypeLevel
+let zeroLevel = typeLevelZero
+
+sumLevel : TypeLevel
+let sumLevel = typeLevelAdd typeLevelOne typeLevelOmega
+
+nextLevel : TypeLevel
+let nextLevel = typeLevelSucc sumLevel
+
+ordered : Ordering
+let ordered = typeLevelCompare zeroLevel nextLevel
+
+joined : TypeLevel
+let joined = typeLevelMax sumLevel nextLevel

@@ -1,0 +1,8 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_EXPECT_UNSATISFIED
+
+expect term platformValue : Int
+
+platformValue : Int
+let platformValue = 42

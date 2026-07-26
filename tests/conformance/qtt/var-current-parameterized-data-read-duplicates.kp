@@ -9,7 +9,7 @@ data Cell : Type =
     Empty
     Full (1 tok : Token)
 
-data Wrap (a : Type) : Type =
+data Wrap (0 a : Type) : Type =
     Wrap (value : a)
 
 bad : UIO Unit

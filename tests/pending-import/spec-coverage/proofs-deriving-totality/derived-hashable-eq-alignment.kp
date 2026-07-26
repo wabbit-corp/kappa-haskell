@@ -1,7 +1,15 @@
--- §14.5.1 (Spec L15017-L15038): derived Hashable is structurally aligned
--- with Eq — erased fields do not contribute to the runtime hash (they are
--- not runtime-observable through Eq), and record fields hash in canonical
--- order, so field order in a record literal cannot affect the hash.
+-- §14.5.1 (derived Eq/IsSet) × §14.5.3 (derived Hashable): derived Eq
+-- must ship checkable eqSound/eqComplete plus the IsSet supertrait, and
+-- §10.2.1 injectivity compares EVERY constructor argument, erased or
+-- not — so an erased bare-data field (say `@0 audit : Int`) admits no
+-- derived Eq: a (==) that ignored it could not have a checkable eqSound
+-- (MkCred @1 42 = MkCred @2 42 would entail 1 = 2). The one exemption is
+-- §14.5.1's conservative structural fragment: an erased PROOF field with
+-- IsProp evidence for its exact field type. This test uses that carrier:
+-- derived Eq lawfully ignores the proof field, and derived Hashable is
+-- structurally aligned with it (§14.5.3) — erased proof fields do not
+-- contribute to the runtime hash, and record fields hash in canonical
+-- order, so record-literal field order cannot affect the hash.
 --! mode run
 --! assertStdout "True\nTrue\nTrue\n"
 module main
@@ -9,7 +17,9 @@ module main
 import std.hash.*
 
 data Cred : Type =
-    MkCred (@0 audit : Int) (user : Int)
+    MkCred
+        (user : Int)
+        (@0 audit : (0 <= user) = True)
 
 derive Eq Cred
 derive Hashable Cred
@@ -23,17 +33,19 @@ derive Hashable Pt
 hEq : forall (a : Type). (@_ : Hashable a) -> a -> a -> Bool
 let hEq l r = hashWith defaultHashSeed l == hashWith defaultHashSeed r
 
+-- Two separately constructed audit proofs: one synthesized by boolean
+-- proposition normalization (§16.3.3 step 3), one supplied explicitly.
+-- IsProp of the boolean-equality fiber makes them interchangeable, so
+-- derived Eq and the derived hash must both ignore the erased field.
+credA : Cred
+let credA = MkCred 42
+
+credB : Cred
+let credB = MkCred 42 @refl
+
 main : UIO Unit
 let main = do
-    -- the erased 'audit' fields differ; derived Eq and the derived hash
-    -- must both ignore them (L15026-L15027)
-    println (hEq (MkCred @1 42) (MkCred @2 42))
-    println (MkCred @1 42 == MkCred @2 42)
-    -- record-literal source order is canonicalized before hashing
-    -- (L15036-L15038)
+    println (hEq credA credB)
+    println (credA == credB)
+    -- record-literal source order is canonicalized before hashing (§14.5.3)
     println (hEq ((x = 1, y = 2) : Pt) ((y = 2, x = 1) : Pt))
-
--- STATUS(a0497523): FAIL — derive declarations are unsupported
--- (E_UNSUPPORTED on all four derives; the program never runs). A
--- handwritten-instance variant of the same runtime assertions passes, so
--- the expected output is achievable on this runtime.

@@ -1,0 +1,27 @@
+-- §11.1.1-§11.1.2.2: TypeLevel is ordinary runtime-capable data. This
+-- fixture keeps level values in a record and observes every standard operation;
+-- it must agree across the interpreter and both native backends.
+module main
+
+type Levels = (zero : TypeLevel, two : TypeLevel, omega : TypeLevel)
+
+levels : Levels
+let levels = (zero = 0, two = succ (succ 0), omega = omegaTypeLevel)
+
+rank : TypeLevel -> TypeLevel -> Int
+let rank a b =
+    match compare a b
+    case LT -> 1
+    case EQ -> 2
+    case GT -> 3
+
+main : UIO Unit
+let main =
+    let finiteOrder = rank levels.zero levels.two in
+    let omegaOrder = rank (levels.two + levels.two) levels.omega in
+    let succOrder = rank (succ levels.two) (max levels.two (succ levels.two)) in
+    let retainedFiniteTail = rank (levels.two + levels.omega) levels.omega in
+    let omegaCoefficient = rank (levels.omega + levels.omega) levels.omega in
+    printlnString (showInt (
+        finiteOrder * 10000 + omegaOrder * 1000 + succOrder * 100
+            + retainedFiniteTail * 10 + omegaCoefficient))

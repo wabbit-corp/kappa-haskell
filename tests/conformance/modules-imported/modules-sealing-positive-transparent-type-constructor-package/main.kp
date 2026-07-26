@@ -1,10 +1,10 @@
 @PrivateByDefault module main
 
-data ListSet (a : Type) : Type =
+data ListSet (0 a : Type) : Type =
     EmptySet
 
-type SetSig : Type =
-    (Set : Type -> Type,
+type SetSig : Type1 =
+    (Set : (0 A : Type) -> Type,
      empty : forall (a : Type). this.Set a)
 
 sets : SetSig

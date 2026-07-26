@@ -1,0 +1,5 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses direct.kcore
+--! assertKCoreParses composed.kcore
+--! assertKCoreSemanticHashEquals direct.kcore composed.kcore

@@ -1,0 +1,15 @@
+-- A term-level TypeLevel binder shadows a declaration-schema parameter with
+-- the same spelling. The proof bounds the term binder, so the result is
+-- well-formed in Typeomega.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+module main
+
+Shadowed.{u} :
+    (u : TypeLevel) ->
+    (@0 p : u < omega) ->
+    Typeω
+let Shadowed u p =
+    Type u

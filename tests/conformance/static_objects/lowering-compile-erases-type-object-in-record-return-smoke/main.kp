@@ -1,6 +1,6 @@
 @PrivateByDefault module main
 
-mkPkg : Int -> (F : Type -> Type, value : F Int)
+mkPkg : Int -> (F : (parametric 0 A : Type) -> Type, value : F Int)
 let mkPkg n = (F = Option, value = Some n)
 
 ok : Int

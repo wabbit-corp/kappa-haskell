@@ -4,7 +4,7 @@ import lib.proj as P
 
 bad : UIO Unit
 let bad = do
-    var cell : P.Cell = (value = P.Empty)
+    var cell : P.Cell = (value = P.Empty,)
     P.replace ~(P.cellValue cell)
     let snapshot = cell.value
     pure ()

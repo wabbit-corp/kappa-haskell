@@ -1,0 +1,28 @@
+-- §11.1.2.3A/§11.1.2.8: containers may store values whose type contains
+-- parametric `0 Type` binders without hoisting a hidden universe scheme.
+--! mode check
+--! assertNoErrors
+
+type Poly : Type =
+    (0 A : Type) -> A -> A
+
+data Box : Type =
+    MkBox (f : Poly)
+
+type Sig : Type =
+    (n : Int,)
+
+boxes : List Box
+let boxes = [MkBox (\ A x -> x), MkBox (\ A x -> x)]
+
+r : Sig
+let r = (n = 5,)
+
+use : Unit
+let use =
+    match boxes
+    case (::) (MkBox f) _ ->
+        let a = f Int 1
+        let b = f Sig r
+        ()
+    case Nil -> ()

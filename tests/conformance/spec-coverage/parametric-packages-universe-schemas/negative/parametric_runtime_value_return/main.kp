@@ -1,0 +1,12 @@
+-- §30.2.0: an explicitly parametric value cannot cross an ordinary declared
+-- result boundary merely because its classifier is a runtime type rather than
+-- a universe.
+module main
+
+bad : (parametric b : Bool) -> Bool
+let bad b = b
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion

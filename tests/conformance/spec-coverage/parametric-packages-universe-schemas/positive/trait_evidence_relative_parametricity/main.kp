@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+trait Tagged A =
+    tag : Int
+
+readTag :
+    (A : Type) ->
+    (evidence : Tagged A) ->
+    A ->
+    Int
+
+let readTag A evidence value =
+    evidence.tag

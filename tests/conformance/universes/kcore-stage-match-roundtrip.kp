@@ -1,0 +1,18 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §30.2.0A: generated case alternatives retain typed pattern binders.
+module main
+
+data Box (A : Type) : Type =
+    Box (value : A)
+
+unbox : Box Int -> Int
+let unbox box =
+    match box
+    case Box value -> value

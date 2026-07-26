@@ -4,12 +4,8 @@
 --! assertNoErrors
 --! assertNoWarnings
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 guardSub : Nat -> Nat -> Nat
 let guardSub x y =
     match x
-      case _ if leInt (natToInt y) (natToInt x) -> x - y
+      case _ if y <= x -> x - y
       case _ -> 0

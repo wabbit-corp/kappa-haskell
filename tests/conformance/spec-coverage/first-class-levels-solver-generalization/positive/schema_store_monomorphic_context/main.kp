@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+id.{u} : (A : Type u) -> A -> A
+let id A x = x
+
+type Mono =
+    (f : (A : Type0) -> A -> A,)
+
+let mono : Mono = (f = id,)

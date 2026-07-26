@@ -1,0 +1,15 @@
+kcore 1;
+
+module @variance.demo#1000 [languageVersion = "kappa-v1", compilerInterfaceVersion = "1", sourceModuleIdentity = "variance.demo",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  extension hirtUniverseVariance 1;
+  decl-node "future-nominal-signature" {
+    action = string-value("recursive-equation-not-natural");
+    requestedRole = string-value("covariant");
+  }
+}

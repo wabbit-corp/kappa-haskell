@@ -1,27 +1,37 @@
-# Borrowed resources do not compose with the `IO` monad across a function boundary
+# Borrowed resources through `IO` across a function boundary
 
 *Discovered 2026-06-24 while trying to make Delve's terminal lifetime
 statically safe (`examples/packages/delve/src/delve/engine.game.kp`).*
 
+> Status 2026-07-06: S6.A closes the kernel-`IO` part of this note. A
+> user-defined `do` block may now return an action whose type explicitly records
+> the borrowed region, e.g.
+> `forall (s : Region). (&[s] x : T) -> ((IO e a) captures (s))`. The
+> unannotated form `(& x : T) -> IO e a` remains a borrow escape, and first-class
+> escape points such as `fork` still require `captures ()`. The sections below
+> are kept as the historical diagnosis and to document the still-open generic
+> user-monad/capture-polymorphic-bind gap.
+
 ## TL;DR
 
-A long-lived resource that is **borrowed** (`& x`) cannot be threaded
-through a **recursive, `IO`-returning helper function** in today's
-implementation. The borrow is captured by the continuation closures that
-a `do`-block desugars into, and those closures *are* the function's
-return value, so the borrow escapes its scope (`E_QTT_BORROW_ESCAPE`,
-§12.3.2). The principled fix the type system offers — annotate the
-result with `captures (s)` so the region becomes part of the type — does
-**not** work for `IO`, because the prelude `ioBind` is monomorphic in
-its capture set: every `do`-step routes through it, and it can neither
-accept a continuation that captures a region nor produce a
-capture-annotated `IO`. There is no capture-polymorphic monadic bind.
+A long-lived resource that is **borrowed** (`& x`) cannot be threaded through a
+plain, region-free `IO` result. A returned `IO` value is a closure; if it
+captures a borrow, the result type must say so with `captures (s)`.
 
-The net consequence: for a *singleton, long-lived resource driven by a
-recursive functional `IO` loop* (a TUI terminal, here), the only clean
-options are a value-level bracket (`finallyIO` / a leaf `using`) or an
-imperative `while`/`var` loop kept inside the acquiring scope. The
-"recursive + borrowed + statically owned" shape is **not expressible**.
+The current supported kernel-`IO` shape is:
+
+```kp
+runLoop :
+    forall (s : Region).
+    (&[s] terminal : term.Terminal) -> ((IO GameError Unit) captures (s))
+```
+
+This is intentionally not a silent relaxation: the unannotated
+`(& terminal : term.Terminal) -> IO GameError Unit` shape is still rejected
+with `E_QTT_BORROW_ESCAPE`. Generic user monads still need a future
+capture-polymorphic bind story; S6.A only teaches the kernel `do` elaborator to
+classify `((IO e a) captures (s))` as an `IO` action while preserving the
+capture annotation on the result type.
 
 ---
 
@@ -102,7 +112,7 @@ wanted to close that gap.
 ## 3. Attempt 1 — `using` + a borrowed `runLoop`
 
 Goal: have `main` own the terminal via `using` (release on all paths via
-the `Releasable` instance) and pass a borrow to `runLoop`:
+the `Releasable` instance) and pass a borrow to a region-free `runLoop`:
 
 ```kp
 runLoop : (& terminal : term.Terminal) -> Size -> Int -> GameState -> IO GameError Unit
@@ -175,18 +185,19 @@ The spec sanctions this. §12.3.1 (Spec.md:11703–11704):
 > abstract data.
 
 So `IO` (an abstract type that hides region-carrying closures) is fair
-game in principle. The annotation makes the boundary honest:
+game. The annotation makes the boundary honest:
 
 ```kp
 runLoop : forall (s : Region). (&[s] terminal : term.Terminal)
             -> Size -> Int -> GameState -> (IO GameError Unit captures (s))
 ```
 
-It does **not** work, for two distinct reasons.
+As of S6.A, the parenthesized kernel-`IO` form works. The two subsections below
+record the historical implementation issues that produced this note.
 
-### 4a. Parser precedence discrepancy (workaroundable)
+### 4a. Historical parser precedence discrepancy
 
-Written without inner parens —
+Before the S6.A cleanup, written without inner parens —
 `… -> (IO GameError Unit captures (s))` — the annotation attached to the
 **last type argument** `Unit`, not to the whole application:
 
@@ -201,16 +212,15 @@ This contradicts §12.3.1's stated precedence (Spec.md:11713–11714):
 `->`. Therefore `Boxed a captures (s)` means `(Boxed a) captures (s)`."*
 By that rule `IO GameError Unit captures (s)` should mean
 `(IO GameError Unit) captures (s)`; the implementation parsed it as
-`IO GameError ((Unit) captures (s))` — i.e. *tighter* than application.
-**Likely an implementation/spec gap worth filing.** Workaround: write the
-inner parentheses explicitly, `((IO GameError Unit) captures (s))`.
+`IO GameError ((Unit) captures (s))` — i.e. *tighter* than application. Current
+S6.A-era checks accept the unparenthesized form, so this is historical rather
+than an open parser workaround.
 
-### 4b. The decisive wall: `ioBind` is monomorphic in captures
+### 4b. Historical wall: `ioBind` was monomorphic in captures
 
-With explicit parens the annotation parses correctly and the
-borrow-escape check is *suppressed* (`capturesAnnotated` in `Usage.hs`
-L832 matches the `ECaptures` node) — but the **type checker** then
-rejects:
+Before S6.A, even with explicit parens the annotation parsed correctly and the
+borrow-escape check was suppressed (`capturesAnnotated` in `Usage.hs` matched
+the `ECaptures` node), but the **type checker** then rejected:
 
 ```
 engine.game.kp:1624:17: error[E_TYPE_EQUALITY_MISMATCH]:   -- the recursive call
@@ -224,7 +234,8 @@ engine.game.kp:1637:9: error[E_TYPE_EQUALITY_MISMATCH]:    -- main's using body
   expected: IO GameError Unit
 ```
 
-The cause is the prelude bind primitive (`Prelude.hs:521`):
+The cause was treating the captured `IO` block as ordinary user-monad syntax
+over the prelude bind primitive (`Prelude.hs:521`):
 
 ```haskell
 prim "ioBind"
@@ -239,8 +250,10 @@ and the `Monad` trait method it backs (`Prelude.hs:800`):
 ```
 
 `ioBind`'s continuation parameter is `(a -> IO e b)` and its result is
-`IO e b` — both **plain, region-free** `IO` (empty capture set). Every
-`do`-step desugars through `ioBind`. So:
+`IO e b` — both **plain, region-free** `IO` (empty capture set). The
+pre-S6 checker classified `((IO e a) captures (s))` as a user monad instead of
+as the kernel `IO` carrier, so it tried to route the block through that
+monomorphic bind. So:
 
 - the recursive call now has type `__captures (IO …) s`, but the
   enclosing `ioBind` continuation must return plain `IO …` → mismatch
@@ -250,24 +263,20 @@ and the `Monad` trait method it backs (`Prelude.hs:800`):
 - and `main`'s `using` body inherits the same conflict (L1637).
 
 `__captures (IO e b) s` is a **distinct type** from `IO e b`; capture
-subsumption is not definitional equality
-(`tests/conformance/qtt/captures-identity.kp`:
-*"the capture set is part of type identity; capture subsumption is NOT
-definitional equality"*). There is no capture-polymorphic bind to thread
-a non-empty region set through, and no coercion. The annotation is
-correct in spirit but has nowhere to flow.
+subsumption is not definitional equality. S6.A fixes the kernel `IO` path by
+peeling capture annotations for carrier classification, checking the block at
+the underlying `IO e a`, and returning the original capture-annotated action
+type. This does not make the generic `Monad` trait capture-polymorphic; user
+monads remain future work.
 
 ## 5. Root cause
 
 `captures (s)` lives on a value's type and records the regions it hides.
-The region machinery can carry it across an **arrow** (a first-class
-closure literal carries its own capture set). But the `IO` monad
-deliberately abstracts its underlying `World -> (a, World)` arrow behind
-an **opaque** type, and `ioBind` / the `Monad` trait are written **once,
-region-free**. That same abstraction — the thing that makes `IO` clean —
-severs it from the capture system: there is no way to express "this `IO`
-action borrows region `s`" and have `do`-notation construct it, because
-`do` is sugar over a bind that is monomorphic in captures.
+The region machinery can carry it across an **arrow** (a first-class closure
+literal carries its own capture set). For kernel `IO`, S6.A now carries that
+annotation through the primitive `do` elaborator. For generic user monads, the
+old limitation still applies: the `Monad` trait is written once, region-free,
+so there is no capture-polymorphic bind to thread an arbitrary capture set.
 
 Contrast Rust, where the analogy *does* close: an `async fn` / closure
 capturing `&'a` produces `impl Future + 'a`, the lifetime is part of the
@@ -279,6 +288,7 @@ lifetime-polymorphic monadic bind.
 
 | Shape | Compiles | Cleanup on crash | Static leak / double-close prevention | Fits Delve's style |
 |---|:--:|:--:|:--:|:--:|
+| Explicit `IO ... captures (s)` helper | ✓ | Depends on caller's bracket/using | ✓ for the borrow lifetime | ✓ for recursive helpers |
 | **ω + `finallyIO`** (current) | ✓ | ✓ | ✗ | ✓ |
 | Imperative `while`/`var` under `using` (same scope) | ✓ * | ✓ | ✓ | ✗ (no `var`/`while` elsewhere in Delve) |
 | Own + thread `(1 terminal)`, close at each exit | ✓ | ✗ (manual; leaks on error) | ✓ | ✓ |
@@ -293,26 +303,21 @@ boundary (no fresh rigid `rho` to erase from a result type). See
 `(1 conn)`**, never a borrow. (Not separately verified for Delve — but
 this is the supported pattern.)
 
-For a **singleton** handle opened once in `main`, the static guarantees
-add little (there is exactly one acquire site, visible at a glance) while
-the runtime bracket delivers the property that actually matters for a TUI
-— restore the terminal on *every* exit including a crash. So the
-`finallyIO` form is the correct fit, not a consolation prize. QTT's
-borrow/linear machinery earns its keep on **first-class values** and on
-**fleets of short-lived resources in straight-line code** (HTTP
-per-connection sockets), not on a singleton threaded through opaque `IO`.
+For a **singleton** handle opened once in `main`, a value-level bracket such as
+`finallyIO` can still be the better engineering fit when crash cleanup matters
+more than static leak/double-close prevention. The S6.A form is useful when the
+caller already owns a protected borrow scope and wants to factor a recursive or
+helper `IO` action without re-owning the resource.
 
 ## 7. Possible language-level fixes
 
 If this gap is ever worth closing:
 
-1. **Capture-polymorphic `ioBind`** (and `Functor`/`Applicative`/`Monad`
-   for `IO`): abstract the bind over a region/capture row so a
-   continuation capturing `&[s]` yields an `IO … captures (s)` and the
-   set propagates. This is the direct analog of Rust's lifetime-
-   polymorphic combinators. Touches `Prelude.hs` (`ioBind`, the `Monad`
-   trait at L799–800) and how `Check.elabMonadDo` types the desugared
-   binds.
+1. **Capture-polymorphic generic bind** (`Functor`/`Applicative`/`Monad`
+   beyond kernel `IO`): abstract bind over a region/capture row so a
+   continuation capturing `&[s]` yields an action type `captures (s)` and the
+   set propagates. The direct kernel `IO` do elaborator no longer needs this to
+   handle `((IO e a) captures (s))`, but user monads still do.
 2. **Region-threading `do`-scope**: make the `do` elaborator treat a
    borrowed-resource bind the way `using` is already treated — a
    primitive protected scope that carries `rho` — rather than plain
@@ -321,9 +326,8 @@ If this gap is ever worth closing:
 
 Either is a type-system change, not something to encode in user code.
 
-Also worth filing independently: the **§12.3.1 precedence discrepancy**
-in §4a (the parser attaches `captures` tighter than type application,
-contrary to the spec). Candidate for `docs/notes/KNOWN_SPEC_ISSUES.md`.
+The old §4a parser precedence discrepancy is no longer reproduced by the
+S6.A-era checker; keep it in mind only when reading older diagnostics.
 
 ## 8. Reproduction
 

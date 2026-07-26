@@ -7,10 +7,6 @@
 
 module main
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 consume : Nat -> Nat
 let consume n = n
 

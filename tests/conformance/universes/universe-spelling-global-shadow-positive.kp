@@ -1,0 +1,22 @@
+-- Backtick spelling does not create a separate namespace key. Once ordinary
+-- lookup resolves these names, `Type` and `Type0` are globals rather than
+-- primitive universe syntax.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertEval typeValue 7
+--! assertEval type0Value 11
+
+module main
+
+`Type` : Int
+let `Type` = 7
+
+`Type0` : Int
+let `Type0` = 11
+
+typeValue : Int
+let typeValue = `Type`
+
+type0Value : Int
+let type0Value = `Type0`

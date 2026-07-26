@@ -1,0 +1,28 @@
+module main
+
+-- Spec 10.2.1: outside the defining scope of an `opaque data`
+-- declaration, hidden-constructor no-confusion metadata is not available
+-- for NEW source proofs or reachability decisions, while exported
+-- theorems generated inside the defining scope remain usable through
+-- their declared interfaces.
+import lib.(type Signal, go, halt, goIsNotHalt)
+
+-- ACCEPTED: consuming the exported checked theorem.
+usesExportedTheorem :
+    go = halt ->
+    Void
+
+let usesExportedTheorem proof =
+    goIsNotHalt proof
+
+-- REJECTED: rebuilding the same refutation here would need the hidden
+-- constructors' disjointness facts, which the interface must not
+-- serialize for importer-side proofs. The equality's summary out here is
+-- Unknown, so the empty-remainder claim fails.
+rebuildsHiddenNoConfusion :
+    go = halt ->
+    Void
+
+let rebuildsHiddenNoConfusion proof =
+    match proof
+    case impossible

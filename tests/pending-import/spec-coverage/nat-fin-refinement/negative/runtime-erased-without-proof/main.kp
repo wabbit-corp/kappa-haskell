@@ -1,0 +1,16 @@
+missingProof :
+    (@0 erased : RuntimeErased (Nat.Zero = Nat.Succ 3)) ->
+    Refined Nat (\value -> Nat.Zero = Nat.Succ value)
+
+let missingProof @erased =
+    3
+
+-- Sibling of negative/refined-proof-required, isolating the RuntimeErased
+-- bullet of T.12.6: `RuntimeErased P` without a proof of `P` does not
+-- construct the refinement. The IsProp goal of the Spec 16.1.9 insertion
+-- succeeds on its own (the fiber is a Nat equality, so IsProp follows from
+-- the required `derive IsSet Nat` evidence of Spec 28.2), and RuntimeErased
+-- states only that the fiber has no runtime representation (Spec 11.1.6);
+-- neither witness inhabits `Nat.Zero = Nat.Succ 3`, so the only failing
+-- obligation is the actual proof.
+--! assertErrorCount 1

@@ -1,0 +1,12 @@
+kcore 1;
+module @tests.version.bad#3020 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.lifts",
+  typeLevelAlgebraVersion = "999",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+}

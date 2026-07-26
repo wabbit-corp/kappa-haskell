@@ -50,7 +50,7 @@ let getXThenZ r = r.z    --!! kappa.name.unresolved
 
 -- NEGATIVE: projecting through a chain where the inner record lacks
 -- the field.
-type Outer = (inner : Empty)
+type Outer = (inner : Empty,)
 
 outer : Outer
 let outer = (inner = ())

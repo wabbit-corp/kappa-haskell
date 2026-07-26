@@ -5,10 +5,10 @@
 -- §16.1.5: multi-root descriptor applications require a record-literal
 -- roots argument of stable places
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 makeCell : Unit -> Cell
-let makeCell () : Cell = (value = 0)
+let makeCell () : Cell = (value = 0,)
 
 projection chooseBetweenCells (chooseLeft : Bool) (place leftRoot : Cell) (place rightRoot : Cell) : Int =
     if chooseLeft then

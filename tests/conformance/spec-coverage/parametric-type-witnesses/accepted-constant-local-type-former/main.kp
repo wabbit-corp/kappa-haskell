@@ -1,0 +1,10 @@
+-- §7.6.1: dependency-sensitive capability classification leaves a local type
+-- former ordinary when its result does not depend on its parametric argument.
+--! mode check
+--! assertNoErrors
+
+good : (A : Type) -> Int
+let good A =
+    type Const (0 T : Type) : Type = Int
+    let x : Const A = 5
+    x

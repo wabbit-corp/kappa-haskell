@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelSolveClass [?u] where [f ?u <= f p] OutsidePortableInferenceFragment
+--! allow_unsafe_assert_proof
+
+expect term f : TypeLevel -> TypeLevel
+expect term p : TypeLevel
+expect term fMonotoneProof :
+    (x y : TypeLevel) ->
+    (@0 le : x <= y) ->
+    (f x <= f y) = True
+
+instance Monotone f =
+    monotone = fMonotoneProof

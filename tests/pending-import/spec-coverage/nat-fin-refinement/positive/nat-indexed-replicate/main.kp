@@ -1,0 +1,28 @@
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec Nat.Zero a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (Nat.Succ n) a
+
+-- Dependent structural recursion over the ordinary inductive Nat
+-- (Spec 28.2): each constructor branch refines the result index, and
+-- the recursive call is on the structural predecessor, so no checked
+-- subtraction obligation or solver bridge is involved.
+replicate :
+    forall (@0 a : Type).
+    (n : Nat) ->
+    a ->
+    Vec n a
+
+let replicate n x =
+    match n
+    case Nat.Zero -> VNil
+    case Nat.Succ k -> VCons x (replicate k x)
+
+-- Literal indices are definitionally the constructor values
+-- (Spec 31.1.3), so the literal-typed use site checks by conversion.
+threeCopies :
+    Vec 3 Bool
+
+let threeCopies =
+    replicate 3 True
+
+--! assertNoErrors

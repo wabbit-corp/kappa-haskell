@@ -1,0 +1,17 @@
+-- A lambda binder whose spelling matches a sibling declaration is lexical,
+-- not a recursive dependency edge. The two declarations therefore retain
+-- their independently valid, unequal universe-schema arities.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+module main
+
+result : Bool
+let result =
+    block
+        f.{u} : (A : Type u) -> (g : A -> A) -> A -> A
+        g.{u, v} : (A : Type u) -> (B : Type v) -> (f : A -> A) -> A -> A
+        let f.{u} A g x = g x
+        let g.{u, v} A B f x = f x
+        f Bool (\x -> x) True

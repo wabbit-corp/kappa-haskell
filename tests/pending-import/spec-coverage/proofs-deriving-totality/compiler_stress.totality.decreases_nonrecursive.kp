@@ -4,12 +4,15 @@
 
 --! mode check
 
-data Nat : Type =
+-- Nat2 is a deliberately user-local Peano type: §28.2 now ships the
+-- canonical inductive `Nat` (Zero/Succ), so a local `data Nat` would
+-- shadow a spec-canonical type of the same shape.
+data Nat2 : Type =
     Z
-    | S Nat
+    | S Nat2
 
 -- POSITIVE: notRecursive is not recursive; the decreases clause has no effect and is not an error.
-notRecursive : Nat -> Nat
+notRecursive : Nat2 -> Nat2
 let notRecursive n decreases n =
     S (S n)
 

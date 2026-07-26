@@ -7,30 +7,29 @@
 --! mode check
 
 -- Parameterized State effect.
-effect State (s : Type) =
+effect State (0 s : Type) =
     1 get : Unit -> s
     1 put : s -> Unit
+
+effect label s1 : State Int
+effect label s2 : State String
 
 -- Two distinct State cells running simultaneously.
 type TwoState : Type = Eff <[s1 : State Int, s2 : State String]>
 
 -- Handler for the first State (Int).
-let runStateInt
-    (forall (r : EffRow) (a : Type))
-    (init : Int)
-    (comp : Eff <[s1 : State Int | r]> a)
-    : Eff r a =
+runStateInt : forall (r : EffRow) (a : Type).
+    Int -> Eff <[s1 : State Int | r]> a -> Eff r a
+let runStateInt init comp =
     handle s1 comp with
         case return v      -> pure v
         case get _ k       -> k init
         case put new k     -> runStateInt new (k ())
 
 -- Handler for the second State (String).
-let runStateStr
-    (forall (r : EffRow) (a : Type))
-    (init : String)
-    (comp : Eff <[s2 : State String | r]> a)
-    : Eff r a =
+runStateStr : forall (r : EffRow) (a : Type).
+    String -> Eff <[s2 : State String | r]> a -> Eff r a
+let runStateStr init comp =
     handle s2 comp with
         case return v      -> pure v
         case get _ k       -> k init

@@ -1,0 +1,10 @@
+-- §11.1.2.8: u <= ω supplies the independent ceiling succ ω, so the
+-- telescope containing Type u is classified by Type(ω+1).
+--! mode check
+--! assertNoErrors
+
+type AtMostOmega : Type(ω+1) =
+    (u : TypeLevel) ->
+    (@0 le : u <= ω) ->
+    Type u
+

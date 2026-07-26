@@ -1,0 +1,9 @@
+--! mode check
+--! assertNoErrors
+
+returnCode :
+    forall (ordinary A : Type).
+    Type
+
+let returnCode A =
+    A

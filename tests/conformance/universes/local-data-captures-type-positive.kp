@@ -1,0 +1,19 @@
+module main
+
+unwrapLocal.{u} : (parametric 0 A : Type u) -> A -> A
+let unwrapLocal.{u} A value =
+    block
+        data Local : Type u =
+            Local (payload : A)
+
+        let unwrap : Local -> A =
+            \box -> match box
+                case Local payload -> payload
+
+        unwrap (Local value)
+
+answer : Int
+let answer = unwrapLocal Int 42
+
+--! mode check
+--! assertNoErrors

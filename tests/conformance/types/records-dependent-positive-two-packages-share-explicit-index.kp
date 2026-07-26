@@ -11,7 +11,7 @@ data Vec (n : Nat) (a : Type) : Type =
     VNil
 
 type SizedAt (n : Nat) : Type =
-    (buf : Vec n Byte)
+    (buf : Vec n Byte,)
 
 type PairAt (n : Nat) : Type =
     (left : Vec n Byte, right : Vec n Byte)
@@ -21,7 +21,7 @@ let pairSized n xs ys =
     (left = xs.buf, right = ys.buf)
 
 sample : PairAt 0
-let sample = pairSized 0 (buf = VNil) (buf = VNil)
+let sample = pairSized 0 (buf = VNil,) (buf = VNil,)
 
 --! assertNoErrors
 --! assertType pairSized (n : Nat) -> SizedAt n -> SizedAt n -> PairAt n

@@ -6,7 +6,7 @@ trait Clone a =
 instance Clone Int =
     let clone x = x
 
-use : forall a. Clone a => a -> a
+use : forall (a : Type). Clone a => a -> a
 let use x = clone x
 
 result : Int

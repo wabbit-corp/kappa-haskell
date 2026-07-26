@@ -16,6 +16,8 @@
 -- so the fiber completes Success.  Same observable interp == native.
 module main
 
+import std.prelude.(type Exit(..), type Cause(..))
+
 -- an unmasked tight loop: counts to a huge bound, interruptible at the back-edge.
 spin : UIO Int
 let spin = do

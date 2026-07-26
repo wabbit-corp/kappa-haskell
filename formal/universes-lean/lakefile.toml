@@ -1,0 +1,6 @@
+name = "kappa-universes"
+version = "0.1.0"
+defaultTargets = ["KappaUniverses"]
+
+[[lean_lib]]
+name = "KappaUniverses"

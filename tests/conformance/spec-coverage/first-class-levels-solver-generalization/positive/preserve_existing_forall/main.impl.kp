@@ -1,0 +1,4 @@
+data F (A : Type) : Type =
+    MkF
+
+let foo = MkF

@@ -1,0 +1,4 @@
+--! mode check
+--! requires capability kcoreText
+--! requires capability qitUniverseVariance
+--! assertKCoreRejects fixture.kcore E_KCORE_SCHEMA_CERTIFICATE_INVALID

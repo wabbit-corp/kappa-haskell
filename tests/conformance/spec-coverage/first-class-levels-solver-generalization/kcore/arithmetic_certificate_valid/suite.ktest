@@ -1,0 +1,5 @@
+--! mode check
+--! requires capability kcoreText
+--! assertKCoreParses proof.kcore
+--! assertKCoreRoundTrips proof.kcore
+--! assertKCoreLevelEvidence proof.kcore @certificate.tests.maxLeast#2001 dependencies 0,1

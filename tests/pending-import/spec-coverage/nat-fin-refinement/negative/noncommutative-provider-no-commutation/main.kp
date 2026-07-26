@@ -1,0 +1,16 @@
+commutativityIsNotAvailable :
+    forall (A : Type).
+    (@evidence : AdditivelyNoncommutativeSemiring A) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+-- AdditivelyNoncommutativeSemiring carries no commutativity law
+-- (Spec 15.8.2/15.8.4: a normalizer must request the exact law bundle,
+-- never infer commutativity from a trait name), so refl cannot close
+-- the stuck goal.
+let commutativityIsNotAvailable @evidence x y =
+    refl
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH

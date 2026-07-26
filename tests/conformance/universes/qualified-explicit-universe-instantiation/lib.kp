@@ -1,0 +1,7 @@
+module lib
+
+public identity.{u} : (parametric 0 A : Type u) -> A -> A
+public let identity.{u} A x = x
+
+public data Box.{u} (parametric 0 A : Type u) : Type u =
+    Box (value : A)

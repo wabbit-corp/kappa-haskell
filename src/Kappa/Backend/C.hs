@@ -71,8 +71,8 @@ import Kappa.Backend.IR
   , BackendTerm (..)
   , BackendUse (..)
   , KBackendIR (..)
-  , backendPatToCorePat
   , lowerKBackendIR
+  , validateCoreCapabilities
   , validateKBackendIR
   )
 import Kappa.Backend.NativeFfi
@@ -137,23 +137,38 @@ backendDiagnostics = map one
 -- trees fail closed before target emission.
 backendIRValidationErrors :: CheckState -> GName -> [BackendError]
 backendIRValidationErrors cs mainG =
-  backendIRValidationErrorsFrom cs mainG (validateKBackendIR (lowerKBackendIR cs))
+  backendIRValidationErrorsFrom cs mainG
+    (validateCoreCapabilities cs ++ validateKBackendIR (lowerKBackendIR cs))
 
 backendIRValidationErrorsFrom :: CheckState -> GName -> [BackendIRViolation] -> [BackendError]
 backendIRValidationErrorsFrom cs mainG findings =
-  case findings of
-    [] -> []
-    _ ->
-      [ backendUnsupported
-          mainG
-          (Map.findWithDefault noSpan mainG (csDeclSites cs))
-          "KBackendIR validation"
-          ( "KBackendIR validation found "
-              <> T.pack (show (length findings))
-              <> " lowered-tree invariant violation(s); native codegen requires zero. First findings: "
-              <> T.intercalate " | " (take 5 (map renderBackendIRViolation findings))
-          )
+  promotionErrors ++ otherErrors
+  where
+    promotions = [v | v <- findings, bivCode v == "E_PARAMETRIC_TYPE_PROMOTION"]
+    others = [v | v <- findings, bivCode v /= "E_PARAMETRIC_TYPE_PROMOTION"]
+    promotionErrors =
+      [ BackendError
+          (bivBody v)
+          (Map.findWithDefault noSpan (bivBody v) (csDeclSites cs))
+          "E_PARAMETRIC_TYPE_PROMOTION"
+          (Just "kappa.type.parametric-promotion")
+          "KCore capability verification"
+          (bivMessage v)
+      | v <- promotions
       ]
+    otherErrors = case others of
+      [] -> []
+      _ ->
+        [ backendUnsupported
+            mainG
+            (Map.findWithDefault noSpan mainG (csDeclSites cs))
+            "KBackendIR validation"
+            ( "KBackendIR validation found "
+                <> T.pack (show (length others))
+                <> " lowered-tree invariant violation(s); native codegen requires zero. First findings: "
+                <> T.intercalate " | " (take 5 (map renderBackendIRViolation others))
+            )
+        ]
 
 renderBackendIRViolation :: BackendIRViolation -> Text
 renderBackendIRViolation v =
@@ -908,9 +923,8 @@ cStrL s = "kstr(" <> cStr s <> ", " <> T.pack (show (utf8Len s)) <> ")"
 -- ('Builtins.runtimeCtors'); the emitted symbolic @KCT_*@ name is resolved to
 -- its numeric value by the C compiler against the included @kappart.h@.
 --
--- §11 Ordering (LT\/EQ\/GT) is deliberately NOT here: @durationCompare@ and
--- the @Ord@ instances are @.kp@ definitions, so Ordering is a USER constructor
--- codegen builds (id @KCT_USER_BASE+i@) — the runtime never delivers it.
+-- §11 Ordering is runtime-built by the ordinary TypeLevel comparison primitive,
+-- so LT/EQ/GT are fixed runtime constructors alongside Exit/Cause outcomes.
 builtinCtorTag :: Text -> Maybe Text
 builtinCtorTag = Builtins.builtinCtorCName
 
@@ -1094,7 +1108,8 @@ basePrims =
 generateC :: Bool -> Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
 generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
   let backendIr = lowerKBackendIR cs
-      backendIrFindings = validateKBackendIR backendIr
+      backendIrFindings =
+        validateCoreCapabilities cs ++ validateKBackendIR backendIr
       backendIrErrs = backendIRValidationErrorsFrom cs mainG backendIrFindings
       backendIrReport = map renderBackendIRViolation backendIrFindings
       mBackendIrReport = if rcEnabled then Just backendIrReport else Nothing
@@ -1174,7 +1189,9 @@ ioMonadRefDicts =
     gnameModule (GName m _) = m
     termHeadGlob = \case
       CApp _ f _ -> termHeadGlob f
+      CUniverseLift _ _ _ t -> termHeadGlob t
       CGlob g -> Just g
+      CGlobal g _ -> Just g
       _ -> Nothing
 
 rcFindingErrors :: Bool -> GName -> Span -> [Text] -> [BackendError]
@@ -2951,6 +2968,17 @@ primEntries :: Map Text PrimEntry
 primEntries = Map.fromList
   [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
+  -- §11.1.1: TypeLevel is ordinary runtime-capable opaque data. These
+  -- helpers share one omega-coefficient/finite-remainder representation across
+  -- C and LLVM through the common primitive registry.
+  , ("__typeLevelZero", PrimEntry "kpf___typeLevelZero" 0 False)
+  , ("__typeLevelOmega", PrimEntry "kpf___typeLevelOmega" 0 False)
+  , ("__typeLevelSucc", PrimEntry "kpf___typeLevelSucc" 1 False)
+  , ("__typeLevelAdd", PrimEntry "kpf___typeLevelAdd" 2 False)
+  , ("__typeLevelMax", PrimEntry "kpf___typeLevelMax" 2 False)
+  , ("__typeLevelFromNat", PrimEntry "kpf___typeLevelFromNat" 1 False)
+  , ("__compareTypeLevel", PrimEntry "kpf___compareTypeLevel" 2 False)
+  , ("__eqTypeLevel", PrimEntry "kpf___eqTypeLevel" 2 False)
   -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array.  The forall (e a) is Q0 and
   -- structurally absent from KBackendIR before codegen, so the entry sees only
   -- value args.
@@ -4312,9 +4340,12 @@ ctorReuseFootprint layout = do
 
 patCtorReuseLayout :: Map GName BackendCtorLayout -> BackendPat -> Maybe BackendCtorLayout
 patCtorReuseLayout layouts = \case
-  BPCtor g ps -> do
+  BPCtor g _ _
+    | g == Builtins.prelNatZero || g == Builtins.prelNatSucc ->
+        Nothing
+  BPCtor g runtimeArity _ -> do
     layout <- Map.lookup g layouts
-    guard (length ps == bclRuntimeFields layout)
+    guard (runtimeArity == bclRuntimeFields layout)
     pure layout
   -- An as-pattern binds the whole scrutinee cell as a real runtime local.
   -- Token reuse overwrites that exact cell, so until whole-cell alias liveness
@@ -4330,9 +4361,9 @@ directCtorReuseBody = \case
 
 patDirectCtorFieldVars :: BackendPat -> Maybe (Map Int Int)
 patDirectCtorFieldVars = \case
-  BPCtor _ ps -> do
+  BPCtor _ _ fields -> do
     slotsInBindingOrder <- fmap concat $
-      forM (zip [0 ..] ps) $ \(slot, p) ->
+      forM fields $ \(slot, p) ->
         case p of
           BPVar {} -> Just [slot]
           BPWild -> Just []
@@ -4537,8 +4568,8 @@ termHasTokenCtorReuse oldLayout pat =
 orReordered :: BackendPat -> Bool
 orReordered = \case
   BPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReordered ps
-  BPCtor _ ps -> any orReordered ps
-  BPTuple ps -> any orReordered ps
+  BPCtor _ _ fields -> any (orReordered . snd) fields
+  BPTuple _ fields -> any (orReordered . snd) fields
   BPRecord fs _ -> any (orReordered . snd) fs
   BPInject _ p -> orReordered p
   BPAs _ p -> orReordered p
@@ -4562,8 +4593,12 @@ expandBackendAltTopOr (BackendAlt meta pat binders g body) =
 distributePat :: BackendPat -> [BackendPat]
 distributePat = \case
   BPOr ps _ -> concatMap distributePat ps
-  BPCtor g ps -> [BPCtor g qs | qs <- mapM distributePat ps]
-  BPTuple ps -> [BPTuple qs | qs <- mapM distributePat ps]
+  BPCtor g runtimeArity fields ->
+    let (indices, patterns) = unzip fields
+     in [BPCtor g runtimeArity (zip indices qs) | qs <- mapM distributePat patterns]
+  BPTuple runtimeArity fields ->
+    let (indices, patterns) = unzip fields
+     in [BPTuple runtimeArity (zip indices qs) | qs <- mapM distributePat patterns]
   BPRecord fs rest ->
     let (names, pats) = unzip fs
      in [BPRecord (zip names qs) rest | qs <- mapM distributePat pats]
@@ -4792,64 +4827,68 @@ rcPatSlotDropLvals binders pat = do
 -- (a pure expression; no side effects, no bindings).  'Nothing' means the
 -- pattern always matches (e.g. a variable or wildcard).
 patTest :: Text -> BackendPat -> Gen (Maybe Text)
-patTest v = patTestCore v . backendPatToCorePat
-
-patTestCore :: Text -> CorePat -> Gen (Maybe Text)
-patTestCore v = \case
-  CPWild -> pure Nothing
-  CPVar _ -> pure Nothing
-  CPAs _ p -> patTestCore v p
-  CPLit l -> do
+patTest v = \case
+  BPWild -> pure Nothing
+  BPVar _ -> pure Nothing
+  BPAs _ p -> patTest v p
+  BPLit l -> do
     le <- litValue l
     case le of
       Just lv -> pure (Just ("klit_eq(" <> v <> ", " <> lv <> ")"))
       Nothing -> pure (Just "0") -- unsupported literal: never matches (error already recorded)
-  CPCtor g _ ps -> do
-    let nps = length ps
-    subs <- forM (zip [0 ..] ps) $ \(i, p) ->
-      patTestCore (ctorArgExpr v nps i) p
-    -- LR2: dispatch on the numeric ctor identity (int compare) rather than a
-    -- kctor_is strcmp.  kctor_tagid returns -1 for a non-ctor scrutinee, so
-    -- this preserves the `v->tag == K_CTOR &&` type guard kctor_is carried.
-    tc <- ctorTagConst g
-    let here = "kctor_tagid(" <> v <> ") == " <> tc
-    pure (Just (conj (here : [t | Just t <- subs])))
-  CPTuple ps -> do
-    let n = length ps
-    subs <- forM (zip [0 ..] ps) $ \(i, p) ->
-      patTestCore (recAtExpr v i) p
-    let szTest = "krec_size(" <> v <> ") == " <> T.pack (show n)
+  BPCtor g _ fields -> do
+    if
+      | g == Builtins.prelNatZero ->
+          pure (Just ("kis_int_any(" <> v <> ") && kint_cmp(" <> v <> ", kint(0)) == 0"))
+      | g == Builtins.prelNatSucc -> do
+          subs <- forM fields $ \(_, p) ->
+            patTest (natPredecessorExpr v) p
+          let here = "kis_int_any(" <> v <> ") && kint_cmp(" <> v <> ", kint(0)) > 0"
+          pure (Just (conj (here : [t | Just t <- subs])))
+      | otherwise -> do
+          subs <- forM fields $ \(index, p) ->
+            patTest (ctorArgAtExpr v index) p
+          -- LR2: dispatch on the numeric ctor identity (int compare) rather than a
+          -- kctor_is strcmp.  kctor_tagid returns -1 for a non-ctor scrutinee, so
+          -- this preserves the `v->tag == K_CTOR &&` type guard kctor_is carried.
+          tc <- ctorTagConst g
+          let here = "kctor_tagid(" <> v <> ") == " <> tc
+          pure (Just (conj (here : [t | Just t <- subs])))
+  BPTuple runtimeArity fields -> do
+    subs <- forM fields $ \(index, p) ->
+      patTest (recAtExpr v index) p
+    let szTest = "krec_size(" <> v <> ") == " <> T.pack (show runtimeArity)
     pure (Just (conj (szTest : [t | Just t <- subs])))
   -- §17.2.5: a record pattern's rest binder always matches; the named
   -- fields determine the test (with or without a rest binder).
-  CPRecord pfs _ -> recordTests v pfs
-  CPOr ps _ -> do
+  BPRecord pfs _ -> recordTests v pfs
+  BPOr ps _ -> do
     -- Top-level binding or-patterns are split into separate alternatives
     -- before reaching here (see consumeMatch), so any CPOr that arrives is
     -- nested. Non-binding nested ors disjoin their tests; a nested or that
     -- binds variables would need decision-tree compilation.
     if all bindsNothing ps
       then do
-        subs <- mapM (patTestCore v) ps
+        subs <- mapM (patTest v) ps
         pure (Just (disj [maybe "1" id t | t <- subs]))
       else do
         _ <- unsupported "CPOr-nested-binding"
           "a nested or-pattern that binds variables is not supported (lift it to top-level alternatives)"
         pure (Just "0")
   -- §13 variant patterns: tag match + payload sub-test.
-  CPInject tag p -> do
-    sub <- patTestCore ("kvariant_payload(" <> v <> ")") p
+  BPInject tag p -> do
+    sub <- patTest ("kvariant_payload(" <> v <> ")") p
     -- LR2: numeric variant dispatch (kvariant_tagid -> -1 for a non-variant).
     tc <- variantTagConst tag
     let here = "kvariant_tagid(" <> v <> ") == " <> tc
     pure (Just (conj (here : [t | Just t <- [sub]])))
   -- §13 residual-row pattern: a variant whose tag is none of the excluded.
-  CPInjectRest excl -> do
+  BPInjectRest excl -> do
     tcs <- mapM variantTagConst excl
     pure (Just (conj ("kis_variant(" <> v <> ")" : ["kvariant_tagid(" <> v <> ") != " <> tc | tc <- tcs])))
   where
     recordTests rv pfs = do
-      subs <- forM pfs $ \(n, p) -> patTestCore ("kproj(" <> rv <> ", " <> cStr n <> ")") p
+      subs <- forM pfs $ \(n, p) -> patTest ("kproj(" <> rv <> ", " <> cStr n <> ")") p
       case [t | Just t <- subs] of
         [] -> pure Nothing
         ts -> pure (Just (conj ts))
@@ -4857,9 +4896,12 @@ patTestCore v = \case
 -- | The C expression for the i-th bound argument of a constructor value
 -- @v@ whose pattern binds @nps@ trailing arguments (matchPat drops the
 -- leading non-bound arguments).
-ctorArgExpr :: Text -> Int -> Int -> Text
-ctorArgExpr v nps i =
-  "kctor_arg(" <> v <> ", kctor_argc(" <> v <> ") - " <> T.pack (show nps) <> " + " <> T.pack (show i) <> ")"
+ctorArgAtExpr :: Text -> Int -> Text
+ctorArgAtExpr v index =
+  "kctor_arg(" <> v <> ", " <> T.pack (show index) <> ")"
+
+natPredecessorExpr :: Text -> Text
+natPredecessorExpr v = "kp_subInt(" <> v <> ", kint(1))"
 
 recAtExpr :: Text -> Int -> Text
 recAtExpr v i = "krec_at(" <> v <> ", " <> T.pack (show i) <> ")"
@@ -4883,23 +4925,44 @@ disj [] = "0"
 disj [x] = x
 disj xs = "(" <> T.intercalate " || " xs <> ")"
 
-bindsNothing :: CorePat -> Bool
+bindsNothing :: BackendPat -> Bool
 bindsNothing = \case
-  CPWild -> True
-  CPLit _ -> True
-  -- @nEx@ skolem slots are Core/interpreter binders, so a ctor pattern with
-  -- existentials does not "bind nothing".
-  CPCtor _ nEx ps -> nEx == 0 && all bindsNothing ps
-  CPTuple ps -> all bindsNothing ps
-  CPOr ps _ -> all bindsNothing ps
-  CPInjectRest _ -> True
+  BPWild -> True
+  BPLit _ -> True
+  BPCtor _ _ fields -> all (bindsNothing . snd) fields
+  BPTuple _ fields -> all (bindsNothing . snd) fields
+  BPOr ps _ -> all bindsNothing ps
+  BPInjectRest _ -> True
   _ -> False
 
 -- | The values a pattern binds, as C expressions over the scrutinee
 -- expression @sv@, in matchPat's left-to-right binding order (rightmost
 -- binder ends up at de Bruijn index 0).
 patBindings :: Text -> BackendPat -> [Text]
-patBindings sv = patBindingsCore sv . backendPatToCorePat
+patBindings = go
+  where
+    go v = \case
+      BPWild -> []
+      BPLit _ -> []
+      BPVar _ -> [v]
+      BPAs _ pattern' -> v : go v pattern'
+      BPCtor g _ fields
+        | g == Builtins.prelNatZero -> []
+        | g == Builtins.prelNatSucc ->
+            concat [go (natPredecessorExpr v) pattern' | (_, pattern') <- fields]
+        | otherwise ->
+            concat [go (ctorArgAtExpr v index) pattern' | (index, pattern') <- fields]
+      BPTuple _ fields ->
+        concat [go (recAtExpr v index) pattern' | (index, pattern') <- fields]
+      BPRecord fields rest ->
+        concat [go ("kproj(" <> v <> ", " <> cStr name <> ")") pattern' | (name, pattern') <- fields]
+          ++ case rest of
+            Just "_" -> []
+            Just _ -> [recWithoutExpr v (map fst fields)]
+            Nothing -> []
+      BPOr _ _ -> []
+      BPInject _ pattern' -> go ("kvariant_payload(" <> v <> ")") pattern'
+      BPInjectRest _ -> [v]
 
 patBindingsWithLayouts :: Map GName BackendCtorLayout -> Text -> BackendPat -> [Text]
 patBindingsWithLayouts layouts sv pat0 = go sv pat0
@@ -4909,17 +4972,21 @@ patBindingsWithLayouts layouts sv pat0 = go sv pat0
       BPLit _ -> []
       BPVar _ -> [v]
       BPAs _ p -> v : go v p
-      BPCtor g ps ->
-        let nps = length ps
-            arg i =
-              case Map.lookup g layouts of
-                Just layout
-                  | staticallyBoxedCtorLayout layout
-                  , bclRuntimeFields layout == nps ->
-                      v <> "->as.ctor.args[" <> T.pack (show i) <> "]"
-                _ -> ctorArgExpr v nps i
-         in concat [go (arg i) p | (i, p) <- zip [0 ..] ps]
-      BPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
+      BPCtor g runtimeArity fields ->
+        if
+          | g == Builtins.prelNatZero -> []
+          | g == Builtins.prelNatSucc ->
+              concat [go (natPredecessorExpr v) p | (_, p) <- fields]
+          | otherwise ->
+              let arg i =
+                    case Map.lookup g layouts of
+                      Just layout
+                        | staticallyBoxedCtorLayout layout
+                        , bclRuntimeFields layout == runtimeArity ->
+                            v <> "->as.ctor.args[" <> T.pack (show i) <> "]"
+                      _ -> ctorArgAtExpr v i
+               in concat [go (arg i) p | (i, p) <- fields]
+      BPTuple _ fields -> concat [go (recAtExpr v i) p | (i, p) <- fields]
       BPRecord fs mrest ->
         concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- fs]
           ++ case mrest of
@@ -4927,38 +4994,8 @@ patBindingsWithLayouts layouts sv pat0 = go sv pat0
             Just _ -> [recWithoutExpr v (map fst fs)]
             Nothing -> []
       BPInject _ p -> go ("kvariant_payload(" <> v <> ")") p
-      BPInjectRest _ -> []
+      BPInjectRest _ -> [v]
       BPOr {} -> patBindings v pat
-
-patBindingsCore :: Text -> CorePat -> [Text]
-patBindingsCore = go
-  where
-    go v = \case
-      CPWild -> []
-      CPLit _ -> []
-      CPVar _ -> [v]
-      CPAs _ p -> v : go v p
-      CPCtor _ nEx ps ->
-        -- §17.1: the @nEx@ existential-skolem slots come FIRST, so after the
-        -- match path reverses the binding list they land BELOW the field binders
-        -- — exactly where 'ctorFieldTypesCtx' bound the skolems. They are erased
-        -- types never read at runtime; @kunit()@ is the placeholder (mirrors the
-        -- interpreter's 'VRecordV []' and the LLVM backend's unit placeholder).
-        let nps = length ps
-         in replicate nEx "kunit()"
-              ++ concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
-      CPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
-      -- §17.2.5: named-field bindings, then (if a non-discard rest binder)
-      -- the remaining fields as a narrower record — matchPat's order.
-      CPRecord pfs mrest ->
-        concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- pfs]
-          ++ case mrest of
-            Just nm | not (T.null nm) -> [recWithoutExpr v (map fst pfs)]
-            _ -> []
-      CPOr _ _ -> [] -- only non-binding or-patterns reach here
-      -- §13 variant payload / whole-value bindings (matchPat semantics).
-      CPInject _ p -> go ("kvariant_payload(" <> v <> ")") p
-      CPInjectRest _ -> [v]
 
 litValue :: Literal -> Gen (Maybe Text)
 litValue = \case
@@ -5059,12 +5096,16 @@ termGlobals = goT
       KCondAction t -> goT t
 
     goT t = case t of
+      CUniverseLift _ _ _ inner -> goT inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> goT inner
       CVar {} -> Set.empty
+      CLocal {} -> Set.empty
       CGlob g -> Set.singleton g
       CLam _ _ _ b -> goT b
       CPi _ _ _ _ ty b -> goT ty <> goT b
       CApp _ a b -> goT a <> goT b
       CSort {} -> Set.empty
+      CLevel {} -> Set.empty
       CLit {} -> Set.empty
       CCtor g _ args -> Set.insert g (goAll args)
       CMatch s _ alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
@@ -5076,6 +5117,11 @@ termGlobals = goT
       CInject _ e -> goT e
       CLet _ _ ty rhs body -> goT ty <> goT rhs <> goT body
       CLetRec _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetPolyM _ _ _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRecPolyM _ _ _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRecGroupM _ definitions body ->
+        Set.unions
+          (goT body : [goT (clrdType definition) <> goT (clrdRhs definition) | definition <- definitions])
       CMeta {} -> Set.empty
       CDo _ items -> goItems items
       CSealE _ e -> goT e

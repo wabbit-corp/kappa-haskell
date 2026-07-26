@@ -1,0 +1,24 @@
+type Small : Type =
+    Refined Nat (\value -> (contains (0 .. 100) value) = True)
+
+type SmallAndPositive : Type =
+    Refined Small (\small -> (1 <= small.value) = True)
+
+needsTwoHops :
+    (x : Nat) ->
+    (@0 inRange : (contains (0 .. 100) x) = True) ->
+    (@0 positive : (1 <= x) = True) ->
+    SmallAndPositive
+
+let needsTwoHops x @inRange @positive =
+    x
+
+-- Every predicate fact is already in scope, so only the chain policy can
+-- reject this: reaching SmallAndPositive from a bare Nat needs one
+-- construction into Small and a second into SmallAndPositive, but the
+-- expected type's view has Base = Small, not Nat. Spec 16.1.9 permits at
+-- most one source projection and one target construction at one
+-- expected-type boundary and forbids searching chains of RefinementView
+-- instances (T.12.6).
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH

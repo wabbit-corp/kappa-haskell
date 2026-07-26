@@ -1,0 +1,33 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §30.2.0A: mutable locals, structured branches, labeled loop control,
+-- loop else blocks, deferred actions, and statement-position child do scopes
+-- all have explicit typed KCoreText schemas.
+module main
+
+run : UIO Unit
+let run = outer@do
+    var i = 0
+    defer@outer (ioPure ())
+    while ltInt i 3 do
+        i = addInt i 1
+        if eqInt i 1 then do
+            continue
+        if eqInt i 2 then do
+            break
+    else do
+        ioPure ()
+    for value in 1 :: 2 :: Nil do
+        if eqInt value 1 then continue
+    else do
+        ioPure ()
+    inner@do
+        defer (ioPure ())
+        ioPure ()
+    return ()

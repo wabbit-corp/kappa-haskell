@@ -1,0 +1,10 @@
+-- §17.1.7A: a generated projection from an erased constructor field keeps
+-- that field's parametric witness capability.
+--! mode check
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+
+data Some : Type =
+    Some (0 A : Type) (value : A)
+
+bad : Some -> Type
+let bad x = x.A

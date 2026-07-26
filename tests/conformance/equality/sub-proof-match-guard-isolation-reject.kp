@@ -3,12 +3,8 @@
 -- `x - y` is correctly rejected.
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
-instance CheckedSub Nat =
-    let subDefined x y = leInt (natToInt y) (natToInt x)
-    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
-
 leakGuard : Nat -> Nat -> Nat
 let leakGuard x y =
     match x
-      case _ if leInt (natToInt y) (natToInt x) -> 0
+      case _ if y <= x -> 0
       case _ -> x - y --!! E_UNSOLVED_IMPLICIT

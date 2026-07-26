@@ -2,11 +2,18 @@
 --   testsuite/TypeclassTests/TestBinInt.curry (user-defined `Num` instance).
 -- Spec: §14.1 (trait headers), §14.2 (trait members), §14.3 (instances;
 --       instance methods may recurse through the instance's own
---       evidence), §10.1 (`data` declarations), §15.3 (structural descent).
+--       evidence), §10.1 (`data` declarations), §15.3 (structural descent),
+--       §14.5.1/§14.5.2 (compiler-owned derivations), §15.8.1/§15.8.2
+--       (semantic-identity recognition; provider-driven normalization).
 --
 -- Pins: a user ADT implements a miniature numeric trait (add, mul,
 -- fromInt) by structural recursion on Peano naturals; dispatch selects
 -- the user instance and the operations compute the expected values.
+-- The user PNat deliberately mirrors the canonical §28.2 Nat shape:
+-- the §14.5.1/§14.5.2 derivations must accept it by checked semantic
+-- shape, while the §15.8 solver must NOT treat its user operations as
+-- prelude Nat arithmetic (recognition is by resolved semantic identity
+-- and selected law evidence, never source spelling).
 
 module test
 
@@ -16,14 +23,23 @@ data PNat : Type =
     PZero
     PSucc PNat
 
+-- §14.5.1: first-order recursive data is inside the required
+-- conservative structural fragment.
+derive IsSet PNat
+derive Eq PNat
+
+-- §14.5.2: PNat has exactly one nullary constructor and one unary
+-- constructor whose sole retained field is one strict recursive
+-- occurrence of PNat — the exact derivable ExactNaturalRepresentation
+-- shape (constructor names and declaration order are irrelevant).
+derive ExactNaturalRepresentation PNat
+
 -- A miniature numeric trait analogous to Haskell `Num` (just `+`, `*`,
 -- and the integer-literal constructor; abs/negate omitted).
 trait Numeric (a : Type) =
     addN : a -> a -> a
     mulN : a -> a -> a
     fromInt : Int -> a
-
---! assertNoErrors
 
 instance Numeric PNat =
     let addN n m =
@@ -40,8 +56,6 @@ instance Numeric PNat =
         if n <= 0
         then PZero
         else PSucc (fromInt (n - 1))
-
---! assertNoErrors
 
 -- POSITIVE: the instance methods have the expected instantiated types.
 addNNat : PNat -> PNat -> PNat
@@ -67,7 +81,6 @@ let toInt n =
 sumOfTwoAndThree : Int
 let sumOfTwoAndThree = toInt (addN (fromInt 2) (fromInt 3))
 
---! assertNoErrors
 --! assertEval sumOfTwoAndThree 5
 
 -- POSITIVE: 2 * 3 = 6, and PZero absorbs on the left.
@@ -77,8 +90,17 @@ let productOfTwoAndThree = toInt (mulN (fromInt 2) (fromInt 3))
 zeroAbsorbsLeft : Int
 let zeroAbsorbsLeft = toInt (mulN PZero (fromInt 7))
 
---! assertNoErrors
 --! assertEval productOfTwoAndThree 6
 --! assertEval zeroAbsorbsLeft 0
 
--- STATUS(a0497523): PASS
+-- NEGATIVE control (§15.8.1, §15.8.2): addN has natAdd's exact Peano
+-- shape — and PNat even carries a derived ExactNaturalRepresentation —
+-- but no validated proof-normalization provider artifact binds the
+-- Numeric members to a theory kind and no CommutativeAdditiveMonoid or
+-- right-identity law evidence is selected for PNat, so the solver must
+-- not discharge the right-identity goal by shape. The implicit goal
+-- stays unsolved.
+addNRightIdentityUnproven : (n : PNat) -> addN n PZero = n
+let addNRightIdentityUnproven n = witness --!! E_UNSOLVED_IMPLICIT
+
+--! assertErrorCount 1

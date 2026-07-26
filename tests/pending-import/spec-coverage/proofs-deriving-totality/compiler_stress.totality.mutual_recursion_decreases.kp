@@ -4,13 +4,16 @@
 
 --! mode check
 
-data Nat : Type =
+-- Nat2 is a deliberately user-local Peano type: §28.2 now ships the
+-- canonical inductive `Nat` (Zero/Succ), so a local `data Nat` would
+-- shadow a spec-canonical type of the same shape.
+data Nat2 : Type =
     Z
-    | S Nat
+    | S Nat2
 
 -- POSITIVE: isEven and isOdd are mutually recursive; each decreases structurally on n.
-isEven : Nat -> Bool
-isOdd : Nat -> Bool
+isEven : Nat2 -> Bool
+isOdd : Nat2 -> Bool
 
 let isEven n decreases structural n =
     match n

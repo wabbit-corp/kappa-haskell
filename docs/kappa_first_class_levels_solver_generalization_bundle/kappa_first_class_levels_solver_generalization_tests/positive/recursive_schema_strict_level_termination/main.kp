@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+--! assertRecursiveSchemaEdge height height strict-lower
+
+data Desc.{u} : Type =
+    Stop
+    Step
+        (ordinary 0 v : TypeLevel)
+        (@0 lower : v < u)
+        (rest : Desc.{v})
+
+height.{u} : Desc.{u} -> Nat
+let height d =
+    match d
+    case Stop -> 0
+    case Step v rest -> 1 + height.{v} rest

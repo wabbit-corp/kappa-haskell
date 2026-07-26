@@ -7,9 +7,9 @@ data Token : Type =
     Token
 
 type Box : Type =
-    (1 tok : Token)
+    (1 tok : Token,)
 
 bad : UIO Unit
 let bad = do
-    var cell : Box = (tok = Token)
+    var cell : Box = (tok = Token,)
     pure ()

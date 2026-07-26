@@ -5,10 +5,10 @@ module main
 import lib.types.(type Token(..), type Outer)
 
 type Inner : Type =
-    (n : Int)
+    (n : Int,)
 
 bad : UIO Unit
 let bad = do
-    var cell : Outer = (inner = (tok = Token), count = 0)
+    var cell : Outer = (inner = (tok = Token,), count = 0)
     let copy = cell.inner
     pure ()

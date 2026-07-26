@@ -1,5 +1,7 @@
 --! mode check
---! assertNoErrors
+--! assertErrorCount 4
+--! assertDiagnostic error E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE
+--! assertDiagnosticFamily error kappa.equality.transport-not-lowerable
 
 -- §11.4.1 endpoint discipline: the equality family has two ordinary
 -- endpoint arguments — implementations MUST NOT treat the left endpoint
@@ -8,7 +10,9 @@
 -- (forward via subst p, backward via subst (sym p)), composition of the
 -- two, double symmetry, and congruence against either endpoint. An
 -- implementation with a hidden parameter/index asymmetry fails one
--- direction.
+-- direction before lowering. The four abstract, runtime-relevant transports
+-- are expected to reach the backend and then fail under §11.4.1 because no
+-- computational path extension is active.
 module main
 
 fwd : forall (@0 a : Type) (@0 c : a -> Type) (@0 x : a) (@0 y : a). (p : x = y) -> c x -> c y

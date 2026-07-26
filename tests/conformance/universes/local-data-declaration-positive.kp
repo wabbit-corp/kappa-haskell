@@ -1,0 +1,16 @@
+module main
+
+answer : Int
+let answer =
+    block
+        scoped data Local.{u} (parametric 0 A : Type u) : Type u =
+            Local (value : A)
+
+        let unwrap : Local.{0} Int -> Int =
+            \box -> match box
+                case Local value -> value
+
+        unwrap (Local.{0} 42)
+
+--! mode check
+--! assertNoErrors

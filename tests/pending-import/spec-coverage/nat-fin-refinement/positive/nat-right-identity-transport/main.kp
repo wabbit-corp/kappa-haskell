@@ -1,0 +1,16 @@
+data NatIndex (n : Nat) : Type =
+    NatIndex
+
+rightIdentityUsesInsertedTransport :
+    (n : Nat) ->
+    NatIndex (natAdd n Nat.Zero) ->
+    NatIndex n
+
+let rightIdentityUsesInsertedTransport n value =
+    value
+
+-- `natAdd n Nat.Zero` is not definitionally equal to `n` for neutral `n`.
+-- Expected-type checking accepts this by producing equality evidence and
+-- inserting `subst`; verified KCore must retain that transport explicitly.
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

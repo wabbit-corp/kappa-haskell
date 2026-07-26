@@ -1,0 +1,34 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+three :
+    NatBetween 2 30
+
+let three =
+    3
+
+baseValue :
+    NatBetween 2 30 ->
+    Nat
+
+let baseValue value =
+    value
+
+threeValue :
+    Nat
+
+let threeValue =
+    baseValue three
+
+widen :
+    NatBetween 2 30 ->
+    NatBetween 0 100
+
+let widen value =
+    value
+
+--! assertNoErrors
+--! assertEval threeValue 3

@@ -1,0 +1,39 @@
+kcore 1;
+
+module @tests.kcore.local_universe#1100 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.local_universe",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  def ordinary @tests.kcore.local_universe.outer#2100 .{^u#0} :
+    ((parametric parametric 0 explicit value %A#0 : Type ^u#0) ->
+      ((ordinary ordinary omega explicit value %x#1 : %A#0) -> %A#0))
+  {
+    body =
+      lambda (parametric parametric 0 explicit value %A#0 : Type ^u#0) {
+        lambda (ordinary ordinary omega explicit value %x#1 : %A#0) {
+          letrec {
+            def ordinary %localId#2 .{^v#1} :
+              ((parametric parametric 0 explicit value %B#3 : Type ^v#1) ->
+                ((ordinary ordinary omega explicit value %y#4 : %B#3) -> %B#3))
+            {
+              body =
+                lambda (parametric parametric 0 explicit value %B#3 : Type ^v#1) {
+                  lambda (ordinary ordinary omega explicit value %y#4 : %B#3) {
+                    %y#4
+                  }
+                };
+            }
+          } in
+            apply
+              (apply %localId#2.{^u#0} %A#0)
+              %x#1
+        }
+      };
+  }
+}

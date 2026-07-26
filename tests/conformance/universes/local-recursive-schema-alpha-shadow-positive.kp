@@ -1,0 +1,23 @@
+-- Alpha-normalizing a shared recursive universe telescope must rename only
+-- free schema-parameter occurrences. The ordinary value binder named `v`
+-- in g's body remains an ordinary value.
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+result : Bool
+let result =
+    block
+        f.{u} : (A : Type u) -> A -> A
+        g.{v} : (A : Type v) -> A -> A
+        let f.{u} A x =
+            if True then x else g A x
+        let g.{v} A v =
+            if True then v else f A v
+        f Bool True

@@ -1,0 +1,6 @@
+--! mode check
+--! assertNoErrors
+
+type AnyTypeWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)

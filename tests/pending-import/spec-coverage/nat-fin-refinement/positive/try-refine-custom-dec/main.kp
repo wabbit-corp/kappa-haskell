@@ -1,0 +1,33 @@
+-- Spec 28.2 (tryRefine) with a USER decision procedure for a non-range
+-- predicate: parity decided by an ordinary total function returning Dec.
+-- The No branch composes 16.4.1 branch facts with 31.1.2 branch-local
+-- normalization: under `else`, p's type normalizes to False = True, whose
+-- 10.2.1 constructor disjointness makes `case impossible` exhaustive.
+-- tryRefine's @0 predicateIsProp argument is left to implicit synthesis
+-- (IsProp of a Bool equality via IsSet Bool from Eq's supertrait).
+--! mode run
+decEven :
+    (x : Nat) ->
+    Dec ((x % 2 == 0) = True)
+
+let decEven x =
+    if x % 2 == 0
+    then Yes refl
+    else No (\p -> match p case impossible)
+
+report :
+    Option (Refined Nat (\value -> (value % 2 == 0) = True)) ->
+    String
+
+let report result =
+    match result
+    case Option.Some _ -> "even"
+    case Option.None -> "odd"
+
+main : UIO Unit
+let main = do
+    printlnString (report (tryRefine decEven 4))
+    printlnString (report (tryRefine decEven 5))
+
+--! assertNoErrors
+--! assertStdout "even\nodd\n"

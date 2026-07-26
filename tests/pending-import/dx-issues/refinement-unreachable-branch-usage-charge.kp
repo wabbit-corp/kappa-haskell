@@ -1,13 +1,25 @@
--- DX EXPECTATION (§16.4.4, §31.1.2, §17.1.4): "If branch refinement proves
--- one branch unreachable, that branch contributes no usage requirement"
--- (§16.4.4). In each usage function below, the only branch that fails to
--- consume the `>=1` binder x is refinement-contradictory — its context
--- proves both b = True and b = False (resp. (n == 0) = True and = False),
--- which §31.1.2 says makes the branch unreachable — so x IS consumed on
--- every reachable path and the definitions should be accepted. The third
--- function shows the root cause sits upstream of the usage checker: an
--- explicit `impossible` in the contradictory branch should already be
--- provably unreachable per §17.1.4.
+-- DX EXPECTATION (§16.4.4, §31.1.2, §17.1.4, §15.8.4, §15.8.8; citations
+-- re-based 2026-07-25 on the Nat/Fin revision): "If branch refinement
+-- proves one branch unreachable, that branch contributes no usage
+-- requirement" (§16.4.4). In each usage function below, the only branch
+-- that fails to consume the `>=1` binder x is refinement-contradictory —
+-- its context proves both b = True and b = False (resp. (n == 0) = True
+-- and = False), which §31.1.2 says makes the branch unreachable — so x IS
+-- consumed on every reachable path and the definitions should be
+-- accepted. contraImpossible shows the root cause sits upstream of the
+-- usage checker, and its acceptance is now explicit text rather than an
+-- inference: §17.1.4 names "the required portable arithmetic/proof
+-- fragment of §15.8" among the unreachability channels, and §15.8.8
+-- makes that fragment the ONLY portable justification for an
+-- arithmetic-impossible `impossible`. Two independent required discharge
+-- routes exist for the Bool contradiction: §10.2.1 constructor
+-- disjointness (True/False no-confusion) routed through §16.3.3 step 4,
+-- and §15.8.4's small-finite-domain rule (Bool has cardinality 2 <= 256,
+-- "exact proof or refutation by complete enumeration"). useArith's
+-- (n == 0) = True /\ (n == 0) = False is additionally inside required
+-- Presburger. useNat pins the Presburger leg on its own, separated from
+-- Bool no-confusion: its middle branch is refuted by linear arithmetic
+-- ((n < 1) = False forces n >= 1, contradicting (n == 0) = True).
 --
 -- CURRENTLY (a0497523): boolean-fact contradictions never mark a branch
 -- unreachable at all. Run in isolation, each usage shape is rejected
@@ -41,7 +53,18 @@ let useArith x n =
 -- The contradiction should already justify `impossible` on its own.
 contraImpossible : (b : Bool) -> Int
 let contraImpossible b = if b then (if b then 1 else impossible) else 0
+
+-- Presburger-only variant: the middle branch is refuted by linear
+-- arithmetic over Nat (§15.8.4), not by Bool no-confusion, so this
+-- separates the two discharge mechanisms.
+useNat : (>=1 x : Int) -> (n : Nat) -> Int
+let useNat x n =
+    if n < 1 then x
+    elif n == 0 then 0
+    else x
 -- STATUS(a0497523): FAIL — expected 0 errors, got 1: E_IMPOSSIBLE_REACHABLE
 -- "'impossible' is not provably unreachable here (§17.1.4)" at line 43; with
 -- contraImpossible removed the same module instead reports E_QTT_LINEAR_DROP
 -- (§12.2.5) on both useBool and useArith — all three expectations fail today.
+-- (Recorded against the pre-revision file shape; useNat was added
+-- 2026-07-25 and has not been run on a0497523.)

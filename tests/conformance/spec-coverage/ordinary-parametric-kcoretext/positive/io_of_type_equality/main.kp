@@ -1,0 +1,5 @@
+--! mode check
+--! assertNoErrors
+
+type EqualityAction =
+    IO String (Type0 = Type0)

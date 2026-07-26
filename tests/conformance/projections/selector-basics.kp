@@ -4,7 +4,7 @@
 -- §9.1.1 selector form: projection facet, term facet, descriptor
 -- application (§16.1.5), receiver sugar (§7.4)
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 type Pair = (left : Int, right : Int)
 
 projection cellValue (place this : Cell) : Int =

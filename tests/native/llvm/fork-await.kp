@@ -2,11 +2,15 @@
 -- establishes a happens-before edge so the output is deterministic.
 module main
 
+import std.prelude.(type Exit(..))
+
 main : UIO Unit
 let main = do
-    let f1 <- fork (printlnString "first")
+    let first : UIO Unit = printlnString "first"
+    let f1 <- fork first
     let _ <- await f1
-    let f2 <- fork (ioPure 42)
+    let value : UIO Int = ioPure 42
+    let f2 <- fork value
     let r <- await f2
     match r
     case Success v -> printlnString (showInt v)

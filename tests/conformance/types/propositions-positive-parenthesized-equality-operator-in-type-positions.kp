@@ -1,14 +1,26 @@
 module main
 
-data Foo (@0 a : Type) (@0 p : a -> a -> Type) : Type =
+data Foo
+    (@0 a : Type)
+    (@0 p : a -> a -> Type)
+    : Type =
     Bar (x : a) (y : a) (proof : p x y)
 
-direct : Foo Nat (=)
+data ParametricFoo
+    (@0 a : Type)
+    (@parametric 0 p : a -> a -> Type)
+    : Type =
+    ParametricBar (x : a) (y : a) (proof : p x y)
+
+direct : Foo @Nat @(=)
 let direct = Bar 1 1 refl
 
-type Equal (@0 a : Type) = (=) a
+explicit : ParametricFoo @Nat @(=)
+let explicit = ParametricBar 1 1 refl
 
-viaAlias : Foo Nat (Equal Nat)
+type Equal (@0 a : Type) = (=) @a
+
+viaAlias : Foo @Nat @(Equal @Nat)
 let viaAlias = Bar 2 2 refl
 
 -- Source issue: Idris2#367
@@ -16,5 +28,6 @@ let viaAlias = Bar 2 2 refl
 -- in direct type arguments and in eta-reduced type-alias bodies.
 -- Spec: §3.5.1, §5.6.1
 --! assertNoErrors
---! assertType direct Foo Nat (=)
---! assertType viaAlias Foo Nat (Equal Nat)
+--! assertType direct Foo @Nat @(=)
+--! assertType explicit ParametricFoo @Nat @(=)
+--! assertType viaAlias Foo @Nat @(Equal @Nat)

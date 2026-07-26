@@ -12,6 +12,6 @@ type Functor (F : Type -> Type) =
 
 -- NEGATIVE TEST: a record field referencing an undefined universe-level type.
 -- Level is not a built-in name in Kappa; this must produce a diagnostic.
-type BrokenFunctor = (lift : Level -> Type)   --!! kappa.name.unresolved
+type BrokenFunctor = (lift : Level -> Type,)   --!! kappa.name.unresolved
 
 --! assertDiagnosticFamily error kappa.name.unresolved

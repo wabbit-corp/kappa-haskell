@@ -1,0 +1,13 @@
+module explicit_owner_inferred_constructor_suffix
+
+data Packed.{u} : Type u =
+    Pack (parametric 0 B : Type) (value : B)
+
+intPacked : Packed.{1}
+let intPacked = Pack.{1} Int 5
+
+stringPacked : Packed.{1}
+let stringPacked = Pack.{1} String "ok"
+
+--! mode check
+--! assertNoErrors

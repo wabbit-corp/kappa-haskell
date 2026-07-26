@@ -12,8 +12,8 @@ let worker = ioPure 5
 emit : forall (e : Type). Exit e Int -> UIO Unit
 let emit ex =
     match ex
-    case Success v -> printlnString (showInt v)
-    case Failure c -> printlnString "fail"
+    case Exit.Success v -> printlnString (showInt v)
+    case Exit.Failure c -> printlnString "fail"
 
 main : UIO Unit
 let main = do

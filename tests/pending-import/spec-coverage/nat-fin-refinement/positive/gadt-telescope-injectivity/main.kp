@@ -1,0 +1,67 @@
+-- T.12.2 / Spec 10.2.1: same-constructor injectivity yields the field
+-- equality obligations in dependent telescope order, transporting later
+-- field types across the already-derived equalities for earlier fields.
+-- `witness` consumes the generated no-confusion package through implicit
+-- resolution step 4 (Spec 16.3.3): visible generated injectivity
+-- evidence for an in-scope constructor-headed equality premise.
+data Flat : Type =
+    MkFlat (left : Nat) (right : Nat)
+
+data Bundle : Type =
+    MkBundle : (bound : Nat) -> (index : Fin bound) -> Bundle
+
+-- Nondependent control: both projections of a plain two-field
+-- constructor equality are available directly.
+flatLeftInjective :
+    (a : Nat) ->
+    (b : Nat) ->
+    (c : Nat) ->
+    (d : Nat) ->
+    (@sameFlat : MkFlat a b = MkFlat c d) ->
+    a = c
+
+let flatLeftInjective a b c d @sameFlat =
+    witness
+
+flatRightInjective :
+    (a : Nat) ->
+    (b : Nat) ->
+    (c : Nat) ->
+    (d : Nat) ->
+    (@sameFlat : MkFlat a b = MkFlat c d) ->
+    b = d
+
+let flatRightInjective a b c d @sameFlat =
+    witness
+
+-- Dependent telescope order: the bound equality is derived first; the
+-- index equality is only well-typed once stated ACROSS that earlier
+-- equality (the second field's type `Fin bound` depends on the first
+-- field), so it is a subst-transported equality, never a raw one.
+bundleBoundInjective :
+    (n : Nat) ->
+    (m : Nat) ->
+    (i : Fin n) ->
+    (j : Fin m) ->
+    (@sameBundle : MkBundle n i = MkBundle m j) ->
+    n = m
+
+let bundleBoundInjective n m i j @sameBundle =
+    witness
+
+bundleFieldsInjective :
+    (n : Nat) ->
+    (m : Nat) ->
+    (i : Fin n) ->
+    (j : Fin m) ->
+    (@sameBundle : MkBundle n i = MkBundle m j) ->
+    (boundEq : n = m, indexEq : subst @Nat @(\k -> Fin k) @n @m boundEq i = j)
+
+-- Constructing the dependent pair checks the second component against
+-- the type instantiated with the FIRST component's synthesized proof:
+-- the same left-to-right telescope discipline the package derivations
+-- follow.
+let bundleFieldsInjective n m i j @sameBundle =
+    (boundEq = witness, indexEq = witness)
+
+--! assertNoErrors

@@ -1,0 +1,15 @@
+-- Universe roles describe cumulative nominal families, never ordinary local
+-- term declarations.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_NOT_APPLICABLE
+--! assertDiagnosticFamily error kappa.universe.variance
+
+module main
+
+result : Bool
+let result =
+    block
+        id.{covariant u} : (A : Type u) -> A -> A
+        let id.{covariant u} A x = x
+        id Bool True

@@ -1,0 +1,8 @@
+notPortableMembershipSyntax :
+    Bool
+
+let notPortableMembershipSyntax =
+    3 in 2 .. 30
+
+-- `contains (2 .. 30) 3` is the portable spelling.
+--! assertErrorCount 1

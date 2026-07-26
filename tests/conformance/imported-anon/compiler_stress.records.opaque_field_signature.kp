@@ -4,7 +4,7 @@
 --! mode check
 
 -- A "signature" record: T is opaque (abstract), val and extract depend on T
-type Sig : Type = (opaque T : Type, val : T, extract : T -> Int)
+type Sig : Type1 = (opaque T : Type, val : T, extract : T -> Int)
 
 -- POSITIVE: access val and extract through the abstract interface;
 -- the types align because T is the same opaque field throughout

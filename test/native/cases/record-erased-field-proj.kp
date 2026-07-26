@@ -5,14 +5,14 @@
 -- offset 1.
 module main
 
-type R = (a : Type, b : Int)
-type TypeOnly = (a : Type)
+type R = (parametric 0 a : Type, b : Int)
+type TypeOnly = (parametric 0 a : Type,)
 
 foo : R
 let foo = (a = Int, b = 5)
 
 sourceType : TypeOnly
-let sourceType = (a = Int)
+let sourceType = (a = Int,)
 
 fooComputed : R
 let fooComputed = (a = sourceType.a, b = 6)

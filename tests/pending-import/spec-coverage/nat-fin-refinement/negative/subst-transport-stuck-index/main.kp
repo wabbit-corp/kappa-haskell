@@ -1,0 +1,53 @@
+data Vec (n : Nat) : Type =
+    MkVec
+
+-- Spec 16.1.8 + 11.4: explicit user-written subst is the portable way
+-- to request a transport outside the automatic fragment. The index
+-- function here is an ABSTRACT parameter, so `f n` is genuinely
+-- neutral: no defining equation applies (Spec 31.1) and no Spec 15.8
+-- required domain covers an arbitrary function symbol. Do NOT re-base
+-- this suite on `natAdd n Zero` or `natAdd m n` — the required solver
+-- plus Spec 16.1.8 auto-transport those, which is exactly why the
+-- pre-revision `0 + n` vehicle died.
+
+-- ACCEPTED: transport along the hypothesis; motive inferred by
+-- unification.
+coerceVec :
+    (f : Nat -> Nat) ->
+    (n : Nat) ->
+    (@0 pf : (=) (f n) n) ->
+    Vec (f n) ->
+    Vec n
+
+let coerceVec f n @pf v =
+    subst pf v
+
+-- ACCEPTED: the reverse transport through sym.
+uncoerceVec :
+    (f : Nat -> Nat) ->
+    (n : Nat) ->
+    (@0 pf : (=) (f n) n) ->
+    Vec n ->
+    Vec (f n)
+
+let uncoerceVec f n @pf v =
+    subst (sym pf) v
+
+-- REJECTED: same hypothesis in scope, no subst — the neutral endpoints
+-- do not convert ("The implementation MUST NOT use arbitrary user
+-- equality assumptions as definitional equality", Spec 16.1.8), so the
+-- acceptances above are the explicit transport's doing. Automatically
+-- consuming the ambient hypothesis here would be a Spec 16.1.8
+-- MAY-shaped elaboration choice; this suite pins the profile that does
+-- not take it, keeping explicit subst observable.
+noCoerce :
+    (f : Nat -> Nat) ->
+    (n : Nat) ->
+    (@0 pf : (=) (f n) n) ->
+    Vec (f n) ->
+    Vec n
+
+let noCoerce f n @pf v =
+    v
+
+--! assertErrorCount 1

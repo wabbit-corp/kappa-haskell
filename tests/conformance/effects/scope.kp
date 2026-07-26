@@ -19,8 +19,8 @@ let useScope sc = do
     let f <- forkIn sc three
     let ex <- await f
     match ex
-      case Success v -> ioPure v
-      case Failure c -> ioPure 0
+      case Exit.Success v -> ioPure v
+      case Exit.Failure c -> ioPure 0
 
 main : UIO Unit
 let main = do
@@ -29,8 +29,8 @@ let main = do
     shutdownScope sc
     let ex <- await f
     match ex
-    case Success v -> printlnString "completed"
-    case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
-    case Failure c -> printlnString "other"
+    case Exit.Success v -> printlnString "completed"
+    case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.ScopeShutdown by)) -> printlnString "scope-shutdown"
+    case Exit.Failure c -> printlnString "other"
     let r <- withScope useScope
     printlnString (showInt r)

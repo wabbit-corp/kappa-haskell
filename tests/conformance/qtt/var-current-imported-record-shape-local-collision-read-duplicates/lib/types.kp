@@ -4,7 +4,7 @@ data Token : Type =
     Token
 
 type Inner : Type =
-    (1 tok : Token)
+    (1 tok : Token,)
 
 type Outer : Type =
     (inner : Inner, count : Int)

@@ -1,0 +1,25 @@
+type NatBetween
+    (lo : Nat)
+    (hi : Nat)
+    : Type =
+    Refined Nat (\value -> (contains (lo .. hi) value) = True)
+
+finExample :
+    Fin 5
+
+let finExample =
+    3
+
+refinedExample :
+    NatBetween 2 30
+
+let refinedExample =
+    3
+
+--! requires capability representationQueries
+--! requires capability representationCertificates
+--! mode compile
+--! assertNoErrors
+--! assertRuntimeFieldAbsent finExample isLt
+--! assertRuntimeFieldAbsent refinedExample proof
+--! assertRefinementRepresentation Nat for NatBetween 2 30

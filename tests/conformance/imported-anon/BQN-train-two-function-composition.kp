@@ -7,7 +7,7 @@
 
 --! mode check
 
-compose : forall a b c. (b -> c) -> (a -> b) -> a -> c
+compose : forall (a b c : Type). (b -> c) -> (a -> b) -> a -> c
 let compose g h x = g (h x)
 
 addOne : Nat -> Nat
@@ -35,4 +35,4 @@ sameAt7 : Bool
 let sameAt7 = chain 7 == associative 7
 
 --! assertNoErrors
---! assertType compose (forall a b c. (b -> c) -> (a -> b) -> a -> c)
+--! assertType compose (forall (a b c : Type). (b -> c) -> (a -> b) -> a -> c)

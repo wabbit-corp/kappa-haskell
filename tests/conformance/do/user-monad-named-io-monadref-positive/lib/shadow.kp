@@ -1,6 +1,6 @@
 module lib.shadow
 
-data IO (a : Type) : Type =
+data IO (0 a : Type) : Type =
     MkIO (runShadowIO : UIO a)
 
 instance Applicative IO =

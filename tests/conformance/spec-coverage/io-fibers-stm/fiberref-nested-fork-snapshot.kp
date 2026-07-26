@@ -20,8 +20,8 @@ let child ref = do
     let g <- fork (grandchild ref)
     let gex <- await g
     match gex
-      case Success v -> printlnString ("grandchild:" ++ showInt v)
-      case Failure c -> printlnString "grandchild:failed"
+      case Exit.Success v -> printlnString ("grandchild:" ++ showInt v)
+      case Exit.Failure c -> printlnString "grandchild:failed"
     -- the grandchild's setFiberRef 30 must not affect this fiber
     getFiberRef ref
 
@@ -32,8 +32,8 @@ let main = do
     let f <- fork (child ref)
     let ex <- await f
     match ex
-      case Success v -> printlnString ("child-after:" ++ showInt v)
-      case Failure c -> printlnString "child-after:failed"
+      case Exit.Success v -> printlnString ("child-after:" ++ showInt v)
+      case Exit.Failure c -> printlnString "child-after:failed"
     -- the child's setFiberRef 20 must not affect the parent
     let mine <- getFiberRef ref
     printlnString ("parent-after:" ++ showInt mine)

@@ -1,7 +1,7 @@
 --! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
 
-r : (x : Integer)
-let r = (x = 1)
+r : (x : Integer,)
+let r = (x = 1,)
 
 bad : Integer
 let bad = r.y --!! E_RECORD_PROJECTION_MISSING_FIELD

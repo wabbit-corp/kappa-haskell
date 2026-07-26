@@ -1,0 +1,9 @@
+-- §11.1.2.6: `(u : TypeLevel < κ)` is not Kappa v1 syntax. Bounds are
+-- ordinary erased proof binders such as `(@0 p : u < κ)`.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+--! assertDiagnosticFamily error kappa.universe.level-expression
+
+type BadBound =
+    (u : TypeLevel < u) -> Type u

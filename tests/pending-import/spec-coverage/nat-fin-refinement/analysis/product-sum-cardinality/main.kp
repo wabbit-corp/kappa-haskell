@@ -1,0 +1,44 @@
+-- Structural pair and variant, spelled exactly as the required exact
+-- symbolic-cardinality equations of Spec 30.2.7A:
+-- cardinality (A, B) = cardinality A * cardinality B and
+-- cardinality (Variant [A, B]) = cardinality A + cardinality B, with the
+-- required Fin projections cardinality (Fin n) = n. The symbolic
+-- assertions below therefore target the tuple and union forms.
+type PairOfFins : Type =
+    (Fin 3, Fin 5)
+
+type EitherFin : Type =
+    (| Fin 3 | Fin 5 |)
+
+-- The nominal one-constructor product and two-constructor sum land in
+-- the required concrete structural fragment of Spec 30.2.7: interval
+-- multiplication over closed nondependent products and interval
+-- addition over closed ordinary data types, with closed `Fin k`
+-- components projecting to Finite k. The required exact SYMBOLIC
+-- equations are stated for the structural forms above, so the nominal
+-- shapes assert concrete inhabitance only.
+data PairOfFinsData : Type =
+    PairOfFinsData
+        (first : Fin 3)
+        (second : Fin 5)
+
+data EitherFinData : Type =
+    SmallSide (small : Fin 3)
+    LargeSide (large : Fin 5)
+
+-- 2^32 * 2^32 = 2^64 exceeds every signed 64-bit counter, so this
+-- product cardinality is computable only with the unbounded exact
+-- arithmetic required by T.12.8 and Spec 30.2.7A/B.
+type WordSquare : Type =
+    (Fin 4294967296, Fin 4294967296)
+
+--! requires capability symbolicCardinality
+--! assertNoErrors
+--! assertSymbolicCardinality 15 for PairOfFins
+--! assertInhabitance SourceReachability Finite(15) for PairOfFins
+--! assertSymbolicCardinality 8 for EitherFin
+--! assertInhabitance SourceReachability Finite(8) for EitherFin
+--! assertInhabitance SourceReachability Finite(15) for PairOfFinsData
+--! assertInhabitance SourceReachability Finite(8) for EitherFinData
+--! assertSymbolicCardinality 18446744073709551616 for WordSquare
+--! assertInhabitance SourceReachability Finite(18446744073709551616) for WordSquare

@@ -1,0 +1,6 @@
+-- sum_sizes recurses on list elements each of which is a subtree.
+sum_sizes : List Tree -> Nat
+let sum_sizes ts decreases ts =
+    match ts
+      case Nil         -> 0
+      case (t :: ts2)  -> size t + sum_sizes ts2

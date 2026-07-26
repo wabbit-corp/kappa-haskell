@@ -15,6 +15,14 @@
 -- (Same eager-defaulting root as mixed-literal-list-order-dependence
 -- .kp; distinct site — literal-first operator applications in type
 -- positions and guards.)
+-- Raised stakes (2026-07-25, Nat/Fin revision): §6.1.5's FromInteger now
+-- carries `fromInteger : Nat -> t`, and once `0` elaborates at Nat,
+-- `(0 + n) = n` is DEFINITIONAL (§28.2 natAdd Zero n -> n, §31.1.3) —
+-- so the eager default is the only thing standing between the user and
+-- a free proof.  zeroPlusProof pins that payoff (pure conversion, no
+-- §15.8 solver, no transport); plusZeroProof pins the boundary: right
+-- identity is NOT definitional (§28.2) and is accepted only through
+-- §15.8 + §16.1.8.
 --! mode check
 --! assertNoErrors
 
@@ -33,4 +41,14 @@ let propUse n pf = n
 -- synthesis position: a boolean guard with the same shape
 guardCtl : (n : Nat) -> Bool
 let guardCtl n = (0 + n) == n
+
+-- payoff once the default fires late: left identity is definitional
+zeroPlusProof : (n : Nat) -> (0 + n) = n
+let zeroPlusProof n = refl
+
+-- boundary: right identity needs the §15.8 proof + §16.1.8 transport
+plusZeroProof : (n : Nat) -> (n + 0) = n
+let plusZeroProof n = refl
 -- STATUS(a0497523): FAIL — expected 0 errors, got 4: termCtl checks clean but propUse and guardCtl each produce a pair of E_TYPE_EQUALITY_MISMATCH "actual: Nat / expected: Integer" ON the occurrences of n (the literal committed to Integer first and the diagnostic blames the variable)
+-- (Recorded against the pre-revision file shape; zeroPlusProof and
+-- plusZeroProof were added 2026-07-25 and have not been run on a0497523.)

@@ -1,12 +1,24 @@
--- DX EXPECTATION (§11.4.2 form 3, §31.1.3, §15.1): the spec's own
--- dependent-boolean-field example shape — (id : Int, ok : id == 1), a
--- field whose Bool-typed type references a sibling field — should be
--- soundly inhabitable. At the ground literal, (1 == 1) should normalize
--- to True so `ok = refl` discharges the field; under the branch fact
--- `if n == 1`, refl (or implicit synthesis) should inhabit it for
--- symbolic n.
+-- DX EXPECTATION (§11.4.2 form 3, §31.1.3, §15.1; re-based 2026-07-25 on
+-- the Nat/Fin revision): the spec's own dependent-boolean-field example
+-- shape — (id : Int, ok : id == 1), a field whose Bool-typed type
+-- references a sibling field — should be soundly inhabitable, and the
+-- revision now SPECIFIES the sound path:
+--   * ground literal: 1 == 1 is exact closed comparison (§15.8.4 required
+--     portable domain), and the goal shape `b = True` is handled directly
+--     by §16.3.3 step 3 (boolean proposition normalization synthesizes
+--     refl when b normalizes to True), with §16.1.8 available for the
+--     field-boundary conversion;
+--   * flow case: §16.4.1 puts (n == 1) = True in the implicit context and
+--     §31.1.2's boolean-fact rule makes `n == 1` reduce to True for
+--     branch-local normalization, so refl checks for symbolic n.
+-- Distinct from §16.1.9 refinement-view subsumption, which explicitly
+-- does NOT apply: "v1 does not recognize arbitrary `(value, @proof)`
+-- records by structural resemblance" — an anonymous dependent-bool record
+-- must be inhabited by the §16.3.3 route above and must not be silently
+-- coerced through a RefinementView. That distinction is new in the
+-- revision and is pinned nowhere else yet.
 --
--- CURRENTLY (a0497523): there is NO sound path to this feature.
+-- CURRENTLY (a0497523): no path works in this compiler.
 --   - Literal case: E_TYPE_EQUALITY_MISMATCH where both sides render as
 --     the stuck application "= Bool (__stuck_app _.== 1 1) ..." with an
 --     unresolved instance hole `_` — the Eq instance inside the field
@@ -20,7 +32,10 @@
 --     — further evidence the instance hole, not the equality, drives the
 --     rejection.
 --   - The only accepted spelling, `ok = witness`, goes through the
---     recorded any-equality witness unsoundness, so it proves nothing.
+--     recorded any-equality witness unsoundness (see the two witness
+--     files in this directory), so it proves nothing — with the spec
+--     path above now normative, the stuck-instance behavior is an
+--     implementation bug, not a missing rule.
 --! mode check
 --! assertNoErrors
 module main

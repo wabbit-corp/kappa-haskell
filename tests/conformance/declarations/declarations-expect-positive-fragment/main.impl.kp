@@ -1,0 +1,2 @@
+platformValue : Int
+let platformValue = 42

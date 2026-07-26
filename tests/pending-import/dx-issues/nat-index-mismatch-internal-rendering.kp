@@ -1,43 +1,44 @@
 -- DX EXPECTATION (diagnostic rendering), anchored on the §3.1.8 renderer
 -- SHOULDs ("render expected and actual types using a common local naming
--- environment"). When a Nat-index mismatch IS the n+0-vs-n asymmetry, the
--- diagnostic should spell both sides in user syntax and at one reduction
--- depth: actual `Vec (n + 0)` vs expected `Vec n`, and for the failed refl
--- `(n + 0) = (n + 0)` vs `(n + 0) = n`.
---
--- WHAT CURRENTLY HAPPENS (a0497523): the index renders as internal Core.
---   * cast case:  actual   Vec (+ Nat __inst_Add_71 @1 0)
---                 expected  Vec @1
---     — the gensym'd Add instance dictionary and de Bruijn '@1' replace the
---     user's `n + 0` / `n`.
---   * refl case:  actual   = Nat (natOfInt (addInt (natToInt @0) 0)) (...)
---                 expected  = Nat (+ Nat __inst_Add_71 @0 0) @0
---     — 'actual' is delta-unfolded to the natOfInt/addInt implementation
---     while 'expected' keeps the surface `+` spine, so one and the same
---     operation appears in two unrecognizable spellings in one diagnostic.
+-- environment"). Re-based 2026-07-25 on the Nat/Fin spec revision: the old
+-- vehicle (n + 0 vs n) is now ACCEPTED (§15.8.4 monoid normalization +
+-- §16.1.8 automatic transport; refl at (n + 0) = n closes the same way),
+-- so the mismatch subject here is MULTIPLICATIVE commutation, which stays
+-- outside the required fragment: §15.8.4 "Neither `Semiring` nor `Ring`
+-- permits reordering multiplicative factors", and §28.2.3 requires no
+-- commutative-multiplication bundle for Nat.
+-- The rendering asks are unchanged: spell both sides in user syntax at one
+-- reduction depth — actual `Vec (n * m)` vs expected `Vec (m * n)`, and for
+-- the failed refl `(n * m) = (n * m)` vs `(n * m) = (m * n)` — with no
+-- gensym'd `__inst_Mul_*` dictionaries, no de Bruijn `@1`, and no
+-- `natMultiply`/`Succ`-spine delta-unfolding of one side only.
+-- New with §28.2's inductive Nat: literal indices have a unary source
+-- normal form, and nothing in §3.1.8 stops a renderer from printing
+-- `Vec (Succ (Succ Zero))`. §34.3.2A forbids the unary representation only
+-- at RUNTIME, so diagnostics are an unguarded surface: the payload asserts
+-- below pin numeral spelling (`Vec 2` / `Vec 3`), never a Succ spine.
 -- Companion: unsolved-implicit-proof-rendering.kp pins the identical
--- '__inst_*' + de Bruijn leak on the kappa.implicit.unsolved path; this is
--- the kappa.type.mismatch path, the first one every Nat-index user hits.
+-- '__inst_*' + de Bruijn leak on the kappa.implicit.unsolved path.
 --! mode check
---! assertErrorCount 2
+--! assertErrorCount 3
 --! assertDiagnosticFamily error kappa.type.mismatch
---! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Vec (n + 0)
---! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Vec n
---! assertDiagnosticMatch (n + 0) = n
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Vec (n * m)
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Vec (m * n)
+--! assertDiagnosticMatch (n * m) = (m * n)
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Vec 2
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Vec 3
 module main
 
 data Vec (n : Nat) : Type =
     MkVec : Vec n
 
-castPlusZeroR : (0 n : Nat) -> Vec (n + 0) -> Vec n
-let castPlusZeroR n x = x                --!! kappa.type.mismatch
+castMulComm : (0 n : Nat) -> (0 m : Nat) -> Vec (n * m) -> Vec (m * n)
+let castMulComm n m x = x                --!! kappa.type.mismatch
 
-plusZeroRefl : (0 n : Nat) -> (n + 0) = n
-let plusZeroRefl n = refl                --!! kappa.type.mismatch
+mulCommRefl : (0 n : Nat) -> (0 m : Nat) -> (n * m) = (m * n)
+let mulCommRefl n m = refl               --!! kappa.type.mismatch
 
--- STATUS(a0497523): FAIL — both mismatches render internal Core:
--- /payload/actual = "Vec (+ Nat __inst_Add_71 @1 0)", /payload/expected =
--- "Vec @1"; refl actual "= Nat (natOfInt (addInt (natToInt @0) 0)) (...)"
--- vs expected "= Nat (+ Nat __inst_Add_71 @0 0) @0" (two spellings of the
--- same index at different reduction depths); no message contains
--- "(n + 0) = n".
+-- Closed literal indices: 1 + 1 normalizes to 2 (§28.2, §31.1.3); the
+-- refuted cast must render `Vec 2` / `Vec 3` as numerals.
+litSpelling : Vec (1 + 1) -> Vec 3
+let litSpelling x = x                    --!! kappa.type.mismatch

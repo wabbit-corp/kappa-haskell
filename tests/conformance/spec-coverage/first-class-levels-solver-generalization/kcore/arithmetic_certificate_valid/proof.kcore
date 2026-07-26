@@ -1,0 +1,21 @@
+kcore 1;
+module @tests.level.valid#1001 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.level",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  level-certificate @certificate.tests.maxLeast#2001 .{^u#0, ^v#1, ^w#2} :
+    max(^u#0, ^v#1) <= ^w#2
+    where {
+      ^u#0 <= ^w#2;
+      ^v#1 <= ^w#2;
+    }
+  {
+    arithmetic [0, 1];
+  }
+}

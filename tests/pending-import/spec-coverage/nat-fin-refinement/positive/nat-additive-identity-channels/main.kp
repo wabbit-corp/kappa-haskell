@@ -1,0 +1,49 @@
+data Indexed (n : Nat) : Type =
+    Indexed
+
+-- Channel 1 (definitional): natAdd recurses on its left argument
+-- (Spec 28.2: natAdd Zero n -> n) and the literal 0 normalizes to
+-- Nat.Zero (Spec 31.1.3), so left identity closes by ordinary
+-- conversion, both as a stated equality and at a data index.
+leftIdentityDefinitional :
+    (n : Nat) ->
+    (0 + n) = n
+
+let leftIdentityDefinitional n =
+    refl
+
+castZeroLeft :
+    (n : Nat) ->
+    Indexed (0 + n) ->
+    Indexed n
+
+let castZeroLeft n value =
+    value
+
+-- Channel 2 (law member + explicit transport): right identity is not
+-- definitional (Spec 28.2 adds no symmetric propositional equations),
+-- but the required AdditiveMonoid Nat evidence (Spec 28.2.3) carries
+-- addRightIdentity, and subst transports the index.
+transportViaLawMember :
+    (n : Nat) ->
+    (@evidence : AdditiveMonoid Nat) ->
+    Indexed (n + 0) ->
+    Indexed n
+
+let transportViaLawMember n @evidence value =
+    subst (evidence.addRightIdentity n) value
+
+-- Channel 3 (solver + inserted transport): the required arithmetic
+-- service produces the equality (Spec 15.8.4 monoid normalization) and
+-- expected-type checking inserts the transport (Spec 16.1.8); the
+-- surface `+` spelling reaches natAdd through the canonical Add Nat
+-- delegation (Spec 15.8.1 semantic identity).
+transportAutomatic :
+    (n : Nat) ->
+    Indexed (n + 0) ->
+    Indexed n
+
+let transportAutomatic n value =
+    value
+
+--! assertNoErrors

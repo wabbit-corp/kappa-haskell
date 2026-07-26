@@ -1,0 +1,10 @@
+-- §11.1.2.2/§11.4.2: explicit Boolean equality-to-True spellings contribute
+-- the same scoped level assumptions as their proposition shorthand.
+--! mode check
+--! assertNoErrors
+
+type ExplicitBounds : Typeω =
+    (u : TypeLevel) ->
+    (@0 lt : (u < ω) = True) ->
+    (@0 le : (u <= ω) = True) ->
+    Type u

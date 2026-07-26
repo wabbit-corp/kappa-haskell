@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+type Sig : Type =
+    (A : Type, value : A)
+
+get :
+    (s : Sig) ->
+    s.A
+
+let get s =
+    s.value

@@ -1,0 +1,597 @@
+{
+  "schemaVersion": 1,
+  "suiteCount": 47,
+  "suites": [
+    {
+      "path": "positive/default_type_binder_parametric",
+      "category": "surface",
+      "description": "A source-written Type binder defaults to parametric mode, quantity 0, and a hidden declaration universe.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/explicit_parametric_equivalent",
+      "category": "surface",
+      "description": "Explicit parametric syntax agrees with the default Type-binder elaboration.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/type0_does_not_change_mode",
+      "category": "surface",
+      "description": "An explicit Type0 annotation fixes only the universe and remains parametric by default.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/ordinary_erased_type_codes",
+      "category": "surface",
+      "description": "An ordinary quantity-0 type-code binder is statically observable while remaining runtime-erased.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/ordinary_unrestricted_type_codes",
+      "category": "surface",
+      "description": "Ordinary type-code production is legal and does not require typecase or reflection.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/forall_defaults_parametric",
+      "category": "surface",
+      "description": "`forall A.` elaborates to an implicit parametric quantity-0 Type binder with a hidden universe.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/forall_explicit_ordinary",
+      "category": "surface",
+      "description": "`forall (ordinary A : Type)` expresses an erased but ordinary-observable type code.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/higher_kinded_functor_shape",
+      "category": "higher-kinded",
+      "description": "An inferred higher-kinded trait parameter defaults recursively to parametric mode.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/higher_kinded_monad_shape",
+      "category": "higher-kinded",
+      "description": "Monad-style higher-kinded parametric application is accepted.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/type_constructor_argument_option",
+      "category": "higher-kinded",
+      "description": "A named type constructor can instantiate a higher-kinded parametric binder.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/type_constructor_partial_application",
+      "category": "higher-kinded",
+      "description": "A partial type-constructor application can instantiate a parametric higher-kinded binder.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/type_alias_identity_constructor",
+      "category": "higher-kinded",
+      "description": "A transparent alias whose body is a parametric witness exposes a parametric higher-kinded facet.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/polymorphic_record_is_small",
+      "category": "records",
+      "description": "A record containing a polymorphic function remains in Type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/stored_polymorphic_function_on_box",
+      "category": "records",
+      "description": "A stored polymorphic function may be instantiated at the record that stores it.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/parametric_record_projection",
+      "category": "records",
+      "description": "Projection exposes a parametric type witness that may remain in a dependent result type.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/parametric_record_repack",
+      "category": "records",
+      "description": "A projected parametric type may be repackaged into another parametric field.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/high_universe_parametric_field_small",
+      "category": "records",
+      "description": "A high-universe parametric field does not raise the record universe by itself.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/high_universe_payload_is_large",
+      "category": "records",
+      "description": "A payload whose type is the high-universe witness still raises the enclosing universe.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/parametric_pattern_repack",
+      "category": "patterns",
+      "description": "Constructor patterns preserve parametric observation mode and permit repacking.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/trait_evidence_relative_parametricity",
+      "category": "traits",
+      "description": "Behavior may depend on an explicit dictionary while the type parameter remains parametric.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/universe_generalized_identity",
+      "category": "universes",
+      "description": "One declaration is instantiated at distinct hidden universe levels.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "positive/universe_polymorphic_equality",
+      "category": "equality",
+      "description": "Ordinary equality between type values is accepted through universe-polymorphic equality.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/io_of_type_equality",
+      "category": "equality",
+      "description": "A universe-polymorphic effect/container may contain equality between types.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/typelevel_runtime_compare",
+      "category": "typelevel",
+      "description": "An ordinary TypeLevel value and Ord TypeLevel operation may remain runtime-relevant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E2"
+    },
+    {
+      "path": "positive/typelevel_erased_binder",
+      "category": "typelevel",
+      "description": "A quantity-0 TypeLevel binder erases by quantity rather than by its type name.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E2"
+    },
+    {
+      "path": "positive/typelevel_mixed_static_runtime_use",
+      "category": "typelevel",
+      "description": "One TypeLevel binder may occur statically as an index and dynamically as a returned value.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E2"
+    },
+    {
+      "path": "positive/proof_bounded_type_package",
+      "category": "universes",
+      "description": "Ordinary erased level evidence supplies a universe ceiling without special bounded-binder syntax.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E4"
+    },
+    {
+      "path": "positive/kcore_stage_roundtrip",
+      "category": "kcore",
+      "description": "Generated KCoreText parses, verifies, prints canonically, and round-trips.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "stageDumps"
+      ],
+      "ownerStage": "U-E7"
+    },
+    {
+      "path": "negative/parametric_return_as_type",
+      "category": "parametricity",
+      "description": "A default parametric Type binder cannot be returned as an ordinary universe value.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_alias_launder",
+      "category": "parametricity",
+      "description": "A local alias does not launder parametric observation into ordinary observation.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_record_projection_launder",
+      "category": "parametricity",
+      "description": "A projected parametric field cannot be returned as an ordinary type code.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_pattern_launder",
+      "category": "parametricity",
+      "description": "A constructor pattern preserves the field mode and cannot leak a type code.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_higher_kind_launder",
+      "category": "parametricity",
+      "description": "A higher-kinded parametric witness cannot be returned as an ordinary type-former value.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "negative/parametric_to_ordinary_consumer",
+      "category": "parametricity",
+      "description": "A parametric higher-kinded witness cannot instantiate an ordinary binder.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
+    },
+    {
+      "path": "positive/parametric_non_kind_domain_allowed",
+      "category": "surface",
+      "description": "Explicit parametric observation is legal on any well-formed domain; only formation uses the parametric-kind fragment.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "negative/type0_self_containment",
+      "category": "universes",
+      "description": "Ordinary predicative universes still reject Type0 : Type0.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "negative/unbounded_typelevel_telescope",
+      "category": "universes",
+      "description": "A first-class level-dependent telescope needs an external universe ceiling.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E1"
+    },
+    {
+      "path": "negative/inconsistent_level_bound",
+      "category": "universes",
+      "description": "A strict self-bound cannot justify a universe classifier.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E6"
+    },
+    {
+      "path": "negative/hurkens_parametric_code_escape",
+      "category": "metatheory",
+      "description": "The parametric route to a universe-code-producing Pi is blocked at promotion.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E9"
+    },
+    {
+      "path": "negative/hurkens_ordinary_small_universe",
+      "category": "metatheory",
+      "description": "The ordinary route to a small universe of all small types is blocked by predicativity.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E9"
+    },
+    {
+      "path": "negative/hurkens_fragment",
+      "category": "metatheory",
+      "description": "A larger Hurkens-shaped fragment must fail at a modal or universe obligation rather than being accepted.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E9"
+    },
+    {
+      "path": "kcore/parse_and_roundtrip_identity",
+      "category": "kcore",
+      "description": "Canonical identity KCoreText parses, verifies, and round-trips.",
+      "files": [
+        "identity.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E7"
+    },
+    {
+      "path": "kcore/parse_and_roundtrip_lift",
+      "category": "kcore",
+      "description": "KCoreText with explicit universe lift parses, verifies, and round-trips.",
+      "files": [
+        "lift.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E6"
+    },
+    {
+      "path": "kcore/reject_missing_mode",
+      "category": "kcore",
+      "description": "Canonical KCoreText requires an explicit observation mode on every binder.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E7"
+    },
+    {
+      "path": "kcore/reject_parametric_promotion",
+      "category": "kcore",
+      "description": "The independent KCore checker rejects a hand-written parametric promotion.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E7"
+    },
+    {
+      "path": "kcore/reject_invalid_lift",
+      "category": "kcore",
+      "description": "The independent KCore checker rejects an invalid cumulative lift.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E6"
+    },
+    {
+      "path": "kcore/reject_unsupported_version",
+      "category": "kcore",
+      "description": "KCoreText rejects unsupported schema versions deterministically.",
+      "files": [
+        "future.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E7"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+--! mode check
+--! assertNoErrors
+--! assertLevelSolve [?u] where [p + 1 <= ?u + 1] gives [?u = p]
+
+expect term p : TypeLevel

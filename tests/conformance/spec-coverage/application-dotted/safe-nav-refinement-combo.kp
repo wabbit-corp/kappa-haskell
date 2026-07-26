@@ -8,7 +8,7 @@
 -- inserted match arms must compose.
 module main
 
-type Container = (field : Int)
+type Container = (field : Int,)
 
 -- POSITIVE: then-branch carries HasCtor Some evidence for x.
 readField : Option Container -> Option Int

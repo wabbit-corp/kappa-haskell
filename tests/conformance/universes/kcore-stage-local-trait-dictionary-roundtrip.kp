@@ -1,0 +1,19 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §§14.3.1A/30.2.0A: a local trait dictionary method may depend on the
+-- trait's parametric index when that dependency is present in the checked
+-- callable classifier. The nominal schema certificate, rather than a readable
+-- trait or member name, authenticates this behavior boundary.
+module main
+
+trait Runs (e : Type) =
+    action : Unit -> IO e Unit
+
+instance Runs e =
+    let action _ = ioPure ()

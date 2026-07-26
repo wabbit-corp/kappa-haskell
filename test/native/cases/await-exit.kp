@@ -4,6 +4,8 @@
 -- the match is non-exhaustive.  Driven through the CPS do-kernel; ≡ interpreter.
 module main
 
+import std.prelude.(type Exit(..))
+
 main : UIO Unit
 let main = do
     let f <- fork (ioPure 42)

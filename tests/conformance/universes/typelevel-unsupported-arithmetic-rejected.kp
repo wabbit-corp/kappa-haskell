@@ -1,0 +1,14 @@
+-- §11.1.2.2/§28.2: TypeLevel deliberately has no negation or multiplication
+-- instance. Ordinary instance search must reject these operations rather than
+-- manufacturing a solver-level expression.
+--! mode check
+
+negative : TypeLevel
+let negative = -1
+
+product : TypeLevel
+let product = 1 * 2
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+--! assertDiagnosticFamily error kappa.implicit.unsolved

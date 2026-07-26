@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+compareLevels :
+    TypeLevel ->
+    TypeLevel ->
+    Ordering
+
+let compareLevels x y =
+    compare x y

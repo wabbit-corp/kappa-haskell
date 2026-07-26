@@ -8,7 +8,7 @@ module main
 --! assertNoErrors
 --! assertStdout "9\n"
 
-data Wrap (a : Type) : Type =
+data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =

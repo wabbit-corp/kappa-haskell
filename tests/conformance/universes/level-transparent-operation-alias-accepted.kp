@@ -1,0 +1,14 @@
+-- §11.1.2.2: transparent aliases of the standard selected operation reduce
+-- to the canonical intrinsic head; recognition is not based on alias text.
+--! mode check
+--! assertNoErrors
+
+plus : TypeLevel -> TypeLevel -> TypeLevel
+let plus = (+)
+
+type ViaAlias : Typeω =
+    (u : TypeLevel) ->
+    (v : TypeLevel) ->
+    (@0 bound : plus u v < ω) ->
+    Type(plus u v)
+

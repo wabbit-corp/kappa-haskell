@@ -1,0 +1,591 @@
+{
+  "schemaVersion": 3,
+  "suiteCount": 42,
+  "suites": [
+    {
+      "path": "future/hiit_path_naturality_negative",
+      "category": "future",
+      "description": "A HIIT role is rejected when a path constructor is not natural under the proposed action.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "hiitUniverseVariance",
+        "kcoreText"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/hiit_path_naturality_positive",
+      "category": "future",
+      "description": "A HIIT certificate preserves path constructors and their endpoints.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "hiitUniverseVariance",
+        "kcoreText"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/hirt_recursive_equation_negative",
+      "category": "future",
+      "description": "A HIRT role is rejected when a recursive equation fails to commute.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "hirtUniverseVariance",
+        "kcoreText"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/hirt_recursive_equation_positive",
+      "category": "future",
+      "description": "A HIRT certificate preserves the recursive operation and every defining equation.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "hirtUniverseVariance",
+        "kcoreText"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/qiit_joint_variance_negative",
+      "category": "future",
+      "description": "A QIIT block role is rejected when one sort or equation lacks a certified action.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "kcoreText",
+        "qiitUniverseVariance"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/qiit_joint_variance_positive",
+      "category": "future",
+      "description": "A QIIT block infers family roles jointly and preserves cross-sort equations.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "kcoreText",
+        "qiitUniverseVariance"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/qit_quotient_equation_negative",
+      "category": "future",
+      "description": "A QIT certificate may not omit an erased quotient equation.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "kcoreText",
+        "qitUniverseVariance"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "future/qit_quotient_equation_positive",
+      "category": "future",
+      "description": "A QIT certificate checks quotient equations even when equation evidence erases.",
+      "files": [
+        "fixture.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "unsupported",
+      "capabilities": [
+        "kcoreText",
+        "qitUniverseVariance"
+      ],
+      "ownerStage": "U-F8"
+    },
+    {
+      "path": "interface/roles_affect_semantic_identity",
+      "category": "interface",
+      "description": "Changing an effective role changes interface semantic identity.",
+      "files": [
+        "invariant.kp",
+        "irrelevant.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F6"
+    },
+    {
+      "path": "kcore/reject_family_argument_mismatch",
+      "category": "kcore",
+      "description": "The independent checker rejects a schema lift whose target family arguments do not align.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/reject_family_head_mismatch",
+      "category": "kcore",
+      "description": "A schema lift cannot change the nominal family head.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/reject_forged_schema_certificate",
+      "category": "kcore",
+      "description": "The independent checker rejects a certificate whose role vector disagrees with the signature.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/reject_runtime_transform_certificate",
+      "category": "kcore",
+      "description": "A certificate requiring a runtime wrapper or field transformation is rejected.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/reject_unsaturated_schema_lift",
+      "category": "kcore",
+      "description": "A schema lift on a partially applied family is rejected.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/reject_wrong_direction_schema_lift",
+      "category": "kcore",
+      "description": "A covariant KCore schema lift requires source <= target evidence.",
+      "files": [
+        "bad.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/roundtrip_mutual_role_fixed_point",
+      "category": "kcore",
+      "description": "A mutual nominal signature block records separately inferred family role vectors.",
+      "files": [
+        "main.kp",
+        "mutual.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText",
+        "mutualNominalVariance"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/roundtrip_schema_lift",
+      "category": "kcore",
+      "description": "KCoreText serializes an explicit irrelevant schema lift of a saturated family.",
+      "files": [
+        "lift.kcore",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "kcore/roundtrip_variance_certificate",
+      "category": "kcore",
+      "description": "KCoreText serializes nominal roles and a locally checked certificate.",
+      "files": [
+        "main.kp",
+        "suite.ktest",
+        "variance.kcore"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-F5"
+    },
+    {
+      "path": "negative/annotation_covariant_too_permissive",
+      "category": "negative",
+      "description": "A covariant annotation is rejected when a function-domain occurrence requires invariance.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F1"
+    },
+    {
+      "path": "negative/annotation_irrelevant_too_permissive",
+      "category": "negative",
+      "description": "An irrelevant annotation is rejected when the signature requires covariance.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F1"
+    },
+    {
+      "path": "negative/covariant_downcast",
+      "category": "negative",
+      "description": "A covariant nominal family cannot be lifted from a larger schema level to a smaller one.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "negative/invariant_mismatch",
+      "category": "negative",
+      "description": "An invariant schema parameter must be definitionally equal at source and target.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "negative/mismatched_family_arguments",
+      "category": "negative",
+      "description": "Schema variance does not invent term-argument variance or change GADT indices.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "negative/parametric_field_not_irrelevant",
+      "category": "negative",
+      "description": "Parametric observation does not make a constructor-local high-universe witness schema-irrelevant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "negative/schema_constraint_target_invalid",
+      "category": "negative",
+      "description": "A target universe instance must independently satisfy the declaration schema constraints.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "negative/variance_not_applicable_term",
+      "category": "negative",
+      "description": "Universe variance annotations are not accepted on ordinary term schemas.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "reject",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F1"
+    },
+    {
+      "path": "positive/covariant_up_lift",
+      "category": "positive",
+      "description": "A covariant schema role permits a lower-to-higher nominal lift.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "positive/equality_irrelevant",
+      "category": "positive",
+      "description": "User-definable equality has an irrelevant declaration-universe role.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F7"
+    },
+    {
+      "path": "positive/explicit_stricter_covariant",
+      "category": "positive",
+      "description": "An explicit covariant role may tighten an inferred irrelevant role.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/explicit_stricter_invariant",
+      "category": "positive",
+      "description": "An explicit invariant role may tighten any more permissive inferred role.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/gadt_family_arguments_align",
+      "category": "positive",
+      "description": "GADT family arguments remain fixed and aligned while only the schema instance is lifted.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "positive/infer_covariant_ordinary_code",
+      "category": "positive",
+      "description": "A constructor-local ordinary type code makes the schema parameter covariant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/infer_covariant_parametric_witness",
+      "category": "positive",
+      "description": "A constructor-local parametric type witness makes the schema parameter covariant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/infer_invariant_function_domain",
+      "category": "positive",
+      "description": "A universe occurring in a function-field domain infers invariant, never contravariant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/infer_irrelevant_box",
+      "category": "positive",
+      "description": "A universe classifying a fixed saturated family argument infers irrelevant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/infer_irrelevant_phantom",
+      "category": "positive",
+      "description": "An unused schema parameter infers irrelevant.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F2"
+    },
+    {
+      "path": "positive/irrelevant_bidirectional_lift",
+      "category": "positive",
+      "description": "An irrelevant schema role permits checked lifts in either direction.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "positive/opaque_import_certificate",
+      "category": "positive",
+      "description": "An imported opaque family is cumulative only through its verified interface certificate.",
+      "files": [
+        "lib.kp",
+        "main.kp",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F6"
+    },
+    {
+      "path": "positive/schema_lift_case_coherence",
+      "category": "positive",
+      "description": "Pattern matching on a lifted nominal value preserves constructor and iota behavior.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "positive/schema_lift_composition",
+      "category": "positive",
+      "description": "Nested schema lifts canonicalize to one direct lift.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F3"
+    },
+    {
+      "path": "positive/trait_evidence_irrelevant",
+      "category": "positive",
+      "description": "A nominal trait evidence family may infer irrelevant universe variance.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F6"
+    },
+    {
+      "path": "positive/typebelow_covariant",
+      "category": "positive",
+      "description": "The standard bounded ordinary-code package is covariant in its declaration universe.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-F7"
+    }
+  ]
+}

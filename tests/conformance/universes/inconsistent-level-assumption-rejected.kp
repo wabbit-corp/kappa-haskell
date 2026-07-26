@@ -1,0 +1,11 @@
+-- §11.1.2.2/§11.4.2: an inconsistent erased comparison proof cannot enter
+-- the scoped assumption set and therefore cannot justify self-containment.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
+--! assertDiagnosticFamily error kappa.universe.constraint
+
+type Impossible : Type =
+    (u : TypeLevel) ->
+    (@0 bad : succ u <= u) ->
+    Unit

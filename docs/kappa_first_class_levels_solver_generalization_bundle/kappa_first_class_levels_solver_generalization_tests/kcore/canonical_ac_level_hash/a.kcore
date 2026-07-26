@@ -1,0 +1,17 @@
+kcore 1;
+module @tests.level.ac#1010 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.level",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  level-certificate @certificate.tests.ac#2010 .{^u#0, ^v#1} :
+    add(^u#0, add(1, ^v#1)) <= add(^v#1, add(^u#0, 1))
+  {
+    arithmetic [];
+  }
+}

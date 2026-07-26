@@ -6,6 +6,8 @@
 -- (TimedOut → typed Fail Timeout), while a fast computation passes through.
 module main
 
+import std.prelude.(type Exit(..))
+
 slowBody : UIO Int
 let slowBody = do
     sleepFor (seconds 10)

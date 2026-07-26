@@ -1,0 +1,7 @@
+-- §11.1.2.8: a proof binder in a forall telescope scopes its level
+-- assumption over every later binder and the result.
+--! mode check
+--! assertNoErrors
+
+type BoundedForall : Typeω =
+    forall (u : TypeLevel). forall (@0 p : u < ω). Type u

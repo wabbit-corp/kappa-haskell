@@ -3,7 +3,7 @@
 
 module main
 
-data Wrap (a : Type) : Type =
+data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
@@ -37,7 +37,7 @@ let direct = do
     let b <- readRef (ref x)
     pureA (addInt a b)
 
-generic : forall (m : Type -> Type). (@_ : Monad m) -> (@_ : MonadRef m) -> Int -> m Int
+generic : forall (m : (0 A : Type) -> Type). (@_ : Monad m) -> (@_ : MonadRef m) -> Int -> m Int
 let generic n : m Int = do
     var x = n
     let a <- readRef (ref x)

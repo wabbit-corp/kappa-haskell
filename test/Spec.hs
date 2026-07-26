@@ -7,7 +7,8 @@
 module Main (main) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (isInfixOf, isSuffixOf, nub, sort)
+import Control.Applicative ((<|>))
+import Data.List (isInfixOf, isSuffixOf, nub, permutations, sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -25,6 +26,8 @@ import Kappa.Backend.IR
   , BackendMeta (..)
   , BackendNodeId (..)
   , BackendParam (..)
+  , BackendErasure (..)
+  , ErasureProvenance (..)
   , BackendPat (..)
   , BackendTerm (..)
   , BackendIRViolation (..)
@@ -32,6 +35,7 @@ import Kappa.Backend.IR
   , KBackendIR (..)
   , BackendUseId (..)
   , lowerKBackendIR
+  , validateCoreCapabilities
   , validateKBackendIR
   )
 import Kappa.Backend.LLVM (generateLL)
@@ -48,18 +52,83 @@ import Kappa.Backend.Repr
   , scalarRep
   )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyInputs, verifyUnit)
-import Kappa.Builtins (gPrel, prelDouble, prelInt, prelUnit, primModule)
-import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
+import Kappa.Builtins (gPrel, prelDouble, prelEqType, prelInt, prelLevelLe, prelUnit, primModule)
+import Kappa.Check
+  ( CheckState (..)
+  , CtorInfo (..)
+  , DataInfo (..)
+  , InstanceEntry (..)
+  , LevelOperatorIdentity (..)
+  , TraitInfo (..)
+  )
 import Kappa.Core
   ( Closure (..)
+  , BinderOrigin (..)
+  , CaseAlt (..)
+  , CorePat (..)
+  , FormationMode (..)
   , GName (..)
+  , gnameText
   , Icit (..)
+  , KItem (..)
+  , ObservationMode (..)
   , Q (..)
+  , RecordField (..)
+  , SchemaRoleEvidence (..)
   , Term (..)
+  , UniverseEvidence (..)
+  , UniverseEvidenceStep (..)
   , Value (..)
+  , emptyDeclarationUniverseTelescope
+  , mapUniverseEvidenceLevels
+  , solverUniverseEvidence
+  , universeLift
+  , validateUniverseLiftEvidence
+  , validateUniverseLiftEvidenceUnder
+  , pattern CPiM
+  , pattern CPiFormedM
+  , pattern CGlob
+  , pattern VGlobN
+  , pattern VPiM
+  , pattern VPi
   )
-import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval, force)
+import Kappa.CoreOps
+  ( foldTerm
+  , globalsOfTerm
+  , levelMetasOfTerm
+  , levelParamsOfTerm
+  , mapTermWithDepth
+  , substTopTermAt
+  , weakenTermUnderBinderAt
+  )
+import Kappa.CoreText
+  ( KCoreTextError (..)
+  , KCoreDataInfo (..)
+  , KCoreConstructorInfo (..)
+  , parseAndVerifyKCoreTextWithGlobals
+  , parseAndVerifyKCoreTextWithEnvironment
+  , parseAndVerifyKCoreInterface
+  , parseAndVerifyKCoreInterfaceWithInterfaces
+  , parseKCoreText
+  , printCanonicalKCoreText
+  , renderKCoreModule
+  , semanticHashKCoreText
+  , verifyKCoreTextWithInterfaces
+  )
+import Kappa.Diagnostic (dCode, isError, jArray, jObject, jStr)
+import Kappa.Eval
+  ( EvalCtx (..)
+  , GlobalDef (..)
+  , Globals (..)
+  , emptyMetas
+  , eval
+  , force
+  , globalDefWithCoreBody
+  , globalDefWithCoreType
+  , globalDefWithNominalSummary
+  , globalDefWithUniverses
+  , quote
+  )
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
 import Kappa.Inhabitance
   ( CardinalityBound (..)
@@ -71,19 +140,71 @@ import Kappa.Inhabitance
   , minCount
   , multiplySummaries
   )
+import Kappa.NominalVariance
+  ( NominalClauseKind (..)
+  , NominalClosureClause (..)
+  , NominalCumulativitySummary (..)
+  , NominalMonotoneWitness (..)
+  , NominalRepresentationAction (..)
+  , NominalRoleAction (..)
+  , NominalSignatureClosure (..)
+  , RoleRequirement (..)
+  , SchemaActionCertificateId (..)
+  , UniverseVariance (..)
+  , makeNominalCumulativitySummary
+  , makeNominalSignatureClosure
+  , nominalEvidenceDependencies
+  , verifyNominalCumulativitySummary
+  , withNominalMonotoneWitnesses
+  )
+import Kappa.Level
+  ( ConstraintOrigin (..)
+  , DeclarationUniverseTelescope (..)
+  , Level (..)
+  , NeutralLevelAtom (..)
+  , NeutralLevelTerm (..)
+  , LevelConstraint (..)
+  , LevelAssignmentGraphError (..)
+  , LevelSolveError (..)
+  , LevelSolution (..)
+  , PrincipalInferenceOutcome (..)
+  , PrincipalNonLeastWitness (..)
+  , SolveResult (..)
+  , assumptionsConsistent
+  , emptyAssumptions
+  , finiteLevel
+  , extendLevelAssignmentGraph
+  , inferPrincipalLevelsFor
+  , insertAssumption
+  , levelAdd
+  , levelMax
+  , levelMetas
+  , mergeLevelAssignments
+  , levelSucc
+  , normalizeLevel
+  , proveLevelLeq
+  , solveLevelConstraints
+  , solveLevelConstraintsFor
+  , substituteLevelMetas
+  )
 import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
   , BranchSite (..)
+  , OwnershipCtorType (..)
   , OwnInfo (..)
   , UseKind (..)
-  , annotateOwnership
+  , annotateOwnershipWithUniverses
   , argConvBodies
-  , crossCheckBodies
+  , crossCheckBodiesWithUniverses
   , renderOwnInfo
   )
+import Kappa.Parser (parseExprText)
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
+import Kappa.Pretty (renderJudgment, renderTerm)
+import Kappa.SemanticHash (canonicalIdentityHex, sha256Hex)
 import Kappa.Source (ModuleName (..))
+import Kappa.Syntax (Expr (EArrow, ERecordType))
 import Kappa.TestHarness
   ( Outcome (..)
   , Summary (..)
@@ -101,7 +222,8 @@ import System.Directory
   , listDirectory
   , removeDirectoryRecursive
   )
-import System.Exit (exitFailure)
+import System.Environment (lookupEnv)
+import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 
@@ -112,7 +234,21 @@ main = do
   famOk <- familiesHygienic
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
+  semanticHashOk <- semanticHashDomain
   inhabitanceOk <- inhabitanceIntervalDomain
+  universeLevelOk <- universeLevelDomain
+  universeLiftOk <- universeLiftEvidenceDomain
+  universeSchemaOk <- universeSchemaInterfaceDomain
+  universePrincipalOk <- universeOccurrenceInstantiationPrincipalDomain
+  universeLawSchemaOk <- universeLawSchemasPrincipalDomain
+  associatedStaticMemberOk <- associatedStaticMemberUniverseDomain
+  universeCapabilityOk <- universeCapabilityBoundary
+  schemaLiftBoundaryOk <- schemaLiftBackendCertificateBoundary
+  nominalVarianceOk <- nominalVarianceCertificateDomain
+  singletonRecordSyntaxOk <- parserSingletonRecordCommaDomain
+  expectFragmentOk <- expectFragmentDomain
+  kcoreTextOk <- kcoreTextCanonicalDomain
+  kcoreInterfaceOk <- kcoreSourceFreeInterfaceDomain
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
   primConvOk <- primArgConventionS23c
@@ -133,10 +269,53 @@ main = do
   scalarDoubleEscapeOk <- llvmDoubleScalarUnboxEscapesWrongTag
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
-  let regOk =
-        regOk0 && famOk && harnessOk && jsonOk && inhabitanceOk && verifyOk && reprOk
-          && primConvOk && spineErasureOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && backendIrOk && backendIrValidateOk && backendIrConsumerOk && backendIrNoPathOwnOk && ownershipNoRPathOk && backendIrProjectedBorrowedOk && backendIrPatternErasureOk && scalarKindParamOk
-          && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
+  let unitChecks =
+        [ ("registryComplete", regOk0)
+        , ("familiesHygienic", famOk)
+        , ("harnessFaithful", harnessOk)
+        , ("jsonEncoderSound", jsonOk)
+        , ("semanticHashDomain", semanticHashOk)
+        , ("inhabitanceIntervalDomain", inhabitanceOk)
+        , ("universeLevelDomain", universeLevelOk)
+        , ("universeLiftEvidenceDomain", universeLiftOk)
+        , ("universeSchemaInterfaceDomain", universeSchemaOk)
+        , ("universeOccurrenceInstantiationPrincipalDomain", universePrincipalOk)
+        , ("universeLawSchemasPrincipalDomain", universeLawSchemaOk)
+        , ("associatedStaticMemberUniverseDomain", associatedStaticMemberOk)
+        , ("universeCapabilityBoundary", universeCapabilityOk)
+        , ("schemaLiftBackendCertificateBoundary", schemaLiftBoundaryOk)
+        , ("nominalVarianceCertificateDomain", nominalVarianceOk)
+        , ("parserSingletonRecordCommaDomain", singletonRecordSyntaxOk)
+        , ("expectFragmentDomain", expectFragmentOk)
+        , ("kcoreTextCanonicalDomain", kcoreTextOk)
+        , ("kcoreSourceFreeInterfaceDomain", kcoreInterfaceOk)
+        , ("verifierCatchesViolations", verifyOk)
+        , ("reprScalarIdentity", reprOk)
+        , ("primArgConventionS23c", primConvOk)
+        , ("spineErasureOmittedImplicitS5", spineErasureOk)
+        , ("ownershipCrossCheckClean", ownOk)
+        , ("perceusS23dDeadBinderDrops", s23dOk)
+        , ("perceusS23dLegacyPathTamperIgnoredS5", s23dDiagOk)
+        , ("perceusS32FreeOnZeroEntryGates", s32Ok)
+        , ("globalCachePublicationMarksShared", cachePubOk)
+        , ("backendIRPhaseAS5", backendIrOk)
+        , ("backendIRValidatorS5", backendIrValidateOk)
+        , ("backendIRConsumerContractS5", backendIrConsumerOk)
+        , ("backendIRNoPathOwnershipS5", backendIrNoPathOwnOk)
+        , ("ownershipPhysicalRPathRetiredS5", ownershipNoRPathOk)
+        , ("backendIRProjectedBorrowedCalleeS5", backendIrProjectedBorrowedOk)
+        , ("backendIRPatternErasesExistentialsS5", backendIrPatternErasureOk)
+        , ("scalarKindDomainParamKeepsWorkers", scalarKindParamOk)
+        , ("llvmDoubleScalarUnboxEscapesWrongTag", scalarDoubleEscapeOk)
+        , ("ctorLayoutEvidenceFields", ctorLayoutOk)
+        , ("reExportBoundaryRefinement", reExportOk)
+        ]
+      regOk = all snd unitChecks
+  unless regOk $ do
+    putStrLn "unit domains FAILED:"
+    mapM_ (putStrLn . ("  " <>) . fst) (filter (not . snd) unitChecks)
+  unitOnly <- maybe False (`elem` ["1", "true", "yes"]) <$> lookupEnv "KAPPA_TEST_UNITS_ONLY"
+  when unitOnly $ if regOk then exitSuccess else exitFailure
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -155,6 +334,344 @@ main = do
       if sFail s > 0 || sHarnessError s > 0 || not regOk
         then exitFailure
         else pure ()
+
+semanticHashDomain :: IO Bool
+semanticHashDomain =
+  pure
+    ( sha256Hex ""
+        == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        && sha256Hex "abc"
+          == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        && canonicalIdentityHex "Global" "a"
+          /= canonicalIdentityHex "Global" "b"
+        && canonicalIdentityHex "Global" "a"
+          /= canonicalIdentityHex "Constructor" "a"
+    )
+
+-- | §13.2.1: a one-field record type is comma-terminated regardless of
+-- field markers. The same marked syntax remains available to Pi binders when
+-- followed by an arrow, so the parser must distinguish these grammatically
+-- rather than by the marker itself.
+parserSingletonRecordCommaDomain :: IO Bool
+parserSingletonRecordCommaDomain = do
+  let noComma =
+        [ "(@x : Type)"
+        , "(1 x : Int)"
+        , "(& x : Int)"
+        ]
+      comma =
+        [ "(@x : Type,)"
+        , "(1 x : Int,)"
+        , "(& x : Int,)"
+        ]
+      arrows =
+        [ "(@x : Type) -> Type"
+        , "(1 x : Int) -> Int"
+        , "(& x : Int) -> Int"
+        ]
+      parse source = parseExprText "singleton-record-syntax.kp" source
+      isNotSingletonRecord = \case
+        Right (ERecordType [_] Nothing _) -> False
+        _ -> True
+      isSingletonRecord = \case
+        Right (ERecordType [_] Nothing _) -> True
+        _ -> False
+      isArrow = \case
+        Right EArrow {} -> True
+        _ -> False
+      notRecords = map (isNotSingletonRecord . parse) noComma
+      records = map (isSingletonRecord . parse) comma
+      parsedArrows = map (isArrow . parse) arrows
+      ok = and notRecords && and records && and parsedArrows
+  unless ok $ do
+    putStrLn "parserSingletonRecordCommaDomain FAILED:"
+    putStrLn ("  no-comma is-not-record results: " ++ show (zip noComma notRecords))
+    putStrLn ("  comma results: " ++ show (zip comma records))
+    putStrLn ("  arrow results: " ++ show (zip arrows parsedArrows))
+  pure ok
+
+-- | Spec §9.4: an @expect@ contract is implemented only by a selected
+-- companion fragment, never by a declaration in the expectation source file
+-- itself. This source-file distinction is independent of module merging.
+expectFragmentDomain :: IO Bool
+expectFragmentDomain = do
+  let expectation =
+        T.unlines
+          [ "expect term platformValue : Int"
+          , "answer : Int"
+          , "let answer = platformValue"
+          ]
+      implementation =
+        T.unlines
+          [ "platformValue : Int"
+          , "let platformValue = 42"
+          ]
+      sameFile = compileFiles [("main.kp", expectation <> implementation)]
+      companion =
+        compileFiles
+          [ ("main.kp", expectation)
+          , ("main.impl.kp", implementation)
+          ]
+      dataExpectation =
+        T.unlines
+          [ "expect data F (A : Type) : Type"
+          , "expect term foo : forall A. F A"
+          , "let use = foo"
+          ]
+      dataImplementation =
+        T.unlines
+          [ "data F (A : Type) : Type ="
+          , "    MkF"
+          , "let foo = MkF"
+          ]
+      implementationFirstData =
+        compileFiles
+          [ ("main.impl.kp", dataImplementation)
+          , ("main.kp", dataExpectation)
+          ]
+      errorCodes = map dCode . filter isError . cuDiags
+      sameFileCodes = errorCodes sameFile
+      companionCodes = errorCodes companion
+      dataCodes = errorCodes implementationFirstData
+      ok =
+        sameFileCodes == ["E_EXPECT_UNSATISFIED"]
+          && null companionCodes
+          && null dataCodes
+  unless ok $ do
+    putStrLn "expectFragmentDomain FAILED:"
+    putStrLn ("  same-file errors: " ++ show sameFileCodes)
+    putStrLn ("  companion-fragment errors: " ++ show companionCodes)
+    putStrLn ("  implementation-first data errors: " ++ show dataCodes)
+  pure ok
+
+-- | §11.1.2.3A regression: a finalized semantic interface has one stable
+-- declaration-universe arity. Every global occurrence in a global or
+-- constructor type must carry exactly that many levels, and no provisional
+-- level metavariable may escape the module generalization boundary. This is
+-- deliberately checked over the embedded prelude as well as user code: a
+-- constructor result whose hidden spine diverges from its data family makes
+-- nominally identical types fail conversion throughout every downstream
+-- module.
+universeSchemaInterfaceDomain :: IO Bool
+universeSchemaInterfaceDomain = do
+  let cu = compileSourceWithPrelude "universe-schema-interface.kp" "module universe_schema_interface\n"
+      st = cuState cu
+      ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      expectedArity target =
+        dutParameterCount . gdUniverses <$> Map.lookup target (csGlobals st)
+          <|> dutParameterCount . ciUniverses <$> Map.lookup target (csCtors st)
+      arityMismatches owner term =
+        foldTerm
+          (\case
+             CGlobal target universes ->
+               case expectedArity target of
+                 Just expected
+                   | length universes /= expected ->
+                       [(owner, target, length universes, expected)]
+                 _ -> []
+             _ -> [])
+          (const [])
+          term
+      globalTerms =
+        [ (gnameText owner, quote ctx 0 (gdType definition))
+        | (owner, definition) <- Map.toList (csGlobals st)
+        ]
+      ctorTerms =
+        [ (gnameText owner, ciType info)
+        | (owner, info) <- Map.toList (csCtors st)
+        ]
+      mismatches =
+        concat
+          [ arityMismatches owner term
+          | (owner, term) <- globalTerms ++ ctorTerms
+          ]
+      escapedMetas =
+        [ (owner, levelMetasOfTerm term)
+        | (owner, term) <- globalTerms ++ ctorTerms
+        , not (null (levelMetasOfTerm term))
+        ]
+      retainedLevelAssignments = Map.size (csLevelAssignments st)
+      retainedConstraintIndex = Set.size (csLevelConstraintIndex st)
+      errors = filter isError (cuDiags cu)
+      ok =
+        null errors
+          && null mismatches
+          && null escapedMetas
+          && retainedLevelAssignments == 0
+          && retainedConstraintIndex == 0
+  unless ok $ do
+    putStrLn "universeSchemaInterfaceDomain FAILED:"
+    unless (null errors) $
+      putStrLn ("  compilation errors: " ++ show (length errors))
+    mapM_
+      (\(owner, target, actual, expected) ->
+         putStrLn
+           ( "  " ++ T.unpack owner ++ " references " ++ T.unpack (gnameText target)
+               ++ " with " ++ show actual ++ " universe arguments; expected " ++ show expected
+           ))
+      (take 20 mismatches)
+    mapM_
+      (\(owner, metas) ->
+         putStrLn ("  " ++ T.unpack owner ++ " retains level metas " ++ show metas))
+      (take 20 escapedMetas)
+    when (retainedLevelAssignments /= 0) $
+      putStrLn
+        ( "  completed module retains "
+            ++ show retainedLevelAssignments
+            ++ " level assignments"
+            ++ " (constraints="
+            ++ show (length (csLevelConstraints st))
+            ++ ", pendingEvidence="
+            ++ show (Map.size (csPendingLevelEvidence st))
+            ++ ", pendingProofs="
+            ++ show (Map.size (csPendingUniverseProofs st))
+            ++ ", provisionalOccurrences="
+            ++ show (length (csProvisionalUniverseInstantiations st))
+            ++ ", activeOwner="
+            ++ show (csActiveUniverseDefinition st)
+            ++ ")"
+        )
+    when (retainedConstraintIndex /= 0) $
+      putStrLn
+        ( "  completed module retains "
+            ++ show retainedConstraintIndex
+            ++ " indexed level constraints"
+        )
+  pure ok
+
+-- | §11.1.2.4A regression: omitted instantiations of a dependency's hidden
+-- universe telescope are minimizable elaboration choices. Repeating @List A@
+-- in an interface must not turn each fresh List specialization into another
+-- parameter of the referencing declaration's schema.
+universeOccurrenceInstantiationPrincipalDomain :: IO Bool
+universeOccurrenceInstantiationPrincipalDomain = do
+  let source =
+        T.unlines
+          [ "module universe_occurrence_principal"
+          , "mapLists : forall (A : Type). List A -> List A -> List A"
+          , "let mapLists A xs ys = listAppend xs ys"
+          ]
+      cu = compileSourceWithPrelude "universe-occurrence-principal.kp" source
+      owner = GName (ModuleName ["universe_occurrence_principal"]) "mapLists"
+      errors = filter isError (cuDiags cu)
+      actual =
+        dutParameterCount . gdUniverses
+          <$> Map.lookup owner (csGlobals (cuState cu))
+      ok = null errors && actual == Just 1
+  unless ok $ do
+    putStrLn "universeOccurrenceInstantiationPrincipalDomain FAILED:"
+    putStrLn ("  errors: " ++ show (map dCode errors))
+    putStrLn ("  mapLists schema arity: " ++ show actual ++ "; expected Just 1")
+  pure ok
+
+-- | §11.1.2.4A regression: universe arguments introduced while elaborating
+-- law-bearing trait members are occurrences of dependency schemas, not new
+-- parameters of the trait or member declaration. The carrier level is the
+-- sole parameter of a generic algebra trait, while laws and dictionaries for
+-- the closed TypeLevel carrier are monomorphic.
+universeLawSchemasPrincipalDomain :: IO Bool
+universeLawSchemasPrincipalDomain = do
+  let cu = compileSourceWithPrelude "universe-law-schemas.kp" "module universe_law_schemas\n"
+      globals = csGlobals (cuState cu)
+      arity name =
+        dutParameterCount . gdUniverses
+          <$> Map.lookup (GName (ModuleName ["std", "prelude"]) name) globals
+      typeLevelArity name =
+        dutParameterCount . gdUniverses
+          <$> Map.lookup (GName (ModuleName ["std", "typelevel"]) name) globals
+      checks =
+        [ ("AdditiveMonoid", arity "AdditiveMonoid", Just 1)
+        , ("AdditiveMonoid.addAssoc", arity "AdditiveMonoid.addAssoc", Just 1)
+        , ("typeLevelAddAssoc", typeLevelArity "typeLevelAddAssoc", Just 0)
+        ]
+      errors = filter isError (cuDiags cu)
+      failures =
+        [ (name, actual, expected)
+        | (name, actual, expected) <- checks
+        , actual /= expected
+        ]
+      ok = null errors && null failures
+  unless ok $ do
+    putStrLn "universeLawSchemasPrincipalDomain FAILED:"
+    putStrLn ("  errors: " ++ show (map dCode errors))
+    mapM_
+      (\(name, actual, expected) ->
+         putStrLn
+           ( "  " ++ T.unpack name ++ " schema arity: " ++ show actual
+               ++ "; expected " ++ show expected
+           ))
+      failures
+  pure ok
+
+-- | §11.1.2.3A / §14.2.1 regression: a generated associated-static-member
+-- accessor is a semantic component of its owning trait prefix. Its hidden
+-- universe occurrence must stay connected to that prefix while any
+-- member-local suffix is generalized independently. Otherwise selecting a
+-- concrete dictionary leaves @Rangeable.Range Int@ neutral instead of
+-- reducing to the dictionary's @NumericRange Int@ field, and repeated
+-- conversion attempts amplify the disconnected level constraints.
+associatedStaticMemberUniverseDomain :: IO Bool
+associatedStaticMemberUniverseDomain = do
+  let source =
+        T.unlines
+          [ "module associated_static_member_universe"
+          , "rangeValue : NumericRange Int"
+          , "let rangeValue = 1 .. 5"
+          , "doubleValue : Double"
+          , "let doubleValue = 1 + 2"
+          ]
+      cu = compileSourceWithPrelude "associated-static-member-universe.kp" source
+      state = cuState cu
+      preludeName name = GName (ModuleName ["std", "prelude"]) name
+      arity name =
+        dutParameterCount . gdUniverses
+          <$> Map.lookup (preludeName name) (csGlobals state)
+      errors = filter isError (cuDiags cu)
+      renderedDefinition name =
+        case Map.lookup (preludeName name) (csGlobals state) of
+          Nothing -> "<missing>"
+          Just definition -> renderDefinition definition
+      renderDefinition definition =
+        "type="
+              ++ maybe "<quoted>" (T.unpack . renderTerm) (gdCoreType definition)
+              ++ "; body="
+              ++ maybe "<missing>" (T.unpack . renderTerm) (gdCoreBody definition)
+              ++ "; reducible=" ++ show (gdReducible definition)
+      rangeableInstances =
+        [ T.unpack (gnameText (ieTrait entry))
+            ++ " universes=" ++ show (ieTraitUniverses entry)
+            ++ " head=" ++ show (map renderTerm (ieHead entry))
+            ++ " dict=" ++ T.unpack (gnameText (ieDict entry))
+            ++ " " ++ maybe "<missing definition>" renderDefinition
+              (Map.lookup (ieDict entry) (csGlobals state))
+        | entry <- csInstances state
+        , gnameText (ieTrait entry) == "Rangeable"
+        ]
+      checks =
+        [ ("Rangeable owner arity", arity "Rangeable", Just 1)
+        , ("Rangeable.Range accessor arity", arity "Rangeable.Range", Just 1)
+        ]
+      failures =
+        [ (label, actual, expected)
+        | (label, actual, expected) <- checks
+        , actual /= expected
+        ]
+      ok = null errors && null failures
+  unless ok $ do
+    putStrLn "associatedStaticMemberUniverseDomain FAILED:"
+    putStrLn ("  errors: " ++ show errors)
+    putStrLn ("  Rangeable: " ++ renderedDefinition "Rangeable")
+    putStrLn ("  Rangeable.Range: " ++ renderedDefinition "Rangeable.Range")
+    putStrLn ("  (..): " ++ renderedDefinition "(..)")
+    mapM_ (putStrLn . ("  instance: " ++)) rangeableInstances
+    mapM_
+      (\(label, actual, expected) ->
+         putStrLn
+           ( "  " ++ label ++ ": " ++ show actual
+               ++ "; expected " ++ show expected
+           ))
+      failures
+  pure ok
 
 -- | §30.2.7 regression: inhabitance is a normalized cardinality interval, not
 -- a closed five-constructor enumeration. The richer bounds retain useful
@@ -188,6 +705,1731 @@ inhabitanceIntervalDomain = do
     putStrLn "inhabitanceIntervalDomain FAILED:"
     mapM_ (putStrLn . ("  " ++)) failures
   pure ok
+
+-- | §11.1.1-§11.1.2.2: canonical levels implement commutative natural sum,
+-- normalize max AC-idempotently, and use scoped assumptions without treating
+-- a consistent equality cycle as a contradiction. Metavariables are reported
+-- as blocked until the owning elaboration boundary solves or generalizes them.
+universeLevelDomain :: IO Bool
+universeLevelDomain = do
+  let u = LVar 0
+      v = LVar 1
+      m = LMeta 0
+      m2 = LMeta 1
+      one = finiteLevel (1 :: Integer)
+      omegaPlusOne = levelAdd LOmega one
+      onePlusOmega = levelAdd one LOmega
+      cyc = insertAssumption v u (insertAssumption u v emptyAssumptions)
+      impossible = insertAssumption (levelSucc u) u emptyAssumptions
+      equalityConstrainedImpossible =
+        insertAssumption
+          (levelSucc u)
+          v
+          (insertAssumption v u (insertAssumption u v emptyAssumptions))
+      ordered = insertAssumption u v emptyAssumptions
+      atomicChain = insertAssumption v (LVar 2) ordered
+      maxBoundedByAssumptions =
+        insertAssumption v (LVar 2) (insertAssumption u (LVar 2) emptyAssumptions)
+      maxBoundAssumption = insertAssumption (levelMax u v) (LVar 2) emptyAssumptions
+      atomicMaxEntailed =
+        insertAssumption
+          u
+          v
+          (insertAssumption v (levelMax v (LVar 2)) emptyAssumptions)
+      atomicMaxCountermodel =
+        insertAssumption
+          v
+          u
+          (insertAssumption u (levelMax u (LVar 2)) emptyAssumptions)
+      disconnectedCompoundAssumption =
+        insertAssumption
+          (levelSucc (LVar 8))
+          (LVar 9)
+          (insertAssumption u v emptyAssumptions)
+      bounded = insertAssumption (levelSucc u) LOmega emptyAssumptions
+      origin = ConstraintOrigin "unit constraint" "universeLevelDomain"
+      constraint a b = LevelConstraint 0 a b origin emptyAssumptions
+      metaConstraints =
+        [ constraint one m
+        , constraint (finiteLevel (3 :: Integer)) m
+        , constraint m (LMeta 1)
+        ]
+      metaSolutions = map solveLevelConstraints (permutations metaConstraints)
+      solveForward = solveLevelConstraints metaConstraints
+      assignedThree = \case
+        Right solution ->
+          Map.lookup 0 (lsAssignments solution) == Just (finiteLevel (3 :: Integer))
+            && Map.lookup 1 (lsAssignments solution) == Just (finiteLevel (3 :: Integer))
+        Left _ -> False
+      occursRejected = case solveLevelConstraints [constraint (levelSucc m) m] of
+        Left {} -> True
+        Right _ -> False
+      reflexiveAccepted = case solveLevelConstraints [constraint m m] of
+        Right solution -> null (lsResidual solution)
+        Left _ -> False
+      recursiveMaxAccepted = case solveLevelConstraints [constraint (levelMax m (finiteLevel (4 :: Integer))) m] of
+        Right solution ->
+          Map.lookup 0 (lsAssignments solution) == Just (finiteLevel (4 :: Integer))
+            && null (lsResidual solution)
+        Left _ -> False
+      embeddedMaxLeast =
+        case solveLevelConstraintsFor (Set.singleton 0)
+          [constraint LOmega (levelMax m one)] of
+          Right solution ->
+            Map.lookup 0 (lsAssignments solution) == Just LOmega
+              && null (lsResidual solution)
+          Left _ -> False
+      embeddedAddLeast =
+        case solveLevelConstraintsFor (Set.singleton 0)
+          [constraint LOmega (levelAdd m one)] of
+          Right solution ->
+            Map.lookup 0 (lsAssignments solution) == Just LOmega
+              && null (lsResidual solution)
+          Left _ -> False
+      embeddedFiniteAddLeast =
+        case solveLevelConstraintsFor (Set.singleton 0)
+          [constraint (finiteLevel (5 :: Integer)) (levelAdd m (finiteLevel (2 :: Integer)))] of
+          Right solution ->
+            Map.lookup 0 (lsAssignments solution) == Just (finiteLevel (3 :: Integer))
+              && null (lsResidual solution)
+          Left _ -> False
+      embeddedIncomparableRemainsResidual =
+        case solveLevelConstraintsFor (Set.fromList [0, 1])
+          [constraint LOmega (levelMax m m2)] of
+          Right solution ->
+            Map.null (lsAssignments solution)
+              && not (null (lsResidual solution))
+          Left _ -> False
+      metaMaxIntroductionAccepted =
+        case solveLevelConstraints [constraint m (levelMax m m2)] of
+          Right solution ->
+            Map.null (lsAssignments solution) && null (lsResidual solution)
+          Left _ -> False
+      rigidParameterAssigned = case solveLevelConstraints [constraint (LParam 0) m] of
+        Right solution ->
+          Map.lookup 0 (lsAssignments solution) == Just (LParam 0)
+            && null (lsResidual solution)
+        Left _ -> False
+      solvedAssignmentSurvivesResidual =
+        case solveLevelConstraints
+          [ constraint (LParam 0) m
+          , constraint (LMeta 1) (LParam 1)
+          ] of
+          Right solution ->
+            Map.lookup 0 (lsAssignments solution) == Just (LParam 0)
+              && map (\c -> (lcLhs c, lcRhs c)) (lsResidual solution)
+                == [(LMeta 1, LParam 1)]
+          Left _ -> False
+      duplicateResidualsAreCanonical =
+        solveLevelConstraints (replicate 64 (constraint m (LParam 1)))
+          == solveLevelConstraints [constraint m (LParam 1)]
+      mutualMaxCycleCanonical =
+        let m0 = LMeta 10
+            m1 = LMeta 11
+            m2 = LMeta 12
+            lower = LParam 0
+         in case solveLevelConstraints
+              [ constraint (levelMax lower m1) m0
+              , constraint (levelMax lower m2) m1
+              , constraint (levelMax lower m0) m2
+              ] of
+              Right solution ->
+                all ((== Just lower) . (`Map.lookup` lsAssignments solution)) [10, 11, 12]
+                  && null (lsResidual solution)
+                  && all (null . levelMetas) (Map.elems (lsAssignments solution))
+              Left _ -> False
+      successorCycleRejected =
+        case solveLevelConstraints
+          [ constraint (levelSucc (LMeta 21)) (LMeta 20)
+          , constraint (LMeta 20) (LMeta 21)
+          ] of
+          Left LevelMetaOccurs {} -> True
+          _ -> False
+      neutralU = LNeutral (NeutralLevelSymbol "test:u" [])
+      neutralV = LNeutral (NeutralLevelSymbol "test:v" [])
+      neutralW = LNeutral (NeutralLevelSymbol "test:w" [])
+      neutralP = LNeutral (NeutralLevelSymbol "test:p" [])
+      naturalDistributionLeft = levelAdd neutralU (levelMax neutralV neutralW)
+      naturalDistributionRight =
+        levelMax (levelAdd neutralU neutralV) (levelAdd neutralU neutralW)
+      additiveCancellationPrincipal =
+        inferPrincipalLevelsFor
+          (Set.singleton 30)
+          [constraint (levelAdd neutralP one) (levelAdd (LMeta 30) one)]
+          == SolvedPrincipal (Map.singleton 30 neutralP)
+      successorCancellationPrincipal =
+        inferPrincipalLevelsFor
+          (Set.singleton 31)
+          [constraint (levelSucc neutralP) (levelSucc (LMeta 31))]
+          == SolvedPrincipal (Map.singleton 31 neutralP)
+      principalAssignmentsComposeWithoutRevision =
+        mergeLevelAssignments
+          (Map.fromList [(40, LMeta 41)])
+          (Map.fromList [(41, LZero)])
+          == Right (Map.fromList [(40, LZero), (41, LZero)])
+      principalAssignmentsRejectRevision =
+        case
+          mergeLevelAssignments
+            (Map.singleton 42 neutralP)
+            (Map.singleton 42 (levelMax neutralP neutralV))
+        of
+          Left (42, old, new) ->
+            old == neutralP && new == levelMax neutralP neutralV
+          _ -> False
+      incrementalAssignmentGraphTracksTransitiveDependents =
+        case
+          extendLevelAssignmentGraph
+            Map.empty
+            Map.empty
+            (Map.fromList [(40, LMeta 41), (50, neutralP)])
+        of
+          Right (initial, initialDependents, initialAffected) ->
+            initialAffected == Set.fromList [40, 50]
+              && case
+                extendLevelAssignmentGraph
+                  initial
+                  initialDependents
+                  (Map.singleton 41 LZero)
+              of
+                Right (combined, dependents, affected) ->
+                  substituteLevelMetas combined (LMeta 40) == LZero
+                    && substituteLevelMetas combined (LMeta 41) == LZero
+                    && substituteLevelMetas combined (LMeta 50) == neutralP
+                    && affected == Set.fromList [40, 41]
+                    && Map.findWithDefault Set.empty 41 dependents == Set.singleton 40
+                Left _ -> False
+          Left _ -> False
+      noPointwiseLeastClass =
+        case inferPrincipalLevelsFor
+          (Set.fromList [32, 33])
+          [constraint LOmega (levelMax (LMeta 32) (LMeta 33))] of
+          NoPointwiseLeastSolution witness ->
+            pnlwLeft witness /= pnlwRight witness
+              && Map.keysSet (pnlwLeft witness) == Set.fromList [32, 33]
+              && Map.keysSet (pnlwRight witness) == Set.fromList [32, 33]
+          _ -> False
+      maxSplitWitnessChecksCompleteSystem =
+        inferPrincipalLevelsFor
+          (Set.fromList [35, 36])
+          [ constraint LOmega (levelMax (LMeta 35) (LMeta 36))
+          , constraint (LMeta 35) LZero
+          ]
+          == SolvedPrincipal (Map.fromList [(35, LZero), (36, LOmega)])
+      rigidMaxArmHasSymbolicPrincipal =
+        inferPrincipalLevelsFor
+          (Set.singleton 37)
+          [constraint neutralP (levelMax (LMeta 37) neutralV)]
+          == SolvedPrincipal (Map.singleton 37 neutralP)
+      unconstrainedMetaHasCheckedZeroPrincipal =
+        inferPrincipalLevelsFor (Set.singleton 38) []
+          == SolvedPrincipal (Map.singleton 38 LZero)
+      upperOnlyMetaHasCheckedZeroPrincipal =
+        inferPrincipalLevelsFor
+          (Set.singleton 39)
+          [constraint (LMeta 39) neutralP]
+          == SolvedPrincipal (Map.singleton 39 LZero)
+      selectedInferencePreservesUnselectedProofObligations =
+        inferPrincipalLevelsFor
+          (Set.singleton 43)
+          [ constraint neutralP (LMeta 43)
+          , constraint (LMeta 44) neutralV
+          ]
+          == SolvedPrincipal (Map.singleton 43 neutralP)
+      selectedChainSolvedTogether =
+        inferPrincipalLevelsFor
+          (Set.fromList [45, 46])
+          [constraint (LMeta 45) (LMeta 46)]
+          == SolvedPrincipal (Map.fromList [(45, LZero), (46, LZero)])
+      selectedEqualitySccSolvedTogether =
+        inferPrincipalLevelsFor
+          (Set.fromList [47, 48])
+          [ constraint (LMeta 47) (LMeta 48)
+          , constraint (LMeta 48) (LMeta 47)
+          ]
+          == SolvedPrincipal (Map.fromList [(47, LZero), (48, LZero)])
+      selectedDependencyRetainsUnselectedMeta =
+        inferPrincipalLevelsFor
+          (Set.singleton 49)
+          [constraint (LMeta 50) (LMeta 49)]
+          == SolvedPrincipal (Map.singleton 49 (LMeta 50))
+      selectedEqualityLeavesRigidProofObligation =
+        let constraints =
+              [ constraint (LMeta 51) (LMeta 52)
+              , constraint (LMeta 52) (LMeta 51)
+              , constraint (LMeta 53) (LMeta 52)
+              ]
+            assignment = Map.singleton 52 (LMeta 51)
+            substituted =
+              [ ( substituteLevelMetas assignment (lcLhs item)
+                , substituteLevelMetas assignment (lcRhs item)
+                )
+              | item <- constraints
+              ]
+         in inferPrincipalLevelsFor (Set.singleton 52) constraints
+              == SolvedPrincipal assignment
+              && (LMeta 53, LMeta 51) `elem` substituted
+      solvedMetasRewriteConstraintAssumptions =
+        let constrained lower upper assumptions =
+              LevelConstraint 0 lower upper origin assumptions
+            authenticated =
+              insertAssumption (LMeta 54) (LMeta 55) emptyAssumptions
+         in case
+              solveLevelConstraintsFor
+                (Set.fromList [54, 55])
+                [ constraint (LParam 0) (LMeta 54)
+                , constraint (LParam 1) (LMeta 55)
+                , constrained (LMeta 54) (LParam 1) authenticated
+                ]
+            of
+              Right solution ->
+                Map.lookup 54 (lsAssignments solution) == Just (LParam 0)
+                  && Map.lookup 55 (lsAssignments solution) == Just (LParam 1)
+                  && null (lsResidual solution)
+              Left _ -> False
+      selectedMetaInAssumptionCannotHideUnsatisfiableBody =
+        let assumptions = insertAssumption (LMeta 56) LZero emptyAssumptions
+            impossibleUnderSelectedAssumption =
+              LevelConstraint 0 one LZero origin assumptions
+         in inferPrincipalLevelsFor (Set.singleton 56) [impossibleUnderSelectedAssumption]
+              == Unsatisfiable
+      explosiveAssignmentGraphFailsClosed =
+        let depth = 24
+            targets = Set.fromList [60 .. 60 + depth]
+            chain =
+              [ constraint
+                  (levelAdd (LMeta (meta + 1)) (LMeta (meta + 1)))
+                  (LMeta meta)
+              | meta <- [60 .. 60 + depth - 1]
+              ]
+                ++ [constraint neutralP (LMeta (60 + depth))]
+         in case solveLevelConstraintsFor targets chain of
+              Left LevelResourceLimit {} -> True
+              _ -> False
+      contradictoryAssumptionsDominateTrivialQueries =
+        proveLevelLeq impossible LZero LZero == ContradictoryAssumptions
+      resourceLimitDominatesBlockedMetavariables =
+        let crowded =
+              foldr
+                (\index ->
+                  insertAssumption
+                    (LNeutral
+                      (NeutralLevelSymbol
+                        (T.pack ("resource:" ++ show index))
+                        (replicate 100 LZero)))
+                    (LMeta 999))
+                emptyAssumptions
+                [1 :: Int .. 1000]
+         in proveLevelLeq crowded (LMeta 1000) (LMeta 1001)
+              == IndeterminateResourceLimit
+      incrementalAssignmentGraphFailsBeforeExpansion =
+        let extendOne (Right (assignments, dependents, _)) meta =
+              extendLevelAssignmentGraph
+                assignments
+                dependents
+                (Map.singleton meta (levelAdd (LMeta (meta + 1)) (LMeta (meta + 1))))
+            extendOne failure _ = failure
+         in case foldl extendOne (Right (Map.empty, Map.empty, Set.empty)) [100 .. 130] of
+              Left (LevelAssignmentGraphResourceLimit _) -> True
+              _ -> False
+      outsidePortableClass =
+        inferPrincipalLevelsFor
+          (Set.singleton 34)
+          [ constraint
+              (LNeutral (NeutralLevelSymbol "test:f" [neutralP]))
+              (levelMax (levelAdd (LMeta 34) neutralV) neutralW)
+          ]
+          == OutsidePortableInferenceFragment
+      hugeFinite = finiteLevel (toInteger (maxBound :: Int) + 1)
+      rigidPairs =
+        [ (LVar 0, LVar 1)
+        , (LField 100 "left", LField 101 "right")
+        , (LProjection 200 ["level"], LProjection 201 ["nested", "level"])
+        , (LParam 0, LParam 1)
+        ]
+      boundedExpressions a b =
+        let atoms = [LZero, LOmega, a, b]
+         in nub
+              ( map normalizeLevel
+                  ( atoms
+                      ++ map levelSucc atoms
+                      ++ [levelAdd x y | x <- atoms, y <- atoms]
+                      ++ [levelMax x y | x <- atoms, y <- atoms]
+                  )
+              )
+      sampleOrdinals :: [(Integer, Integer)]
+      sampleOrdinals =
+        [ (0, 0)
+        , (0, 1)
+        , (0, 2)
+        , (1, 0)
+        , (1, 1)
+        , (2, 0)
+        -- The open-addition cases can add one omega coefficient. Keep a
+        -- strictly larger sample available than every generated expression,
+        -- plus one further coefficient for the strict @succ u <= v@ edge.
+        -- Without that final point the bounded reference oracle incorrectly
+        -- labels @u <= omega + omega@ as entailed: its first countermodel is
+        -- @u = 3*omega, v = 4*omega@.
+        , (3, 0)
+        , (4, 0)
+        ]
+      exhaustiveFailures =
+        [ "solver/reference mismatch for " ++ show (a, b) ++ " under " ++ show edges ++ ": " ++ show lhs ++ " <= " ++ show rhs
+        | (a, b) <- rigidPairs
+        , let rigidExpressions = boundedExpressions a b
+              valuations =
+                [ Map.fromList [(a, aValue), (b, bValue)]
+                | aValue <- sampleOrdinals
+                , bValue <- sampleOrdinals
+                ]
+              assumptionSets =
+                [ []
+                , [(a, b)]
+                , [(b, a)]
+                , [(a, b), (b, a)]
+                , [(levelSucc a, b)]
+                , [(a, LOmega)]
+                , [(LOmega, a)]
+                ]
+        , edges <- assumptionSets
+        , lhs <- rigidExpressions
+        , rhs <- rigidExpressions
+        , let assumptions = foldr (uncurry insertAssumption) emptyAssumptions edges
+              expected =
+                all
+                  ( \valuation ->
+                      not (all (referenceLeq valuation) edges)
+                        || referenceLeq valuation (lhs, rhs)
+                  )
+                  valuations
+              actual = proveLevelLeq assumptions lhs rhs == Proved
+        , expected /= actual
+        ]
+      checks =
+        [ ("finite successor canonicalizes", normalizeLevel (LSucc (finiteLevel (2 :: Integer))) == finiteLevel (3 :: Integer))
+        , ("constructor NF orders atoms before additive forms", normalizeLevel neutralU < normalizeLevel (levelAdd neutralU one))
+        , ("constructor NF orders closed forms before atoms", normalizeLevel omegaPlusOne < normalizeLevel neutralU)
+        , ("constructor NF orders additive forms before maxima", normalizeLevel (levelAdd neutralU one) < normalizeLevel (levelMax neutralU one))
+        , ("constructor NF orders maxima before metas", normalizeLevel (levelMax neutralU one) < LMeta 99)
+        , ("one plus omega commutes", onePlusOmega == omegaPlusOne)
+        , ("omega plus one remains above omega", proveLevelLeq emptyAssumptions omegaPlusOne LOmega == Disproved)
+        , ("finite levels are below omega", proveLevelLeq emptyAssumptions (finiteLevel (100 :: Integer)) LOmega == Proved)
+        , ("successor self-containment is disproved", proveLevelLeq emptyAssumptions (levelSucc u) u == Disproved)
+        , ("max introduction left", proveLevelLeq emptyAssumptions u (levelMax u v) == Proved)
+        , ("zero is the identity of max", levelMax LZero u == u)
+        , ("max elimination uses both arms", proveLevelLeq bounded (levelMax u one) LOmega == Proved)
+        , ("max elimination recursively uses scoped arm bounds", proveLevelLeq maxBoundedByAssumptions (levelMax u v) (LVar 2) == Proved)
+        , ("left-max assumptions expose both atomic arm bounds", proveLevelLeq maxBoundAssumption u (LVar 2) == Proved && proveLevelLeq maxBoundAssumption v (LVar 2) == Proved)
+        , ("consistent assumption cycle proves equality", proveLevelLeq cyc u v == Proved && proveLevelLeq cyc v u == Proved)
+        , ("consistent equality cycle remains satisfiable", assumptionsConsistent cyc)
+        , ("strict self-cycle is unsatisfiable", not (assumptionsConsistent impossible))
+        , ("rigid equality canonicalization preserves strict-cycle rejection", not (assumptionsConsistent equalityConstrainedImpossible))
+        , ("assumptions close through successor", proveLevelLeq ordered (levelSucc u) (levelSucc v) == Proved)
+        , ("atomic rigid assumptions close by graph reachability", proveLevelLeq atomicChain u (LVar 2) == Proved)
+        , ("atomic reachability proves a right-side maximum", proveLevelLeq atomicMaxEntailed u (levelMax v (LVar 2)) == Proved)
+        , ("atomic right-side maximum has a graph countermodel", proveLevelLeq atomicMaxCountermodel (LVar 2) (levelMax u v) == Disproved)
+        , ("disconnected compound assumptions do not enter an atomic zero query", proveLevelLeq disconnectedCompoundAssumption u LZero == Disproved)
+        , ("open natural addition preserves omega", proveLevelLeq emptyAssumptions LOmega (levelAdd u LOmega) == Proved)
+        , ("open natural coefficient can exceed omega", proveLevelLeq emptyAssumptions (levelAdd u LOmega) LOmega == Disproved)
+        , ("adding one is successor", levelAdd one u == levelSucc u)
+        , ("open natural addition commutes", levelAdd u v == levelAdd v u)
+        , ("open natural addition associates", levelAdd (levelAdd u v) one == levelAdd u (levelAdd v one))
+        , ("scoped field identities do not alias by label", proveLevelLeq emptyAssumptions (LField 0 "k") (LField 1 "k") == Disproved)
+        , ("unresolved level meta blocks", proveLevelLeq emptyAssumptions m LOmega == Blocked [0])
+        , ("level-meta lower bounds choose the least solution", assignedThree solveForward)
+        , ("level-meta solving is order independent", all (== solveForward) metaSolutions)
+        , ("level-meta occurs checks reject self containment", occursRejected)
+        , ("reflexive level-meta constraints are tautologies", reflexiveAccepted)
+        , ("recursive max lower bounds have a principal solution", recursiveMaxAccepted)
+        , ("embedded max constraints choose their unique least solution", embeddedMaxLeast)
+        , ("embedded natural-add constraints choose their unique least solution", embeddedAddLeast)
+        , ("embedded finite additions subtract the closed offset", embeddedFiniteAddLeast)
+        , ("incomparable embedded minima remain residual", embeddedIncomparableRemainsResidual)
+        , ("max introduction discharges without assigning level metas", metaMaxIntroductionAccepted)
+        , ("hidden declaration parameters are valid principal lower bounds", rigidParameterAssigned)
+        , ("principal assignments survive unrelated residual constraints", solvedAssignmentSurvivesResidual)
+        , ("duplicate universe judgments do not duplicate residual obligations", duplicateResidualsAreCanonical)
+        , ("mutual max lower-bound cycles have a closed principal solution", mutualMaxCycleCanonical)
+        , ("successor-bearing mutual cycles fail the occurs check", successorCycleRejected)
+        , ("rigid neutral natural addition distributes over max", proveLevelLeq emptyAssumptions naturalDistributionLeft naturalDistributionRight == Proved && proveLevelLeq emptyAssumptions naturalDistributionRight naturalDistributionLeft == Proved)
+        , ("rigid neutral max is dominated by successor", proveLevelLeq emptyAssumptions (levelMax neutralU (levelSucc neutralU)) (levelSucc neutralU) == Proved)
+        , ("principal inference cancels common natural-add terms", additiveCancellationPrincipal)
+        , ("principal inference cancels successor contexts", successorCancellationPrincipal)
+        , ("principal assignments compose through later substitutions", principalAssignmentsComposeWithoutRevision)
+        , ("principal assignments cannot be revised by a later join", principalAssignmentsRejectRevision)
+        , ("incremental assignment graph tracks transitive dependents", incrementalAssignmentGraphTracksTransitiveDependents)
+        , ("principal inference detects incomparable max minima", noPointwiseLeastClass)
+        , ("max-split certificates satisfy the complete constraint system", maxSplitWitnessChecksCompleteSystem)
+        , ("single-meta max inference retains a rigid symbolic lower bound", rigidMaxArmHasSymbolicPrincipal)
+        , ("unconstrained selected meta has checked zero principal", unconstrainedMetaHasCheckedZeroPrincipal)
+        , ("upper-only selected meta has checked zero principal", upperOnlyMetaHasCheckedZeroPrincipal)
+        , ("selected inference preserves unrelated rigid proof obligations", selectedInferencePreservesUnselectedProofObligations)
+        , ("selected-meta chains are solved as one principal system", selectedChainSolvedTogether)
+        , ("selected-meta equality SCCs have the pointwise-zero principal solution", selectedEqualitySccSolvedTogether)
+        , ("selected inference retains an unselected meta dependency", selectedDependencyRetainsUnselectedMeta)
+        , ("selected equality preserves the resulting rigid proof obligation", selectedEqualityLeavesRigidProofObligation)
+        , ("solving metas rewrites authenticated constraint assumptions", solvedMetasRewriteConstraintAssumptions)
+        , ("selected metas in assumptions participate in full satisfiability recheck", selectedMetaInAssumptionCannotHideUnsatisfiableBody)
+        , ("selected-meta assignment DAGs fail closed before exponential materialization", explosiveAssignmentGraphFailsClosed)
+        , ("contradictory assumptions dominate trivially true queries", contradictoryAssumptionsDominateTrivialQueries)
+        , ("resource limits dominate blocked metavariables", resourceLimitDominatesBlockedMetavariables)
+        , ("incremental assignment graphs fail before exponential materialization", incrementalAssignmentGraphFailsBeforeExpansion)
+        , ("principal inference classifies opaque meta contexts outside the portable fragment", outsidePortableClass)
+        , ("large finite levels remain exact", proveLevelLeq emptyAssumptions hugeFinite LOmega == Proved && hugeFinite /= LZero)
+        , ("renderer keeps Type0 implicit", renderTerm (CSort LZero) == "Type")
+        , ("renderer prints higher finite universes explicitly", renderTerm (CSort one) == "Type 1")
+        , ("verbose renderer classifies Type0 in Type1", renderJudgment (CSort LZero) (CSort one) == "Type : Type 1")
+        , ("verbose renderer never prints Type : Type", renderJudgment (CSort LZero) (CSort one) /= "Type : Type")
+        ]
+      failures = [label | (label, False) <- checks] ++ exhaustiveFailures
+      ok = null failures
+  unless ok $ do
+    putStrLn "universeLevelDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+  pure ok
+  where
+    referenceLeq valuation (lhs, rhs) = referenceLevel valuation lhs <= referenceLevel valuation rhs
+
+    referenceLevel valuation = \case
+      LZero -> (0, 0)
+      LFinite n -> (0, n)
+      LOmega -> (1, 0)
+      LSucc a -> let (c, n) = referenceLevel valuation a in (c, n + 1)
+      LAdd a b ->
+        let (ac, an) = referenceLevel valuation a
+            (bc, bn) = referenceLevel valuation b
+         in (ac + bc, an + bn)
+      LMax a b -> max (referenceLevel valuation a) (referenceLevel valuation b)
+      rigid@LVar {} -> Map.findWithDefault (0, 0) rigid valuation
+      rigid@LField {} -> Map.findWithDefault (0, 0) rigid valuation
+      rigid@LProjection {} -> Map.findWithDefault (0, 0) rigid valuation
+      rigid@LParam {} -> Map.findWithDefault (0, 0) rigid valuation
+      LMeta ident -> error ("referenceLevel: unexpected level meta " ++ show ident)
+
+-- | §30.2.1A: cumulative subsumption is explicit in KCore and carries a
+-- replayable, scope-checked universe certificate.  These are constructor-level
+-- properties so a frontend regression cannot hide behind source inference.
+universeLiftEvidenceDomain :: IO Bool
+universeLiftEvidenceDomain = do
+  let u = LParam 0
+      v = LParam 1
+      w = LParam 2
+      uvAssumptions = insertAssumption u v emptyAssumptions
+      vwAssumptions = insertAssumption v w emptyAssumptions
+      uv = solverUniverseEvidence uvAssumptions u v
+      vw = solverUniverseEvidence vwAssumptions v w
+      irrelevantAssumptions = insertAssumption u v emptyAssumptions
+      assumptionFree = solverUniverseEvidence irrelevantAssumptions LZero w
+      neededDependencyRetained = case uv of
+        UniverseEvidence [UniverseEvidenceStep {uesAssumptions = dependencies}] ->
+          dependencies == [(u, v)]
+        _ -> False
+      irrelevantDependencyOmitted = case assumptionFree of
+        UniverseEvidence [UniverseEvidenceStep {uesAssumptions = dependencies}] ->
+          null dependencies
+        _ -> False
+      specializedUv =
+        mapUniverseEvidenceLevels
+          (\level -> if level == u then LZero else level)
+          uv
+      specializedDependencyOmitted = case specializedUv of
+        UniverseEvidence [UniverseEvidenceStep {uesAssumptions = dependencies}] ->
+          null dependencies
+        _ -> False
+      payload = CGlob prelUnit
+      identity = universeLift (solverUniverseEvidence emptyAssumptions u u) payload == payload
+      composed = universeLift vw (universeLift uv payload)
+      composedCanonical = case composed of
+        CUniverseLift from to (UniverseEvidence steps) inner ->
+          from == u
+            && to == w
+            && inner == payload
+            && length steps == 2
+        _ -> False
+      composedAssumptions = insertAssumption v w uvAssumptions
+      composedValid = null (validateUniverseLiftEvidenceUnder composedAssumptions 0 3 composed)
+      malformed = CUniverseLift u w (UniverseEvidence []) payload
+      malformedRejected = not (null (validateUniverseLiftEvidence 0 3 malformed))
+      forgedAssumptions = insertAssumption u v emptyAssumptions
+      forged = universeLift (solverUniverseEvidence forgedAssumptions u v) payload
+      forgedSelfAuthorizationRejected =
+        not (null (validateUniverseLiftEvidence 0 3 forged))
+      outOfScopeRejected =
+        not
+          ( null
+              (validateUniverseLiftEvidence 0 1 (universeLift uv payload))
+          )
+      sourceUnit =
+        compileSourceWithPrelude
+          "universe-lift-source.kp"
+          ( T.unlines
+              [ "module universe_lift_source"
+              , "Small : Type0"
+              , "let Small = Int"
+              , "widen : Type1"
+              , "let widen = Small"
+              ]
+          )
+      sourceState = cuState sourceUnit
+      sourceOwner = GName (ModuleName ["universe_lift_source"]) "widen"
+      sourceLifted = case Map.lookup sourceOwner (csCoreBodies sourceState) of
+        Just CUniverseLift {} -> True
+        _ -> False
+      sourceErrorFree = not (any isError (cuDiags sourceUnit))
+      sourceLiftEvidenceValid =
+        and
+          [ null (validateUniverseLiftEvidence 0 universeArity body)
+          | (owner, body) <- Map.toList (csCoreBodies sourceState)
+          , let universeArity =
+                  maybe
+                    0
+                    (dutParameterCount . gdUniverses)
+                    (Map.lookup owner (csGlobals sourceState))
+          ]
+      syntheticModule = ModuleName ["universe_lift_composed_kcore"]
+      syntheticOwner = GName syntheticModule "raise"
+      proofType lower upper =
+        CApp Expl
+          (CApp Expl (CGlobal prelLevelLe []) (CLevel lower))
+          (CLevel upper)
+      syntheticType =
+        CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "uv" (Just (u, v)) BinderSourceWritten (proofType u v) $
+          CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "vw" (Just (v, w)) BinderSourceWritten (proofType v w) $
+            CPiFormedM Ordinary FormationOrdinary Expl QW False "A" (CSort u) (CSort w)
+      syntheticBody =
+        CLamM Ordinary Impl Q0 "uv" $
+          CLamM Ordinary Impl Q0 "vw" $
+            CLamM Ordinary Expl QW "A" (universeLift vw (universeLift uv (CVar 0)))
+      syntheticTelescope =
+        DeclarationUniverseTelescope 3 False
+      sourceEval = EvalCtx (Globals (csGlobals sourceState)) (csMetas sourceState) False mempty
+      syntheticDefinition =
+        globalDefWithCoreBody syntheticBody
+          ( globalDefWithCoreType syntheticType
+              ( globalDefWithUniverses syntheticTelescope
+                  (GlobalDef (eval sourceEval [] syntheticType) Nothing True)
+              )
+          )
+      syntheticGlobals = Map.insert syntheticOwner syntheticDefinition (csGlobals sourceState)
+      composedKCoreRoundTrip = do
+        dump <-
+          renderKCoreModule
+            syntheticModule
+            sourceEval
+            syntheticGlobals
+            (Map.singleton syntheticOwner syntheticBody)
+            (Map.empty :: Map.Map GName KCoreDataInfo)
+            (Map.empty :: Map.Map GName KCoreConstructorInfo)
+        parsed <-
+          parseAndVerifyKCoreTextWithEnvironment
+            sourceEval
+            (csGlobals sourceState)
+            Map.empty
+            dump
+        let canonical = printCanonicalKCoreText parsed
+        reparsed <-
+          parseAndVerifyKCoreTextWithEnvironment
+            sourceEval
+            (csGlobals sourceState)
+            Map.empty
+            canonical
+        pure
+          ( "arithmetic [0, 1]" `T.isInfixOf` canonical
+              && "certificate(" `T.isInfixOf` canonical
+              && printCanonicalKCoreText reparsed == canonical
+          , canonical
+          )
+      runtimeIdentity =
+        case
+          ( eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) [] composed
+          , eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) [] payload
+          ) of
+          (VGlobal g us [], VGlobal g' us' []) -> g == g' && us == us'
+          _ -> False
+      substitutedEvidence =
+        substTopTermAt
+          0
+          (CLevel LOmega)
+          ( CUniverseLift
+              (LVar 0)
+              (levelSucc (LVar 0))
+              (solverUniverseEvidence (insertAssumption (LVar 0) (levelSucc (LVar 0)) emptyAssumptions) (LVar 0) (levelSucc (LVar 0)))
+              (CSort (LVar 0))
+          )
+      substitutionTransportsLevelsAndEvidence =
+        case substitutedEvidence of
+          CUniverseLift from to (UniverseEvidence [UniverseEvidenceStep lower upper assumptions]) (CSort payloadLevel) ->
+            from == LOmega
+              && to == levelSucc LOmega
+              && lower == LOmega
+              && upper == levelSucc LOmega
+              && null assumptions
+              && payloadLevel == LOmega
+          _ -> False
+      substitutionReindexesInnerLevelIdentities =
+        substTopTermAt
+          1
+          (CVar 0)
+          (CPiFormedM Ordinary FormationOrdinary Expl QW False "inner" (CSort (LVar 1)) (CSort (LVar 2)))
+          == CPiFormedM Ordinary FormationOrdinary Expl QW False "inner" (CSort (LVar 0)) (CSort (LVar 1))
+      assumptionMetadataParticipatesInLevelTraversal =
+        let metadataTerm =
+              CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "proof"
+                (Just (LMeta 88, LParam 0))
+                BinderSourceWritten
+                (CGlob prelUnit)
+                ( CRecordTQ
+                    [ RecordField
+                        "fieldProof"
+                        Ordinary
+                        FormationOrdinary
+                        Q0
+                        (Just (LMeta 89, LParam 1))
+                        (CGlob prelUnit)
+                    ]
+                )
+         in sort (levelMetasOfTerm metadataTerm) == [88, 89]
+              && sort (levelParamsOfTerm metadataTerm) == [0, 1]
+      weakeningTransportsAssumptionLevelIdentities =
+        let memberType =
+              CPiEvidenceM Ordinary FormationOrdinary Expl QW False "x" Nothing
+                BinderSourceWritten
+                (CGlob prelUnit)
+                ( CPiEvidenceM Ordinary FormationOrdinary Expl QW False "y" Nothing
+                    BinderSourceWritten
+                    (CGlob prelUnit)
+                    ( CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "p"
+                        (Just (LVar 1, LVar 2))
+                        BinderSourceWritten
+                        (CGlob prelUnit)
+                        (CSort (LMax (LVar 0) (LVar 2)))
+                    )
+                )
+            weakened = weakenTermUnderBinderAt 1 memberType
+         in case weakened of
+              CPiEvidenceM _ _ _ _ _ _ _ _ _
+                (CPiEvidenceM _ _ _ _ _ _ _ _ _
+                  (CPiEvidenceM _ _ _ _ _ _ (Just relation) _ _ (CSort resultLevel))) ->
+                    relation == (LVar 2, LVar 3)
+                      && resultLevel == LMax (LVar 0) (LVar 3)
+              _ -> False
+      checks =
+        [ ("identity lifts normalize away", identity)
+        , ("solver evidence retains assumptions required by its judgment", neededDependencyRetained)
+        , ("solver evidence omits ambient assumptions irrelevant to its judgment", irrelevantDependencyOmitted)
+        , ("evidence substitution removes dependencies made irrelevant by specialization", specializedDependencyOmitted)
+        , ("nested lifts compose and retain both evidence dependencies", composedCanonical)
+        , ("composed evidence replays at checkpoint", composedValid)
+        , ("missing evidence fails closed", malformedRejected)
+        , ("lift evidence cannot authorize itself with embedded assumptions", forgedSelfAuthorizationRejected)
+        , ("out-of-scope universe evidence fails closed", outOfScopeRejected)
+        , ("surface cumulativity elaborates to an explicit KCore lift", sourceLifted)
+        , ("generalized source lifts retain replayable solver evidence", sourceErrorFree && sourceLiftEvidenceValid)
+        , ("composed Core lifts emit scoped certificates and round trip", either (const False) fst composedKCoreRoundTrip)
+        , ("lifts are runtime representation identity", runtimeIdentity)
+        , ("term substitution transports embedded levels and lift evidence", substitutionTransportsLevelsAndEvidence)
+        , ("term substitution reindexes later level identities", substitutionReindexesInnerLevelIdentities)
+        , ("authenticated assumption metadata participates in level traversal", assumptionMetadataParticipatesInLevelTraversal)
+        , ("term weakening transports embedded local level identities", weakeningTransportsAssumptionLevelIdentities)
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "universeLiftEvidenceDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    putStrLn ("  source diagnostics=" ++ show (map dCode (cuDiags sourceUnit)))
+    putStrLn ("  source body=" ++ maybe "<missing>" (T.unpack . renderTerm) (Map.lookup sourceOwner (csCoreBodies sourceState)))
+    case composedKCoreRoundTrip of
+      Left err -> putStrLn ("  composed KCore error=" ++ show err)
+      Right (_, canonical) -> TIO.putStrLn canonical
+  pure (null failures)
+
+-- | U-G8 artifact boundary: an imported declaration must remain usable after
+-- all source/checker state has been discarded. The opaque interface can only
+-- be constructed by parsing and verifying its KCoreText artifact, and merging
+-- two artifacts with the same semantic owner fails closed.
+kcoreSourceFreeInterfaceDomain :: IO Bool
+kcoreSourceFreeInterfaceDomain = do
+  let metadata owner =
+        " [languageVersion = \"kappa-v1\", compilerInterfaceVersion = \"1\", "
+          <> "sourceModuleIdentity = \"" <> owner <> "\", "
+          <> "typeLevelAlgebraVersion = \"1\", levelConstructorNormalizerVersion = \"1\", "
+          <> "levelRigidEntailmentVersion = \"1\", levelPrincipalInferenceVersion = \"1\", "
+          <> "levelCertificateVersion = \"1\"]"
+      upstream =
+        "kcore 1;\nmodule @artifact.up#100" <> metadata "artifact.up" <> " {\n"
+          <> "  axiom ordinary @artifact.up.A#101 : Type 0;\n"
+          <> "}\n"
+      downstream =
+        "kcore 1;\nmodule @artifact.down#200" <> metadata "artifact.down" <> " {\n"
+          <> "  def ordinary @artifact.down.B#201 : Type 0 { body = @artifact.up.A#101; }\n"
+          <> "}\n"
+      transitive =
+        "kcore 1;\nmodule @artifact.transitive#300" <> metadata "artifact.transitive" <> " {\n"
+          <> "  axiom ordinary @artifact.transitive.y#301 : @artifact.down.B#201;\n"
+          <> "}\n"
+      localNominal =
+        "kcore 1;\nmodule @artifact.local-cert#400" <> metadata "artifact.local-cert" <> " {\n"
+          <> "  schema-certificate @schema:artifact.local-cert.T#401 for @artifact.local-cert.T#402 "
+          <> "[checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, "
+          <> "levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, "
+          <> "levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {\n"
+          <> "    roles = [];\n"
+          <> "    clauseKinds = [sort_declaration, point_constructor, eliminator, computation_rule];\n"
+          <> "    monotoneWitnesses = [];\n"
+          <> "  }\n"
+          <> "  data @artifact.local-cert.T#402 : Type 0 certificate @schema:artifact.local-cert.T#401 {\n"
+          <> "    constructor @artifact.local-cert.C#403 : @artifact.local-cert.T#402;\n"
+          <> "  }\n"
+          <> "}\n"
+      nominalConsumer =
+        "kcore 1;\nmodule @artifact.local-cert-consumer#500" <> metadata "artifact.local-cert-consumer" <> " {\n"
+          <> "  axiom ordinary @artifact.local-cert-consumer.x#501 : @artifact.local-cert.T#402;\n"
+          <> "}\n"
+      result = do
+        upstreamInterface <- parseAndVerifyKCoreInterface upstream
+        downstreamInterface <-
+          parseAndVerifyKCoreInterfaceWithInterfaces [upstreamInterface] downstream
+        transitiveFile <- parseKCoreText transitive
+        verifyKCoreTextWithInterfaces [downstreamInterface] transitiveFile
+        downstreamFile <- parseKCoreText downstream
+        case verifyKCoreTextWithInterfaces [upstreamInterface, upstreamInterface] downstreamFile of
+          Left _ -> pure ()
+          Right () -> Left (KCoreTextError "unit" "duplicate imported identities were accepted")
+        localNominalInterface <- parseAndVerifyKCoreInterface localNominal
+        nominalConsumerFile <- parseKCoreText nominalConsumer
+        case verifyKCoreTextWithInterfaces [localNominalInterface] nominalConsumerFile of
+          Left KCoreTextError {kcteCode = "E_KCORE_SCHEMA_CERTIFICATE_INVALID"} -> pure ()
+          Left err ->
+            Left
+              ( KCoreTextError
+                  "unit"
+                  ("imported local schema certificate failed with the wrong diagnostic: " <> kcteCode err)
+              )
+          Right () -> Left (KCoreTextError "unit" "an imported local schema certificate was trusted")
+  case result of
+    Right () -> pure True
+    Left err -> do
+      putStrLn ("kcoreSourceFreeInterfaceDomain FAILED: " <> show err)
+      pure False
+
+-- | §30.2.0A: KCoreText is an untrusted, canonical typed checkpoint, not a
+-- presentation dump. These pins cover identity completeness, universe-spine
+-- arity, extension ownership, deterministic dependency ordering, and local
+-- alpha-normalization independently of the design-bundle fixtures.
+kcoreTextCanonicalDomain :: IO Bool
+kcoreTextCanonicalDomain = do
+  let envUnit = compileSourceWithPrelude "kcore-environment.kp" "module kcore_environment\n"
+      envState = cuState envUnit
+      envEval = EvalCtx (Globals (csGlobals envState)) (csMetas envState) False mempty
+      parseVerified = parseAndVerifyKCoreTextWithGlobals envEval (csGlobals envState)
+      semanticVersionMetadata =
+        ", typeLevelAlgebraVersion = \"1\""
+          <> ", levelConstructorNormalizerVersion = \"1\""
+          <> ", levelRigidEntailmentVersion = \"1\""
+          <> ", levelPrincipalInferenceVersion = \"1\""
+          <> ", levelCertificateVersion = \"1\""
+      header identity extensions =
+        "kcore 1;\nmodule @" <> identity <> "#1 ["
+          <> "languageVersion = \"kappa-v1\", "
+          <> "compilerInterfaceVersion = \"1\", "
+          <> "sourceModuleIdentity = \"" <> identity <> "\""
+          <> semanticVersionMetadata
+          <> extensions <> "] {\n"
+      footer = "}\n"
+      nominalCertificate identity familyId certificateId =
+        "schema-certificate @schema:" <> identity <> ".T#" <> certificateId
+          <> " for @" <> identity <> ".T#" <> familyId
+          <> " [checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1"
+          <> ", levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1"
+          <> ", levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {\n"
+          <> "  roles = [];\n"
+          <> "  clauseKinds = [sort_declaration, point_constructor, eliminator, computation_rule];\n"
+          <> "  monotoneWitnesses = [];\n"
+          <> "}\n"
+      constructorCollision =
+        header "test.collision" ""
+          <> nominalCertificate "test.collision" "2" "4"
+          <> "data @test.collision.T#2 : Type 0 certificate @schema:test.collision.T#4 {\n"
+          <> "  constructor @test.collision.C#1 : Type 0;\n}\n"
+          <> footer
+      missingNominalCertificate =
+        header "test.missing-nominal-certificate" ""
+          <> "data @test.missing-nominal-certificate.T#2 : Type 0 { }\n"
+          <> footer
+      missingNominalRole =
+        header "test.missing-nominal-role" ""
+          <> "data @test.missing-nominal-role.T#2 .{^u#0} : Type ^u#0 "
+          <> "certificate @test.missing-nominal-role.certificate#3 { }\n"
+          <> footer
+      wrongLanguageVersion =
+        T.replace
+          "languageVersion = \"kappa-v1\""
+          "languageVersion = \"kappa-v0\""
+          unordered
+      wrongCompilerInterfaceVersion =
+        T.replace
+          "compilerInterfaceVersion = \"1\""
+          "compilerInterfaceVersion = \"2\""
+          unordered
+      versionedSchemaCertificate =
+        header "test.schema-certificate-version" ""
+          <> nominalCertificate "test.schema-certificate-version" "2" "4"
+          <> "data @test.schema-certificate-version.T#2 : Type 0 "
+          <> "certificate @schema:test.schema-certificate-version.T#4 { }\n"
+          <> footer
+      wrongSchemaCertificateVersion =
+        T.replace
+          "levelCertificateVersion = 1, signatureHash"
+          "levelCertificateVersion = 2, signatureHash"
+          versionedSchemaCertificate
+      alternateSourceModuleIdentity =
+        T.replace
+          "sourceModuleIdentity = \"test.order\""
+          "sourceModuleIdentity = \"test.source-package\""
+          unordered
+      constructorFieldHeader identity fields =
+        header identity ""
+          <> nominalCertificate identity "2" "4"
+          <> "data @" <> identity <> ".T#2 : Type 1 certificate @schema:" <> identity <> ".T#4 {\n"
+          <> "  constructor @" <> identity <> ".C#3 : "
+          <> "((ordinary ordinary omega explicit value %x#0 : Type 0) -> Type 0) "
+          <> "fields { " <> fields <> " };\n}\n"
+          <> footer
+      forgedConstructorFieldIdentity =
+        constructorFieldHeader "test.constructor-field-forged"
+          "@field:x#deadbeef = 0;"
+      duplicateConstructorFieldPosition =
+        constructorFieldHeader "test.constructor-field-duplicate-position"
+          "@field:x#4b415050413a76313a4b436f72654669656c640078 = 0; @field:y#4b415050413a76313a4b436f72654669656c640079 = 0;"
+      outOfRangeConstructorFieldPosition =
+        constructorFieldHeader "test.constructor-field-out-of-range"
+          "@field:x#4b415050413a76313a4b436f72654669656c640078 = 1;"
+      arityMismatch =
+        header "test.arity" ""
+          <> "axiom ordinary @test.arity.A#2 .{^u#0} : Type ^u#0;\n"
+          <> "def ordinary @test.arity.x#3 : Type 0 { body = @test.arity.A#2; }\n"
+          <> footer
+      unadvertisedExtension =
+        header "test.extension" ""
+          <> "decl-node \"example.vendor.node\" { }\n"
+          <> footer
+      advertisedExtension =
+        header "test.extension" ""
+          <> "extension example.vendor 1;\n"
+          <> "decl-node \"example.vendor.node\" { }\n"
+          <> footer
+      crossModuleExtensionLeak =
+        header "test.extension.owner" ""
+          <> "extension example.vendor 1;\n"
+          <> footer
+          <> "module @test.extension.consumer#2 ["
+          <> "languageVersion = \"kappa-v1\", "
+          <> "compilerInterfaceVersion = \"1\", "
+          <> "sourceModuleIdentity = \"test.extension.consumer\""
+          <> semanticVersionMetadata
+          <> "] {\n"
+          <> "decl-node \"example.vendor.node\" { }\n"
+          <> footer
+      missingSemanticVersion =
+        "kcore 1;\nmodule @test.missing-semantic-version#1 ["
+          <> "languageVersion = \"kappa-v1\", "
+          <> "compilerInterfaceVersion = \"1\", "
+          <> "sourceModuleIdentity = \"test.missing-semantic-version\", "
+          <> "typeLevelAlgebraVersion = \"1\", "
+          <> "levelConstructorNormalizerVersion = \"1\", "
+          <> "levelRigidEntailmentVersion = \"1\", "
+          <> "levelPrincipalInferenceVersion = \"1\"] {\n"
+          <> footer
+      unsupportedAdvertisedExtension =
+        header "test.unsupported-extension" ""
+          <> "extension unregistered.vendor 1;\n"
+          <> "decl-node \"unregistered.vendor.node\" { }\n"
+          <> footer
+      builtinExtensionBypass =
+        header "test.builtin-extension-bypass" ""
+          <> "def ordinary @test.builtin-extension-bypass.bad#2 : Type 1 { body = "
+          <> "term-node \"impl.kappa.core.record-type\" { "
+          <> "names = [string-value(\"x\")]; "
+          <> "fields = [term-value(((ordinary ordinary omega explicit value %x#0 : Type 0) -> Type 0))]; }; }\n"
+          <> footer
+      forgedAscription =
+        header "test.forged-ascription" ""
+          <> "def ordinary @test.forged-ascription.bad#2 : Type 1 { body = "
+          <> "apply ascribe Type 0 : ((ordinary ordinary omega explicit value %x#0 : Type 0) -> Type 1) "
+          <> "(explicit Type 0); }\n"
+          <> footer
+      forgedTypedGenericResult =
+        header "test.forged-generic-result" ""
+          <> "extension impl.kappa 1;\n"
+          <> "def ordinary @test.forged-generic-result.bad#2 : Type 1 { body = "
+          <> "term-node \"impl.kappa.core.thunk\" { "
+          <> "result-type = term-value(Type 1); value = term-value(Type 0); }; }\n"
+          <> footer
+      inconsistentConstraints =
+        header "test.inconsistent-constraints" ""
+          <> "axiom ordinary @test.inconsistent-constraints.A#2 .{^u#0} : Type ^u#0 "
+          <> "where { succ(^u#0) <= ^u#0; };\n"
+          <> footer
+      obsoleteConstraintEvidence =
+        header "test.obsolete-constraint-evidence" ""
+          <> "def ordinary @test.obsolete-constraint-evidence.bad#2 : Type 0 { body = "
+          <> "lift [0 <= 0 by constraint(0)] Type 0; }\n"
+          <> footer
+      localUniverseAlphaA =
+        header "test.local-universe-alpha" ""
+          <> "def ordinary @test.local-universe-alpha.value#2 : Type 1 { body = "
+          <> "letrec { def ordinary %poly#7 .{^inner#12} : Type succ(^inner#12) "
+          <> "{ body = Type ^inner#12; } } in Type 0; }\n"
+          <> footer
+      localUniverseAlphaB =
+        header "test.local-universe-alpha" ""
+          <> "def ordinary @test.local-universe-alpha.value#2 : Type 1 { body = "
+          <> "letrec { def ordinary %renamed#33 .{^level#91} : Type succ(^level#91) "
+          <> "{ body = Type ^level#91; } } in Type 0; }\n"
+          <> footer
+      disjointLocalReuseA =
+        header "test.disjoint-local-alpha" ""
+          <> "extension example.vendor 1;\n"
+          <> "decl-node \"example.vendor.node\" { "
+          <> "left = term-value(lambda (ordinary ordinary omega explicit value %x#7 : Type 0) { %x#7 }); "
+          <> "right = term-value(lambda (ordinary ordinary omega explicit value %x#7 : Type 0) { %x#7 }); }\n"
+          <> footer
+      disjointLocalReuseB =
+        header "test.disjoint-local-alpha" ""
+          <> "extension example.vendor 1;\n"
+          <> "decl-node \"example.vendor.node\" { "
+          <> "left = term-value(lambda (ordinary ordinary omega explicit value %left#41 : Type 0) { %left#41 }); "
+          <> "right = term-value(lambda (ordinary ordinary omega explicit value %right#70 : Type 0) { %right#70 }); }\n"
+          <> footer
+      dependencyOrderInput =
+        header "test.dependency-order" ""
+          <> "def ordinary @test.dependency-order.user#10 : Type 0 { body = @test.dependency-order.dependency#20; }\n"
+          <> "axiom ordinary @test.dependency-order.dependency#20 : Type 0;\n"
+          <> footer
+      cycleOrderInput =
+        header "test.cycle-order" ""
+          <> "def ordinary @test.cycle-order.right#20 : Type 0 { body = @test.cycle-order.left#10; }\n"
+          <> "def ordinary @test.cycle-order.left#10 : Type 0 { body = @test.cycle-order.right#20; }\n"
+          <> footer
+      structured =
+        header "test.structured" ""
+          <> "extension example.vendor 1;\n"
+          <> "axiom ordinary @test.structured.level#2 : @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c;\n"
+          <> "axiom ordinary @test.structured.F#3 : Type level-term(@test.structured.level#2);\n"
+          <> "def ordinary @test.structured.value#4 : Type 1 { body = block {\n"
+          <> "  let (ordinary ordinary omega explicit value %x#9 : Type 1) = Type 0;\n"
+          <> "  letrec { def ordinary %again#8 : Type 1 { body = Type 0; } } in\n"
+          <> "  case %x#9 : Type 1 { default { %x#9 } }\n"
+          <> "}; }\n"
+          <> "decl-node \"example.vendor.node\" { mode = ordinary; quantity = quantity-value(affine); explicitness = implicit; access = borrow; level = level-value(succ(0)); values = [string-value(\"x\"), integer-value(7)]; }\n"
+          <> footer
+      invalidLevelTerm =
+        header "test.badlevel" ""
+          <> "axiom ordinary @test.badlevel.notLevel#2 : Type 0;\n"
+          <> "axiom ordinary @test.badlevel.F#3 : Type level-term(@test.badlevel.notLevel#2);\n"
+          <> footer
+      nonTotalLevelTerm =
+        header "test.nontotal-level" ""
+          <> "axiom ordinary @test.nontotal-level.F#2 : Type level-term("
+          <> "letrec { def ordinary %loop#0 : @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c "
+          <> "{ body = %loop#0; } } in %loop#0);\n"
+          <> footer
+      unavailableIdentity =
+        header "test.unavailable" ""
+          <> "axiom ordinary @test.unavailable.bad#2 : @missing.external.Type#deadbeef;\n"
+          <> footer
+      unrelatedLiftEvidence =
+        header "test.badevidence" ""
+          <> "axiom ordinary @test.badevidence.notProof#2 .{^u#0, ^v#1} : Type 0;\n"
+          <> "def ordinary @test.badevidence.raise#3 .{^u#0, ^v#1} : "
+          <> "((ordinary ordinary omega explicit value %A#0 : Type ^u#0) -> Type ^v#1) "
+          <> "{ body = "
+          <> "lambda (ordinary ordinary omega explicit value %A#0 : Type ^u#0) { "
+          <> "lift [^u#0 <= ^v#1 by @test.badevidence.notProof#2] %A#0 }; }\n"
+          <> footer
+      forgedParametricLocalEvidence =
+        header "test.forged-parametric-local-evidence" ""
+          <> "def ordinary @test.forged-parametric-local-evidence.raise#2 .{^u#0, ^v#1} : "
+          <> "((parametric ordinary 0 implicit value %fake#0 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^u#0); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); })) -> "
+          <> "((ordinary ordinary omega explicit value %A#1 : Type ^u#0) -> Type ^v#1)) "
+          <> "{ body = lambda (parametric ordinary 0 implicit value %fake#0 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^u#0); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); })) { "
+          <> "lambda (ordinary ordinary omega explicit value %A#1 : Type ^u#0) { "
+          <> "lift [^u#0 <= ^v#1 by %fake#0] %A#1 } }; }\n"
+          <> footer
+      proofBinderOriginModule generatedMarker =
+        header "test.proof-binder-origin" ""
+          <> "extension impl.kappa 1;\n"
+          <> "axiom ordinary @test.proof-binder-origin.raise#2 .{^u#0, ^v#1} : "
+          <> "((ordinary ordinary 0 implicit value" <> generatedMarker <> " %proof#0 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^u#0); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); })) -> Type 0);\n"
+          <> footer
+      sourceProofBinder = proofBinderOriginModule ""
+      generatedProofBinder = proofBinderOriginModule " generated"
+      forgedGeneratedOrdinaryBinder =
+        header "test.forged-generated-ordinary-binder" ""
+          <> "axiom ordinary @test.forged-generated-ordinary-binder.bad#2 : "
+          <> "((ordinary ordinary omega explicit value generated %value#0 : Type 0) -> Type 0);\n"
+          <> footer
+      composedCertificate =
+        header "test.composed-certificate" ""
+          <> "extension impl.kappa 1;\n"
+          <> "level-certificate @certificate.test.composed#100 .{^u#0, ^v#1, ^w#2} : ^u#0 <= ^w#2 "
+          <> "where { ^u#0 <= ^v#1; ^v#1 <= ^w#2; } { "
+          <> "trans { assumption(0); assumption(1); } }\n"
+          <> "def ordinary @test.composed-certificate.raise#2 .{^u#0, ^v#1, ^w#2} : "
+          <> "((ordinary ordinary 0 implicit value %uv#0 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^u#0); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); })) -> "
+          <> "((ordinary ordinary 0 implicit value %vw#1 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^w#2); })) -> "
+          <> "((ordinary ordinary omega explicit value %A#2 : Type ^u#0) -> Type ^w#2))) "
+          <> "{ body = "
+          <> "lambda (ordinary ordinary 0 implicit value %uv#0 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^u#0); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); })) { "
+          <> "lambda (ordinary ordinary 0 implicit value %vw#1 : "
+          <> "apply @std.typelevel.LevelLe#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e4c6576656c4c65 "
+          <> "(explicit term-node \"impl.kappa.level-value\" { level = level-value(^v#1); }, "
+          <> "explicit term-node \"impl.kappa.level-value\" { level = level-value(^w#2); })) { "
+          <> "lambda (ordinary ordinary omega explicit value %A#2 : Type ^u#0) { "
+          <> "lift [^u#0 <= ^w#2 by certificate(@certificate.test.composed#100.{^u#0, ^v#1, ^w#2})] %A#2 } } }; }\n"
+          <> footer
+      badCertificateAssumption =
+        header "test.bad-certificate-assumption" ""
+          <> "level-certificate @certificate.test.bad-assumption#100 .{^u#0, ^v#1} : ^u#0 <= ^v#1 "
+          <> "where { ^u#0 <= ^v#1; } { assumption(1); }\n"
+          <> footer
+      redundantCertificateProof =
+        header "test.canonical-certificate" ""
+          <> "level-certificate @certificate.test.canonical#100 .{^u#0, ^v#1} : ^u#0 <= ^v#1 "
+          <> "where { ^u#0 <= ^v#1; } { trans { refl ^u#0; assumption(0); } }\n"
+          <> footer
+      directCertificateProof =
+        header "test.canonical-certificate" ""
+          <> "level-certificate @certificate.test.canonical#100 .{^u#0, ^v#1} : ^u#0 <= ^v#1 "
+          <> "where { ^u#0 <= ^v#1; } { assumption(0); }\n"
+          <> footer
+      parametricGlobalPromotion =
+        header "test.parametric-global-promotion" ""
+          <> "axiom parametric @test.parametric-global-promotion.hidden#2 : Type 0;\n"
+          <> "def ordinary @test.parametric-global-promotion.bad#3 : Type 0 { "
+          <> "body = @test.parametric-global-promotion.hidden#2; }\n"
+          <> footer
+      dependentParametricApplication =
+        header "test.dependent-parametric-application" ""
+          <> "axiom ordinary @test.dependent-parametric-application.typeIdentity#2 : "
+          <> "((parametric parametric 0 explicit value %T#0 : Type 0) -> Type 0);\n"
+          <> "def ordinary @test.dependent-parametric-application.bad#3 : "
+          <> "((parametric parametric 0 explicit value %A#1 : Type 0) -> Type 0) { body = "
+          <> "lambda (parametric parametric 0 explicit value %A#1 : Type 0) { "
+          <> "apply @test.dependent-parametric-application.typeIdentity#2 (explicit %A#1) }; }\n"
+          <> footer
+      constantParametricApplication =
+        header "test.constant-parametric-application" ""
+          <> "axiom ordinary @test.constant-parametric-application.constant#2 : "
+          <> "((parametric parametric 0 explicit value %T#0 : Type 0) -> @std.prelude.Int#4b415050413a76313a4b436f7265476c6f62616c007374642e7072656c7564652e496e74);\n"
+          <> "def ordinary @test.constant-parametric-application.ok#3 : "
+          <> "((parametric parametric 0 explicit value %A#1 : Type 0) -> @std.prelude.Int#4b415050413a76313a4b436f7265476c6f62616c007374642e7072656c7564652e496e74) { body = "
+          <> "lambda (parametric parametric 0 explicit value %A#1 : Type 0) { "
+          <> "apply @test.constant-parametric-application.constant#2 (explicit %A#1) }; }\n"
+          <> footer
+      unordered =
+        header "test.order" ""
+          <> "axiom ordinary @test.order.z#20 : Type 0;\n"
+          <> "def ordinary @test.order.id#10 .{^u#0} : "
+          <> "((parametric parametric 0 explicit value %A#9 : Type ^u#0) -> "
+          <> "((ordinary ordinary omega explicit value %x#5 : %A#9) -> %A#9)) { "
+          <> "body = lambda (parametric parametric 0 explicit value %A#9 : Type ^u#0) { "
+          <> "lambda (ordinary ordinary omega explicit value %x#5 : %A#9) { %x#5 } }; }\n"
+          <> footer
+      alphaRenamed =
+        header "test.order" ""
+          <> "axiom ordinary @test.order.z#20 : Type 0;\n"
+          <> "def ordinary @test.order.id#10 .{^different#41} : "
+          <> "((parametric parametric 0 explicit value %Carrier#70 : Type ^different#41) -> "
+          <> "((ordinary ordinary omega explicit value %value#61 : %Carrier#70) -> %Carrier#70)) { "
+          <> "body = lambda (parametric parametric 0 explicit value %Carrier#70 : Type ^different#41) { "
+          <> "lambda (ordinary ordinary omega explicit value %value#61 : %Carrier#70) { %value#61 } }; }\n"
+          <> footer
+      rejectedWith code source = case parseVerified source of
+        Left err -> kcteCode err == code
+        Right _ -> False
+      parses source = either (const False) (const True) (parseKCoreText source)
+      canonical = printCanonicalKCoreText <$> parseVerified unordered
+      canonicalStable = do
+        first <- canonical
+        parsed <- parseVerified first
+        pure (printCanonicalKCoreText parsed == first)
+      canonicalOrdered = case canonical of
+        Right text ->
+          let (_, afterId) = T.breakOn "@test.order.id#10" text
+           in not (T.null afterId) && "@test.order.z#20" `T.isInfixOf` afterId
+        Left _ -> False
+      structuredStable = do
+        first <- parseVerified structured
+        let canonicalText = printCanonicalKCoreText first
+        second <- parseVerified canonicalText
+        pure (printCanonicalKCoreText second == canonicalText)
+      canonicalLocals = case canonical of
+        Right text ->
+          "%v#0" `T.isInfixOf` text
+            && "%v#1" `T.isInfixOf` text
+            && not ("%A#9" `T.isInfixOf` text)
+            && not ("%x#5" `T.isInfixOf` text)
+        Left _ -> False
+      alphaStable = do
+        original <- parseVerified unordered
+        renamed <- parseVerified alphaRenamed
+        pure
+          ( printCanonicalKCoreText original == printCanonicalKCoreText renamed
+              && semanticHashKCoreText original == semanticHashKCoreText renamed
+          )
+      localUniverseAlphaStable = do
+        first <- parseVerified localUniverseAlphaA
+        second <- parseVerified localUniverseAlphaB
+        pure
+          ( printCanonicalKCoreText first == printCanonicalKCoreText second
+              && semanticHashKCoreText first == semanticHashKCoreText second
+          )
+      disjointLocalAlphaStable = do
+        first <- parseVerified disjointLocalReuseA
+        second <- parseVerified disjointLocalReuseB
+        pure
+          ( printCanonicalKCoreText first == printCanonicalKCoreText second
+              && semanticHashKCoreText first == semanticHashKCoreText second
+          )
+      declarationAppearsBefore firstRef secondRef source = case printCanonicalKCoreText <$> parseVerified source of
+        Right text ->
+          let (_, fromFirst) = T.breakOn firstRef text
+           in not (T.null fromFirst) && secondRef `T.isInfixOf` fromFirst
+        Left _ -> False
+      certificateProofCanonical = do
+        redundant <- parseVerified redundantCertificateProof
+        direct <- parseVerified directCertificateProof
+        pure
+          ( printCanonicalKCoreText redundant == printCanonicalKCoreText direct
+              && semanticHashKCoreText redundant == semanticHashKCoreText direct
+          )
+      proofBinderOriginIsSemantic = do
+        sourceWritten <- parseVerified sourceProofBinder
+        generated <- parseVerified generatedProofBinder
+        pure
+          ( printCanonicalKCoreText sourceWritten /= printCanonicalKCoreText generated
+              && semanticHashKCoreText sourceWritten /= semanticHashKCoreText generated
+              && " value generated %v#0" `T.isInfixOf` printCanonicalKCoreText generated
+          )
+      checks =
+        [ ("constructor identities participate in stable-id validation", rejectedWith "E_KCORE_TEXT_INVALID" constructorCollision)
+        , ("every KCore nominal declaration selects a certificate", not (parses missingNominalCertificate))
+        , ("every KCore nominal universe binder records its effective role", not (parses missingNominalRole))
+        , ("all semantic-version pins are mandatory", rejectedWith "E_KCORE_TEXT_INVALID" missingSemanticVersion)
+        , ("language version metadata is checked, not merely present", rejectedWith "E_KCORE_TEXT_UNSUPPORTED_VERSION" wrongLanguageVersion)
+        , ("compiler-interface version metadata is checked, not merely present", rejectedWith "E_KCORE_TEXT_UNSUPPORTED_VERSION" wrongCompilerInterfaceVersion)
+        , ("schema certificates pin all semantic-layer versions", rejectedWith "E_KCORE_SCHEMA_CERTIFICATE_INVALID" wrongSchemaCertificateVersion)
+        , ( "source-module metadata is opaque provenance and remains semantic"
+          , case (parseVerified unordered, parseVerified alternateSourceModuleIdentity) of
+              (Right original, Right alternate) ->
+                semanticHashKCoreText original /= semanticHashKCoreText alternate
+              _ -> False
+          )
+        , ("constructor field identities are authenticated", parses forgedConstructorFieldIdentity && rejectedWith "E_KCORE_TEXT_INVALID" forgedConstructorFieldIdentity)
+        , ("constructor field payload positions are unique", parses duplicateConstructorFieldPosition && rejectedWith "E_KCORE_TEXT_INVALID" duplicateConstructorFieldPosition)
+        , ("constructor field payload positions are in range", parses outOfRangeConstructorFieldPosition && rejectedWith "E_KCORE_TEXT_INVALID" outOfRangeConstructorFieldPosition)
+        , ("declared global universe instantiation arity is exact", rejectedWith "E_KCORE_TEXT_INVALID" arityMismatch)
+        , ("generic tags require an advertised owning extension", rejectedWith "E_KCORE_TEXT_INVALID" unadvertisedExtension)
+        , ("advertised generic extension is accepted", either (const False) (const True) (parseVerified advertisedExtension))
+        , ("extension ownership is module-local", rejectedWith "E_KCORE_TEXT_INVALID" crossModuleExtensionLeak)
+        , ("an extension declaration cannot register an unsupported verifier", parses unsupportedAdvertisedExtension && rejectedWith "E_KCORE_TEXT_INVALID" unsupportedAdvertisedExtension)
+        , ("parsed implementation nodes cannot bypass extension ownership", rejectedWith "E_KCORE_TEXT_INVALID" builtinExtensionBypass)
+        , ("nested ascriptions cannot manufacture a function type", parses forgedAscription && rejectedWith "E_KCORE_TEXT_INVALID" forgedAscription)
+        , ("typed generic nodes cannot forge their result type", parses forgedTypedGenericResult && rejectedWith "E_KCORE_TEXT_INVALID" forgedTypedGenericResult)
+        , ("declaration constraint blocks are rejected outside certificates", not (parses inconsistentConstraints))
+        , ("constraint-index lift evidence is rejected", not (parses obsoleteConstraintEvidence))
+        , ("standard block/case/generic nodes and typed level-term round trip", either (const False) id structuredStable)
+        , ("level-term rejects a producer not typed by the TypeLevel semantic identity", rejectedWith "E_KCORE_TEXT_INVALID" invalidLevelTerm)
+        , ("level-term independently rejects an unproved recursive producer", rejectedWith "E_KCORE_TEXT_INVALID" nonTotalLevelTerm)
+        , ("unavailable external semantic identities reject", rejectedWith "E_KCORE_TEXT_INVALID" unavailableIdentity)
+        , ("lift evidence must prove the asserted level relation", rejectedWith "E_KCORE_TEXT_INVALID" unrelatedLiftEvidence)
+        , ("parametric proof binders cannot authorize level relations", rejectedWith "E_KCORE_TEXT_INVALID" forgedParametricLocalEvidence)
+        , ("source-written and generated declaration proof binders have distinct semantic identity", either (const False) id proofBinderOriginIsSemantic)
+        , ("only authenticated declaration constraints may carry generated binder provenance", rejectedWith "E_KCORE_TEXT_INVALID" forgedGeneratedOrdinaryBinder)
+        , ("composed lift certificates replay scoped assumptions", either (const False) (const True) (parseVerified composedCertificate))
+        , ("certificate assumptions are checked against their own normalized block", rejectedWith "E_KCORE_LEVEL_CERTIFICATE_INVALID" badCertificateAssumption)
+        , ("semantically neutral certificate proof nodes canonicalize away", either (const False) id certificateProofCanonical)
+        , ("parametric global facets cannot enter ordinary positions", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" parametricGlobalPromotion)
+        , ("dependent parametric application preserves its argument dependency", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" dependentParametricApplication)
+        , ("constant parametric application remains ordinary", either (const False) (const True) (parseVerified constantParametricApplication))
+        , ("canonical declarations use dependency/identity order", canonicalOrdered)
+        , ("canonical local binders are numbered in preorder", canonicalLocals)
+        , ("canonical text and semantic hashes are alpha-invariant", either (const False) id alphaStable)
+        , ("local universe telescopes are alpha-invariant", either (const False) id localUniverseAlphaStable)
+        , ("disjoint lexical binders canonicalize by occurrence", either (const False) id disjointLocalAlphaStable)
+        , ("canonical SCC order places dependencies before users", declarationAppearsBefore "@test.dependency-order.dependency#20" "@test.dependency-order.user#10" dependencyOrderInput)
+        , ("canonical recursive SCC members use stable identity order", declarationAppearsBefore "@test.cycle-order.left#10" "@test.cycle-order.right#20" cycleOrderInput)
+        , ("canonical parse-print is byte stable", either (const False) id canonicalStable)
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "kcoreTextCanonicalDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    case parseVerified composedCertificate of
+      Left err -> putStrLn ("  composed certificate error=" ++ show err)
+      Right _ -> pure ()
+    case (parseVerified sourceProofBinder, parseVerified generatedProofBinder) of
+      (Left err, _) -> putStrLn ("  source proof binder error=" ++ show err)
+      (_, Left err) -> putStrLn ("  generated proof binder error=" ++ show err)
+      (Right sourceWritten, Right generated) -> do
+        putStrLn ("  source proof binder hash=" ++ show (semanticHashKCoreText sourceWritten))
+        putStrLn ("  generated proof binder hash=" ++ show (semanticHashKCoreText generated))
+        TIO.putStrLn (printCanonicalKCoreText generated)
+    case canonical of
+      Left err -> putStrLn ("  canonical input rejected: " ++ T.unpack (kcteMessage err))
+      Right text -> TIO.putStrLn text
+  pure (null failures)
+
+-- | §30.2.2.9: erased binders retain typed justification, while malformed
+-- structural observation modes fail closed before either emitter sees them.
+universeCapabilityBoundary :: IO Bool
+universeCapabilityBoundary = do
+  let src =
+        T.unlines
+          [ "module universe_capability"
+          , "param : (parametric 0 A : Type0) -> Unit"
+          , "let param A = ()"
+          , "ordinary : (ordinary 0 A : Type0) -> Unit"
+          , "let ordinary A = ()"
+          , "proof : (@0 p : True) -> Unit"
+          , "let proof @p = ()"
+          ]
+      st = cuState (compileSourceWithPrelude "universe-capability-boundary.kp" src)
+      ir = lowerKBackendIR st
+      erasures = concatMap bbErasures (Map.elems (kbirBodies ir))
+      hasParam = any (\e -> case beProvenance e of ErasedParametricTypeWitness LZero -> True; _ -> False) erasures
+      hasOrdinary = any ((== ErasedOrdinaryTypeCode) . beProvenance) erasures
+      hasEvidence = any ((== ErasedProofOrTraitEvidence) . beProvenance) erasures
+      owner = GName (ModuleName [T.pack "universe_capability"]) (T.pack "param")
+      malformed =
+        st
+          { csCoreBodies =
+              Map.singleton owner
+                (CLamM Ordinary Expl Q0 "A" (CCtor prelUnit Nothing []))
+          }
+      malformedCodes = map bivCode (validateKBackendIR (lowerKBackendIR malformed))
+      checkpointCodes = map bivCode (validateCoreCapabilities malformed)
+      unresolvedObservation =
+        st
+          { csCoreBodies =
+              Map.singleton owner
+                (CLamM Parametric Expl Q0 "A" (CMeta 987))
+          }
+      unresolvedObservationCodes = map bivCode (validateCoreCapabilities unresolvedObservation)
+      escapedLevel =
+        st
+          { csCoreBodies = Map.singleton owner (CSort (LVar 0))
+          }
+      escapedLevelCodes = map bivCode (validateCoreCapabilities escapedLevel)
+      hiddenDoLevel =
+        st {csCoreBodies = Map.singleton owner (CDo Nothing [KExpr (CSort (LMeta 77))])}
+      hiddenDoCodes = map bivCode (validateCoreCapabilities hiddenDoLevel)
+      modeLevel =
+        st
+          { csCoreBodies = Map.singleton owner (CSort (LMeta 78))
+          , csGlobals = Map.adjust (\def -> def {gdType = VSort (LMeta 79)}) owner (csGlobals st)
+          }
+      modeLevelCodes = map bivCode (validateCoreCapabilities modeLevel)
+      annotationLevelMetas =
+        ( levelMetasOfTerm (CCtor prelUnit (Just (CSort (LMeta 80))) [])
+        , levelMetasOfTerm (CMatch (CGlob prelUnit) (Just (CSort (LMeta 81))) [])
+        )
+      generatedOwner = GName (ModuleName [T.pack "universe_capability"]) (T.pack "generatedBad")
+      mismatchedGeneratedMode =
+        st
+          { csGlobals =
+              Map.insert generatedOwner
+                (GlobalDef
+                  (VPiEvidenceM Ordinary FormationOrdinary Expl Q0 False "A" Nothing
+                    BinderSourceWritten
+                    (VSort LZero) (Closure [] (CSort LZero)))
+                  Nothing False)
+                (csGlobals st)
+          , csCoreBodies =
+              Map.singleton generatedOwner
+                (CLamM Parametric Expl Q0 "A" (CApp Expl (CGlob (gPrel "List")) (CVar 0)))
+          }
+      mismatchedGeneratedModeCodes = map bivCode (validateCoreCapabilities mismatchedGeneratedMode)
+      patternOwner = GName (ModuleName [T.pack "universe_capability"]) (T.pack "patternBad")
+      patternType =
+        VPiEvidenceM Ordinary FormationOrdinary Expl QW False "s" Nothing
+          BinderSourceWritten
+          (VRecordTQ [RecordField "A" Parametric FormationParametric Q0 Nothing (VSort LZero)])
+          (Closure [] (CSort LZero))
+      mismatchedPatternMode =
+        st
+          { csGlobals =
+              Map.insert patternOwner (GlobalDef patternType Nothing False) (csGlobals st)
+          , csCoreBodies =
+              Map.singleton patternOwner
+                (CLamM Ordinary Expl QW "s"
+                  (CMatch (CVar 0) Nothing
+                    [CaseAlt
+                      (CPRecordM [("A", CPVarM Ordinary "A")] Nothing)
+                      Nothing
+                      (CVar 0)]))
+          }
+      mismatchedPatternModeCodes = map bivCode (validateCoreCapabilities mismatchedPatternMode)
+      returnOwner = GName (ModuleName [T.pack "universe_capability"]) (T.pack "returnBad")
+      mismatchedReturnMode =
+        st
+          { csGlobals =
+              Map.insert returnOwner
+                (GlobalDef
+                  (VPiEvidenceM Parametric FormationParametric Expl Q0 False "A" Nothing BinderSourceWritten (VSort LZero)
+                    (Closure [] (CApp Expl (CGlob (gPrel "UIO")) (CSort LZero))))
+                  Nothing False)
+                (csGlobals st)
+          , csCoreBodies =
+              Map.singleton returnOwner
+                (CLamM Parametric Expl Q0 "A" (CDo Nothing [KReturn (CVar 0)]))
+          }
+      mismatchedReturnModeViolations = validateCoreCapabilities mismatchedReturnMode
+      mismatchedReturnModeCodes = map bivCode mismatchedReturnModeViolations
+      libSrc =
+        T.unlines
+          [ "module lib"
+          , "type Sig : Type = (0 A : Type, value : A)"
+          , "type Keep (0 T : Type) : Type = T"
+          , "plus : TypeLevel -> TypeLevel -> TypeLevel"
+          , "let plus = (+)"
+          , "copy : Sig -> Sig"
+          , "let copy s = (0 A = s.A, value = s.value)"
+          ]
+      appSrc =
+        T.unlines
+          [ "module app"
+          , "import lib"
+          , "use : lib.Sig -> lib.Sig"
+          , "let use x = lib.copy x"
+          , "asInt : lib.Keep Int"
+          , "let asInt = 1"
+          , "type ViaImportedAlias : Typeω ="
+          , "    (u : TypeLevel) -> (v : TypeLevel) ->"
+          , "    (@0 bound : lib.plus u v < ω) -> Type(lib.plus u v)"
+          ]
+      roundTrip = compileFiles [("lib.kp", libSrc), ("app.kp", appSrc)]
+      roundTripState = cuState roundTrip
+      keepName = GName (ModuleName [T.pack "lib"]) (T.pack "Keep")
+      plusName = GName (ModuleName [T.pack "lib"]) (T.pack "plus")
+      viaAliasName = GName (ModuleName [T.pack "app"]) (T.pack "ViaImportedAlias")
+      keepMode = gdObservationMode <$> Map.lookup keepName (csGlobals roundTripState)
+      plusIdentity = Map.lookup plusName (csLevelOperatorAliases roundTripState)
+      viaAliasNormalized =
+        maybe False
+          (Set.notMember plusName . globalsOfTerm)
+          (Map.lookup viaAliasName (csGlobals roundTripState) >>= gdCoreType)
+      roundTripErrors = filter isError (cuDiags roundTrip)
+      aliasCacheIndependentArtifact =
+        roundTripState
+          { csLevelOperatorAliases = Map.delete plusName (csLevelOperatorAliases roundTripState)
+          }
+      aliasCacheIndependentCodes = map bivCode (validateCoreCapabilities aliasCacheIndependentArtifact)
+      malformedArtifact =
+        roundTripState
+          { csGlobals =
+              Map.adjust
+                (\def -> def {gdType = VSort (LVar 0)})
+                keepName
+                (csGlobals roundTripState)
+          }
+      malformedArtifactCodes = map bivCode (validateCoreCapabilities malformedArtifact)
+      missingUniverseSpine =
+        st
+          { csCoreBodies = Map.singleton owner (CGlobal prelEqType [])
+          }
+      missingUniverseSpineCodes = map bivCode (validateCoreCapabilities missingUniverseSpine)
+      lateConstraintSource =
+        T.unlines
+          [ "module late_constraint_spine"
+          , "type Id A = A"
+          , "useF :"
+          , "    (F : (A : Type) -> Type) ->"
+          , "    (A : Type) ->"
+          , "    F A -> F A"
+          , "let useF F A x = x"
+          , "idInt : Id Int -> Id Int"
+          , "let idInt x = useF Id Int x"
+          ]
+      lateConstraintUnit = compileSourceWithPrelude "late-constraint-spine.kp" lateConstraintSource
+      lateConstraintErrors = filter isError (cuDiags lateConstraintUnit)
+      lateConstraintCodes = map bivCode (validateCoreCapabilities (cuState lateConstraintUnit))
+      checks =
+        [ ("parametric witness erasure is distinguished", hasParam)
+        , ("ordinary type-code erasure is distinguished", hasOrdinary)
+        , ("proof/trait evidence erasure is distinguished", hasEvidence)
+        , ("malformed witness-to-runtime Core fails closed", T.pack "E_PARAMETRIC_TYPE_PROMOTION" `elem` malformedCodes)
+        , ("malformed witness-to-runtime Core fails at typed checkpoint", T.pack "E_PARAMETRIC_TYPE_PROMOTION" `elem` checkpointCodes)
+        , ("observation analysis failures reject even in parametric results", T.pack "E_BACKENDIR_OBSERVATION_ANALYSIS" `elem` unresolvedObservationCodes)
+        , ("escaped level identity fails at typed checkpoint", T.pack "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" `elem` escapedLevelCodes)
+        , ("do-kernel levels are checked before erasure", T.pack "E_UNSOLVED_METAVARIABLE" `elem` hiddenDoCodes)
+        , ("Core and interface mode-bearing levels are checked", length (filter (== T.pack "E_UNSOLVED_METAVARIABLE") modeLevelCodes) >= 2)
+        , ("typed constructor and match annotations participate in level closure", annotationLevelMetas == ([80], [81]))
+        , ("generated Core cannot mislabel observation modes", T.pack "E_PARAMETRIC_TYPE_PROMOTION" `elem` mismatchedGeneratedModeCodes)
+        , ("generated Core cannot mislabel record-pattern binders", T.pack "E_PARAMETRIC_TYPE_PROMOTION" `elem` mismatchedPatternModeCodes)
+        , ("generated do return cannot promote a parametric witness", T.pack "E_PARAMETRIC_TYPE_PROMOTION" `elem` mismatchedReturnModeCodes)
+        , ("two-module witness artifact round trip typechecks", null roundTripErrors)
+        , ("two-module alias retains parametric observation mode", keepMode == Just Parametric)
+        , ("two-module TypeLevel alias retains semantic identity", plusIdentity == Just LevelOperatorAdd)
+        , ("finalized level proofs normalize imported operator aliases to certified constructors",
+            viaAliasNormalized
+              && T.pack "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" `notElem` aliasCacheIndependentCodes)
+        , ("malformed imported type artifact fails closed", T.pack "E_UNSOLVED_METAVARIABLE" `elem` malformedArtifactCodes)
+        , ("generalized globals require an exact hidden-universe spine", T.pack "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" `elem` missingUniverseSpineCodes)
+        , ("late generated constraint binders repair earlier call spines", null lateConstraintErrors && null lateConstraintCodes)
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "universeCapabilityBoundary FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    putStrLn ("  erasures=" ++ show erasures)
+    putStrLn ("  malformedCodes=" ++ show malformedCodes)
+    putStrLn ("  roundTripErrors=" ++ show roundTripErrors)
+    putStrLn ("  lateConstraintErrors=" ++ show lateConstraintErrors)
+    putStrLn ("  lateConstraintCodes=" ++ show lateConstraintCodes)
+  pure (null failures)
+
+-- | §30.2.1B/§31.2: schema lifts may disappear at the runtime boundary only
+-- after the finalized typed-Core checkpoint independently replays their
+-- nominal summary and evidence. A selected certificate identity is a lookup
+-- key, not authority by itself.
+schemaLiftBackendCertificateBoundary :: IO Bool
+schemaLiftBackendCertificateBoundary = do
+  let source =
+        T.unlines
+          [ "module schema_lift_boundary"
+          , "data Phantom.{irrelevant u} (ordinary 0 A : Type0) : Type0 = Phantom"
+          , "up : Phantom.{0} Int -> Phantom.{3} Int"
+          , "let up x = x"
+          ]
+      state = cuState (compileSourceWithPrelude "schema-lift-boundary.kp" source)
+      family = GName (ModuleName ["schema_lift_boundary"]) "Phantom"
+      owner = GName (ModuleName ["schema_lift_boundary"]) "up"
+      rewriteLift transform =
+        Map.adjust
+          (mapTermWithDepth (\_ term -> case term of
+            CSchemaLift family' sourceLevels targetLevels roles evidence certificate sourceArguments targetArguments inner
+              | family' == family ->
+                  Just (transform sourceLevels targetLevels roles evidence certificate sourceArguments targetArguments inner)
+            _ -> Nothing) 0)
+          owner
+      forgedCertificate =
+        state
+          { csCoreBodies =
+              rewriteLift
+                (\sourceLevels targetLevels roles evidence _ sourceArguments targetArguments inner ->
+                  CSchemaLift family sourceLevels targetLevels roles evidence
+                    (SchemaActionCertificateId "schema:forged") sourceArguments targetArguments inner)
+                (csCoreBodies state)
+          }
+      mismatchedRoleEvidence =
+        state
+          { csCoreBodies =
+              rewriteLift
+                (\sourceLevels targetLevels _ _ certificate sourceArguments targetArguments inner ->
+                  CSchemaLift family sourceLevels targetLevels [Covariant]
+                    [SchemaInvariantEvidence] certificate sourceArguments targetArguments inner)
+                (csCoreBodies state)
+          }
+      mismatchedSourceSpine =
+        state
+          { csCoreBodies =
+              rewriteLift
+                (\sourceLevels targetLevels roles evidence certificate sourceArguments targetArguments inner ->
+                  CSchemaLift family sourceLevels targetLevels roles evidence certificate
+                    (CSort LZero : sourceArguments) targetArguments inner)
+                (csCoreBodies state)
+          }
+      mismatchedSourceArgument =
+        state
+          { csCoreBodies =
+              rewriteLift
+                (\sourceLevels targetLevels roles evidence certificate sourceArguments targetArguments inner ->
+                  CSchemaLift family sourceLevels targetLevels roles evidence certificate
+                    (case sourceArguments of
+                       _ : rest -> CGlob prelUnit : rest
+                       [] -> [])
+                    targetArguments inner)
+                (csCoreBodies state)
+          }
+      transplantedSummary = do
+        definition <- Map.lookup family (csGlobals state)
+        summary <- gdNominalSummary definition
+        pure $
+          makeNominalCumulativitySummary
+            "schema_lift_boundary.OtherFamily"
+            (ncsRoles summary)
+            (ncsExplicitRoles summary)
+            (ncsClosure summary)
+            (ncsExtensionGate summary)
+      transplantedFamilySummary =
+        case transplantedSummary of
+          Nothing -> state
+          Just summary ->
+            state
+              { csGlobals =
+                  Map.adjust (globalDefWithNominalSummary summary) family (csGlobals state)
+              }
+      missingSummary =
+        state
+          { csGlobals =
+              Map.adjust (\definition -> definition {gdNominalSummary = Nothing}) family
+                (csGlobals state)
+          }
+      cleanCodes = map bivCode (validateCoreCapabilities state)
+      forgedCodes = map bivCode (validateCoreCapabilities forgedCertificate)
+      roleCodes = map bivCode (validateCoreCapabilities mismatchedRoleEvidence)
+      sourceSpineCodes = map bivCode (validateCoreCapabilities mismatchedSourceSpine)
+      sourceArgumentCodes = map bivCode (validateCoreCapabilities mismatchedSourceArgument)
+      transplantedCodes = map bivCode (validateCoreCapabilities transplantedFamilySummary)
+      missingCodes = map bivCode (validateCoreCapabilities missingSummary)
+      checks =
+        [ ("verified schema lift crosses the backend boundary", "E_KCORE_SCHEMA_CERTIFICATE_INVALID" `notElem` cleanCodes && "E_UNIVERSE_SCHEMA_LIFT_INVALID" `notElem` cleanCodes)
+        , ("forged schema certificate is rejected", "E_KCORE_SCHEMA_CERTIFICATE_INVALID" `elem` forgedCodes)
+        , ("role/evidence mismatch is rejected", "E_UNIVERSE_SCHEMA_LIFT_INVALID" `elem` roleCodes)
+        , ("source application mismatch is rejected", "E_UNIVERSE_SCHEMA_LIFT_INVALID" `elem` sourceSpineCodes)
+        , ("same-arity source family argument forgery is rejected", "E_UNIVERSE_SCHEMA_LIFT_INVALID" `elem` sourceArgumentCodes)
+        , ("valid summary for another family is rejected", "E_KCORE_SCHEMA_CERTIFICATE_INVALID" `elem` transplantedCodes)
+        , ("missing nominal summary is rejected", "E_KCORE_SCHEMA_CERTIFICATE_INVALID" `elem` missingCodes)
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "schemaLiftBackendCertificateBoundary FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    putStrLn ("  clean=" ++ show cleanCodes)
+    putStrLn ("  forged=" ++ show forgedCodes)
+    putStrLn ("  role=" ++ show roleCodes)
+    putStrLn ("  sourceSpine=" ++ show sourceSpineCodes)
+    putStrLn ("  sourceArgument=" ++ show sourceArgumentCodes)
+    putStrLn ("  transplanted=" ++ show transplantedCodes)
+    putStrLn ("  missing=" ++ show missingCodes)
+  pure (null failures)
+
+-- | §10.4.3/§30.2.1B: certificate identity is derived from the
+-- normalized nominal signature, never diagnostic prose, while trait roles are
+-- replayed from their dictionary fields just like ordinary-data actions.
+nominalVarianceCertificateDomain :: IO Bool
+nominalVarianceCertificateDomain = do
+  let summaryWith _reason =
+        makeNominalCumulativitySummary
+          "certificate_domain.Family"
+          [Covariant]
+          [False]
+          ( makeNominalSignatureClosure 1 [] 0
+              [ NominalClosureClause ClauseSortDeclaration "family" [] "sort" [] NominalPreserveRepresentation
+              , NominalClosureClause ClausePointConstructor "constructor" [] "result" [NominalCovariantUse 0] NominalPreserveRepresentation
+              , NominalClosureClause ClauseEliminator "eliminator" [] "eliminator" [NominalCovariantUse 0] NominalPreserveRepresentation
+              , NominalClosureClause ClauseComputationRule "computation" [] "computation" [NominalCovariantUse 0] NominalPreserveRepresentation
+              ]
+          )
+          Nothing
+      firstSummary = summaryWith "source field oldName stores a type code"
+      renamedSummary = summaryWith "source field newName stores a type code"
+      forgedRepresentation =
+        firstSummary
+          { ncsClosure =
+              (ncsClosure firstSummary)
+                { nscClauses = case nscClauses (ncsClosure firstSummary) of
+                    clause : rest -> clause {nccRepresentationAction = NominalTransformRepresentation} : rest
+                    [] -> []
+                }
+          }
+      traitSource =
+        T.unlines
+          [ "module trait_role_probe"
+          , "trait CarriesCode.{u} ="
+          , "    code : Type u"
+          ]
+      traitState = cuState (compileSourceWithPrelude "trait_role_probe.kp" traitSource)
+      traitFamily = GName (ModuleName ["trait_role_probe"]) "CarriesCode"
+      traitRoles = do
+        definition <- Map.lookup traitFamily (csGlobals traitState)
+        summary <- gdNominalSummary definition
+        pure (ncsRoles summary)
+      witnessSummary mode fieldName = do
+        let source =
+              T.unlines
+                [ "module closure_probe"
+                , "data Witness.{u} : Type0 ="
+                , "    Witness (" <> mode <> " 0 " <> fieldName <> " : Type u)"
+                ]
+            state = cuState (compileSourceWithPrelude "closure_probe.kp" source)
+            family = GName (ModuleName ["closure_probe"]) "Witness"
+        definition <- Map.lookup family (csGlobals state)
+        gdNominalSummary definition
+      ordinarySummary = witnessSummary "ordinary" "A"
+      parametricSummary = witnessSummary "parametric" "A"
+      renamedOrdinarySummary = witnessSummary "ordinary" "Renamed"
+      monotoneSummary proofName =
+        let operator = NLTGlobal ["certificate_domain"] "bump" []
+            goal = NLTApply True (NLTGlobal ["std", "typelevel"] "Monotone" []) operator
+            evidence = NLTGlobal ["certificate_domain"] proofName []
+            witness =
+              NominalMonotoneWitness
+                { nmwParameter = 0
+                , nmwOperator = operator
+                , nmwGoal = goal
+                , nmwEvidence = evidence
+                , nmwDependencies = nominalEvidenceDependencies [goal, evidence]
+                }
+            closure =
+              withNominalMonotoneWitnesses [witness]
+                ( makeNominalSignatureClosure 1 [] 0
+                    [ NominalClosureClause ClauseSortDeclaration "family" [] "sort" [] NominalPreserveRepresentation
+                    , NominalClosureClause ClausePointConstructor "constructor" [] "result" [NominalCovariantUse 0] NominalPreserveRepresentation
+                    , NominalClosureClause ClauseEliminator "eliminator" [] "eliminator" [NominalCovariantUse 0] NominalPreserveRepresentation
+                    , NominalClosureClause ClauseComputationRule "computation" [] "computation" [NominalCovariantUse 0] NominalPreserveRepresentation
+                    ]
+                )
+         in makeNominalCumulativitySummary
+              "certificate_domain.MonotoneFamily" [Covariant] [False] closure Nothing
+      leftMonotoneSummary = monotoneSummary "leftProof"
+      rightMonotoneSummary = monotoneSummary "rightProof"
+      checks =
+        [ ("generated summaries independently verify", verifyNominalCumulativitySummary firstSummary && verifyNominalCumulativitySummary renamedSummary)
+        , ("representation identity is replayed from clause actions", not (verifyNominalCumulativitySummary forgedRepresentation))
+        , ("diagnostic/source names do not change certificate identity", ncsClosureHash firstSummary == ncsClosureHash renamedSummary && ncsCertificateId firstSummary == ncsCertificateId renamedSummary)
+        , ("trait dictionary fields constrain nominal variance", traitRoles == Just [Covariant])
+        , ("binder observation mode changes the normalized nominal closure", (ncsClosureHash <$> ordinarySummary) /= (ncsClosureHash <$> parametricSummary))
+        , ("alpha-only constructor binder renaming preserves closure identity", (ncsClosureHash <$> ordinarySummary) == (ncsClosureHash <$> renamedOrdinarySummary))
+        , ("alpha-only constructor binder renaming preserves the exported summary", ordinarySummary == renamedOrdinarySummary)
+        , ( "selected monotonicity proof identity is audit-only"
+          , verifyNominalCumulativitySummary leftMonotoneSummary
+              && verifyNominalCumulativitySummary rightMonotoneSummary
+              && ncsClosureHash leftMonotoneSummary == ncsClosureHash rightMonotoneSummary
+              && ncsCertificateId leftMonotoneSummary == ncsCertificateId rightMonotoneSummary
+          )
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "nominalVarianceCertificateDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    putStrLn ("  firstSummary=" ++ show firstSummary)
+    putStrLn ("  renamedSummary=" ++ show renamedSummary)
+    putStrLn ("  traitRoles=" ++ show traitRoles)
+    putStrLn ("  ordinarySummary=" ++ show ordinarySummary)
+    putStrLn ("  parametricSummary=" ++ show parametricSummary)
+    putStrLn ("  renamedOrdinarySummary=" ++ show renamedOrdinarySummary)
+  pure (null failures)
 
 -- | §1.2 regression pin: 'scalarRep' must classify a primitive by its
 -- declaration-symbol IDENTITY (the module-qualified 'GName'), not by surface
@@ -239,17 +2481,16 @@ primArgConventionS23c = do
       convDirect name = argConvSelectGlobal ctx (GName primModule (T.pack name))
       fakePrimG = GName (ModuleName [T.pack "test"]) (T.pack "fakeWriteRefWithKindParam")
       fakePrimTy =
-        CPi Expl Q1 False (T.pack "a") (CSort 0) $
-          CPi Expl QW False (T.pack "r") (CGlob prelInt) $
-            CPi Expl QW False (T.pack "v") (CGlob prelInt) $
+        CPiFormedM Ordinary FormationOrdinary Expl Q1 False (T.pack "a") (CSort LZero) $
+          CPiFormedM Ordinary FormationOrdinary Expl QW False (T.pack "r") (CGlob prelInt) $
+            CPiFormedM Ordinary FormationOrdinary Expl QW False (T.pack "v") (CGlob prelInt) $
               CGlob prelUnit
       fakePrimCtx =
         let gd =
               GlobalDef
-                { gdType = eval ctx [] fakePrimTy
-                , gdValue = Just (VPrim (T.pack "__ioWriteRef") [])
-                , gdReducible = False
-                }
+                (eval ctx [] fakePrimTy)
+                (Just (VPrim (T.pack "__ioWriteRef") []))
+                False
             Globals globals = ecGlobals ctx
          in ctx {ecGlobals = Globals (Map.insert fakePrimG gd globals)}
       b = ArgBorrowed
@@ -364,7 +2605,7 @@ replaceGlobInSimpleApp from to = go
     go t = case t of
       CGlob g | g == from -> CGlob to
       CApp ic f a -> CApp ic (go f) (go a)
-      CLam ic q n body -> CLam ic q n (go body)
+      CLamM mode ic q n body -> CLamM mode ic q n (go body)
       other -> other
 
 -- | Perceus RC Stage S1.2 gate: the ownership last-use analysis
@@ -435,10 +2676,10 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "fixture.kp" src
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-            ctorTypes = Map.map ciType (csCtors st)
+            ctorTypes = Map.map (\ci -> OwnershipCtorType (ciUniverses ci) (ciType ci)) (csCtors st)
             -- S1.1 last-use + S1.4 §3a refinement tighten-only invariant.
             xc =
-              crossCheckBodies
+              crossCheckBodiesWithUniverses
                 ctx
                 ctorTypes
                 (csCoreBodies st)
@@ -497,7 +2738,7 @@ ownershipCrossCheckClean = do
           , "let useParamCtor b y ="
           , "  match b"
           , "  case MkBoxF f -> f y + y"
-          , "type RecAlias = (f : PeekInt)"
+          , "type RecAlias = (f : PeekInt,)"
           , "useRecordAlias : RecAlias -> Int -> Int"
           , "let useRecordAlias r y ="
           , "  match r"
@@ -513,18 +2754,18 @@ ownershipCrossCheckClean = do
           , "let useVariant v y ="
           , "  match v"
           , "  case (| f : PeekInt |) -> f y + y"
-          , "foo : (a : Type) -> Int"
+          , "foo : (ω a : Type) -> Int"
           , "let foo a = 0"
-          , "typeOnly : (a : Type) -> Int"
+          , "typeOnly : (ω a : Type) -> Int"
           , "let typeOnly a = foo a"
           , "type K = Type"
-          , "fooK : (a : K) -> Int"
+          , "fooK : (ω a : K) -> Int"
           , "let fooK a = 0"
-          , "typeOnlyAlias : (a : K) -> Int"
+          , "typeOnlyAlias : (ω a : K) -> Int"
           , "let typeOnlyAlias a = fooK a"
-          , "projOnly : (r : (v : Int)) -> Int"
+          , "projOnly : (r : (v : Int,)) -> Int"
           , "let projOnly r = r.v"
-          , "type Box = (v : Int)"
+          , "type Box = (v : Int,)"
           , "peekBox : (& x : Box) -> Int"
           , "let peekBox x = x.v"
           , "useBorrowTwice : Box -> Int"
@@ -546,7 +2787,7 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "consume-vs-read.kp" consumeVsReadSrc
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-            ctorTypes = Map.map ciType (csCtors st)
+            ctorTypes = Map.map (\ci -> OwnershipCtorType (ciUniverses ci) (ciType ci)) (csCtors st)
             mainMod = ModuleName [T.pack "main"]
             passG = GName mainMod (T.pack "pass")
             aliasPassG = GName mainMod (T.pack "aliasPass")
@@ -604,8 +2845,8 @@ ownershipCrossCheckClean = do
                 passG
                 (csOwnership st)
             forcedBodies = Map.filterWithKey (\g _ -> g == passG) (csCoreBodies st)
-            forcedMsgs = crossCheckBodies ctx ctorTypes forcedBodies forcedLinear
-            missingMsgs = crossCheckBodies ctx ctorTypes forcedBodies Map.empty
+            forcedMsgs = crossCheckBodiesWithUniverses ctx ctorTypes forcedBodies forcedLinear
+            missingMsgs = crossCheckBodiesWithUniverses ctx ctorTypes forcedBodies Map.empty
             driftUses =
               Map.adjust
                 (\oi -> oi {oiUses = Map.empty})
@@ -621,10 +2862,10 @@ ownershipCrossCheckClean = do
                 (\oi -> oi {oiBinders = Map.empty})
                 passG
                 (csOwnership st)
-            driftUsesMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftUses
-            driftBinderUsesMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinderUses
-            driftBindersMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinders
-            focusedXc = crossCheckBodies ctx ctorTypes (csCoreBodies st) (csOwnership st)
+            driftUsesMsgs = crossCheckBodiesWithUniverses ctx ctorTypes forcedBodies driftUses
+            driftBinderUsesMsgs = crossCheckBodiesWithUniverses ctx ctorTypes forcedBodies driftBinderUses
+            driftBindersMsgs = crossCheckBodiesWithUniverses ctx ctorTypes forcedBodies driftBinders
+            focusedXc = crossCheckBodiesWithUniverses ctx ctorTypes (csCoreBodies st) (csOwnership st)
             directPrimReadBody =
               replaceGlobInSimpleApp
                 (gPrel (T.pack "__ioReadRef"))
@@ -633,7 +2874,7 @@ ownershipCrossCheckClean = do
             directPrimReadOwn =
               maybe
                 Map.empty
-                (\body -> annotateOwnership ctx ctorTypes (Map.singleton primReadRefBorrowG body))
+                (\body -> annotateOwnershipWithUniverses ctx ctorTypes (Map.singleton primReadRefBorrowG body))
                 directPrimReadBody
             directPrimReadDump =
               case Map.lookup primReadRefBorrowG directPrimReadOwn of
@@ -796,7 +3037,7 @@ perceusS23dDeadBinderDrops = do
           , "    MkBox (value : Int)"
           , "data Holder : Type ="
           , "    Holder (box : Box)"
-          , "type RHolder : Type = (box : Box)"
+          , "type RHolder : Type = (box : Box,)"
           , "consumeBox : Box -> Int"
           , "let consumeBox b ="
           , "    match b"
@@ -849,14 +3090,14 @@ perceusS23dDeadBinderDrops = do
           , "    else peekHolder h"
           , "branchBorrowedRecordAlias : Bool -> Int"
           , "let branchBorrowedRecordAlias c ="
-          , "    let h : RHolder = (box = MkBox 9)"
+          , "    let h : RHolder = (box = MkBox 9,)"
           , "    let y = h.box"
           , "    if c"
           , "    then consumeBox y"
           , "    else peekRHolder h"
           , "branchBorrowedNestedAlias : Bool -> Int"
           , "let branchBorrowedNestedAlias c ="
-          , "    let h : RHolder = (box = MkBox 12)"
+          , "    let h : RHolder = (box = MkBox 12,)"
           , "    let y = let z = 0 in h.box"
           , "    if c"
           , "    then consumeBox y"
@@ -954,6 +3195,15 @@ perceusS23dDeadBinderDrops = do
     Left (errs, mLog) -> do
       putStrLn ("perceusS23dDeadBinderDrops FAILED: generateC rejected: " <> show errs)
       putStrLn ("  rcLog=" <> show mLog)
+      putStrLn
+        ( "  Eq member quantities="
+            <> show (tiMemberQs <$> Map.lookup (gPrel "Eq") (csTraits st))
+        )
+      putStrLn
+        ( "  Eq.eqSound type="
+            <> maybe "<missing>" (T.unpack . maybe "<unquoted>" renderTerm . gdCoreType)
+              (Map.lookup (gPrel "Eq.eqSound") (csGlobals st))
+        )
       pure False
     Right (csrc, _) -> do
       let requiredWorkers :: [(String, T.Text)]
@@ -1532,7 +3782,7 @@ backendIRPhaseAS5 = do
           , "    case MkBox x -> MkBox x"
           , "let useIdBox (a : Type) (b : Box a) = idBox a b"
           , "type R = (a : Type, b : Int)"
-          , "type TypeOnly = (a : Type)"
+          , "type TypeOnly = (a : Type,)"
           , "type TupleErased = (a : Type, b : Int)"
           , "type RuntimeProofRec = (proof : (=) 1 1, value : Int)"
           , "type ErasedProofRec = (prop : IsProp ((=) \"x\" \"x\"), value : Int)"
@@ -1717,7 +3967,7 @@ backendIRPhaseAS5 = do
       constructorPatternErasedTailReindexed =
         any
           ( \case
-              BackendAlt _ (BPCtor g [BPWild, BPVar n]) binders _ _ ->
+              BackendAlt _ (BPCtor g 2 [(0, BPWild), (1, BPVar n)]) binders _ _ ->
                 g == mkErasedTailG && n == T.pack "b" && length binders == 1
               _ -> False
           )
@@ -1725,7 +3975,7 @@ backendIRPhaseAS5 = do
       tuplePatternErasedFieldReindexed =
         any
           ( \case
-              BackendAlt _ (BPTuple [BPVar n]) binders _ _ ->
+              BackendAlt _ (BPTuple 1 [(0, BPVar n)]) binders _ _ ->
                 n == T.pack "b" && length binders == 1
               _ -> False
           )
@@ -1832,6 +4082,7 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
+                []
                 (BCtor meta0 (BackendCtorLayout (gn "MkBad") Nothing 2) [BGlob meta1 (gn "x")])
           )
           []
@@ -1848,12 +4099,13 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
+                []
                 (BCtor meta0 (BackendCtorLayout (gn "MkBad") (Just staleInfo) 1) [BGlob meta1 (gn "x")])
           )
           []
       badUse =
         KBackendIR
-          (Map.singleton owner $ BackendBody owner [] (BVar meta0 Nothing 0))
+          (Map.singleton owner $ BackendBody owner [] [] (BVar meta0 Nothing 0))
           []
       dupUse = BackendUse (BackendUseId 0) NonLast False
       badDuplicateUse =
@@ -1862,18 +4114,20 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
+                []
                 (BRecord meta0 [(T.pack "a", BVar meta1 (Just dupUse) 0), (T.pack "b", BVar meta2 (Just dupUse) 0)])
           )
           []
       badBinder =
         KBackendIR
-          (Map.singleton owner $ BackendBody owner [BackendParam Expl (T.pack "x") Nothing] (BUnit meta0))
+          (Map.singleton owner $ BackendBody owner [BackendParam Expl (T.pack "x") Nothing] [] (BUnit meta0))
           []
       badNodeId =
         KBackendIR
           ( Map.singleton owner $
               BackendBody
                 owner
+                []
                 []
                 (BLet meta0 Nothing Q1 (T.pack "x") (BUnit meta0) (BUnit meta1))
           )
@@ -1883,6 +4137,7 @@ backendIRValidatorS5 = do
           ( Map.singleton owner $
               BackendBody
                 owner
+                []
                 []
                 (BIf (BackendMeta (BackendNodeId 2) [BackendBinder (BackendBinderId 99) (T.pack "dangling") (BinderOwn QW Nothing False True) False]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
           )
@@ -1895,6 +4150,7 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                []
                 (BIf (BackendMeta (BackendNodeId 2) [forgedDropBinder]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
           )
           []
@@ -1904,6 +4160,7 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                []
                 (BIf (BackendMeta (BackendNodeId 2) [realDropBinder, realDropBinder]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
           )
           []
@@ -1913,6 +4170,7 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                []
                 (BDo meta0 Nothing [BKExpr (BackendMeta (BackendNodeId 2) [realDropBinder]) (BUnit meta1)])
           )
           []
@@ -1926,6 +4184,7 @@ backendIRValidatorS5 = do
                 [ BackendParam Expl (T.pack "a") (Just duplicateBinderA)
                 , BackendParam Expl (T.pack "b") (Just duplicateBinderB)
                 ]
+                []
                 (BUnit meta0)
           )
           []
@@ -1935,7 +4194,8 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
-                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") [BPWild, BPWild]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") Nothing 1)])
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") 2 [(0, BPWild), (1, BPWild)]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") Nothing 1)])
           )
           []
       badPatternInfo =
@@ -1944,7 +4204,8 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
-                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") [BPWild]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") (Just staleInfo) 1)])
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") 1 [(0, BPWild)]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") (Just staleInfo) 1)])
           )
           []
       badPatternMissingLayout =
@@ -1953,7 +4214,8 @@ backendIRValidatorS5 = do
               BackendBody
                 owner
                 []
-                (BMatch meta0 (BUnit meta1) [BackendAlt meta2 (BPCtor (gn "MkBad") [BPWild]) [] Nothing (BUnit meta3)] [])
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta2 (BPCtor (gn "MkBad") 1 [(0, BPWild)]) [] Nothing (BUnit meta3)] [])
           )
           []
       codesOf = map bivCode . validateKBackendIR
@@ -2117,15 +4379,15 @@ backendIRProjectedBorrowedCalleeS5 = do
   let src =
         T.unlines
           [ "module main"
-          , "type Box = (v : Int)"
+          , "type Box = (v : Int,)"
           , "type PeekBox = (& x : Box) -> Int"
           , "peekBox : (& x : Box) -> Int"
           , "let peekBox x = x.v"
-          , "type RecAlias = (f : PeekBox)"
+          , "type RecAlias = (f : PeekBox,)"
           , "useProjectedTwice : RecAlias -> Box -> Int"
           , "let useProjectedTwice r y = r.f y + y.v"
-          , "type PolyBox (a : Type) = (v : a)"
-          , "type PolyRec (a : Type) = (f : (& x : PolyBox a) -> a)"
+          , "type PolyBox (a : Type) = (v : a,)"
+          , "type PolyRec (a : Type) = (f : (& x : PolyBox a) -> a,)"
           , "polyPeek : (a : Type) -> (& x : PolyBox a) -> a"
           , "let polyPeek a x = x.v"
           , "usePolyProjected : (a : Type) -> PolyRec a -> PolyBox a -> (a, a)"
@@ -2135,7 +4397,7 @@ backendIRProjectedBorrowedCalleeS5 = do
           , "firstClassPoly : ((a : Type) -> a -> a) -> Int"
           , "let firstClassPoly f = f Int 1"
           , "main : UIO Unit"
-          , "let main = printInt (useProjectedTwice (f = peekBox) (v = 1))"
+          , "let main = printInt (useProjectedTwice (f = peekBox,) (v = 1,))"
           ]
       cu = compileSourceWithPrelude "s5a-projected-borrowed-callee.kp" src
       ir = lowerKBackendIR (cuState cu)
@@ -2213,7 +4475,7 @@ backendIRPatternErasesExistentialsS5 = do
       alts = maybe [] (backendAlts . bbRoot) (Map.lookup use2G (kbirBodies ir))
       mkQAltRuntimeBinders =
         [ length binders
-        | BackendAlt _ (BPCtor g _) binders _ _ <- alts
+        | BackendAlt _ (BPCtor g _ _) binders _ _ <- alts
         , g == mkQ
         ]
       mainG = GName m (T.pack "main")
@@ -2471,7 +4733,7 @@ reExportBoundaryRefinement = do
       cu = compileFiles [("lib.kp", libSrc), ("app.kp", appSrc)]
       st = cuState cu
       ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-      ctorTypes = Map.map ciType (csCtors st)
+      ctorTypes = Map.map (\ci -> OwnershipCtorType (ciUniverses ci) (ciType ci)) (csCtors st)
       lib = ModuleName [T.pack "lib"]
       -- The first value binder in each one-arg body receives owner-local ordinal 0.
       refinedOf cname =
@@ -2482,7 +4744,7 @@ reExportBoundaryRefinement = do
               Nothing -> Left ("no param binder for " <> cname)
               Just bo -> Right (boRefined bo)
       xcClean =
-        crossCheckBodies
+        crossCheckBodiesWithUniverses
           ctx
           ctorTypes
           (csCoreBodies st)
@@ -2507,7 +4769,7 @@ reExportBoundaryRefinement = do
           (GName lib (T.pack "priv"))
           (csOwnership st)
       xcForced =
-        crossCheckBodies
+        crossCheckBodiesWithUniverses
           ctx
           ctorTypes
           (csCoreBodies st)
@@ -2571,13 +4833,19 @@ harnessFaithful = do
     "--! mode run\n--! runArgs \"a\" \"b\"\nlet main : UIO Unit = printlnString \"hi\"\n"
   stdinMissing <- fileCase root "g32-stdin-missing.kp"
     "--! mode run\n--! stdinFile does-not-exist.txt\nlet main : UIO Unit = printlnString \"hi\"\n"
-  -- §T.5.3 (G32): an un-gated assertStageDump names a checkpoint this
-  -- implementation cannot serve, so the suite is ill-formed; gating it
-  -- behind 'requires capability stageDumps' yields the soft outcome.
+  -- §T.5.3 (G32): stageDumps is a real capability, but an unknown checkpoint
+  -- remains ill-formed whether or not the capability requirement is repeated.
   stageDump <- fileCase root "g32-stagedump.kp"
     "--! assertStageDump kfront equals expected.json\nlet x : Int = 5\n"
   stageGated <- fileCase root "g32-stagedump-gated.kp"
     "--! requires capability stageDumps\n--! assertStageDump kfront equals expected.json\nlet x : Int = 5\n"
+  -- §T.5.2: non-entailment requires a satisfiable strict refutation. A
+  -- blocked/false abstract comparison is accepted, while the strict
+  -- refutation of reflexivity has no model and therefore fails the assertion.
+  neutralNonEntail <- fileCase root "level-neutral-nonentail.kp"
+    "--! assertLevelDoesNotEntail f x <= g x\nlet x : Int = 5\n"
+  impossibleRefutation <- fileCase root "level-impossible-refutation.kp"
+    "--! assertLevelDoesNotEntail u <= u\nlet x : Int = 5\n"
   -- §T.2 (G35): walking a container directory recurses; a nested
   -- directory that declares itself a suite (suite.ktest/main.kp)
   -- compiles its .kp files as ONE unit (so a cross-module reference
@@ -2608,7 +4876,9 @@ harnessFaithful = do
         , ("G32 runArgs honored → pass", trOutcome runArgsOk == Pass)
         , ("G32 missing stdinFile → harnessError", trOutcome stdinMissing == HarnessError)
         , ("G32 un-gated assertStageDump → harnessError", trOutcome stageDump == HarnessError)
-        , ("G32 gated assertStageDump → unsupported", trOutcome stageGated == Unsupported)
+        , ("G32 gated unknown assertStageDump → harnessError", trOutcome stageGated == HarnessError)
+        , ("level non-entailment accepts a satisfiable refutation", trOutcome neutralNonEntail == Pass)
+        , ("level non-entailment rejects an inconsistent refutation", trOutcome impossibleRefutation == Fail)
         , ("G35 declared suite is exactly one report", length declaredReps == 1)
         , ("G35 declared suite passes as one unit", all ((== Pass) . trOutcome) declaredReps)
         , ("G35 bare dir → one report per file", length bareReps == 2)
@@ -2691,9 +4961,16 @@ verifierCatchesViolations = do
       tyA = CGlob aN
       tyD = CGlob dN
       -- C1, C2 : A -> D  (declared runtime arity 1)
-      ctorTy = CPi Expl Q1 False (T.pack "_") tyA tyD
-      ci = CtorInfo {ciData = dN, ciType = ctorTy, ciFields = [(Nothing, Nothing)]}
-      datas = Map.fromList [(dN, DataInfo {diCtors = [c1, c2], diParamCount = 0})]
+      ctorTy = CPiFormedM Ordinary FormationOrdinary Expl Q1 False (T.pack "_") tyA tyD
+      ci =
+        CtorInfo
+          { ciData = dN
+          , ciUniverses = emptyDeclarationUniverseTelescope
+          , ciType = ctorTy
+          , ciFields = [(Nothing, Nothing)]
+          , ciSourceFields = [(Expl, Nothing)]
+          }
+      datas = Map.fromList [(dN, DataInfo {diCtors = [c1, c2], diParamCount = 0, diLevel = LZero})]
       ctors = Map.fromList [(c1, ci), (c2, ci)]
       -- a unit-typed global 'u' (declared type Unit) and a real function 'f'.
       -- The type VALUEs are obtained by evaluating Core type terms (so their
@@ -2701,9 +4978,9 @@ verifierCatchesViolations = do
       uN = gn "u"
       fN = gn "f"
       evalTy = eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) []
-      gd tyTm = GlobalDef {gdType = evalTy tyTm, gdValue = Nothing, gdReducible = False}
+      gd tyTm = GlobalDef (evalTy tyTm) Nothing False
       -- f : A -> A   (one explicit, runtime-kept argument)
-      fTyTm = CPi Expl Q1 False (T.pack "_") tyA tyA
+      fTyTm = CPiFormedM Ordinary FormationOrdinary Expl Q1 False (T.pack "_") tyA tyA
       -- u : Unit  (a non-function value head: 'prelUnit', the canonical erased
       -- unit type the verifier recognizes).
       uTyTm = CGlob prelUnit
@@ -2724,18 +5001,18 @@ verifierCatchesViolations = do
       -- 1a. erased/non-function head: u applied to an argument → kapp(unit, …).
       nonFnHead = CApp Expl (CGlob uN) (CGlob aN)
       -- 1b. erased TYPE form (a universe) in f's runtime-kept argument slot.
-      erasedArg = CApp Expl (CGlob fN) (CSort 0)
+      erasedArg = CApp Expl (CGlob fN) (CSort LZero)
       -- 2. arity mismatch: C1 has runtime arity 1, built with 0 fields.
       arityBad = CCtor c1 Nothing []
       -- 3a. tag-id collision: a datatype listing the SAME ctor twice.
       collideInputs =
-        base {viDatas = Map.fromList [(dN, DataInfo {diCtors = [c1, c1], diParamCount = 0})]}
+        base {viDatas = Map.fromList [(dN, DataInfo {diCtors = [c1, c1], diParamCount = 0, diLevel = LZero})]}
       -- 3b. parent back-reference: a ctor whose ciData points to a DIFFERENT
       -- datatype than the one listing it.
       eN = gn "E"
       wrongParent =
         base
-          { viDatas = Map.fromList [(eN, DataInfo {diCtors = [c1], diParamCount = 0})]
+          { viDatas = Map.fromList [(eN, DataInfo {diCtors = [c1], diParamCount = 0, diLevel = LZero})]
           }
       -- 3c. field-count: a ctor declaring 2 explicit fields but whose type has
       -- runtime arity 1.

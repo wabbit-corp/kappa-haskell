@@ -3,7 +3,7 @@ module main
 data A : Type =
     A
 
-type Dep x = Nat
+type Dep (x : A) = Nat
 
 demo : (x : A) -> Dep x
 let demo x =

@@ -1,0 +1,8 @@
+module explicit_instance_universe_schema
+
+trait Marker.{u} (parametric 0 A : Type u)
+
+instance.{u} Marker.{succ u} (Type u)
+
+--! mode check
+--! assertNoErrors

@@ -1,7 +1,8 @@
---! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
 
--- A dependent record that stores a Type0-valued field lives in Type1, not
--- Type0. This pins the current non-universe-polymorphic record behavior.
+-- A dependent record that stores an ordinary Type0-valued field lives in
+-- Type1, not Type0. Parametric witness fields are intentionally small under
+-- §11.1.2.7, so the strong-Sigma control must say ordinary explicitly.
 module main
 
-type TypeValue : Type0 = (t : Type0, v : this.t)
+type TypeValue : Type0 = (ordinary t : Type0, v : this.t)

@@ -13,11 +13,10 @@
 --   * later witnesses and the payload may depend on earlier witnesses.
 --
 -- §11.1: an existential is a strong-Σ (the `open` form eliminates it), so
--- one quantifying over a witness `a : Type` (which inhabits Type1) lives
--- in Type1, not Type0 — assigning it to bare `Type` (= Type0) would be a
--- universe inconsistency. (With universe polymorphism, bare `Type` would
--- absorb the level; that is the §2 SHOULD extension. Until then the level
--- is written explicitly.)
+-- this existential lives in Type1 when the inferred bare `Type` binder is
+-- instantiated as Type0. The explicit result annotation fixes that
+-- instantiation; bare `Type` itself is universe-generalized, not fixed to
+-- Type0.
 module main
 
 anonBody : Type1
@@ -28,7 +27,7 @@ sugarBinder : Type1
 let sugarBinder = exists a. a
 
 recordBody : Type1
-let recordBody = exists (a : Type). (value : a)
+let recordBody = exists (a : Type). (value : a,)
 
 -- direct payload introduction (Spec.md 13352): the witness is solved by
 -- checking the payload
@@ -54,12 +53,12 @@ let optSize =
 
 -- record-shaped payload: the source label `value` is part of the payload
 -- view; here it carries an Option so the opened witness does not escape
-recordPkg : exists (a : Type). (value : Option a)
-let recordPkg = seal (value = Some 7) as exists (a : Type). (value : Option a)
+recordPkg : exists (a : Type). (value : Option a,)
+let recordPkg = seal (value = Some 7,) as exists (a : Type). (value : Option a,)
 
 recordSize : Int
 let recordSize =
-    open recordPkg as exists (a). (value = v) in
+    open recordPkg as exists (a). (value = v,) in
         match v
         case Option.None -> 0
         case Option.Some _ -> 2

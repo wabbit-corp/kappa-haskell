@@ -1,6 +1,6 @@
 @PrivateByDefault module main
 
-idThroughType : (F : Type -> Type) -> F Int -> F Int
+idThroughType : (F : (parametric 0 A : Type) -> Type) -> F Int -> F Int
 let idThroughType F x = x
 
 ok : Option Int

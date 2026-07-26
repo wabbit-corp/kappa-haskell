@@ -9,9 +9,9 @@ data Box : Type =
     Empty
     Full (1 tok : Token)
 
-replace : (inout b : Box) -> UIO (1 b : Box)
-let replace (inout b : Box) : UIO (1 b : Box) =
-    pure (b = Full Token)
+replace : (inout b : Box) -> UIO (1 b : Box,)
+let replace (inout b : Box) : UIO (1 b : Box,) =
+    pure (b = Full Token,)
 
 bad : UIO Unit
 let bad = do

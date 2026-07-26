@@ -28,7 +28,7 @@ let reboundUse =
 
 -- NEGATIVE: record-literal construction of evidence must be rejected.
 forged : MyEq Int
-let forged = (myeq = \a b -> False)                      --!! kappa.type.mismatch
+let forged = (myeq = \a b -> False,)                      --!! kappa.type.mismatch
 
 -- NEGATIVE: record update on evidence must be rejected.
 tweaked : MyEq Int
@@ -38,6 +38,6 @@ let tweaked = (summon (MyEq Int)).{ myeq := \a b -> False }    --!! kappa.type.m
 inspected : Int
 let inspected =
     match summon (MyEq Int)                              --!! kappa.pattern.non-exhaustive
-    case (myeq = f) -> 0
+    case (myeq = f,) -> 0
 
 -- STATUS(a51e1bf): PASS

@@ -1,0 +1,33 @@
+-- T.12.2 / Spec 30.2.7 rule 3: the required Presburger fragment refutes
+-- `natAdd m 2 = 1` outright (no Nat solution exists), so MkAtLeastTwo's
+-- arm at demanded index 1 is Refuted and contributes Empty to source
+-- reachability. The refutation cuts both ways: the empty remainder makes
+-- `case impossible` acceptable (Spec 17.1.5), and transporting a value
+-- TO the refuted index is an ordinary type error. Exactly one error:
+-- refutedArmIsEmpty must elaborate cleanly.
+data AtLeastTwo (k : Nat) : Type =
+    MkAtLeastTwo : (m : Nat) -> AtLeastTwo (natAdd m 2)
+
+-- ACCEPTED: the arithmetic-refuted bridge makes the whole remainder
+-- Empty, so the empty-remainder claim checks.
+refutedArmIsEmpty :
+    AtLeastTwo 1 ->
+    Void
+
+let refutedArmIsEmpty value =
+    match value
+    case impossible
+
+-- REJECTED: the same checked refutation means no transport can bridge
+-- `natAdd m 2` to 1; this is a compile-time mismatch, never a runtime
+-- concern.
+transportToRefutedIndex :
+    (m : Nat) ->
+    AtLeastTwo (natAdd m 2) ->
+    AtLeastTwo 1
+
+let transportToRefutedIndex m value =
+    value
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH

@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+data PayloadBox
+    (A : Type)
+    : Type =
+    PayloadBox (value : A)
+
+-- Type2 : Type3, so the payload forces the principal result to Type3.
+type HighBox : Type3 =
+    PayloadBox Type2

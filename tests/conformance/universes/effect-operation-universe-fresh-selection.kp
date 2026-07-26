@@ -1,0 +1,22 @@
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+-- Spec §11.1.2.3A and §18.1.15: the levels occurring in an operation
+-- signature belong to the effect interface's declaration universe schema.
+-- Distinct selections must freshen that schema rather than sharing the raw
+-- level metavariable captured while the effect header was elaborated.
+module main
+
+effect Poly =
+    op : (parametric 0 A : Type) -> (x : A) -> A
+
+at0 : (parametric 0 A : Type 0) -> (x : A) -> Eff <[Poly : Poly.{0}]> A
+let at0 = Poly.op
+
+at1 : (parametric 0 A : Type 1) -> (x : A) -> Eff <[Poly : Poly.{1}]> A
+let at1 = Poly.op
