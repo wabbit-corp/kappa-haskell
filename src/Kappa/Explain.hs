@@ -756,6 +756,10 @@ registry =
       "A compiler-generated constructor occurrence has no declared constructor interface."
   , ent "E_INTERNAL_GENERATED_APPLICATION" (Just "kappa.internal.compiler")
       "A compiler-generated application does not match the checked dependent telescope from which its argument spine was derived."
+  , ent "E_INTERNAL_ARITHMETIC_PROOF" (Just "kappa.internal.compiler")
+      "The value-arithmetic elaborator selected evidence whose checked law does not prove the equality required by a generated transport."
+  , ent "E_INTERNAL_ARITHMETIC_TRANSPORT" (Just "kappa.internal.compiler")
+      "The value-arithmetic elaborator could not check a generated equality transport against its indexed source and target types."
   , ent "E_INTERNAL_ANONYMOUS_REGION" (Just "kappa.internal.compiler")
       "The compiler could not construct the typed lexical-region witness required for an anonymous borrow."
   , ent "E_INTERNAL_MISSING_PRELUDE_DECLARATION" (Just "kappa.internal.compiler")

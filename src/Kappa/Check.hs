@@ -7529,14 +7529,17 @@ coerceTerm ctx sp term actual expected = do
               if compatible
                 then finishCompatible before
                 else
-                  tryRefinementCoercion ctx sp term actual expected >>= \case
-                    Just refined -> pure refined
+                  tryArithmeticIndexTransport ctx sp term actual expected >>= \case
+                    Just transported -> pure transported
                     Nothing -> do
-                      blockedEvidence <- pendingEvidenceComponent ctx [actual, expected]
-                      unless (Set.null blockedEvidence) $
-                        flushPendingSelected blockedEvidence
-                      expectType ctx sp actual expected
-                      pure term
+                      tryRefinementCoercion ctx sp term actual expected >>= \case
+                        Just refined -> pure refined
+                        Nothing -> do
+                          blockedEvidence <- pendingEvidenceComponent ctx [actual, expected]
+                          unless (Set.null blockedEvidence) $
+                            flushPendingSelected blockedEvidence
+                          expectType ctx sp actual expected
+                          pure term
   where
     finishCompatible before = do
       after <- gets (length . csDiags)
@@ -7548,6 +7551,260 @@ coerceTerm ctx sp term actual expected = do
             Just evidence -> pure (universeLift evidence term)
             Nothing -> pure term
         _ -> pure term
+
+-- | The first proof-producing §15.8/§16.1.8 transport shape. A neutral Nat
+-- right identity is not conversion: select the ordinary AdditiveMonoid Nat
+-- evidence, project its checked law member, and feed that proof to ordinary
+-- 'subst'. The recognizer is deliberately semantic and fail-closed:
+--
+-- * both types must have the same resolved nominal head and exactly one
+--   differing argument;
+-- * that argument must be Nat;
+-- * normalization must expose the canonical 'natAdd' identity with a
+--   constructor-zero right operand; and
+-- * the projected law and final subst application are rechecked against their
+--   evolving telescopes.
+--
+-- Broader provider normalization belongs to the dedicated arithmetic service;
+-- this seed path establishes the explicit-transport boundary without
+-- extending conversion or admitting a raw proof primitive.
+tryArithmeticIndexTransport
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Value
+  -> CheckM (Maybe Term)
+tryArithmeticIndexTransport ctx site source actual0 expected0 =
+  transactional $ do
+    actual <- forceM actual0
+    expected <- forceM expected0
+    singleNominalIndexDifference ctx actual expected >>= \case
+      Nothing -> pure Nothing
+      Just (carrier, lhs, rhs) -> do
+        carrier' <- forceM carrier
+        case carrier' of
+          VGlobN natural [] | natural == prelNat -> do
+            -- Force only to weak-head normal form. Eval preserves an open
+            -- canonical Nat operation head, but this step reduces a selected
+            -- Add-Nat dictionary projection to that head. Thus overloaded
+            -- @n + 0@ and explicit @natAdd n Zero@ reach one semantic
+            -- operation identity without making right identity conversion.
+            lhsSemantic <- forceM lhs
+            lhsTerm <- quoteIn ctx lhsSemantic
+            rhsTerm <- quoteIn ctx rhs
+            lhsTerm' <- zonkTermM (ctxLen ctx) lhsTerm
+            rhsTerm' <- zonkTermM (ctxLen ctx) rhsTerm
+            case natRightIdentityOperand lhsTerm' of
+              Just operand | operand == rhsTerm' -> do
+                proof <- natRightIdentityProof ctx site carrier lhs rhs operand
+                Just
+                  <$> buildSingleIndexTransport
+                    ctx
+                    site
+                    source
+                    actual
+                    expected
+                    carrier
+                    lhs
+                    rhs
+                    lhsTerm'
+                    proof
+              _ -> pure Nothing
+          _ -> pure Nothing
+  where
+    transactional action = do
+      saved <- get
+      diagnostics <- gets (length . csDiags)
+      result <- action
+      diagnostics' <- gets (length . csDiags)
+      case result of
+        Just value | diagnostics == diagnostics' -> pure (Just value)
+        _ -> put saved >> pure Nothing
+
+-- | Compare only the checked semantic spines of one nominal family. Matching
+-- arguments must already be definitionally identical after zonking; the
+-- transport path never solves unrelated metas while searching for a plan.
+singleNominalIndexDifference
+  :: Ctx
+  -> Value
+  -> Value
+  -> CheckM (Maybe (Value, Value, Value))
+singleNominalIndexDifference ctx actual expected =
+  case (actual, expected) of
+    (VGlobI actualHead actualUniverses actualArgs, VGlobI expectedHead expectedUniverses expectedArgs)
+      | actualHead == expectedHead
+      , map normalizeLevel actualUniverses == map normalizeLevel expectedUniverses
+      , length actualArgs == length expectedArgs -> do
+          differences <- fmap catMaybes . forM (zip actualArgs expectedArgs) $
+            \((actualIcit, actualArgument), (expectedIcit, expectedArgument)) ->
+              if actualIcit /= expectedIcit
+                then pure (Just (actualArgument, expectedArgument))
+                else do
+                  actualTerm <- quoteIn ctx actualArgument >>= zonkTermM (ctxLen ctx)
+                  expectedTerm <- quoteIn ctx expectedArgument >>= zonkTermM (ctxLen ctx)
+                  pure
+                    ( if actualTerm == expectedTerm
+                        then Nothing
+                        else Just (actualArgument, expectedArgument)
+                    )
+          case differences of
+            [(lhs, rhs)] ->
+              equandType ctx lhs >>= \case
+                Just carrier -> do
+                  rhsType <- equandType ctx rhs
+                  case rhsType of
+                    Just rhsCarrier -> do
+                      sameCarrier <- unifyDefinitional ctx carrier rhsCarrier
+                      pure (if sameCarrier then Just (carrier, lhs, rhs) else Nothing)
+                    Nothing -> pure Nothing
+                Nothing -> pure Nothing
+            _ -> pure Nothing
+    _ -> pure Nothing
+
+natRightIdentityOperand :: Term -> Maybe Term
+natRightIdentityOperand expression =
+  case spineOfTerm expression of
+    (CGlob operation, arguments)
+      | operation == prelNatAdd
+      , [left, right] <- [argument | (Expl, argument) <- arguments]
+      , isNatZero right ->
+          Just left
+    _ -> Nothing
+  where
+    isNatZero = \case
+      CCtorI constructor _ _ [] -> constructor == prelNatZero
+      CLit (LitInt 0) -> True
+      _ -> False
+
+natRightIdentityProof
+  :: Ctx
+  -> Span
+  -> Value
+  -> Value
+  -> Value
+  -> Term
+  -> CheckM Term
+natRightIdentityProof ctx site carrier lhs rhs operand = do
+  providerGoal <- globalValueM (gPrel "AdditiveMonoid") [(Expl, carrier)]
+  dictionary <- resolveImplicitQ ctx site Q0 providerGoal
+  (selectedLaw, selectedLawType) <-
+    knownTraitMemberProjection
+      ctx
+      site
+      (gPrel "AdditiveMonoid")
+      "addRightIdentity"
+      [carrier]
+      dictionary
+  (_, selectedProofType) <-
+    applyGeneratedCoreSpine
+      ctx
+      site
+      selectedLaw
+      selectedLawType
+      [(Impl, operand, carrier)]
+  equality <- globalValueM prelEqType [(Impl, carrier), (Expl, lhs), (Expl, rhs)]
+  compatible <- unifyDefinitional ctx selectedProofType equality
+  unless compatible $
+    errAt site "E_INTERNAL_ARITHMETIC_PROOF" Nothing
+      "the selected AdditiveMonoid right-identity law does not prove the requested Nat equality"
+  globalTerm prelNatAddRightIdentity >>= \case
+    Nothing -> do
+      errAt site "E_INTERNAL_MISSING_PRELUDE_DECLARATION" Nothing
+        "the checked prelude has no canonical Nat right-identity theorem"
+      pure (CCtorI prelRefl [] Nothing [])
+    Just (theorem, theoremType) -> do
+      (proof, proofType) <-
+        applyGeneratedCoreSpine
+          ctx
+          site
+          theorem
+          theoremType
+          [ (Impl, dictionary, providerGoal)
+          , (Expl, operand, carrier)
+          ]
+      exact <- unifyDefinitional ctx proofType equality
+      unless exact $
+        errAt site "E_INTERNAL_ARITHMETIC_PROOF" Nothing
+          "the canonical Nat right-identity theorem does not prove the requested equality"
+      pure proof
+
+buildSingleIndexTransport
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Value
+  -> Value
+  -> Value
+  -> Value
+  -> Term
+  -> Term
+  -> CheckM Term
+buildSingleIndexTransport ctx site source actual expected carrier lhs rhs lhsTerm proof = do
+  actualTerm <- quoteIn ctx actual >>= zonkTermM (ctxLen ctx)
+  expectedTerm <- quoteIn ctx expected >>= zonkTermM (ctxLen ctx)
+  carrierTerm <- quoteIn ctx carrier >>= zonkTermM (ctxLen ctx)
+  lhsTerm' <- quoteIn ctx lhs >>= zonkTermM (ctxLen ctx)
+  rhsTerm <- quoteIn ctx rhs >>= zonkTermM (ctxLen ctx)
+  classifier <- equandType ctx carrier >>= \case
+    Just value -> pure value
+    Nothing -> freshMetaV ctx
+  resultLevel <- typeValueClassifierLevel ctx actual >>= \case
+    Just level -> pure level
+    Nothing -> do
+      errAt site "E_INTERNAL_ARITHMETIC_TRANSPORT" Nothing
+        "the indexed source type has no checked universe classifier"
+      pure LZero
+  let shiftedActual = shiftTerm 1 0 actualTerm
+      shiftedNeedle = shiftTerm 1 0 lhsTerm
+      motiveBody =
+        mapTermWithDepth
+          (\depth node ->
+             if node == shiftTerm depth 0 shiftedNeedle
+               then Just (CVar depth)
+               else Nothing)
+          0
+          shiftedActual
+      motive = CLamM Ordinary Expl Q0 "__arithmetic_index" motiveBody
+      motiveType =
+        CPiFormedM
+          Ordinary
+          FormationOrdinary
+          Expl
+          Q0
+          False
+          "__arithmetic_index"
+          carrierTerm
+          (CSort resultLevel)
+  motiveValue <- evalIn ctx motiveType
+  equality <- globalValueM prelEqType [(Impl, carrier), (Expl, lhs), (Expl, rhs)]
+  globalTerm prelSubst >>= \case
+    Nothing -> do
+      errAt site "E_INTERNAL_MISSING_PRELUDE_DECLARATION" Nothing
+        "the checked prelude has no subst declaration"
+      pure source
+    Just (substHead, substType) -> do
+      (transported, transportedType) <-
+        applyGeneratedCoreSpine
+          ctx
+          site
+          substHead
+          substType
+          [ (Impl, carrierTerm, classifier)
+          , (Impl, motive, motiveValue)
+          , (Impl, lhsTerm', carrier)
+          , (Impl, rhsTerm, carrier)
+          , (Expl, proof, equality)
+          , (Expl, source, actual)
+          ]
+      final <- unifyDefinitional ctx transportedType expected
+      unless final $
+        errAt site "E_INTERNAL_ARITHMETIC_TRANSPORT" Nothing
+          ( "the generated subst result does not match its expected indexed type: "
+              <> renderTerm expectedTerm
+          )
+      pure transported
 
 -- | One coherent 'RefinementView' witness together with its associated base.
 -- The dictionary is selected by ordinary evidence resolution; associated
@@ -13807,7 +14064,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                       mapM_ validateKindSlot slots
                       pure (Just tm)
           case done of
-            Just tm -> pure tm
+            Just tm -> canonicalizeSelectedNatOperation ctx tm
             Nothing -> do
               put st0
               (tm, ty) <- infer ctx (EApp f args)
@@ -14510,7 +14767,9 @@ elabSpineWith ctx sp fTm fTy0 [] = do
     -- A capture wrapper is transparent only while eliminating a callable.
     -- Once the surface argument spine is complete, it is the result value's
     -- hidden environment and must remain in the inferred type.
-    _ -> (fTm,) <$> forceM fTy0
+    _ -> do
+      canonical <- canonicalizeSelectedNatOperation ctx fTm
+      (canonical,) <$> forceM fTy0
 elabSpineWith ctx sp fTm fTy0 (arg : rest) = do
   -- §12.3.1: a capture-annotated callable applies at its underlying type
   (fTy, captureRegions) <- peelCapturesWithRegionsM fTy0
@@ -14533,6 +14792,63 @@ elabSpineWith ctx sp fTm fTy0 (arg : rest) = do
       case mdesc of
         Just (tm', ty') -> elabSpineWith ctx sp tm' ty' rest
         Nothing -> elabSpineArg ctx sp captureRegions fTm fTy arg rest
+
+-- | Reify the canonical semantic identity of the standard Nat operation at
+-- the point where its selected evidence is still explicit in Core. This is
+-- not arithmetic conversion: it only replaces a fully applied method call
+-- whose exact Add-Nat dictionary is the authenticated prelude instance with
+-- the source definition that instance delegates to. User dictionaries,
+-- partial calls, and every other carrier are preserved verbatim.
+canonicalizeSelectedNatOperation :: Ctx -> Term -> CheckM Term
+canonicalizeSelectedNatOperation ctx application = do
+  finalized <- zonkTermM (ctxLen ctx) application
+  case spineOfTerm (stripIdentityWrappers finalized) of
+    (headTerm, arguments)
+      | Just dictionary <- operationDictionary headTerm arguments
+      , [left, right] <- [argument | (Expl, argument) <- arguments] -> do
+          standard <- standardNaturalDictionary prelAdd dictionary
+          pure
+            ( if standard
+                then CApp Expl (CApp Expl (CGlob prelNatAdd) left) right
+                else application
+            )
+    _ -> pure application
+  where
+    operationDictionary headTerm arguments = case headTerm of
+      CGlobal operation _ ->
+        if operation == prelAddOp
+            || operation == prelAddMethod
+            || operation == memberGlobal prelAdd "add"
+          then case [argument | (Impl, argument) <- arguments] of
+            carrier : dictionary : _
+              | termHeadGlob (stripIdentityWrappers carrier) == Just prelNat ->
+                  Just dictionary
+            _ -> Nothing
+          else Nothing
+      CProjM _ dictionary "add" -> Just dictionary
+      _ -> Nothing
+
+-- | Authenticate the compiler-owned prelude instance for one Nat trait.
+-- Instance identity, trait identity, premise closure, and checked head carrier
+-- must all agree; rendered dictionary/member spellings are not authority.
+standardNaturalDictionary :: GName -> Term -> CheckM Bool
+standardNaturalDictionary trait dictionary = do
+  instances <- gets csInstances
+  pure $ case termHeadGlob (stripIdentityWrappers dictionary) of
+    Just dictionaryGlobal ->
+      dictionaryGlobal `gnameInModule` preludeModule
+        && any
+          ( \entry ->
+              ieDict entry == dictionaryGlobal
+                && ieTrait entry == trait
+                && null (iePremises entry)
+                && case ieHead entry of
+                     [headType] ->
+                       termHeadGlob (stripIdentityWrappers headType) == Just prelNat
+                     _ -> False
+          )
+          instances
+    Nothing -> False
 
 elabSpineArg :: Ctx -> Span -> [Value] -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp captureRegions fTm fTy arg rest = do

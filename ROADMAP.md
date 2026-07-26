@@ -1026,7 +1026,7 @@ capabilities, stage ownership, and T.12 coverage.
       evaluator/C/LLVM execution, make narrowing explicit, and keep propositional
       arithmetic out of conversion. Verify the boundary with an untransported
       KCore rejection, not by rejecting source that may insert `subst`.
-- [ ] **NFR-2 - no-confusion and checked derivation.** Generate ordinary verified
+- [x] **NFR-2 - no-confusion and checked derivation.** Generate ordinary verified
       KCore no-confusion packages, make `Eq` refine `IsSet`, implement checked
       `derive IsSet` / `derive Eq`, and reject unsupported shapes without UIP/K.
 - [ ] **NFR-3 - algebraic hierarchy and value arithmetic.** Land

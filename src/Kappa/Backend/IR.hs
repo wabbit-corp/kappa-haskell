@@ -54,6 +54,7 @@ import Kappa.Builtins
   , preludeModule
   , prelIO
   , prelInteger
+  , prelNatAddRightIdentity
   , prelNatSucc
   , prelNatZero
   , prelPathInd
@@ -342,6 +343,7 @@ data LowerStatic = LowerStatic
   , lsGlobals :: !(Map GName GlobalDef)
   , lsCtors :: !(Map GName CtorInfo)
   , lsTraits :: !(Map GName TraitInfo)
+  , lsRuntimeErasedProofHeads :: !(Set GName)
   , lsBuiltinIntegerLiteralDicts :: !(Set GName)
   , lsCtx :: !EvalCtx
   }
@@ -3032,6 +3034,15 @@ lowerBody ctx globals ctors traits builtinIntegerLiteralDicts g body =
         , lsGlobals = globals
         , lsCtors = ctors
         , lsTraits = traits
+        , lsRuntimeErasedProofHeads =
+            Set.fromList
+              ( prelNatAddRightIdentity
+                  : [ traitMemberGlobal trait member
+                    | (trait, info) <- Map.toList traits
+                    , member <- tiMembers info
+                    , Map.lookup member (tiMemberQs info) == Just Q0
+                    ]
+              )
         , lsBuiltinIntegerLiteralDicts = builtinIntegerLiteralDicts
         , lsCtx = ctx
         }
@@ -3487,6 +3498,7 @@ lowerApp expected term depth scopes = do
   meta <- metaAt
   globals <- asks lsGlobals
   traits <- asks lsTraits
+  runtimeErasedProofHeads <- asks lsRuntimeErasedProofHeads
   builtinIntegerLiteralDicts <- asks lsBuiltinIntegerLiteralDicts
   ctx <- asks lsCtx
   case selectedBuiltinIntegerLiteral builtinIntegerLiteralDicts term of
@@ -3543,11 +3555,12 @@ lowerApp expected term depth scopes = do
           Nothing -> lowerGeneric
           Just transport ->
             let proofErased =
-                  case [erased | (index, _, erased, _, _, _) <- aligned, index == rtaProofIndex transport] of
-                    erased : _ -> erased
-                    [] -> True
+                  proofHeadIsRuntimeErased runtimeErasedProofHeads (rtaProof transport)
+                    || case [erased | (index, _, erased, _, _, _) <- aligned, index == rtaProofIndex transport] of
+                      erased : _ -> erased
+                      [] -> True
              in if proofErased
-                  then lowerGeneric
+                  then lowerTermExpected expected (rtaReduced transport) depth scopes
                   else if proofIsDefinitionallyRefl ctx depth (rtaProof transport)
                     then lowerTermExpected expected (rtaReduced transport) depth scopes
                     else do
@@ -3625,6 +3638,16 @@ proofIsDefinitionallyRefl ctx depth proof =
   case force ctx (eval ctx (rigidEnv depth) proof) of
     VCtor constructor _ -> constructor == prelRefl
     _ -> False
+
+-- | A checked trait-member layout records quantity zero only after the
+-- member's complete result has been proved RuntimeErased. Member accessors
+-- have stable semantic global identities, so an application headed by one of
+-- those accessors is an erased proof producer even when the generic
+-- eliminator telescope cannot recover the selected IsSet evidence from the
+-- equality type alone.
+proofHeadIsRuntimeErased :: Set GName -> Term -> Bool
+proofHeadIsRuntimeErased runtimeErasedHeads proof =
+  maybe False (`Set.member` runtimeErasedHeads) (coreHeadGlobal proof)
 
 lowerCtorTerm :: BackendMeta -> GName -> Maybe Term -> [Term] -> Int -> ScopeStack -> Lower BackendTerm
 lowerCtorTerm meta g _ [] _ _

@@ -123,6 +123,7 @@ module Kappa.Builtins
     -- * Prelude traits
   , prelShow
   , prelOrd
+  , prelAdd
   , prelSuccessor
   , prelMax
   , prelApplicative
@@ -148,7 +149,10 @@ module Kappa.Builtins
   , prelOr
   , prelCompare
   , prelSucc
+  , prelAddOp
+  , prelAddMethod
   , prelNatAdd
+  , prelNatAddRightIdentity
   , prelNatMultiply
   , prelNatCompare
   , prelMaxOp
@@ -416,9 +420,10 @@ prelRORight = gPrel "RORight"
 
 -- ── Prelude traits ───────────────────────────────────────────────────
 
-prelShow, prelOrd, prelSuccessor, prelMax, prelApplicative, prelMonad, prelMonadRef, prelRangeable, prelIntoQuery, prelReleasable :: GName
+prelShow, prelOrd, prelAdd, prelSuccessor, prelMax, prelApplicative, prelMonad, prelMonadRef, prelRangeable, prelIntoQuery, prelReleasable :: GName
 prelShow = gPrel "Show"
 prelOrd = gPrel "Ord"
+prelAdd = gPrel "Add"
 prelSuccessor = gPrel "Successor"
 prelMax = gPrel "Max"
 prelApplicative = gPrel "Applicative"
@@ -451,13 +456,16 @@ prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 
-prelNot, prelAnd, prelOr, prelCompare, prelSucc, prelNatAdd, prelNatMultiply, prelNatCompare, prelMaxOp, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
+prelNot, prelAnd, prelOr, prelCompare, prelSucc, prelAddOp, prelAddMethod, prelNatAdd, prelNatAddRightIdentity, prelNatMultiply, prelNatCompare, prelMaxOp, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
 prelNot = gPrel "not"
 prelAnd = gPrel "&&"
 prelOr = gPrel "||"
 prelCompare = gPrel "compare"
 prelSucc = gPrel "succ"
+prelAddOp = gPrel "+"
+prelAddMethod = gPrel "add"
 prelNatAdd = gPrel "natAdd"
+prelNatAddRightIdentity = gPrel "natAddRightIdentity"
 prelNatMultiply = gPrel "natMultiply"
 prelNatCompare = gPrel "natCompare"
 prelMaxOp = gPrel "max"

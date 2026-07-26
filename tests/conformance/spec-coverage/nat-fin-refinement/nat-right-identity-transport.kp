@@ -1,0 +1,28 @@
+data NatIndex (n : Nat) : Type =
+    NatIndex
+
+rightIdentityUsesInsertedTransport :
+    (n : Nat) ->
+    NatIndex (natAdd n Nat.Zero) ->
+    NatIndex n
+
+let rightIdentityUsesInsertedTransport n value =
+    value
+
+operatorRightIdentityUsesInsertedTransport :
+    (n : Nat) ->
+    NatIndex (n + 0) ->
+    NatIndex n
+
+let operatorRightIdentityUsesInsertedTransport n value =
+    value
+
+-- `natAdd n Nat.Zero` is propositional, not definitional, equality for a
+-- neutral `n`. Expected-type checking selects the canonical Nat algebraic
+-- provider, applies its checked right-identity law, and inserts `subst`.
+-- The authenticated Add-Nat dictionary canonicalizes the overloaded spelling
+-- to the same semantic operation before this proof-producing step.
+-- The proof is RuntimeErased through the law member's checked layout, so
+-- KBackendIR lowers the transport to the representation-identical payload.
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

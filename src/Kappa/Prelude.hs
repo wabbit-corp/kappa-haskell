@@ -1886,6 +1886,10 @@ preludeSource =
     , ""
     , "trait RuntimeErased (0 t : Type)"
     , ""
+    , -- §14.5.2/§28.2 compiler-owned representation marker. Source code may
+      -- name the goal, but only the checked derive path introduces evidence.
+      "trait ExactNaturalRepresentation (0 t : Type)"
+    , ""
     , -- §14.4 set-truncation witnesses. Primitive carriers have canonical
       -- equality, while recursive containers below require IsSet evidence for
       -- every element carrier; no unconditional container instance is sound.
@@ -2141,7 +2145,7 @@ preludeSource =
     , "    let (==) x y = eqInt (natToInt x) (natToInt y)"
     , ""
     , "instance Ord Nat ="
-    , "    let compare x y = if ltInt (natToInt x) (natToInt y) then LT elif eqInt (natToInt x) (natToInt y) then EQ else GT"
+    , "    let compare x y = natCompare x y"
     , ""
     , "instance Show Nat ="
     , "    let show n = showInt (natToInt n)"
@@ -2715,10 +2719,10 @@ preludeSource =
     , "    let one = natOfInt 1"
     , ""
     , "instance Add Nat ="
-    , "    let add x y = natOfInt (addInt (natToInt x) (natToInt y))"
+    , "    let add x y = natAdd x y"
     , ""
     , "instance Mul Nat ="
-    , "    let multiply x y = natOfInt (mulInt (natToInt x) (natToInt y))"
+    , "    let multiply x y = natMultiply x y"
     , ""
     , "instance Negatable Double ="
     , "    let negate x = negDouble x"
@@ -3167,6 +3171,17 @@ preludeSource =
     , ""
     , "cong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
     , "let cong f eq = __eqProof"
+    , ""
+    , -- Canonical Nat right identity is proved structurally because natAdd
+      -- recurses on its left argument. The erased provider argument records
+      -- the coherent AdditiveMonoid instance selected by the arithmetic
+      -- elaborator; the proof itself is stated over canonical natAdd so a
+      -- portable KCore checker need not unfold an instance implementation.
+      "natAddRightIdentity : (@0 provider : AdditiveMonoid Nat) -> (n : Nat) -> (=) (natAdd n Nat.Zero) n"
+    , "let natAddRightIdentity @provider n ="
+    , "    match n"
+    , "    case Nat.Zero -> refl"
+    , "    case Nat.Succ predecessor -> cong (\\value -> Nat.Succ value) (natAddRightIdentity @provider predecessor)"
     , ""
     , -- The two non-definitional List monoid laws, PROVEN by structural
       -- induction on the spine — sound for EVERY element type 'a', needing no

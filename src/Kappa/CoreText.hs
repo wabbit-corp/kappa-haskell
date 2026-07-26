@@ -67,6 +67,8 @@ import Kappa.Builtins
   , prelInt
   , prelList
   , prelMonotone
+  , prelNatSucc
+  , prelNatZero
   , prelString
   , prelSyntax
   , prelThis
@@ -4725,7 +4727,24 @@ sameKCoreTypeWith
 sameKCoreTypeWith sameLevel context lhs0 rhs0 =
   same lhs0 rhs0
   where
-    same lhs rhs = go (unfoldTypeHead context lhs) (unfoldTypeHead context rhs)
+    -- Try congruence before delta-unfolding. Besides avoiding needless
+    -- expansion of matching applications, this preserves canonical
+    -- representation equivalences in their arguments (notably logical Nat
+    -- constructors versus compact Nat literals) instead of burying them
+    -- inside the neutral case tree of a recursive definition.
+    same lhs rhs =
+      surfaceCongruent lhs rhs
+        || go (unfoldTypeHead context lhs) (unfoldTypeHead context rhs)
+    surfaceCongruent lhs rhs =
+      case (lhs, rhs) of
+        (KTApply lhsFunction lhsArguments, KTApply rhsFunction rhsArguments) ->
+          length lhsArguments == length rhsArguments
+            && same lhsFunction rhsFunction
+            && and (zipWith sameArgument lhsArguments rhsArguments)
+        _ ->
+          case (logicalNaturalValue lhs, logicalNaturalValue rhs) of
+            (Just lhsNatural, Just rhsNatural) -> lhsNatural == rhsNatural
+            _ -> False
     go (KTType lhs) (KTType rhs) = sameLevel lhs rhs
     go (KTGlobal lhs levelsL) (KTGlobal rhs levelsR) =
       lhs == rhs
@@ -4735,6 +4754,14 @@ sameKCoreTypeWith sameLevel context lhs0 rhs0 =
       lhs == rhs
         && length levelsL == length levelsR
         && and (zipWith sameLevel levelsL levelsR)
+    -- Logical Nat constructors and their exact compact literal form denote
+    -- one canonical value language (§28.2/NFR-1). KCore replay must recognize
+    -- that representation identity independently; otherwise a checked proof
+    -- over Nat.Zero cannot transport an index written with literal 0.
+    go lhs rhs
+      | Just lhsNatural <- logicalNaturalValue lhs
+      , Just rhsNatural <- logicalNaturalValue rhs =
+          lhsNatural == rhsNatural
     -- Classifier lifts are proof-irrelevant type-code coercions. Their
     -- evidence is verified at the term boundary, but the lifted code denotes
     -- the same type for conversion and binder identity (§30.2.1A).
@@ -4781,6 +4808,15 @@ sameKCoreTypeWith sameLevel context lhs0 rhs0 =
           lhsRest
           [(field, renameBinderLocal (kbRef rhs) (kbRef lhs) binder) | (field, binder) <- rhsRest]
     sameFields _ _ = False
+    logicalNaturalValue = \case
+      KTLiteral (LitInt value) | value >= 0 -> Just value
+      KTConstruct constructor [] []
+        | constructor == stableRefForConstructor prelNatZero ->
+            Just 0
+      KTConstruct constructor [] [KArgument KExplicit predecessor]
+        | constructor == stableRefForConstructor prelNatSucc ->
+            (+ 1) <$> logicalNaturalValue predecessor
+      _ -> Nothing
 
 renameBinderLocal :: LocalRef -> LocalRef -> KBinder -> KBinder
 renameBinderLocal old new binder = binder {kbType = renameLocal old new (kbType binder)}
@@ -8248,7 +8284,14 @@ coreToTextWithExpected conversionContext certificates expected term =
           Just reduced -> go env expectedHere reduced
           Nothing -> do
             head' <- go env Nothing headTerm
-            arguments' <- mapM (\(ic, argument) -> KArgument (icitToText ic) <$> go env Nothing argument) arguments
+            arguments' <-
+              case inferCoreType conversionContext env headTerm of
+                Just signature -> convertApplicationArguments env signature arguments
+                Nothing ->
+                  mapM
+                    (\(ic, argument) ->
+                       KArgument (icitToText ic) <$> go env Nothing argument)
+                    arguments
             pure (KTApply head' arguments')
       CSort level -> KTType <$> convertLevel env level
       CLevel level -> levelAsTerm <$> convertLevel env level
@@ -8982,6 +9025,33 @@ coreToTextWithExpected conversionContext certificates expected term =
               conversionError
                 ( "constructor " <> gKey constructor <> " occurrence has more arguments than its checked interface"
                 )
+    -- General applications need the same dependent telescope walk as
+    -- constructors. In particular, a generated `subst` motive is a lambda
+    -- whose binder type is available only from the selected argument domain;
+    -- serializing every argument with no expected type loses that checked
+    -- formation fact. Each accepted argument is substituted through the
+    -- remaining telescope before the next argument is rendered.
+    convertApplicationArguments env = goArguments
+      where
+        goArguments _ [] = pure []
+        goArguments signature ((icit, argument) : rest) =
+          case stripClassifierWrappers signature of
+            CPiEvidenceM _ _ expectedIcit _ _ _ _ _ domain codomain
+              | icit == expectedIcit -> do
+                  argument' <-
+                    KArgument (icitToText icit)
+                      <$> go env (Just domain) argument
+                  rest' <-
+                    goArguments
+                      (substTopTermAt (length env) argument codomain)
+                      rest
+                  pure (argument' : rest')
+              | otherwise ->
+                  conversionError
+                    "application argument icity disagrees with its checked telescope"
+            _ ->
+              conversionError
+                "application occurrence has more arguments than its checked telescope"
     constructorParameterCount info = do
       evalContext <-
         maybe
