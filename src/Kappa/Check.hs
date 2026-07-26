@@ -7526,20 +7526,232 @@ coerceTerm ctx sp term actual expected = do
             Nothing -> do
               before <- gets (length . csDiags)
               compatible <- tryTypeCompatibility ctx sp actual expected
-              unless compatible $ do
-                blockedEvidence <- pendingEvidenceComponent ctx [actual, expected]
-                unless (Set.null blockedEvidence) $
-                  flushPendingSelected blockedEvidence
-                expectType ctx sp actual expected
-              after <- gets (length . csDiags)
-              actual' <- forceM actual
-              expected' <- forceM expected
-              case (after == before, actual', expected') of
-                (True, VSort from, VSort to) -> do
-                  universeEvidenceFor ctx sp from to >>= \case
-                    Just evidence -> pure (universeLift evidence term)
-                    Nothing -> pure term
-                _ -> pure term
+              if compatible
+                then finishCompatible before
+                else
+                  tryRefinementCoercion ctx sp term actual expected >>= \case
+                    Just refined -> pure refined
+                    Nothing -> do
+                      blockedEvidence <- pendingEvidenceComponent ctx [actual, expected]
+                      unless (Set.null blockedEvidence) $
+                        flushPendingSelected blockedEvidence
+                      expectType ctx sp actual expected
+                      pure term
+  where
+    finishCompatible before = do
+      after <- gets (length . csDiags)
+      actual' <- forceM actual
+      expected' <- forceM expected
+      case (after == before, actual', expected') of
+        (True, VSort from, VSort to) -> do
+          universeEvidenceFor ctx sp from to >>= \case
+            Just evidence -> pure (universeLift evidence term)
+            Nothing -> pure term
+        _ -> pure term
+
+-- | One coherent 'RefinementView' witness together with its associated base.
+-- The dictionary is selected by ordinary evidence resolution; associated
+-- members are projected through their checked observation modes.
+refinementViewWitness
+  :: Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe (Term, Value))
+refinementViewWitness ctx site target = do
+  candidate <- refinementViewMayResolve ctx target
+  if not candidate
+    then pure Nothing
+    else do
+      goal <- globalValueM (gPrel "RefinementView") [(Expl, target)]
+      traitEvidence ctx site goal >>= \case
+        Nothing -> pure Nothing
+        Just dictionary -> do
+          baseMode <- traitMemberObservationMode (gPrel "RefinementView") "Base"
+          base <- evalIn ctx (CProjM baseMode dictionary "Base") >>= forceM
+          pure (Just (dictionary, base))
+
+-- | Cheap semantic candidate filter for the implicit refinement conversion.
+-- Ordinary conversion failure is a hot path, so it must not launch full
+-- instance/universe search when no 'RefinementView' dictionary can possibly
+-- exist. Checked instance heads provide the nominal discriminator; a
+-- variable-headed instance remains a conservative wildcard. Local evidence is
+-- admitted only when its checked trait identity is 'RefinementView' or reaches
+-- it through the declared supertrait graph.
+refinementViewMayResolve :: Ctx -> Value -> CheckM Bool
+refinementViewMayResolve ctx target = do
+  state <- get
+  targetTerm <- quoteIn ctx target
+  let refinementTrait = gPrel "RefinementView"
+      targetHead = nominalDataHead targetTerm
+      instanceCandidate entry
+        | ieTrait entry /= refinementTrait = False
+        | otherwise =
+            case ieHead entry of
+              [headTerm] ->
+                case nominalDataHead headTerm of
+                  Nothing -> True
+                  Just candidateHead -> Just candidateHead == targetHead
+              _ -> False
+      reachesRefinement seen trait
+        | trait == refinementTrait = True
+        | trait `Set.member` seen = False
+        | otherwise =
+            case Map.lookup trait (csTraits state) of
+              Nothing -> False
+              Just info ->
+                any
+                  ( maybe False
+                      (reachesRefinement (Set.insert trait seen))
+                      . traitClosureHead
+                      . snd
+                  )
+                  (tiSupers info)
+  localCandidates <-
+    forM
+      [entry | entry <- ctxEntries ctx, ceImplicitLocal entry]
+      $ \entry ->
+        forceM (ceType entry) >>= \case
+          VGlobI trait _ _ ->
+            pure
+              ( Map.member trait (csTraits state)
+                  && reachesRefinement Set.empty trait
+              )
+          _ -> pure False
+  pure (any instanceCandidate (csInstances state) || or localCandidates)
+  where
+    traitClosureHead = \case
+      CLamM _ _ _ _ body -> traitClosureHead body
+      CApp _ function _ -> traitClosureHead function
+      CUniverseLift _ _ _ term -> traitClosureHead term
+      CSchemaLift _ _ _ _ _ _ _ _ term -> traitClosureHead term
+      CGlobal global _ -> Just global
+      CGlob global -> Just global
+      _ -> Nothing
+
+-- | Build the target refinement exactly once from an already-checked base
+-- term. 'IsProp P(x)' establishes uniqueness only; the separate @P(x)@
+-- resolution is mandatory and may fail with the ordinary proof-demand
+-- diagnostic. The hidden strict let is the stable representative required by
+-- §16.1.9: predicate formation, evidence, and construction all refer to the
+-- same source evaluation.
+constructRefinement
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Term
+  -> CheckM Term
+constructRefinement ctx site sourceTerm baseType dictionary = do
+  baseTypeTerm <- quoteIn ctx baseType
+  sourceValue <- evalIn ctx sourceTerm
+  let sourceName = "__refinement_source"
+      innerCtx =
+        case ctxEntries knownCtx of
+          entry : rest ->
+            knownCtx
+              { ctxEntries =
+                  entry {ceCoreQ = Q1} : rest
+              }
+          [] -> knownCtx
+      knownCtx =
+        bindCtxLet sourceName False baseType sourceValue ctx
+      dictionary' = shiftTerm 1 0 dictionary
+      source = CVar 0
+      trait = gPrel "RefinementView"
+  predicateMode <- traitMemberObservationMode trait "Predicate"
+  refineMode <- traitMemberObservationMode trait "refine"
+  let predicateTerm =
+        CApp Expl (CProjM predicateMode dictionary' "Predicate") source
+  predicate <- evalIn innerCtx predicateTerm >>= forceM
+  isPropGoal <- globalValueM prelIsProp [(Expl, predicate)]
+  predicateIsProp <- resolveImplicitQ innerCtx site Q0 isPropGoal
+  proof <- resolveImplicitQ innerCtx site Q0 predicate
+  let body =
+        CApp Impl
+          ( CApp Impl
+              (CApp Expl (CProjM refineMode dictionary' "refine") source)
+              predicateIsProp
+          )
+          proof
+  pure (CLetM Ordinary Q1 sourceName baseTypeTerm sourceTerm body)
+
+-- | Expected-type refinement introduction for bidirectional forms (notably
+-- literals) that cannot first infer a useful base type. Once a coherent target
+-- view is selected, checking proceeds against its associated base and the
+-- predicate obligations remain committed; a missing proof is not rewritten
+-- into a literal-domain mismatch.
+checkRefinementIntroduction
+  :: Ctx
+  -> Expr
+  -> Value
+  -> CheckM (Maybe Term)
+checkRefinementIntroduction ctx expression expected = do
+  saved <- get
+  refinementViewWitness ctx (exprSpan expression) expected >>= \case
+    Nothing -> put saved >> pure Nothing
+    Just (dictionary, base) -> do
+      same <- unifyDefinitional ctx base expected
+      if same
+        then put saved >> pure Nothing
+        else do
+          source <- check ctx expression base
+          Just
+            <$> constructRefinement
+              ctx
+              (exprSpan expression)
+              source
+              base
+              dictionary
+
+-- | The inferred-term half of §16.1.9. Try direct base-to-refinement first,
+-- then refinement-to-base projection. Both attempts are transactional when
+-- their associated base does not match, so ordinary mismatches retain their
+-- original diagnostics and meta state.
+tryRefinementCoercion
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Value
+  -> CheckM (Maybe Term)
+tryRefinementCoercion ctx site sourceTerm actual expected = do
+  tryIntroduction >>= \case
+    Just term -> pure (Just term)
+    Nothing -> tryProjection
+  where
+    tryIntroduction = transactional $ do
+      refinementViewWitness ctx site expected >>= \case
+        Nothing -> pure Nothing
+        Just (dictionary, base) -> do
+          same <- unifyDefinitional ctx actual base
+          if same
+            then Just <$> constructRefinement ctx site sourceTerm base dictionary
+            else pure Nothing
+    tryProjection = transactional $ do
+      refinementViewWitness ctx site actual >>= \case
+        Nothing -> pure Nothing
+        Just (dictionary, base) -> do
+          same <- unifyDefinitional ctx base expected
+          if not same
+            then pure Nothing
+            else do
+              mode <-
+                traitMemberObservationMode
+                  (gPrel "RefinementView")
+                  "refinementValue"
+              pure
+                ( Just
+                    ( CApp Expl
+                        (CProjM mode dictionary "refinementValue")
+                        sourceTerm
+                    )
+                )
+    transactional action = do
+      saved <- get
+      result <- action
+      case result of
+        Nothing -> put saved >> pure Nothing
+        Just value -> pure (Just value)
 
 -- | §11.1.2.3B: commute a parametric forall through a type former only by
 -- applying the selected 'PreservesParametricForall' method.  This recognizer
@@ -12565,13 +12777,19 @@ check ctx expr expected0 = do
               pure tm1
             _ -> elabAppChecked ctx f args expected (exprSpan expr)
     (EIntLit v msuf sp, _) -> do
-      (tm, ty) <- elabIntLit ctx v msuf sp (Just expected)
-      expectType ctx sp ty expected
-      pure tm
+      checkRefinementIntroduction ctx expr expected >>= \case
+        Just refined -> pure refined
+        Nothing -> do
+          (tm, ty) <- elabIntLit ctx v msuf sp (Just expected)
+          expectType ctx sp ty expected
+          pure tm
     (EFloatLit v msuf sp, _) -> do
-      (tm, ty) <- elabFloatLit ctx v msuf sp (Just expected)
-      expectType ctx sp ty expected
-      pure tm
+      checkRefinementIntroduction ctx expr expected >>= \case
+        Just refined -> pure refined
+        Nothing -> do
+          (tm, ty) <- elabFloatLit ctx v msuf sp (Just expected)
+          expectType ctx sp ty expected
+          pure tm
     (EVariant arms mtail sp, _) -> do
       (tm, ty) <- elabVariant ctx arms mtail sp (Just expected)
       expectType ctx sp ty expected
@@ -21145,22 +21363,16 @@ checkMatchPlain ctx scrut cases sp resT = do
           -- reconstruction is conservative: anything outside this shape
           -- records no positive fact (only the 'FactNot' lacks-fact), which
           -- is always sound — it just forgoes the refinement.
-          let ctorFieldsFact g nEx ps
-                | nEx == 0
-                , all isPlainVar ps =
-                    let base = ctxLen ctx
-                        fieldVals = [VRigid (base + i) [] | i <- [0 .. length ps - 1]]
-                     in Just (FactIs (VCtor g fieldVals))
-                | otherwise = Nothing
-              isPlainVar = \case CPVar _ -> True; _ -> False
-              fact = case patC of
-                CPCtor g _ [] -> Just (FactIs (VCtor g []))
-                CPCtor g nEx ps@(_ : _) -> case ctorFieldsFact g nEx ps of
-                  Just f -> Just f
-                  Nothing | not (null prior) -> Just (FactNot prior)
-                  Nothing -> Nothing
-                _ | not (null prior) -> Just (FactNot prior)
-                _ -> Nothing
+          fact <- case patC of
+            CPCtor g _ [] -> pure (Just (FactIs (VCtor g [])))
+            CPCtor _ _ (_ : _) -> do
+              complete <- constructorPatternFact ctx sTy1 patC
+              pure $ case complete of
+                Just value -> Just (FactIs value)
+                Nothing | not (null prior) -> Just (FactNot prior)
+                Nothing -> Nothing
+            _ | not (null prior) -> pure (Just (FactNot prior))
+            _ -> pure Nothing
           oldFacts <- gets csFacts
           forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
             modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
@@ -21214,6 +21426,129 @@ checkMatchPlain ctx scrut cases sp resT = do
   -- type term the (later) niche/discriminator work will read.
   sTyTm <- quoteIn ctx sTy1
   pure (CMatch sTm1 (Just sTyTm) alts)
+
+-- | Reconstruct the complete typed constructor occurrence established by a
+-- plain constructor branch. The older branch fact retained only runtime
+-- payload fields, which was enough for constructor-tag refinement but lost
+-- hidden erased arguments. Consequently a valid constructor eta proof such as
+--
+-- @
+-- match x
+-- case Mk value -> refl
+-- @
+--
+-- could not reduce when the equality reconstructed @x@ through named hidden
+-- proof projections. The pattern elaborator has already introduced one rigid
+-- branch-local slot for every result-undetermined implicit constructor
+-- argument and one slot for every explicit field. Re-specialize the exact
+-- constructor identity against the scrutinee type, then pair those slots with
+-- the checked constructor spine. Result-undetermined generated family/index
+-- arguments deliberately do not produce a positive fact: re-specializing such
+-- a GADT branch can duplicate arithmetic/universe solving and the fact is not
+-- required for refutation or exhaustiveness. Hidden quantity-zero SOURCE
+-- fields are safe, however, and are exactly what constructor eta needs. This
+-- is semantic reconstruction: source names never choose an argument, and any
+-- arity/meta mismatch fails closed.
+constructorPatternFact
+  :: Ctx
+  -> Value
+  -> CorePat
+  -> CheckM (Maybe Value)
+constructorPatternFact outerCtx scrutineeType pattern' =
+  case pattern' of
+    CPCtorM existentialModes constructor patternUniverses fields
+      | all plainField fields -> do
+          constructors <- gets csCtors
+          case Map.lookup constructor constructors of
+            Nothing -> pure Nothing
+            Just constructorInfo -> do
+              (_freshUniverses, _constructorType, arguments, namedBinders, explicitFields) <-
+                instantiateConstructorForFields
+                  outerCtx
+                  constructor
+                  constructorInfo
+                  scrutineeType
+                  noSpan
+              let baseLevel = ctxLen outerCtx
+                  existentialValues =
+                    [ VRigid (baseLevel + index) []
+                    | index <- [0 .. length existentialModes - 1]
+                    ]
+                  fieldValues =
+                    [ VRigid (baseLevel + length existentialModes + index) []
+                    | index <- [0 .. length fields - 1]
+                    ]
+                  explicitByArgument =
+                    Map.fromList
+                      [ (argumentIndex, value)
+                      | ((argumentIndex, _mode, _quantity, _type), value) <-
+                          zip explicitFields fieldValues
+                      ]
+                  sourceFieldCount = length (ciSourceFields constructorInfo)
+                  sourceBinders =
+                    drop (length namedBinders - sourceFieldCount) namedBinders
+                  sourceQuantityByArgument =
+                    Map.fromList
+                      [ (argumentIndex, quantity)
+                      | (argumentIndex, _name, _mode, quantity, _type) <-
+                          sourceBinders
+                      ]
+                  unresolvedHiddenArguments =
+                    [ argumentIndex
+                    | (argumentIndex, argument) <- zip [0 :: Int ..] arguments
+                    , Map.notMember argumentIndex explicitByArgument
+                    , CMeta _ <- [stripIdentityWrappers (caTerm argument)]
+                    ]
+                  sourceExistentialsOnly =
+                    length unresolvedHiddenArguments == length existentialModes
+                      && all
+                        ( \argumentIndex ->
+                            Map.lookup argumentIndex sourceQuantityByArgument
+                              == Just Q0
+                        )
+                        unresolvedHiddenArguments
+                  step (remainingExistentials, built) (argumentIndex, argument) =
+                    case Map.lookup argumentIndex explicitByArgument of
+                      Just fieldValue ->
+                        pure
+                          ( remainingExistentials
+                          , built ++ [constructorValueArg argument fieldValue]
+                          )
+                      Nothing ->
+                        case stripIdentityWrappers (caTerm argument) of
+                          CMeta _
+                            | existentialValue : rest <- remainingExistentials ->
+                                pure
+                                  ( rest
+                                  , built ++ [constructorValueArg argument existentialValue]
+                                  )
+                          _ -> do
+                            argumentValue <- evalIn outerCtx (caTerm argument)
+                            pure
+                              ( remainingExistentials
+                              , built ++ [constructorValueArg argument argumentValue]
+                              )
+              if length explicitFields /= length fields
+                  || not sourceExistentialsOnly
+                then pure Nothing
+                else do
+                  (remainingExistentials, builtArguments) <-
+                    foldM step (existentialValues, []) (zip [0 :: Int ..] arguments)
+                  pure $ do
+                    guard (null remainingExistentials)
+                    guard (length builtArguments == length arguments)
+                    pure (VCtorI constructor patternUniverses builtArguments)
+    _ -> pure Nothing
+  where
+    plainField = \case
+      CPVarM {} -> True
+      _ -> False
+    constructorValueArg argument value =
+      ConstructorValueArg
+        (caIcit argument)
+        (caPayload argument)
+        (caName argument)
+        value
 
 -- | §30.2.7 / §17.1.5: is the (refined) scrutinee type provably uninhabited?
 -- Generalizes the old "zero-constructor data type" check into the full
@@ -26229,18 +26564,30 @@ reflQueryNames = ["defEqSyntax", "headSymbolSyntax", "typeOfSyntax"]
 -- first-order type expression yields Nothing, so the query fails gracefully
 -- rather than fabricating syntax.
 delaborateType :: Ctx -> Span -> Term -> Maybe Expr
-delaborateType ctx dsp = go []
+delaborateType ctx dsp = delaborateTypeWithEnv ctx dsp []
+
+-- | Delaborate a checked type under an explicitly named synthetic binder
+-- environment. Compiler-owned declaration generators use this to abstract a
+-- selected semantic field while still sending the resulting ordinary syntax
+-- back through the normal checker. The environment is de Bruijn order
+-- (nearest binder first), matching 'ctxEntries'.
+delaborateTypeWithEnv :: Ctx -> Span -> [Text] -> Term -> Maybe Expr
+delaborateTypeWithEnv ctx dsp initialEnv = go initialEnv
   where
     nm t = Name t dsp
     go env tm = case tm of
       CSort _ -> Just (EVar (nm "Type"))
       CGlob g -> Just (EVar (nm (gnameText g)))
       CGlobal g _ -> Just (EVar (nm (gnameText g)))
+      CUniverseLift _ _ _ inner -> go env inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> go env inner
       CVar i
         | i < length env -> Just (EVar (nm (env !! i)))
         | otherwise -> case drop (i - length env) (ctxEntries ctx) of
             (e : _) -> Just (EVar (nm (ceName e)))
             [] -> Nothing
+      CLit (LitInt value) -> Just (EIntLit value Nothing dsp)
+      CLit (LitDouble value) -> Just (EFloatLit value Nothing dsp)
       CApp Impl f _ -> go env f
       CApp Expl f a -> do
         fE <- go env f
@@ -30544,6 +30891,7 @@ checkModule st0 m =
                 deferredInterfaces
         mapM_ materializePendingUniverseProofs
           (Set.toAscList finalizedPendingOwners)
+        finalizeDerivedRefinementDeclarations (modDecls m)
         let elaborateBodies _ [] = pure ()
             elaborateBodies remaining (declaration : rest) = do
               bodyPassIn siglessLets declaration
@@ -37223,6 +37571,37 @@ planDerivedDeclarations declarations = do
       state {csDerivedDecls = Map.insert sourceSpan generated (csDerivedDecls state)}
     mapM_ instanceHeadPass generated
 
+-- | Dependent refinement fibers can contain ordinary type/evidence metas that
+-- are finalized only after the complete module header and instance set has
+-- been checked. The derive head is registered by 'planDerivedDeclarations';
+-- after header evidence finalization this pass replaces its head-only
+-- placeholder with the checked generated members. This mirrors the ordinary
+-- instance header/body split and avoids order-dependent retries.
+finalizeDerivedRefinementDeclarations :: [Decl] -> CheckM ()
+finalizeDerivedRefinementDeclarations declarations =
+  forM_ declarations $ \case
+    DDerive headExpression sourceSpan -> do
+      (traitIdentity, _, arguments) <- instSplitHead headExpression
+      case (traitIdentity, arguments) of
+        (Just trait, [target])
+          | trait == gPrel "RefinementView" -> do
+              targetTerm0 <- fst <$> inferType emptyCtx target
+              targetTerm <- zonkTermM 0 targetTerm0
+              shape <- deriveRefinementViewShape sourceSpan target targetTerm
+              let generated =
+                    [ maybe
+                        (derivedEmptyInstance sourceSpan 1 "RefinementView" target)
+                        (derivedRefinementViewDecl sourceSpan target)
+                        shape
+                    ]
+              modify' $ \state ->
+                state
+                  { csDerivedDecls =
+                      Map.insert sourceSpan generated (csDerivedDecls state)
+                  }
+        _ -> pure ()
+    _ -> pure ()
+
 derivedGeneratedSpan :: Span -> Int -> Span
 derivedGeneratedSpan (Span file start (Pos endLine endColumn)) discriminator =
   Span file start (Pos endLine (endColumn + discriminator))
@@ -37237,6 +37616,359 @@ derivedEmptyInstance sourceSpan discriminator trait target =
    in DInstance
         (InstanceDecl Nothing [] (derivedTraitHead span' trait target) [])
         span'
+
+-- | The exact checked shape used to generate a 'RefinementView' dictionary.
+-- Field positions are source-constructor positions, but their semantic roles
+-- were selected from instantiated checked types and resolved global identity.
+-- Textual names are used only to emit ordinary syntax that is re-resolved by
+-- the checker.
+data DerivedRefinementViewShape = DerivedRefinementViewShape
+  { drvsConstructor :: !GName
+  , drvsFieldCount :: !Int
+  , drvsFieldIcit :: ![Icit]
+  , drvsBaseIndex :: !Int
+  , drvsIsPropIndex :: !Int
+  , drvsProofIndex :: !Int
+  , drvsBaseFieldName :: !(Maybe Text)
+  , drvsIsPropFieldName :: !Text
+  , drvsProofFieldName :: !Text
+  , drvsBaseType :: !Expr
+  , drvsPredicateBody :: !Expr
+  }
+
+data InstantiatedRefinementField = InstantiatedRefinementField
+  { irfSourceIndex :: !Int
+  , irfArgumentIndex :: !Int
+  , irfMode :: !ObservationMode
+  , irfQuantity :: !Q
+  , irfType :: !Value
+  , irfArgument :: !ConstructorArg
+  }
+
+-- | §14.5.2 eligibility and predicate recovery. This deliberately works from
+-- the checked constructor telescope:
+--
+-- * one ordinary runtime-kept field is the base;
+-- * every other source field is erased quantity-0 evidence;
+-- * one field has checked type @IsProp P@ and one has checked type @P@;
+-- * the two fibers are definitionally equal; and
+-- * the predicate contains no unresolved meta except the selected base-field
+--   meta, which is abstracted into the generated associated predicate.
+--
+-- Requiring exactly the base/IsProp/proof triple is the v1 deterministic
+-- filler fragment. Shapes with additional erased fields fail closed until
+-- those fields have a checked synthesis rule.
+deriveRefinementViewShape
+  :: Span
+  -> Expr
+  -> Term
+  -> CheckM (Maybe DerivedRefinementViewShape)
+deriveRefinementViewShape sourceSpan target _requestTargetTerm = do
+  -- Re-specialize the target under the checked derived-head occurrence.
+  -- Eligibility itself performs no evidence search and cannot be justified by
+  -- the instance being generated.
+  settledTargetTerm0 <- fst <$> inferType emptyCtx target
+  settledTargetTerm <- zonkTermM 0 settledTargetTerm0
+  deriveRefinementViewShapeSettled sourceSpan settledTargetTerm
+
+deriveRefinementViewShapeSettled
+  :: Span
+  -> Term
+  -> CheckM (Maybe DerivedRefinementViewShape)
+deriveRefinementViewShapeSettled sourceSpan targetTerm = do
+  state <- get
+  case nominalDataHead targetTerm >>= \dataName -> (dataName,) <$> Map.lookup dataName (csDatas state) of
+    Just (_dataName, dataInfo)
+      | [constructor] <- diCtors dataInfo
+      , Just constructorInfo <- Map.lookup constructor (csCtors state) -> do
+          targetValue <- evalIn emptyCtx targetTerm
+          (_universes, _constructorType, arguments, namedBinders, _explicitFields) <-
+            instantiateConstructorForFields
+              emptyCtx
+              constructor
+              constructorInfo
+              targetValue
+              sourceSpan
+          let sourceFieldCount = length (ciSourceFields constructorInfo)
+              sourceBinders =
+                drop (length namedBinders - sourceFieldCount) namedBinders
+              instantiatedFields0 =
+                [ InstantiatedRefinementField
+                    sourceIndex
+                    argumentIndex
+                    mode
+                    quantity
+                    fieldType
+                    argument
+                | (sourceIndex, (argumentIndex, _fieldName, mode, quantity, fieldType)) <-
+                    zip [0 :: Int ..] sourceBinders
+                , Just argument <- [arguments `atMay` argumentIndex]
+                ]
+          connectedEvidence <-
+            pendingEvidenceComponent emptyCtx (map irfType instantiatedFields0)
+          flushPendingSelected connectedEvidence
+          instantiatedFields <-
+            forM instantiatedFields0 $ \field -> do
+              fieldTypeTerm <-
+                quoteIn emptyCtx (irfType field) >>= zonkTermM 0
+              fieldType <- evalIn emptyCtx fieldTypeTerm
+              pure field {irfType = fieldType}
+          ec <- ec_
+          let retainedFields =
+                [ field
+                | field <- instantiatedFields
+                , Repr.runtimeConstructorField
+                    ec
+                    (irfArgumentIndex field)
+                    (caIcit (irfArgument field))
+                    (irfQuantity field)
+                    (irfType field)
+                ]
+              erasedFields =
+                [ field
+                | field <- instantiatedFields
+                , field `notElemByIndex` retainedFields
+                ]
+              exactSourceShape =
+                length instantiatedFields == sourceFieldCount
+                  && and
+                    [ caIcit (irfArgument field) == sourceIcit
+                    | (field, (sourceIcit, _sourceName)) <-
+                        zip instantiatedFields (ciSourceFields constructorInfo)
+                    ]
+          case retainedFields of
+            [baseField]
+              | exactSourceShape
+              , irfMode baseField == Ordinary
+              , length instantiatedFields == 3
+              , all ((== Q0) . irfQuantity) erasedFields -> do
+                  baseArgument <- zonkTermM 0 (caTerm (irfArgument baseField))
+                  case stripIdentityWrappers baseArgument of
+                    CMeta baseMeta -> do
+                      classified <-
+                        forM erasedFields $ \field ->
+                          (field,) <$> refinementIsPropFiber (irfType field)
+                      let isPropFields =
+                            [ (field, fiber)
+                            | (field, Just fiber) <- classified
+                            ]
+                          proofFields =
+                            [ field
+                            | (field, Nothing) <- classified
+                            ]
+                          matchingPairs =
+                            [ (isPropField, proofField, fiber)
+                            | (isPropField, fiber) <- isPropFields
+                            , proofField <- proofFields
+                            , convertible ec 0 fiber (irfType proofField)
+                            ]
+                      case matchingPairs of
+                        [(isPropField, proofField, fiber)] -> do
+                          baseTypeTerm <-
+                            quoteIn emptyCtx (irfType baseField) >>= zonkTermM 0
+                          predicateTerm0 <-
+                            quoteIn emptyCtx fiber >>= zonkTermM 0
+                          let predicateTerm =
+                                mapTermWithDepth
+                                  ( \depth -> \case
+                                      CMeta meta
+                                        | meta == baseMeta -> Just (CVar depth)
+                                      _ -> Nothing
+                                  )
+                                  0
+                                  predicateTerm0
+                              noResidualMetas =
+                                null (metaIdsOf baseTypeTerm)
+                                  && null (metaIdsOf predicateTerm)
+                              baseName = "__derive_refinement_base"
+                              sourceNames = map snd (ciSourceFields constructorInfo)
+                              baseFieldName =
+                                sourceNames `atMay` irfSourceIndex baseField >>= id
+                              isPropFieldName =
+                                sourceNames `atMay` irfSourceIndex isPropField >>= id
+                              proofFieldName =
+                                sourceNames `atMay` irfSourceIndex proofField >>= id
+                              checkedSourceModes =
+                                ( caIcit (irfArgument baseField)
+                                , caIcit (irfArgument isPropField)
+                                , caIcit (irfArgument proofField)
+                                )
+                          pure $ do
+                            guard noResidualMetas
+                            guard (checkedSourceModes == (Expl, Impl, Impl))
+                            isPropName <- isPropFieldName
+                            proofName <- proofFieldName
+                            baseType <-
+                              delaborateTypeWithEnv emptyCtx sourceSpan [] baseTypeTerm
+                            predicateBody <-
+                              delaborateTypeWithEnv
+                                emptyCtx
+                                sourceSpan
+                                [baseName]
+                                predicateTerm
+                            pure
+                              DerivedRefinementViewShape
+                                { drvsConstructor = constructor
+                                , drvsFieldCount = length instantiatedFields
+                                , drvsFieldIcit = map (caIcit . irfArgument) instantiatedFields
+                                , drvsBaseIndex = irfSourceIndex baseField
+                                , drvsIsPropIndex = irfSourceIndex isPropField
+                                , drvsProofIndex = irfSourceIndex proofField
+                                , drvsBaseFieldName = baseFieldName
+                                , drvsIsPropFieldName = isPropName
+                                , drvsProofFieldName = proofName
+                                , drvsBaseType = baseType
+                                , drvsPredicateBody = predicateBody
+                                }
+                        _ -> pure Nothing
+                    _ -> pure Nothing
+            _ -> pure Nothing
+    _ -> pure Nothing
+  where
+    atMay values index
+      | index < 0 = Nothing
+      | otherwise = listToMaybe (drop index values)
+    field `notElemByIndex` others =
+      all ((/= irfSourceIndex field) . irfSourceIndex) others
+
+-- | Recover the semantic fiber from checked @IsProp fiber@ evidence. Hidden
+-- declaration-universe proof arguments are removed through the trait's
+-- registered semantic telescope, so this cannot be confused by source
+-- spelling or a same-named non-prelude declaration.
+refinementIsPropFiber :: Value -> CheckM (Maybe Value)
+refinementIsPropFiber fieldType = do
+  normalized <- forceM fieldType
+  state <- get
+  pure $ case normalized of
+    VGlobN trait arguments
+      | trait == gPrel "IsProp"
+      , Just [(Expl, fiber)] <- traitSemanticSpineIn state trait arguments ->
+          Just fiber
+    _ -> Nothing
+
+derivedRefinementViewDecl
+  :: Span
+  -> Expr
+  -> DerivedRefinementViewShape
+  -> Decl
+derivedRefinementViewDecl sourceSpan target shape =
+  DInstance
+    (InstanceDecl Nothing [] (derivedTraitHead span' "RefinementView" target) members)
+    span'
+  where
+    span' = derivedGeneratedSpan sourceSpan 1
+    baseName = Name "__derive_refinement_base" span'
+    valueName = Name "__derive_refinement_value" span'
+    isPropName = Name "__derive_refinement_is_prop" span'
+    proofName = Name "__derive_refinement_proof" span'
+    refinedName = Name "__derive_refinement_value_object" span'
+    predicateIsPropName = Name "__derive_refinement_predicate_is_prop" span'
+    predicateProofName = Name "__derive_refinement_predicate_proof" span'
+    implicit name = (simpleBinder name) {bImplicit = True}
+    member name binders body =
+      DLet
+        noMods
+        ( LetDef
+            (Just (Name name span'))
+            False
+            Nothing
+            emptyPrefix
+            binders
+            Nothing
+            Nothing
+            body
+        )
+        span'
+    members =
+      [ member "Base" [] (drvsBaseType shape)
+      , member "Predicate" [simpleBinder baseName] (drvsPredicateBody shape)
+      , member
+          "refinementValue"
+          [simpleBinder refinedName]
+          (projectRefinementField refinedName (drvsBaseFieldName shape) valueName)
+      , member
+          "refinementPredicateIsProp"
+          [simpleBinder refinedName]
+          ( projectRefinementField
+              refinedName
+              (Just (drvsIsPropFieldName shape))
+              isPropName
+          )
+      , member
+          "refinementProof"
+          [simpleBinder refinedName]
+          ( projectRefinementField
+              refinedName
+              (Just (drvsProofFieldName shape))
+              proofName
+          )
+      , member
+          "refine"
+          [ simpleBinder baseName
+          , implicit predicateIsPropName
+          , implicit predicateProofName
+          ]
+          constructDerivedRefinement
+      , member
+          "valueAfterRefine"
+          [ implicit baseName
+          , implicit predicateIsPropName
+          , implicit predicateProofName
+          ]
+          refl
+      , member
+          "refineAfterValue"
+          [implicit refinedName]
+          (matchRefinementBase refinedName refl)
+      ]
+    targetQualifier = case targetHead target of
+      EVar name -> Just name
+      _ -> Nothing
+    targetHead = \case
+      EApp function _ -> targetHead function
+      other -> other
+    constructorName = Name (gnameText (drvsConstructor shape)) span'
+    constructorPattern =
+      PCtor
+        (CtorRef targetQualifier constructorName)
+        [PVar valueName]
+        span'
+    matchRefinementBase scrutinee body =
+      EMatch
+        (EVar scrutinee)
+        [ MatchCase
+            constructorPattern
+            Nothing
+            body
+            span'
+        ]
+        span'
+    projectRefinementField scrutinee fieldName fallbackName =
+      case fieldName of
+        Just name ->
+          EDot (EVar scrutinee) (DotName (Name name span'))
+        Nothing ->
+          matchRefinementBase scrutinee (EVar fallbackName)
+    constructorExpression =
+      case targetQualifier of
+        Just qualifier -> EDot (EVar qualifier) (DotName constructorName)
+        Nothing -> EVar constructorName
+    constructDerivedRefinement =
+      EApp
+        constructorExpression
+        [ argumentFor index icit
+        | (index, icit) <- zip [0 :: Int ..] (drvsFieldIcit shape)
+        ]
+    argumentFor index icit =
+      let expression
+            | index == drvsBaseIndex shape = EVar baseName
+            | index == drvsIsPropIndex shape = EVar predicateIsPropName
+            | index == drvsProofIndex shape = EVar predicateProofName
+            | otherwise = EHole Nothing span'
+       in case icit of
+            Expl -> ArgExplicit expression
+            Impl -> ArgImplicit expression
+    refl = EVar (Name "refl" span')
 
 derivedEqDecl :: Span -> Int -> Expr -> Term -> CheckM Decl
 derivedEqDecl sourceSpan discriminator target targetTerm = do
@@ -37415,13 +38147,20 @@ validateExactNaturalDerive target = do
       pure (length fields == 2 && zeroCount == 1 && successorCount == 1)
 
 validateRefinementViewDerive :: Expr -> CheckM Bool
-validateRefinementViewDerive _ = pure False
+validateRefinementViewDerive target = do
+  targetTerm0 <- fst <$> inferType emptyCtx target
+  targetTerm <- zonkTermM 0 targetTerm0
+  isJust <$> deriveRefinementViewShape (exprSpan target) target targetTerm
 
 constructorFieldBinders :: CtorInfo -> [(Q, Term)]
 constructorFieldBinders info =
   drop (length binders - fieldCount) binders
   where
-    fieldCount = length (ciFields info)
+    -- 'ciFields' contains only explicit source fields because it also stores
+    -- explicit-field defaults. Semantic constructor shape must include erased
+    -- implicit proof fields as well; 'ciSourceFields' is the exact source
+    -- telescope with family/generated binders intentionally absent.
+    fieldCount = length (ciSourceFields info)
     binders = piBinders (ciType info)
     piBinders = \case
       CPiBoundM _ _ quantity _ _ _ domain body ->
