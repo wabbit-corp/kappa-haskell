@@ -427,9 +427,20 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
         , VLit (LitInt n) <- go (fuel - 1) predecessor
         , n >= 0 ->
             VLit (LitInt (n + 1))
-      VGlobI g _ spine
-        | Just result <- closedNatOperation g spine ->
+      VGlobI g universes spine
+        | Just result <- logicalNatOperationStep g universes spine ->
             go (fuel - 1) result
+      -- Open logical-Nat operations stay headed by their authenticated
+      -- declaration identity when their first computation argument is
+      -- neutral.  Unfolding the source definition here would replace
+      -- @natAdd n k@ by a stuck match and lose the arithmetic head needed by
+      -- the proof-producing value solver.  Concrete left constructors still
+      -- take exactly one ordinary computation step above.
+      v@(VGlobI g _ _)
+        | g == prelNatAdd
+            || g == prelNatMultiply
+            || g == prelNatCompare ->
+            v
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
@@ -473,24 +484,77 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
             go (fuel - 1) v'
       _ -> v
       where
-        -- This is a representation-preserving accelerator keyed by resolved
-        -- declaration identity. It avoids unary normalization of huge closed
-        -- naturals without adding equations for open terms.
-        closedNatOperation global spine =
-          case (global, [go (fuel - 1) argument | (Expl, argument) <- spine]) of
-            (g, [VLit (LitInt left), VLit (LitInt right)])
-              | g == prelNatAdd
-              , left >= 0
-              , right >= 0 ->
-                  Just (VLit (LitInt (left + right)))
-              | g == prelNatMultiply
-              , left >= 0
-              , right >= 0 ->
-                  Just (VLit (LitInt (left * right)))
-              | g == prelNatCompare
-              , left >= 0
-              , right >= 0 ->
-                  Just (VCtor (prelOrdering (compare left right)) [])
+        -- Representation-preserving logical-Nat computation keyed by
+        -- resolved declaration identity.  Closed arithmetic uses exact
+        -- compact integers; open arithmetic follows the declared recursion on
+        -- the left argument one constructor at a time.
+        logicalNatOperationStep global universes spine =
+          case [argument | (Expl, argument) <- spine] of
+            [left, right]
+              | global == prelNatAdd ->
+                  case go (fuel - 1) left of
+                    VLit (LitInt 0) -> Just right
+                    VLit (LitInt n)
+                      | n > 0 ->
+                          case go (fuel - 1) right of
+                            VLit (LitInt m) | m >= 0 ->
+                              Just (VLit (LitInt (n + m)))
+                            _ ->
+                              Just
+                                ( VCtor prelNatSucc
+                                    [ VGlobI global universes
+                                        [ (Expl, VLit (LitInt (n - 1)))
+                                        , (Expl, right)
+                                        ]
+                                    ]
+                                )
+                    VCtor constructor [predecessor]
+                      | constructor == prelNatSucc ->
+                          Just
+                            ( VCtor prelNatSucc
+                                [ VGlobI global universes
+                                    [(Expl, predecessor), (Expl, right)]
+                                ]
+                            )
+                    _ -> Nothing
+              | global == prelNatMultiply ->
+                  case go (fuel - 1) left of
+                    VLit (LitInt 0) -> Just (VLit (LitInt 0))
+                    VLit (LitInt n)
+                      | n > 0 ->
+                          case go (fuel - 1) right of
+                            VLit (LitInt m) | m >= 0 ->
+                              Just (VLit (LitInt (n * m)))
+                            _ ->
+                              Just
+                                ( VGlobI prelNatAdd []
+                                    [ (Expl, right)
+                                    , ( Expl
+                                      , VGlobI global universes
+                                          [ (Expl, VLit (LitInt (n - 1)))
+                                          , (Expl, right)
+                                          ]
+                                      )
+                                    ]
+                                )
+                    VCtor constructor [predecessor]
+                      | constructor == prelNatSucc ->
+                          Just
+                            ( VGlobI prelNatAdd []
+                                [ (Expl, right)
+                                , ( Expl
+                                  , VGlobI global universes
+                                      [(Expl, predecessor), (Expl, right)]
+                                  )
+                                ]
+                            )
+                    _ -> Nothing
+              | global == prelNatCompare ->
+                  case (go (fuel - 1) left, go (fuel - 1) right) of
+                    (VLit (LitInt n), VLit (LitInt m))
+                      | n >= 0, m >= 0 ->
+                          Just (VCtor (prelOrdering (compare n m)) [])
+                    _ -> Nothing
             _ -> Nothing
         isPrimRoot = \case
           VPrim _ [] -> True

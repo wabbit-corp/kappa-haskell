@@ -405,12 +405,23 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           alignValues substitution patternMembers actualMembers
         (VInject patternTag patternPayload, VInject actualTag actualPayload)
           | patternTag == actualTag -> align substitution patternPayload actualPayload
+        (VPrim patternPrimitive patternArguments, VPrim actualPrimitive actualArguments)
+          | patternPrimitive == actualPrimitive ->
+              alignValues substitution patternArguments actualArguments
         (VSort patternLevel, VSort actualLevel)
           | patternLevel == actualLevel -> Just substitution
         (VLevel patternLevel, VLevel actualLevel)
           | patternLevel == actualLevel -> Just substitution
         (VLit patternLiteral, VLit actualLiteral)
           | patternLiteral == actualLiteral -> Just substitution
+        (patternForced, actualForced)
+          | Just (patternGlobal, patternLevels, patternSpine) <-
+              globalApplicationView patternForced
+          , Just (actualGlobal, actualLevels, actualSpine) <-
+              globalApplicationView actualForced
+          , patternGlobal == actualGlobal
+          , allowProvisionalLevels || patternLevels == actualLevels ->
+              alignSpines substitution patternSpine actualSpine
         (patternForced, actualForced)
           | convertible ctx depth patternForced actualForced -> Just substitution
         _ -> Nothing
@@ -434,6 +445,20 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
                 result >>= \current -> align current patternValue actualValue)
             (Just substitution)
             (zip patternValues actualValues)
+
+    -- Evaluation may represent the same neutral global application either as
+    -- a 'VGlobal' carrying its spine or as nested 'VAppN' nodes around that
+    -- global.  Constructor alignment is representation-independent: flatten
+    -- both forms before comparing the authenticated global identity, universe
+    -- arguments, icities, and semantic arguments.
+    globalApplicationView = go []
+      where
+        go suffix = \case
+          VAppN icit function argument ->
+            go ((icit, argument) : suffix) function
+          VGlobal global levels spine ->
+            Just (global, levels, spine ++ suffix)
+          _ -> Nothing
 
     bind level actual substitution =
       let actual' = substituteValue substitution actual

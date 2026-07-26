@@ -3156,7 +3156,7 @@ preludeSource =
       "absurd : forall (@0 a : Type). Void -> a"
     , "let absurd v = __absurd v"
     , ""
-    , "subst.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 p : (parametric 0 z : a) -> Type v) (@parametric 0 x : a) (@parametric 0 y : a). x = y -> p x -> p y"
+    , "subst.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 p : (ordinary 0 z : a) -> Type v) (@ordinary 0 x : a) (@ordinary 0 y : a). x = y -> p x -> p y"
     , "let subst.{u, v} eq px = __transport px"
     , ""
     , "sym : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x"
@@ -3210,7 +3210,7 @@ preludeSource =
     , ""
     , -- §11.4: dependent path induction over the motive 'c'. The base
       -- case is transported to the (proof-irrelevantly identical) goal.
-      "pathInd.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 x : a) (@parametric 0 c : forall (@parametric 0 y : a). (@parametric 0 pp : x = y) -> Type v). c @x @refl -> forall (@parametric 0 y : a). (parametric 0 p : x = y) -> c @y @p"
+      "pathInd.{u, v} : forall (@parametric 0 a : Type u) (@ordinary 0 x : a) (@parametric 0 c : forall (@ordinary 0 y : a). (@parametric 0 pp : x = y) -> Type v). c @x @refl -> forall (@ordinary 0 y : a). (parametric 0 p : x = y) -> c @y @p"
     , "let pathInd.{u, v} base y p = __transport base"
     , ""
     , -- §10.2.1 standard Nat no-confusion projections. These are ordinary

@@ -39,6 +39,7 @@ module Kappa.Termination
   , boolNotArg
   , lastExplicitArg
   , arithOf
+  , arithmeticMetaVariable
   , proveFactByBounds
   , lowerBoundExpr
   , lastMaybe
@@ -59,7 +60,16 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Text.Read (readMaybe)
 
-import Kappa.Builtins (prelFalse, prelNot, prelTrue, preludeModule)
+import Kappa.Builtins
+  ( prelFalse
+  , prelNatAdd
+  , prelNatMultiply
+  , prelNatSucc
+  , prelNatZero
+  , prelNot
+  , prelTrue
+  , preludeModule
+  )
 import Kappa.Core
 import Kappa.CoreOps
   ( globalsOfTerm
@@ -305,7 +315,7 @@ simplifyDecisionTerm = go
 -- | A symbolic integer expression lifted out of a core term by 'arithOf'.
 data AExpr
   = AConst !Integer
-  | AVar !Int -- ^ a variable, by de Bruijn /level/ (so it's stable as we descend)
+  | AVar !Int -- ^ a rigid level, or a negative 'arithmeticMetaVariable'
   | AScale !Integer !AExpr
   | AAdd !AExpr !AExpr
   | ASub !AExpr !AExpr
@@ -445,7 +455,13 @@ lastExplicitArg args = lastMaybe [a | (Expl, a) <- args]
 arithOf :: Int -> Term -> Maybe AExpr
 arithOf d t0 = case simplifyDecisionTerm t0 of
   CLit (LitInt n) -> Just (AConst n)
+  CCtorI g _ _ []
+    | g == prelNatZero -> Just (AConst 0)
+  CCtorI g _ _ [argument]
+    | g == prelNatSucc ->
+        AAdd (AConst 1) <$> arithOf d (caTerm argument)
   CVar i -> Just (AVar (d - 1 - i))
+  CMeta meta -> Just (AVar (arithmeticMetaVariable meta))
   CIf c th el -> arithIf c th el
   t@CApp {} -> arithApp t
   _ -> Nothing
@@ -472,18 +488,29 @@ arithOf d t0 = case simplifyDecisionTerm t0 of
             un f = do
               a <- lastMaybe ex
               f <$> arithOf d a
-        case intArithPrim fg of
-          Just PrimAddInt -> bin AAdd
-          Just PrimSubInt -> bin ASub
-          Just PrimMulInt -> bin AMul
-          Just PrimDivInt -> bin ADiv
-          Just PrimModInt -> bin AMod
-          Just PrimNegInt -> un ANeg
-          Just PrimNatToInt -> un id
-          Just PrimNatOfInt -> un id
-          Just PrimIntToNat -> un id
-          Nothing -> Nothing
+        if fg == prelNatAdd
+          then bin AAdd
+          else if fg == prelNatMultiply
+            then bin AMul
+            else case intArithPrim fg of
+              Just PrimAddInt -> bin AAdd
+              Just PrimSubInt -> bin ASub
+              Just PrimMulInt -> bin AMul
+              Just PrimDivInt -> bin ADiv
+              Just PrimModInt -> bin AMod
+              Just PrimNegInt -> un ANeg
+              Just PrimNatToInt -> un id
+              Just PrimNatOfInt -> un id
+              Just PrimIntToNat -> un id
+              Nothing -> Nothing
       _ -> Nothing
+
+-- | Give an inference meta a stable arithmetic-variable identity disjoint
+-- from every de Bruijn level.  Callers still decide whether the meta is known
+-- to be Nat-typed before adding this identity to the non-negative variable
+-- set; merely reifying a meta here grants it no arithmetic facts.
+arithmeticMetaVariable :: MetaId -> Int
+arithmeticMetaVariable meta = negate meta - 1
 
 -- | Try to prove a goal 'AFact' from the facts in scope. @natLvls@ is the
 -- set of variable /levels/ known to be naturals (so they're @>= 0@ for

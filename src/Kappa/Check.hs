@@ -2039,7 +2039,13 @@ freshMetaV ctx = freshMeta >>= evalIn ctx
 -- declaration generalization; reconstructing a classifier later from source
 -- shape would make holes and evidence arguments indistinguishable.
 freshMetaFor :: Ctx -> Value -> CheckM Term
-freshMetaFor ctx classifier = do
+freshMetaFor ctx classifier = snd <$> freshMetaForWithId ctx classifier
+
+-- | Allocate a classifier-authenticated inference meta while retaining its
+-- stable identity for analyses that must track the variable independently of
+-- its current solution.
+freshMetaForWithId :: Ctx -> Value -> CheckM (MetaId, Term)
+freshMetaForWithId ctx classifier = do
   firstClassLevel <- isTypeLevelValue classifier
   meta <- freshMetaId
   classifierTerm <- quoteIn ctx classifier
@@ -2055,7 +2061,7 @@ freshMetaFor ctx classifier = do
             then Set.insert meta (csFirstClassLevelMetas st)
             else csFirstClassLevelMetas st
       }
-  pure (CMeta meta)
+  pure (meta, CMeta meta)
 
 freshLevelMeta :: CheckM Level
 freshLevelMeta = LMeta <$> freshMetaId
@@ -21098,7 +21104,7 @@ checkMatchPlain ctx scrut cases sp resT = do
         _ -> Nothing
       goCase (accAlts, checkedCases, prior, covered) c = case c of
         MatchImpossible isp -> do
-          empty <- scrutineeEmpty ctx sTy1
+          empty <- matchRemainderEmpty ctx sTy1 Nothing checkedCases
           unless empty $
             errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.proof.impossible-reachable")
               "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
@@ -21333,7 +21339,7 @@ inhabCtorFiber ctx scrutTy c = do
     Just ci -> do
       nBefore <- gets (length . filter isError . csDiags)
       ctype <- evalIn emptyCtx =<< instantiateCtorType c ci
-      (result, fields) <- peelCtorResult ctype []
+      (result, fields, natMetas) <- peelCtorResult ctype [] Set.empty
       -- Decide unify success/failure WITH per-position clash tracking, so the
       -- ground-ness probe can target only the family-argument positions that
       -- actually disagreed (§17.1.2). Each clash records the (ctorResultArg,
@@ -21341,10 +21347,9 @@ inhabCtorFiber ctx scrutTy c = do
       (ok, clashPairs) <- unifyHeadByPosition result scrutTy
       nAfter <- gets (length . filter isError . csDiags)
       put st -- discard speculative meta solutions and diagnostics
-      pure $
-        if ok && nAfter == nBefore
-          then CtorRefined fields
-          else failureVerdict st clashPairs
+      if ok && nAfter == nBefore
+        then pure (CtorRefined fields)
+        else failureVerdict st natMetas clashPairs
   where
     -- A unify-failure is a genuine no-confusion contradiction ('Empty') only
     -- when every DISAGREEING family-argument position is PROVABLY APART — the
@@ -21370,30 +21375,65 @@ inhabCtorFiber ctx scrutTy c = do
     -- though the second clash (`True` vs rigid `b`) is on its own undecidable.
     -- Only when NO clashing position is provably apart (every disagreement is
     -- shielded by a rigid/meta) is emptiness undecidable ('CtorIndexUnknown').
-    failureVerdict st clashPairs
+    failureVerdict st natMetas clashPairs
       | null clashPairs =
-          if noRigidSkolemForced (ecOf st) scrutTy
-            then CtorContradiction
-            else CtorIndexUnknown
-      | any (\(ca, sa) -> groundlyApart (ecOf st) ca sa) clashPairs =
-          CtorContradiction
-      | otherwise = CtorIndexUnknown
+          pure $
+            if noRigidSkolemForced (ecOf st) scrutTy
+              then CtorContradiction
+              else CtorIndexUnknown
+      | otherwise = do
+          apart <- or <$> mapM (valuesProvablyApart st natMetas) clashPairs
+          pure (if apart then CtorContradiction else CtorIndexUnknown)
+
+    -- Structural no-confusion handles visible constructor clashes.  Logical
+    -- Nat arithmetic can also prove two family arguments apart without
+    -- reducing an open expression to constructors (for example @0@ versus
+    -- @n + 1@).  Reify through the shared authenticated arithmetic domain and
+    -- use only bounds justified by Nat-typed rigids in the current context.
+    -- A failed translation/proof remains 'False', preserving the
+    -- fail-closed reachability direction.
+    valuesProvablyApart st natMetas (left, right)
+      | groundlyApart (ecOf st) left right = pure True
+      | otherwise = do
+          natLevels <- ctxNatLevels ctx
+          let depth = ctxLen ctx
+              evaluation = ecOf st
+              leftTerm = quote evaluation depth (force evaluation left)
+              rightTerm = quote evaluation depth (force evaluation right)
+              arithmeticNatVariables =
+                Set.union
+                  natLevels
+                  (Set.map arithmeticMetaVariable natMetas)
+          pure $ case (arithOf depth leftTerm, arithOf depth rightTerm) of
+            (Just lhs, Just rhs) ->
+              proveFactByBounds arithmeticNatVariables [] (AFact ACmpLt lhs rhs)
+                || proveFactByBounds arithmeticNatVariables [] (AFact ACmpLt rhs lhs)
+            _ -> False
 
     -- Instantiate the constructor telescope with fresh metas; return the result
     -- type (unsolved) and the retained Expl field types. Unlike the old peel we
     -- do NOT unify here — the caller drives a position-aware unification.
-    peelCtorResult t acc = do
+    peelCtorResult t acc natMetas = do
       t' <- forceM t
       case t' of
-        VPi Impl _ _ _ _ clo -> do
-          m <- freshMetaV ctx
+        VPi Impl _ _ _ dom clo -> do
+          (m, natMetas') <- freshCtorMeta dom natMetas
           r <- clApp clo m
-          peelCtorResult r acc
+          peelCtorResult r acc natMetas'
         VPi Expl _ _ _ dom clo -> do
-          m <- freshMetaV ctx
+          (m, natMetas') <- freshCtorMeta dom natMetas
           r <- clApp clo m
-          peelCtorResult r (acc ++ [dom])
-        result -> pure (result, acc)
+          peelCtorResult r (acc ++ [dom]) natMetas'
+        result -> pure (result, acc, natMetas)
+
+    freshCtorMeta domain natMetas = do
+      (meta, term) <- freshMetaForWithId ctx domain
+      value <- evalIn ctx term
+      domain' <- forceM domain
+      let natMetas' = case domain' of
+            VGlobN g [] | g == prelNat -> Set.insert meta natMetas
+            _ -> natMetas
+      pure (value, natMetas')
 
     -- Unify the constructor result against the scrutinee. When both sides are
     -- the same data head with matching arity, unify each family-argument
@@ -21575,11 +21615,48 @@ inhabEqualityVerdict t = do
 -- present, only that subset of the data type's constructors must be
 -- covered for exhaustiveness. 'Nothing' means "no refinement in scope",
 -- so the full constructor set is required (the conservative default).
+matchRemainderEmpty
+  :: Ctx
+  -> Value
+  -> Maybe [GName]
+  -> [(CorePat, Maybe Term)]
+  -> CheckM Bool
+matchRemainderEmpty ctx ty mRefined alts = do
+  t <- forceM ty
+  wholeScrutineeEmpty <- scrutineeEmpty ctx t
+  let unguarded = [p | (p, Nothing) <- alts]
+  if wholeScrutineeEmpty || any corePatternCatchAll unguarded
+    then pure True
+    else case t of
+      VGlobN g _ -> do
+        st <- get
+        case Map.lookup g (csDatas st) of
+          Nothing -> pure False
+          Just di -> do
+            let uncovered = uncoveredDataConstructors st di mRefined alts
+            and <$> mapM (constructorFiberEmpty ctx t) uncovered
+      VVariantT members -> do
+        tags <- mapM (tagOf ctx) members
+        let covered = concatMap corePatternCoveredTags unguarded
+        pure
+          ( any corePatternHasVariantRest unguarded
+              || null (tags \\ covered)
+          )
+      VRecordT _ -> do
+        st <- get
+        let tupleRows = [[p] | p@CPTuple {} <- unguarded]
+            tupleComplete = not (null tupleRows) && not (wildUseful st tupleRows 1)
+        pure
+          ( tupleComplete
+              || any coreRecordPatternIrrefutable unguarded
+          )
+      _ -> pure False
+
 checkExhaustive :: Ctx -> Span -> Value -> Maybe [GName] -> [(CorePat, Maybe Term)] -> CheckM ()
 checkExhaustive ctx sp ty mRefined alts = do
   t <- forceM ty
   wholeScrutineeEmpty <- scrutineeEmpty ctx t
-  let catchAll = any isCatchAll [p | (p, Nothing) <- alts]
+  let catchAll = any corePatternCatchAll [p | (p, Nothing) <- alts]
   if wholeScrutineeEmpty || catchAll
     then pure ()
     else case t of
@@ -21587,27 +21664,8 @@ checkExhaustive ctx sp ty mRefined alts = do
         st <- get
         case Map.lookup g (csDatas st) of
           Just di -> do
-            -- §16.4.1: restrict the constructors-to-cover to the
-            -- scrutinee's flow-refined subset, when one is in scope and
-            -- is a subset of this data type's constructors.
-            let allCtors = diCtors di
-                ctorsToCover = case mRefined of
-                  Just gs | not (null gs), all (`elem` allCtors) gs -> gs
-                  _ -> allCtors
-                rows = [[p] | (p, Nothing) <- alts]
-                uncovered =
-                  [ c
-                  | c <- ctorsToCover
-                  , let a = ctorArity st c
-                  , wildUseful st (specializeRows st (KCtor c) a rows) (a :: Int)
-                  ]
-            -- §17.1.1: an uncovered constructor whose §30.2.7-refined fiber is
-            -- 'Empty' (its result family arguments contradict the scrutinee's,
-            -- as for a GADT, or its fields are uninhabited) is unreachable and
-            -- so is not required for exhaustiveness. A genuinely-inhabited
-            -- uncovered arm (the common case, and the conservative default)
-            -- still makes the match non-exhaustive.
-            missing <- filterM (fmap not . fiberEmptyCtor t) uncovered
+            let uncovered = uncoveredDataConstructors st di mRefined alts
+            missing <- filterM (fmap not . constructorFiberEmpty ctx t) uncovered
             unless (null missing) $
               report $
                 withNote ("missing cases: " <> T.intercalate ", " (map gnameText missing)) $
@@ -21616,8 +21674,8 @@ checkExhaustive ctx sp ty mRefined alts = do
           Nothing -> requireCatchAll
       VVariantT members -> do
         tags <- mapM (tagOf ctx) members
-        let covered = concat [coveredTags p | (p, Nothing) <- alts]
-            hasRest = any hasRestPat [p | (p, Nothing) <- alts]
+        let covered = concat [corePatternCoveredTags p | (p, Nothing) <- alts]
+            hasRest = any corePatternHasVariantRest [p | (p, Nothing) <- alts]
             missing = tags \\ covered
         unless (null missing || hasRest) $
           report $
@@ -21629,48 +21687,85 @@ checkExhaustive ctx sp ty mRefined alts = do
         let unguarded = [p | (p, Nothing) <- alts]
             tupleRows = [[p] | p@CPTuple {} <- unguarded]
             tupleComplete = not (null tupleRows) && not (wildUseful st tupleRows 1)
-        unless (tupleComplete || any isRecordIrrefutable unguarded) requireCatchAll
+        unless (tupleComplete || any coreRecordPatternIrrefutable unguarded) requireCatchAll
       _ -> requireCatchAll
   where
-    -- §17.1.1: is the fiber of constructor @c@ at scrutinee type @scrutTy@
-    -- provably 'Empty'? Reuses the same arm-fiber analysis used for
-    -- `-> impossible`, with a placeholder pattern (the field patterns are
-    -- irrelevant; only the constructor's family-argument refinement matters).
-    fiberEmptyCtor scrutTy c = do
-      st <- get
-      let arity = ctorArity st c
-      universes <- case Map.lookup c (csCtors st) of
-        Just ci -> ctorPatternUniverses ctx c ci scrutTy
-        Nothing -> pure []
-      branchFiberEmpty ctx scrutTy (CPCtorM [] c universes (replicate arity CPWild))
     requireCatchAll =
       report $
         diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp
           "match requires a catch-all case for this scrutinee type (§17.1)"
-    isCatchAll = \case
-      CPWild -> True
-      CPVar _ -> True
-      CPAs _ p -> isCatchAll p
-      CPOr ps _ -> any isCatchAll ps
-      _ -> False
-    irrefutableSub = \case
-      CPWild -> True
-      CPVar _ -> True
-      CPAs _ p -> irrefutableSub p
-      CPTuple ps -> all irrefutableSub ps
-      CPRecord fs _ -> all (irrefutableSub . snd) fs
-      _ -> False
-    coveredTags = \case
-      CPInject tag p | irrefutableSub p -> [tag]
-      CPOr ps _ -> concatMap coveredTags ps
-      _ -> []
-    hasRestPat = \case
-      CPInjectRest _ -> True
-      _ -> False
-    isRecordIrrefutable = \case
-      CPRecord fs _ -> all (irrefutableSub . snd) fs
-      CPTuple ps -> all irrefutableSub ps
-      p -> isCatchAll p
+
+uncoveredDataConstructors
+  :: CheckState
+  -> DataInfo
+  -> Maybe [GName]
+  -> [(CorePat, Maybe Term)]
+  -> [GName]
+uncoveredDataConstructors st di mRefined alts =
+  [ c
+  | c <- ctorsToCover
+  , let arity = ctorArity st c
+  , wildUseful st (specializeRows st (KCtor c) arity rows) arity
+  ]
+  where
+    allCtors = diCtors di
+    ctorsToCover = case mRefined of
+      Just constructors
+        | not (null constructors)
+        , all (`elem` allCtors) constructors -> constructors
+      _ -> allCtors
+    rows = [[pattern'] | (pattern', Nothing) <- alts]
+
+-- | Is an uncovered constructor's refined fiber provably empty? This is the
+-- common judgment used by omission exhaustiveness and terminal
+-- @case impossible@ remainder checking.
+constructorFiberEmpty :: Ctx -> Value -> GName -> CheckM Bool
+constructorFiberEmpty ctx scrutTy constructor = do
+  env <- mkInhabEnv ctx
+  inhabCtorFiber ctx scrutTy constructor >>= \case
+    CtorContradiction -> pure True
+    CtorIndexUnknown -> pure False
+    CtorRefined fieldTypes -> do
+      summaries <-
+        mapM
+          (inhabitanceSummary env SourceReachability)
+          fieldTypes
+      pure (any isEmpty summaries)
+
+corePatternCatchAll :: CorePat -> Bool
+corePatternCatchAll = \case
+  CPWild -> True
+  CPVar _ -> True
+  CPAs _ pattern' -> corePatternCatchAll pattern'
+  CPOr patterns _ -> any corePatternCatchAll patterns
+  _ -> False
+
+corePatternIrrefutableSubpattern :: CorePat -> Bool
+corePatternIrrefutableSubpattern = \case
+  CPWild -> True
+  CPVar _ -> True
+  CPAs _ pattern' -> corePatternIrrefutableSubpattern pattern'
+  CPTuple patterns -> all corePatternIrrefutableSubpattern patterns
+  CPRecord fields _ -> all (corePatternIrrefutableSubpattern . snd) fields
+  _ -> False
+
+corePatternCoveredTags :: CorePat -> [Text]
+corePatternCoveredTags = \case
+  CPInject tag pattern'
+    | corePatternIrrefutableSubpattern pattern' -> [tag]
+  CPOr patterns _ -> concatMap corePatternCoveredTags patterns
+  _ -> []
+
+corePatternHasVariantRest :: CorePat -> Bool
+corePatternHasVariantRest = \case
+  CPInjectRest _ -> True
+  _ -> False
+
+coreRecordPatternIrrefutable :: CorePat -> Bool
+coreRecordPatternIrrefutable = \case
+  CPRecord fields _ -> all (corePatternIrrefutableSubpattern . snd) fields
+  CPTuple patterns -> all corePatternIrrefutableSubpattern patterns
+  pattern' -> corePatternCatchAll pattern'
 
 -- §17.1 exhaustiveness for nested constructor patterns, via pattern-
 -- matrix usefulness (Maranget-style, over-approximating coverage for

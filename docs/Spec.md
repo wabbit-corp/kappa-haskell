@@ -14494,18 +14494,18 @@ The standard eliminators are universe-generalized declarations:
 ```kappa
 pathInd.{u, v} :
     (@parametric 0 A : Type u) ->
-    (@parametric 0 x : A) ->
-    (parametric 0 motive : (parametric 0 y : A) -> x = y -> Type v) ->
+    (@ordinary 0 x : A) ->
+    (parametric 0 motive : (ordinary 0 y : A) -> x = y -> Type v) ->
     motive x refl ->
-    (parametric 0 y : A) ->
+    (ordinary 0 y : A) ->
     (parametric 0 p : x = y) ->
     motive y p
 
 subst.{u, v} :
     (@parametric 0 A : Type u) ->
-    (parametric 0 P : (parametric 0 z : A) -> Type v) ->
-    (parametric 0 x : A) ->
-    (parametric 0 y : A) ->
+    (parametric 0 P : (ordinary 0 z : A) -> Type v) ->
+    (ordinary 0 x : A) ->
+    (ordinary 0 y : A) ->
     x = y ->
     P x ->
     P y
@@ -35639,18 +35639,18 @@ expect term absurd :
 
 expect term pathInd.{u, v} :
     (@parametric 0 A : Type u) ->
-    (@parametric 0 x : A) ->
-    (parametric 0 motive : (parametric 0 y : A) -> x = y -> Type v) ->
+    (@ordinary 0 x : A) ->
+    (parametric 0 motive : (ordinary 0 y : A) -> x = y -> Type v) ->
     motive x refl ->
-    (parametric 0 y : A) ->
+    (ordinary 0 y : A) ->
     (parametric 0 p : x = y) ->
     motive y p
 
 expect term subst.{u, v} :
     (@parametric 0 A : Type u) ->
-    (parametric 0 P : (parametric 0 z : A) -> Type v) ->
-    (parametric 0 x : A) ->
-    (parametric 0 y : A) ->
+    (parametric 0 P : (ordinary 0 z : A) -> Type v) ->
+    (ordinary 0 x : A) ->
+    (ordinary 0 y : A) ->
     x = y ->
     P x ->
     P y
