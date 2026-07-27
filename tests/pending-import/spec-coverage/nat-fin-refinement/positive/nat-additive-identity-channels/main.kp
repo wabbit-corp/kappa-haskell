@@ -31,7 +31,7 @@ transportViaLawMember :
     Indexed n
 
 let transportViaLawMember n @evidence value =
-    subst (evidence.addRightIdentity n) value
+    subst (evidence.addRightIdentity @n) value
 
 -- Channel 3 (solver + inserted transport): the required arithmetic
 -- service produces the equality (Spec 15.8.4 monoid normalization) and

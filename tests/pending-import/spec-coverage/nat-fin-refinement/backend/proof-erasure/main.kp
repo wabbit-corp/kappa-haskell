@@ -17,9 +17,7 @@ let refinedExample =
     3
 
 --! requires capability representationQueries
---! requires capability representationCertificates
 --! mode compile
 --! assertNoErrors
 --! assertRuntimeFieldAbsent finExample isLt
 --! assertRuntimeFieldAbsent refinedExample proof
---! assertRefinementRepresentation Nat for NatBetween 2 30

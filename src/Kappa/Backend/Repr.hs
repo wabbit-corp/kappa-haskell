@@ -123,6 +123,7 @@ import Kappa.Core
   , Q (..)
   , RecordField (..)
   , Term (..)
+  , foldMapArithmeticCertificate
   , pattern CLam
   , pattern CPi
   , pattern CRecordT
@@ -705,6 +706,8 @@ maxVar = \case
   CUniverseLift _ _ _ t -> maxVar t
   CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t ->
     maximum (maxVar t : map maxVar (sourceArguments ++ targetArguments))
+  CArithmeticProof certificate ->
+    maximum (-1 : map maxVar (foldMapArithmeticCertificate (: []) certificate))
   CLit _ -> -1
   CCtorI _ _ _ arguments -> maximum (-1 : map (maxVar . caTerm) arguments)
   CMatch s _ alts ->

@@ -1,0 +1,30 @@
+-- Spec 16.1.9 x 12.2: refinement wrappers and ownership. Refined's
+-- `value` field and `refine`'s base binder are unannotated, hence
+-- unrestricted (Spec 12.1.1), so CONSTRUCTION demands the base at
+-- omega — a linear payload cannot enter a refinement (pinned by
+-- negative/refined-linear-construction). ELIMINATION of a linear
+-- refined value is fine: the constructor pattern consumes the
+-- scrutinee exactly once and the erased evidence fields impose no
+-- extra demand.
+data Token : Type =
+    MkToken
+
+type HeldToken : Type =
+    Refined Token (\value -> True = True)
+
+hold :
+    (t : Token) ->
+    HeldToken
+
+let hold t =
+    t
+
+release :
+    (1 r : HeldToken) ->
+    Token
+
+let release r =
+    match r
+    case Refined v @ip @p -> v
+
+--! assertNoErrors

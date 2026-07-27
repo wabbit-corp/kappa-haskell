@@ -1,0 +1,11 @@
+-- Spec 20.2.1 (Contains (Rangeable.Range Integer) Integer is required) x
+-- 6.1.4 (prefix minus): a range refinement at Integer with NEGATIVE
+-- bounds, constructed from a negative literal. Presburger over Integer
+-- includes negatives; nothing here is Nat-specific.
+type Balanced : Type =
+    Refined Integer (\value -> (contains ((-3) .. 3) value) = True)
+
+minusTwo : Balanced
+let minusTwo = -2
+
+--! assertNoErrors

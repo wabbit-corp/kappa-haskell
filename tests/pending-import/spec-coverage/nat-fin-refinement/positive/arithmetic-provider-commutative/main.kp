@@ -6,7 +6,7 @@ commuteSelectedAddition :
     add x y = add y x
 
 let commuteSelectedAddition @evidence x y =
-    evidence.addCommutative x y
+    evidence.addCommutative @x @y
 
 natPolynomialTransport :
     (m : Nat) ->
@@ -38,7 +38,7 @@ vecCommExplicit :
     Commuted (m + n)
 
 let vecCommExplicit n m @evidence value =
-    subst (evidence.addCommutative n m) value
+    subst (evidence.addCommutative @n @m) value
 
 vecCommAutomatic :
     (n : Nat) ->
@@ -49,5 +49,6 @@ vecCommAutomatic :
 let vecCommAutomatic n m value =
     value
 
+--! requires capability arithmeticCertificates
 --! assertNoErrors
 --! assertArithmeticCertificatesValid

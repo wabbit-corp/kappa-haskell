@@ -1,0 +1,13 @@
+-- Spec 15.8.4 (exact closed literals, unbounded) x 34.3.2A (exact
+-- non-unary representation): refinement synthesis with bounds far above
+-- machine words. The closed comparisons are exact; no wraparound may make
+-- the predicate true or false incorrectly.
+type Wide : Type =
+    Refined Nat (
+        \value -> (contains (0 .. 36893488147419103232) value) = True
+    )
+
+big : Wide
+let big = 18446744073709551617
+
+--! assertNoErrors

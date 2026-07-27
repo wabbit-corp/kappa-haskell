@@ -511,6 +511,9 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VQuote _ slots -> any (go seen) slots
           VSort {} -> False
           VLevel {} -> False
+          VArithmeticProof certificate ->
+            getAny
+              (foldMapArithmeticCertificate (Any . go seen) certificate)
           VLit {} -> False
           VRef {} -> False
           VArr {} -> False
@@ -539,6 +542,9 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VPiEvidenceM mode formation icit quantity borrowed name assumption origin domain closure ->
             VPiEvidenceM mode formation icit quantity borrowed name assumption origin
               (go resolving domain) (substituteClosure resolving closure)
+          VArithmeticProof certificate ->
+            VArithmeticProof
+              (mapArithmeticCertificate (go resolving) certificate)
           VCtorI constructor levels arguments ->
             VCtorI constructor levels
               [argument {cvaValue = go resolving (cvaValue argument)} | argument <- arguments]
@@ -843,6 +849,17 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CLevel _ -> Set.empty
       CUniverseLift _ _ _ inner -> go (child path 0) env wanted inner
       CSchemaLift _ _ _ _ _ _ _ _ inner -> go (child path 0) env wanted inner
+      CArithmeticProof certificate ->
+        Set.unions
+          [ go (child path index) env Nothing evidenceTerm
+          | (index, evidenceTerm) <-
+              zip [0 ..]
+                ( map apeEvidence (acProviders certificate)
+                    ++ acNaturalVariables certificate
+                    ++ map aaProposition (acAssumptions certificate)
+                    ++ [acGoal certificate]
+                )
+          ]
       CLit _ -> Set.empty
       CCtorI constructor universes annotation arguments ->
         constructorDependencies path env constructor (Just universes) annotation arguments

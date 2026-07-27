@@ -32,7 +32,7 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Control.Monad.State.Strict qualified as State
 import Data.Char (isDigit)
-import Data.List (find, foldl', isPrefixOf, isSuffixOf, nub, sort, sortOn)
+import Data.List (find, isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -66,18 +66,12 @@ import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Level
   ( ConstraintOrigin (..)
-  , Level (..)
-  , NeutralLevelAtom (..)
   , LevelConstraint (..)
   , PrincipalInferenceOutcome (..)
   , assumptionsConsistent
   , emptyAssumptions
-  , finiteLevel
   , inferPrincipalLevelsFor
   , insertAssumption
-  , levelAdd
-  , levelMax
-  , levelSucc
   , normalizeLevel
   , proveLevelLeq
   , renderLevel
@@ -87,7 +81,6 @@ import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
 import Kappa.NominalVariance
   ( NominalCumulativitySummary (..)
-  , UniverseVariance (..)
   , stableNominalHash
   , verifyNominalCumulativitySummary
   )
@@ -224,6 +217,7 @@ data Assertion
   | AInterfaceContainsUniverseRoles !Text !Text ![UniverseVariance]
   | AInterfaceContainsCurrentUniverseRoles !Text ![UniverseVariance]
   | ATotal !Text
+  | AArithmeticCertificatesValid
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -274,6 +268,7 @@ declKindNames =
 supportedCapabilities :: [Text]
 supportedCapabilities =
   [ "runTask", "pipelineTrace", "stageDumps", "kcoreText"
+  , "arithmeticCertificates"
   , "mutualNominalVariance"
   , "legacyCharAlias", "unicodeSourceWarnings"
   ]
@@ -560,8 +555,7 @@ parseDirective allLines lno body =
       -- intentionally not a test-only approximation of cardinality,
       -- certificates, or backend representation selection.
       "assertArithmeticCertificatesValid"
-        | null args ->
-            unsup "assertArithmeticCertificatesValid requires capability arithmeticCertificates: not provided"
+        | null args -> ok (SAssert AArithmeticCertificatesValid)
         | otherwise -> bad "malformed 'assertArithmeticCertificatesValid' directive"
       "assertInhabitance" ->
         case splitDirectiveInfix " for " rest of
@@ -2051,6 +2045,27 @@ checkAssertion compileWith root path src files cu diags mRun = \case
               ( "assertTotal: " <> declaration
                   <> " is not verified conversion-safe by the checker"
               )
+  AArithmeticCertificatesValid ->
+    pure $ case renderCheckpointKCore of
+      Left detail ->
+        AssertFail
+          ("assertArithmeticCertificatesValid: KCore emission failed: " <> detail)
+      Right dump ->
+        case parseKCore dump of
+          Left err ->
+            AssertFail
+              ( "assertArithmeticCertificatesValid: generated KCore does not verify: "
+                  <> kcteCode err <> ": " <> kcteMessage err
+              )
+          Right artifact
+            | kcoreArithmeticCertificateCount artifact <= 0 ->
+                AssertFail
+                  "assertArithmeticCertificatesValid: generated KCore contains no arithmetic certificate"
+            | otherwise ->
+                assertKCoreRoundTripText
+                  parseKCore
+                  "generated arithmetic-certificate KCore"
+                  dump
   where
     checkpointState = cuState cu
     -- The verifier's external environment is an import environment. The
@@ -2081,6 +2096,15 @@ checkAssertion compileWith root path src files cu diags mRun = \case
              ciType
              (map fst ciFields))
         (csCtors checkpointState)
+    renderCheckpointKCore =
+      firstKCoreError $
+        renderKCoreModule
+          (cuModule cu)
+          (EvalCtx (Globals (csGlobals checkpointState)) (csMetas checkpointState) False mempty)
+          (csGlobals checkpointState)
+          (csCoreBodies checkpointState)
+          checkpointDataInterfaces
+          checkpointConstructorInterfaces
     errors = filter isError diags
     warnings = filter (\d -> dSeverity d == SevWarning) diags
     require b detail = pure (if b then AssertOk else AssertFail detail)

@@ -1,0 +1,19 @@
+-- Spec 15.8.2 (no mixing across distinct goal types): evidence
+-- canonicalization identifies dictionaries only at the SAME normalized
+-- trait application. Here the only closure at carrier A is an
+-- AdditiveMonoid A (theory kind Monoid: no CommutativityLaw), and the
+-- CommutativeAdditiveMonoid closure lives at a DIFFERENT carrier B.
+-- Trait coherence does not license bridging them, so the commuted goal
+-- at A is rejected rather than proved with B's law.
+mixAcrossCarriers :
+    forall (A : Type) (B : Type).
+    (@e1 : AdditiveMonoid A) ->
+    (@e2 : CommutativeAdditiveMonoid B) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+let mixAcrossCarriers @e1 @e2 x y =
+    refl
+
+--! assertErrorCount 1

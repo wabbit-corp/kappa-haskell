@@ -33,21 +33,21 @@ uncoerceVec :
 let uncoerceVec f n @pf v =
     subst (sym pf) v
 
--- REJECTED: same hypothesis in scope, no subst — the neutral endpoints
--- do not convert ("The implementation MUST NOT use arbitrary user
--- equality assumptions as definitional equality", Spec 16.1.8), so the
--- acceptances above are the explicit transport's doing. Automatically
--- consuming the ambient hypothesis here would be a Spec 16.1.8
--- MAY-shaped elaboration choice; this suite pins the profile that does
--- not take it, keeping explicit subst observable.
+-- REJECTED: NO equality evidence in scope at all — the neutral
+-- endpoints do not convert ("The implementation MUST NOT use arbitrary
+-- user equality assumptions as definitional equality", Spec 16.1.8),
+-- no Spec 15.8 required domain covers an abstract function symbol, and
+-- with no lexical hypothesis there is no Spec 16.1.8 proof source
+-- either, so EVERY conforming elaboration profile rejects this,
+-- keeping the explicit transports above observable as the subst's
+-- doing.
 noCoerce :
     (f : Nat -> Nat) ->
     (n : Nat) ->
-    (@0 pf : (=) (f n) n) ->
     Vec (f n) ->
     Vec n
 
-let noCoerce f n @pf v =
+let noCoerce f n v =
     v
 
 --! assertErrorCount 1

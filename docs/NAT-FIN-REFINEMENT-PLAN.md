@@ -3,17 +3,43 @@
 Status: **Specification applied; implementation planned (2026-07-25; contract
 expanded 2026-07-26).** `docs/Spec.md` contains the Nat/Fin/refinement patch
 from `docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Spec-Nat-Fin-Refinement-v2.patch`
-and passes the repository specification validator. The contract is
-materialized as an **83-suite** tree under
+plus the 2026-07-26 evidence-canonicalization amendment (§15.8.2 canonicalizes
+evidence occurrences at the same normalized trait application to the §16.3.3
+step 1 deterministic representative, recording the identifying
+`IsSubsingleton` equalities as quantity-`0` bridge evidence in proof terms and
+certificates; the no-mixing prohibition is scoped to closures at distinct
+normalized trait applications; §14.3.3 defers same-scope projected candidates
+to the same rule), and passes the repository specification validator. The
+contract is materialized as a **103-suite** tree under
 `tests/pending-import/spec-coverage/nat-fin-refinement/`: the 22 originally
 derived suites, 49 added by the T.12 catalog-gap and corpus-reconciliation
 pass (including four dx-issues probes whose dead-end premises the revision
 turned into requirements, and re-based replacements for five green
-conformance tests the revision invalidated), and 12 non-range refinement
+conformance tests the revision invalidated), 12 non-range refinement
 suites (equality/parity/congruence predicates, non-numeric and record bases,
 custom and derived `RefinementView`, nested refinement, non-prop-fiber
-rejection, finite-domain cardinality, user-`Dec` `tryRefine`). None of those
-suites is eligible for active conformance yet.
+rejection, finite-domain cardinality, user-`Dec` `tryRefine`), and 18
+corner-case/interaction suites (the natAdd left-recursion asymmetry,
+literal-spelling convergence, Presburger cancellation from assumptions,
+checked-subtraction never-saturating boundary in both directions,
+principal-solution multiplication pair, provider-closure boundaries,
+automatic Fin weakening via refinement widening, source-level `Fin 0`
+`case impossible`, linear-base refinement, alias-equal-base widening,
+negative Integer range bounds, derive through Fin fields and recursive
+trees, nested wrapper erasure, Fin literals in index position, and
+beyond-word range synthesis), and the 2026-07-26 canonicalization rewrite
+that replaced the corner-case pass's provider-closure negative with an
+accepted evidence-canonicalization suite (implicit solving plus explicit law
+projection from either named dictionary) and a retained-boundary negative at
+distinct normalized trait applications. A same-day five-way adversarial
+review of the whole tree against the spec then corrected roughly twenty
+suites (forall-implicit application spellings, implicit constructor-field
+payloads, invented or non-required prelude spellings, capability vocabulary,
+premise collapses at concrete carriers), split the linear-refinement claim
+into an elimination positive plus a construction negative, converted the
+supertrait-incoherence negative the canonicalization amendment flipped, and
+renamed the unsafe-assert probe to a direct IsProp demand, bringing the tree
+to 103. None of those suites is eligible for active conformance yet.
 
 The current compiler has useful pieces to preserve: `Literal` stores exact
 Haskell `Integer` values, the evaluator performs exact integer arithmetic, the
@@ -112,28 +138,28 @@ The following are deliberate non-goals:
 
 ### 1.3 Pending contract baseline
 
-`tests/pending-import/spec-coverage/nat-fin-refinement/manifest.json` owns 83
+`tests/pending-import/spec-coverage/nat-fin-refinement/manifest.json` owns 103
 suites:
 
 | owner | suites | contract |
 | --- | ---: | --- |
-| NFR-1 | 5 | logical Nat, constructor computation, definitional left identities, structural recursion |
-| NFR-2 | 16 | no-confusion, GADT bridge judgment, checked h-level derivation, derive views |
-| NFR-3 | 25 | algebraic providers, solver domains, inserted transport, certificates, determinism |
-| NFR-4 | 25 | Fin, Refined (range and non-range), subsumption, ranges, Contains |
+| NFR-1 | 8 | logical Nat, constructor computation, definitional left identities, structural recursion |
+| NFR-2 | 18 | no-confusion, GADT bridge judgment, checked h-level derivation, derive views |
+| NFR-3 | 32 | algebraic providers, solver domains, inserted transport, certificates, determinism |
+| NFR-4 | 32 | Fin, Refined (range and non-range), subsumption, ranges, Contains |
 | NFR-5 | 6 | inhabitance, symbolic cardinality, ordinal evidence |
 | NFR-6 | 2 | arithmetic and representation artifact mutation |
-| NFR-7 | 4 | exact Nat, proof erasure, profile-aware compact layout |
+| NFR-7 | 5 | exact Nat, proof erasure, profile-aware compact layout |
 
-The 2026-07-26 audited run over all 83 suites reports 8 passed, 55 failed,
-0 unsupported, and 20 harness errors. The passes cover narrow pre-existing
+The 2026-07-26 audited run over all 103 suites reports 8 passed, 73 failed,
+0 unsupported, and 22 harness errors. The passes cover narrow pre-existing
 behavior (rejection paths and an unsolved-hole rule); they are not
-package-promotion evidence, and the 20 harness errors are the new
+package-promotion evidence, and the 22 harness errors are the new
 directives/capabilities the pre-NFR-0 harness does not know (they must become
 `Unsupported`, per the NFR-0 gate). The validator
 `scripts/validate_nat_fin_contract.py` fixes the suite tree, bundle
 source-document hashes, categories, capabilities, owner stages, and T.12
-coverage; it passes at 83 suites.
+coverage; it passes at 103 suites.
 
 The applied specification includes one implementation-discovered correction
 to the frozen input patch: `finLast` takes an ordinary explicit `n : Nat`.
@@ -170,8 +196,12 @@ KCoreText file cannot assert the result through an unchecked flag.
 The arithmetic solver normalizes only with the exact law bundle selected by
 ordinary implicit resolution. Commutativity requires
 `CommutativeAdditiveMonoid`; distributivity without additive commutativity is
-owned by `AdditivelyNoncommutativeSemiring`. Unrelated imports cannot change the
-selected provider, certificate identity, or semantic hash.
+owned by `AdditivelyNoncommutativeSemiring`. Evidence occurrences at the same
+normalized trait application canonicalize to the deterministic §16.3.3
+representative before reification, with the identifying `IsSubsingleton`
+equalities recorded as quantity-`0` bridge evidence; closures at distinct
+normalized trait applications are never mixed (§15.8.2). Unrelated imports
+cannot change the selected provider, certificate identity, or semantic hash.
 
 ### 2.4 Source analysis is not runtime-layout analysis
 
@@ -193,7 +223,7 @@ field only after KCore checking and erasure justification.
 
 Deliverables:
 
-* keep the 22-suite manifest and provenance validator authoritative;
+* keep the 103-suite manifest and provenance validator authoritative;
 * add typed `TestHarness` directives for:
   `assertArithmeticCertificatesValid`, `assertInhabitance`,
   `assertSymbolicCardinality`, `assertOrdinalRepresentation`,
@@ -217,7 +247,11 @@ Deliverables:
   is a lane spelling, not a class) — and specify how free `Nat` variables of
   `assertSymbolicCardinality`/`assertOrdinalRepresentation` type expressions
   are bound (both recorded as KNOWN_SPEC_ISSUES III.8);
-* list the already-implemented `assertTotal` directive in Appendix T;
+* implement the newly listed §T.5.2 `assertEval` and `assertTotal`
+  directives through the same public queries as the rest (both were
+  corpus-load-bearing and are now standard; `assertTotal` the directive is
+  disambiguated from the §4.4 unsafe modifier by position, KNOWN_SPEC_ISSUES
+  III.9);
 * reconcile the `E_INDEXED_IMPOSSIBLE_REACHABLE` portable alias with the
   implementation's `E_IMPOSSIBLE_REACHABLE` spelling in the diagnostic
   registry (the bundle's unknown-bridge suite asserts the spec alias).
@@ -226,9 +260,9 @@ Gate:
 
 * every pending directive parses;
 * unavailable capabilities report `Unsupported`, not `HarnessError` (the
-  2026-07-26 baseline shows 20 harness errors that must convert);
+  2026-07-26 baseline shows 22 harness errors that must convert);
 * malformed assertions fail locally and deterministically;
-* the validator still reports exactly 83 suites with no unowned files.
+* the validator still reports exactly 103 suites with no unowned files.
 
 ### NFR-1 - Logical Nat and exact numeric substrate
 
@@ -325,6 +359,12 @@ Deliverables:
 * insert explicit equality evidence and `subst` transport for indexed terms
   rather than extending conversion, including direct source expected-type
   checking from `NatIndex (natAdd n Nat.Zero)` to `NatIndex n`;
+* canonicalize evidence occurrences at the same normalized trait application
+  to the §16.3.3 step 1 deterministic representative before reification and
+  record the identifying `IsSubsingleton` bridge equalities in the generated
+  proof term or compact certificate (§15.8.2 amendment, 2026-07-26), while
+  still rejecting law borrowing across distinct normalized trait
+  applications;
 * define compact arithmetic certificates with provider/domain/version/context/
   assumption/goal/normal-form identities and an independent replay checker;
 * key interfaces, caches, semantic hashes, and incremental dependencies on all
@@ -340,7 +380,11 @@ Primary files:
 
 Gate:
 
-* all six NFR-3 suites pass;
+* all 32 NFR-3-owned suites pass;
+* the evidence-canonicalization pair behaves per the amendment: the positive
+  suite accepts through either named dictionary's law projection with bridge
+  evidence visible in the certificate, and the distinct-goal-type negative
+  still rejects;
 * the right-identity source suite accepts and its verified KCore contains
   explicit transport evidence rather than an untransported conversion;
 * the noncommutative and underconstrained cases reject with their portable
@@ -381,7 +425,7 @@ Primary files:
 
 Gate:
 
-* all six NFR-4 suites pass;
+* all 32 NFR-4-owned suites pass;
 * out-of-range and missing-proof cases reject with the specified evidence
   demand;
 * `contains` passes while the paired `in` syntax suite still rejects;
@@ -414,7 +458,7 @@ Primary files:
 
 Gate:
 
-* both NFR-5 analysis suites pass;
+* all six NFR-5-owned suites pass;
 * source reachability remains unchanged when only backend capabilities change;
 * ordinal rank/unrank round trips are independently checked;
 * symbolic forms are canonical and stable under alpha-renaming and import
@@ -486,7 +530,7 @@ Primary files:
 
 Gate:
 
-* all three NFR-7 backend suites pass on each applicable profile;
+* all five NFR-7-owned suites pass on each applicable profile;
 * exactness and proof erasure pass on every runnable backend;
 * optional native compact-layout assertions run only when advertised, then are
   mandatory;
@@ -500,7 +544,7 @@ Deliverables:
 
 * promote suites only after their declared source/artifact outcome and every
   assertion pass; never promote an incidental rejection;
-* move the exact 83-suite tree to
+* move the exact 103-suite tree to
   `tests/conformance/spec-coverage/nat-fin-refinement/` and update the manifest
   and validator atomically;
 * audit generated no-confusion/derive code, local and imported providers,
@@ -514,7 +558,7 @@ Deliverables:
 
 Gate:
 
-* the 22-suite ledger is active with zero pending Nat/Fin/refinement suites;
+* the 103-suite ledger is active with zero pending Nat/Fin/refinement suites;
 * the full conformance and unit suite is green;
 * interpreter/C/LLVM parity, native exactness, RC/poison/TSan lanes, package
   builds, KCoreText round trips, interface/cache tests, and performance
@@ -603,6 +647,8 @@ Closeout additionally requires:
   required instances.
 * §15.8: shared proof-producing arithmetic and index solver.
 * §16.1.9: refinement-view subsumption.
+* §14.3.3 and §16.3.3 step 1: coherent candidate selection, deterministic
+  representatives, and the §15.8.2 evidence-canonicalization boundary.
 * §20.2.1: ordinary `Contains` range membership.
 * §28.2: normative `Nat`, `Fin`, `Refined`, and numeric prelude surface.
 * §30.2.7A-§30.2.7C: symbolic cardinality and representation certificates.

@@ -1,0 +1,17 @@
+-- Spec 15.8.1 + 15.8.4: WITH the domain proof in scope, checked
+-- subtraction reifies mathematically and Presburger closes
+-- (m - n) + n = m, so the index transport is accepted.
+data Idx (n : Nat) : Type =
+    Idx
+
+sound :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 p : (n <= m) = True) ->
+    Idx ((m - n) + n) ->
+    Idx m
+
+let sound m n @p v =
+    v
+
+--! assertNoErrors

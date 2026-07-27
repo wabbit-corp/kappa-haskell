@@ -1,0 +1,10 @@
+-- Spec 15.8.6 + 15.8.4 (multiplication by literals is in the required
+-- fragment): 2 * ?n = 6 has the unique principal solution ?n := 3, so the
+-- metavariable may be assigned.
+data Holds (n : Nat) : Type =
+    MkHolds (@0 p : (2 * n) = 6)
+
+solved : Holds ?n
+let solved = MkHolds @refl
+
+--! assertNoErrors

@@ -49,6 +49,7 @@ library
         Kappa.Backend.NativeProbe
         Kappa.Backend.Repr
         Kappa.Backend.Verify
+        Kappa.Arithmetic
         Kappa.Builtins
         Kappa.Build.Lock
         Kappa.Build.Plan

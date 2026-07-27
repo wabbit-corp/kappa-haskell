@@ -1,0 +1,19 @@
+-- Spec 16.1.9 case 3 requires 'definitionally equal bases', not
+-- syntactically equal ones: widening works between views whose Base
+-- associated members are a type and its transparent alias.
+type MyNat : Type = Nat
+
+type SmallA : Type =
+    Refined Nat (\value -> (value <= 10) = True)
+
+type SmallB : Type =
+    Refined MyNat (\value -> (value <= 100) = True)
+
+widen :
+    SmallA ->
+    SmallB
+
+let widen value =
+    value
+
+--! assertNoErrors

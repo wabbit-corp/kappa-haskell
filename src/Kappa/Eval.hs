@@ -253,6 +253,8 @@ eval ctx env = \case
   CLevel n -> VLevel (evalLevel ctx env n)
   CUniverseLift _ _ _ t -> eval ctx env t
   CSchemaLift _ _ _ _ _ _ _ _ t -> eval ctx env t
+  CArithmeticProof certificate ->
+    VArithmeticProof (mapArithmeticCertificate (eval ctx env) certificate)
   CLit l -> VLit l
   -- The head-type annotation remains observe-only, but universes and the
   -- complete typed argument spine survive in the semantic domain so quoting
@@ -740,6 +742,8 @@ quote ctx lvl v = case forceQ ctx v of
       (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n
   VLevel n -> CLevel n
+  VArithmeticProof certificate ->
+    CArithmeticProof (mapArithmeticCertificate (quote ctx lvl) certificate)
   VLit l -> CLit l
   -- The head-type annotation is a fresh-elaboration-only artifact, but hidden
   -- universes and erased typed arguments are stable KCore identity and survive

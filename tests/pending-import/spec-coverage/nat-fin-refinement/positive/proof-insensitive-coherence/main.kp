@@ -1,6 +1,7 @@
--- NOTE: refinedExt is declared with forall binders (Spec 28.2); the
--- explicit endpoint applications below track the open forall-explicitness
--- question (OQ-1) and must be revisited with it.
+-- NOTE: refinedExt is declared with forall binders (Spec 28.2), so its
+-- endpoints are supplied with @-arguments (Spec 16.1.7.1); if the open
+-- forall-explicitness question (OQ-1) later licenses positional
+-- application, that spelling becomes an additional accepted alternative.
 type NatBetween
     (lo : Nat)
     (hi : Nat)
@@ -35,7 +36,7 @@ proofRoutesAgree :
     viaSynthesis = viaExplicitProof
 
 let proofRoutesAgree =
-    refinedExt viaSynthesis viaExplicitProof refl
+    refinedExt @viaSynthesis @viaExplicitProof refl
 
 comparesProofInsensitively :
     Bool

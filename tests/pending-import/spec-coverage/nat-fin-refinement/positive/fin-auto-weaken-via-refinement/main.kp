@@ -1,0 +1,16 @@
+-- DELIBERATE-SURPRISE PIN. Spec 16.1.9 case 3 (refinement widening) +
+-- the required instance RefinementView (Fin n) (28.2) + symbolic
+-- Presburger (15.8.4): Fin n and Fin (n + 1) are refinement views over the
+-- same base Nat whose target predicate value < n + 1 follows from the
+-- source predicate value < n. Widening therefore accepts the identity
+-- WITHOUT finWeaken — automatic Fin weakening is a spec consequence, not
+-- an API call. If this is unintended, the spec needs an explicit carve-out.
+autoWeaken :
+    (n : Nat) ->
+    Fin n ->
+    Fin (n + 1)
+
+let autoWeaken n i =
+    i
+
+--! assertNoErrors

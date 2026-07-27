@@ -8385,6 +8385,12 @@ Modifier rules:
     * Apart from `inout`, named-function parameter binders use the same binder forms as lambda binders (§16.2). This
       includes wildcard binders such as `_`, `(_ : A)`, and `(q _ : A)`, the Unit binder `()`, and receiver-marked
       binders such as `(this : T)`, `(q this : T)`, `(this x : T)`, and `(q this x : T)`.
+    * In a definition equation whose declaration signature is separately stated, an implicit parameter may additionally
+      be bound as a bare `@binderName` binder. The binder binds the signature's implicit binder of the same name; its
+      quantity, binder prefix, and type are taken from that signature binder and are not restated. Equation binders
+      must appear in signature-telescope order, and signature implicit binders not named by any equation binder are
+      introduced by ordinary implicit lambda insertion. This form is definition-equation shorthand only: anonymous
+      lambdas still require the parenthesized annotated implicit binder forms of §16.2.
     * If a definition has the form `let name = \binders -> body` or `let name : T = \binders -> body`, where `name` is a
       simple binder, the lambda is treated as a named function body named `name` for `return` target resolution (§18.5).
       This applies both at top level and for local `let` bindings.
@@ -19346,8 +19352,12 @@ If several projection paths from the same trait evidence value reach the same no
 declaration is well-formed only if those projected evidence values are coherent under §33.2.1.
 
 If several local trait evidence values at the same lexical scope can project evidence for the same normalized
-supertrait goal, local implicit resolution treats them as ambiguous unless their projected evidence values are coherent
-under §33.2.1.
+supertrait goal `G`, local implicit resolution applies the multi-candidate rule of §16.3.3 step 1: `IsTrait G` is
+available for a trait goal, the candidates are therefore coherent because the trait-evidence `IsSubsingleton G`
+construction of §14.4 proves any two of them equal, and the implementation selects the deterministic representative.
+The instance-artifact comparison of §33.2.1 is the coherence check for global instance artifacts; symbolic local
+evidence, including abstract evidence binders, needs no artifact comparison because its pairwise equality is supplied by
+`IsSubsingleton G` directly.
 
 If a direct local trait evidence value for the goal and one or more projected local trait evidence values for the same
 goal are visible in the same lexical scope, they are ordinary local candidates for the same implicit goal. They are
@@ -19359,7 +19369,8 @@ An implementation MUST NOT choose arbitrarily among multiple refinement paths.
 
 Whenever more than one path can supply evidence for the same normalized trait goal, the checker must either:
 
-* prove the resulting evidence values coherent under §33.2.1 and select a deterministic representative; or
+* prove the resulting evidence values coherent — through the trait-evidence `IsSubsingleton` construction of §14.4 for
+  trait goals, or under §33.2.1 for global instance artifacts — and select a deterministic representative; or
 * reject the implicit goal as ambiguous or incoherent.
 
 Deterministic representative ordering for coherent projected evidence follows the representative ordering of §14.3.1,
@@ -20204,10 +20215,24 @@ only toward deleting the corresponding constant; associativity, commutativity, i
 roles are consumed by the theory's canonicalizer rather than installed as unrestricted bidirectional rewrite rules.
 
 The **coherent evidence closure** is the selected evidence value together with its uniquely determined supertrait evidence
-and member projections. The selected operations, constants, and laws must all come from that closure. V1 defines no
-provider compatibility bridge that mixes independently selected dictionaries. A provider MUST NOT normalize with `add`
-from one dictionary while using identity, associativity, or commutativity laws from another. Provider matching is
-deterministic and uses semantic identities, never trait or member spellings.
+and member projections. The selected operations, constants, and laws must all come from that closure.
+
+Trait coherence licenses exactly one identification between separately spelled closures. Before reification, the service
+canonicalizes evidence occurrences: when two evidence occurrences relevant to the goal or its lexical assumptions have
+evidence types that are the same normalized trait application `G` and `IsTrait G` is available, both occurrences denote
+the deterministic representative selected by the multi-candidate rule of §16.3.3 step 1, and the identifying
+`IsSubsingleton G` equalities are recorded as ordinary quantity-`0` bridge evidence in the generated proof term or
+compact certificate. After canonicalization, law members projected from two abstract dictionaries at the same normalized
+trait application are projections of one selected closure, so a goal elaborated against one spelling may be discharged
+by a law projected from the other. Canonicalization constructs propositional bridge evidence only: it does not extend
+conversion, and a checking-boundary mismatch healed by it is consumed through the ordinary inserted-transport channel of
+§16.1.8 like any other solver-produced equality.
+
+V1 defines no provider compatibility bridge beyond that identification. Independently selected dictionaries whose
+evidence types are distinct normalized trait applications are never mixed: a provider MUST NOT normalize with `add`
+from one closure while consuming identity, associativity, or commutativity laws from a closure at a distinct normalized
+trait application, and trait coherence does not license that identification. Provider matching is deterministic and uses
+semantic identities, never trait or member spellings.
 
 The generic normalization engine understands theory kinds, not source trait spellings. The standard prelude interface
 supplies validated provider artifacts connecting the standard algebraic law bundles of §28.2.2 to these theory kinds.
@@ -21724,7 +21749,15 @@ Rules:
 #### 16.1.8 Equality-based subsumption (automatic transport insertion)
 
 When checking an expression `e` against an expected type `T`, if inference yields type `S` and `S` is not
-definitionally equal to `T`, the elaborator MAY attempt equality-based transport insertion.
+definitionally equal to `T`, the elaborator attempts equality-based transport insertion as follows.
+
+The attempt is REQUIRED when the mismatch between `S` and `T` fits one of the required supported plan shapes below and
+every needed bridging equality is available from a listed proof source — including, in particular, an ordinary proof
+produced by the required arithmetic/index solver fragment of §15.8.4 from the current lexical assumptions. Within this
+required automatic transport fragment, if a valid deterministic plan exists, a conforming implementation MUST find and
+insert it; declining to attempt is nonconforming. Beyond the required fragment — additional plan shapes, additional
+proof sources, or bridging proofs outside the required solver domains — the elaborator MAY attempt transport
+insertion.
 
 Transport insertion elaborates `e` by inserting one or more applications of `subst`.
 
@@ -21827,8 +21860,9 @@ Rules:
   environment, and implementation version.
 * Transport insertion MUST preserve source and synthetic provenance using `equality-transport-insertion`.
 * If no valid plan is found, expected-type checking fails as usual.
-* Explicit user-written `subst` or `pathInd` remains the portable way to request transports outside the implementation's
-  automatic transport fragment.
+* Explicit user-written `subst` or `pathInd` remains the portable way to request transports outside the required
+  automatic transport fragment; within that fragment the untransported spelling is itself portable, because the
+  attempt is mandatory.
 * At an application boundary, this rule may be attempted only after ordinary argument checking, borrow introduction,
   suspension insertion, and arrow subsumption have failed to accept the supplied argument directly.
 
@@ -22005,7 +22039,9 @@ Rules:
   inside the function body.
 * A leading label `L@` labels the lambda body for `return@L` (§18.5.1).
 * Parentheses are required for typed, quantity-annotated, suspension-marked, receiver-marked, implicit, and Unit
-  binders `()`; they are not required for bare identifier or bare wildcard binders.
+  binders `()`; they are not required for bare identifier or bare wildcard binders. Definition equations with a
+  separately stated signature may additionally use the signature-directed bare `@binderName` implicit binder shorthand
+  of §9.1; that shorthand is not available in anonymous lambdas.
 * A lambda must contain at least one binder; there is no point-free "degenerate" lambda.
   The Unit binder `()` counts as one binder; it does not denote a binderless lambda.
 * The body after `->` may be either a single expression or an indented pure block suite, which elaborates to `block ...`
@@ -36284,6 +36320,9 @@ Implementations MUST provide coherent evidence for at least the following portab
 Equality, ordering, and display:
 
 ```text
+IsSet Unit, IsSet Bool, IsSet Byte, IsSet Bytes, IsSet UnicodeScalar, IsSet Grapheme, IsSet String, IsSet Int, IsSet Nat, IsSet Integer,
+IsSet Float, IsSet Double, IsSet Rational, IsSet Ordering, IsSet Duration, IsSet Instant, IsSet TypeLevel, IsSet (Fin n),
+
 Eq Unit, Eq Bool, Eq Byte, Eq Bytes, Eq UnicodeScalar, Eq Grapheme, Eq String, Eq Int, Eq Nat, Eq Integer, Eq Float, Eq Double, Eq Rational,
 Eq Ordering, Eq Duration, Eq Instant, Eq TypeLevel, Eq (Fin n),
 
@@ -36293,6 +36332,13 @@ Ord Ordering, Ord Duration, Ord Instant, Ord TypeLevel, Ord (Fin n),
 Show Unit, Show Bool, Show Byte, Show Bytes, Show UnicodeScalar, Show Grapheme, Show String, Show Int, Show Nat, Show Integer, Show Float, Show Double, Show Rational,
 Show Ordering, Show Duration, Show Instant, Show (Fin n)
 ```
+
+The `IsSet` row is required as directly declared, globally searchable evidence. `Eq` refines `IsSet`, so each required
+`Eq` instance already carries coherent `IsSet` evidence in its supertrait closure, but global implicit resolution
+searches only directly declared instances (§14.3.1, §14.3.3), and literal refinement synthesis (§16.1.9, §20.2.1)
+demands globally solvable `IsProp (b = True)` goals — hence `IsSet Bool` — throughout ordinary programs. Each required
+`IsSet` instance MUST be the same coherent evidence value the corresponding `Eq` instance's supertrait closure carries
+(§33.2.1).
 
 The `Eq TypeLevel` and `Ord TypeLevel` instances are actual standard instances defined by §11.1.2.2. The universe
 solver recognizes their resolved semantic identities through its certified normalization bridge.
@@ -54102,6 +54148,8 @@ Supported directives:
 
 ```text
 assertType <name> <typeExpr>
+assertEval <name> <literal>
+assertTotal <name>
 assertDeclKinds <kindList>
 assertFileDeclKinds <path> <kindList>
 assertUniverseRole <qualified-declaration> <parameter-index> <invariant|covariant|irrelevant>
@@ -54168,6 +54216,22 @@ Rules for `assertType`:
 * `<typeExpr>` is parsed as a type expression in the ordinary type grammar.
 * The assertion succeeds iff the resolved declaration has a type and that type is definitionally equal to the parsed
   expected type.
+
+Rules for `assertEval`:
+
+* `<name>` is a bound top-level definition resolved by ordinary name resolution; a compound expression subject is
+  ill-formed.
+* The suite must elaborate without errors. The harness evaluates the named definition with the reference evaluation
+  semantics and succeeds iff the canonical rendering of the resulting value equals `<literal>`.
+* `<literal>` is an integer literal, a boolean literal, a string literal, or a nullary-constructor spelling.
+* `assertEval` is valid in every mode that elaborates the program (`check`, `compile`, `run`).
+
+Rules for `assertTotal`:
+
+* `assertTotal name` succeeds iff the totality checker certified the named declaration total under §15.1.
+* This directive is distinct from the `assertTotal` declaration modifier of §4.4, which asserts totality without proof
+  behind `allow_assert_terminates`. The directive spelling occurs only at the head of a `--!` directive line, never as
+  a declaration modifier, and does not interact with the §4.2 unsafe configuration gates.
 
 Rules for `assertDeclKinds`:
 

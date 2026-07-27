@@ -1,0 +1,21 @@
+-- Spec 12.2.2 x 16.1.9 x 28.2: Refined's `value` field and `refine`'s
+-- base binder carry no quantity annotation, so they default to the
+-- unrestricted quantity (Spec 12.1.1), and the quantity-satisfaction
+-- table of Spec 12.2 has no `1 satisfies omega` row. A linear payload
+-- therefore cannot be moved into a refinement wrapper; the Spec 16.1.9
+-- insertion elaborates to an ordinary `refine` application whose
+-- base-argument demand the linear capability cannot meet.
+data Token : Type =
+    MkToken
+
+type HeldToken : Type =
+    Refined Token (\value -> True = True)
+
+hold :
+    (1 t : Token) ->
+    HeldToken
+
+let hold t =
+    t
+
+--! assertErrorCount 1

@@ -1,6 +1,6 @@
 # Nat, Fin, refinement, and representation conformance contract
 
-This package contains 83 directory suites: 22 imported from the original bundle derivation, plus 49 added 2026-07-26 by the catalog-gap pass (T.12 items previously uncovered) and the corpus-reconciliation pass (tests moved in from dx-issues/spec-coverage and green conformance tests re-based after the revision flipped their expectations). Original derivation sources:
+This package contains 103 directory suites: 22 imported from the original bundle derivation, plus 49 added 2026-07-26 by the catalog-gap pass (T.12 items previously uncovered) and the corpus-reconciliation pass (tests moved in from dx-issues/spec-coverage and green conformance tests re-based after the revision flipped their expectations). Original derivation sources:
 
 * `docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Appendix-T-Nat-Fin-Refinement-Tests.md`;
 * `docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Additional-Backend-and-Certificate-Pseudotests.md`; and
@@ -20,10 +20,10 @@ The package is intentionally split by contract surface:
 
 | Root | Suites | Primary coverage |
 | --- | ---: | --- |
-| `positive/` | 45 | Nat constructors/computation, proof-directed right-identity transport, no-confusion, derivation, provider selection, arithmetic transport, Fin, refinements, and range membership |
-| `negative/` | 25 | unsupported derivation, noncommutative evidence, underconstrained solving, missing refinement proof, out-of-range literals, and forbidden `in` syntax |
+| `positive/` | 61 | Nat constructors/computation, proof-directed right-identity transport, no-confusion, derivation, provider selection, arithmetic transport, Fin, refinements, and range membership |
+| `negative/` | 28 | unsupported derivation, noncommutative evidence, underconstrained solving, missing refinement proof, out-of-range literals, and forbidden `in` syntax |
 | `analysis/` | 6 | inhabitance, symbolic cardinality, and ordinal representation |
-| `backend/` | 3 | exact unbounded Nat, proof-field erasure, and capability-gated compact native layouts |
+| `backend/` | 4 | exact unbounded Nat, proof-field erasure, and capability-gated compact native layouts |
 | `artifact/` | 4 | arithmetic certificates, representation certificates, provider determinism, and mutation rejection |
 
 `manifest.json` is authoritative for paths, provenance, owner stages, and

@@ -1,0 +1,18 @@
+-- Spec 15.8.1: a checked Nat subtraction is reified as mathematical
+-- subtraction ONLY together with its in-scope domain proof, and saturating
+-- subtraction is never inferred. With no proof that n <= m anywhere in
+-- scope, the solver must not simplify (m - n) + n to m — and the checked
+-- (-) itself has an undischargeable subDefined obligation.
+data Idx (n : Nat) : Type =
+    Idx
+
+unsound :
+    (m : Nat) ->
+    (n : Nat) ->
+    Idx ((m - n) + n) ->
+    Idx m
+
+let unsound m n v =
+    v
+
+--! assertErrorCount 1

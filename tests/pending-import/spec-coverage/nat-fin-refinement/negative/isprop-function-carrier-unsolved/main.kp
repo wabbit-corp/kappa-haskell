@@ -1,0 +1,20 @@
+-- Spec 14.4 soundness: Kappa equality is intensional and does not
+-- assume UIP. `IsProp (x = y)` follows only from IsSet evidence for the
+-- equands' carrier (Spec 14.4), function types receive no Eq instance
+-- (Spec 28.2), and Spec 14.5.1 refuses to assume function
+-- extensionality when deriving — so `Bool -> Bool` has NO IsSet
+-- anywhere in any coherent closure and the IsProp obligation stays
+-- unsolved. This keeps the no-UIP tripwire closed in the revised
+-- prelude. (The production consumer of this obligation is
+-- unsafeAssertProof's IsProp gate, Spec 4.5; that unsafe form is
+-- build-configuration-gated and has no standard harness directive, so
+-- the obligation is demanded here directly through witness.)
+
+bogusIsProp :
+    IsProp ((=) @(Bool -> Bool) (\ (b : Bool) -> b) (\ (b : Bool) -> True))
+
+let bogusIsProp =
+    witness
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved

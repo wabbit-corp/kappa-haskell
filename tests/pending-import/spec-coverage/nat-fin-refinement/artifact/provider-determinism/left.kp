@@ -6,6 +6,8 @@ public stable :
     (n : Nat) ->
     natAdd m n = natAdd n m
 
--- summon takes its type argument explicitly (Spec 16.3.3.1).
+-- summon takes its type argument explicitly (Spec 16.3.3.1); the law
+-- member's endpoints are forall (implicit) binders (Spec 28.2.2), so
+-- they are supplied with @-arguments.
 let stable m n =
-    (summon (CommutativeAdditiveMonoid Nat)).addCommutative m n
+    (summon (CommutativeAdditiveMonoid Nat)).addCommutative @m @n

@@ -1007,10 +1007,13 @@ The repository already has exact `Integer` evaluation and a GMP-backed C/LLVM
 fallback, exact finite bounds in `Inhabitance.hs`, a shared representation selector,
 and versioned universe evidence patterns to reuse. It does not yet have the required
 logical `Nat` constructors, derivation, value-level solver, refinement surface,
-certificate artifacts, or verified backend classes. The exact 83-suite contract (22 originally derived, 49 from the catalog-gap and
-corpus-reconciliation pass, 12 non-range refinement suites) is
+certificate artifacts, or verified backend classes. The exact 103-suite contract (22 originally derived, 49 from the catalog-gap and
+corpus-reconciliation pass, 12 non-range refinement suites, the 2026-07-26
+evidence-canonicalization rewrite pair and same-day full-tree review
+corrections, and 18 corner-case and
+interaction suites) is
 pending under `tests/pending-import/spec-coverage/nat-fin-refinement/`; the 2026-07-26 baseline is
-8 narrow/pre-existing passes, 55 failures, 0 unsupported suites, and 20 harness errors
+8 narrow/pre-existing passes, 73 failures, 0 unsupported suites, and 22 harness errors
 (the harness errors are the not-yet-implemented directives/capabilities NFR-0 converts to Unsupported).
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
@@ -1049,7 +1052,7 @@ capabilities, stage ownership, and T.12 coverage.
       erasure on every runnable backend; add certificate-backed finite-ordinal,
       packed-field, and unboxed-refinement classes only where advertised; audit
       dynamic, FFI, bridge, and ABI narrowing.
-- [ ] **NFR-8 - adversarial closeout and promotion.** Promote the exact 83 suites
+- [ ] **NFR-8 - adversarial closeout and promotion.** Promote the exact 103 suites
       only after every declared outcome and assertion passes, then run full
       conformance/unit, KCoreText/interface/cache, interpreter/C/LLVM parity,
       native exactness, RC/poison/TSan, package, and performance gates.

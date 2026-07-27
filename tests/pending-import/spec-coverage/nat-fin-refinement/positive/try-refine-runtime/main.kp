@@ -41,13 +41,15 @@ let printOutcome outcome =
 
 -- An arbitrary runtime Nat never receives a silent dynamic membership
 -- check (Spec 20.2.1); `tryRefine` is the explicit runtime decision
--- required by Spec 16.1.9 and T.12.6/T.12.7.
+-- required by Spec 16.1.9 and T.12.6/T.12.7. Its Pi-typed @0
+-- predicateIsProp has no Spec 16.3.3 synthesis rule, so it is supplied
+-- pointwise; each fiber is a Bool equality discharged by witness.
 main :
     UIO Unit
 
 let main = do
-    printOutcome (tryRefine decideBetween 7)
-    printOutcome (tryRefine decideBetween 31)
+    printOutcome (tryRefine @(\(@0 x : Nat) -> witness) decideBetween 7)
+    printOutcome (tryRefine @(\(@0 x : Nat) -> witness) decideBetween 31)
 
 --! mode run
 --! assertNoErrors

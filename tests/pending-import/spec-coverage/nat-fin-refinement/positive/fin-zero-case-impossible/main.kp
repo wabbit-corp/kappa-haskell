@@ -1,0 +1,13 @@
+-- Spec 28.2 (Fin 0 is empty in the required source-reachability fragment,
+-- via the arithmetic refutation of value < 0) + 17.1.5: an empty match on
+-- Fin 0 is accepted as `case impossible` at the source level, not only in
+-- the analysis query.
+vacuous :
+    forall (a : Type).
+    Fin 0 ->
+    a
+
+let vacuous i =
+    match i case impossible
+
+--! assertNoErrors

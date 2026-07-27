@@ -15,9 +15,14 @@ instance RefinementView AtMost7 =
     let refinementValue x = x.value
     let refinementPredicateIsProp x = x.isP
     let refinementProof x = x.prf
-    let refine x @predicateIsProp @proof = MkAtMost7 x @predicateIsProp @proof
-    let valueAfterRefine x @predicateIsProp @proof = refl
-    let refineAfterValue x =
+    -- refine's trailing binders and both law telescopes are implicit
+    -- (Spec 16.1.9 trait declaration), so the definitions bind only
+    -- explicit positions; the constructor's implicit fields and the law
+    -- endpoints resolve from the auto-inserted implicit binders
+    -- (Spec 16.2, 16.3.3 step 1).
+    let refine x = MkAtMost7 x
+    let valueAfterRefine = refl
+    let refineAfterValue (@0 x : AtMost7) =
         match x
         case MkAtMost7 v @ip @p -> refl
 

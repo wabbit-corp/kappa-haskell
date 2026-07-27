@@ -11,5 +11,6 @@ let commuteIndex m n value =
     value
 
 --! requires capability arithmeticCertificates
+--! requires capability kcoreText
 --! assertNoErrors
 --! assertArithmeticCertificatesValid

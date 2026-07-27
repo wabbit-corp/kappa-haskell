@@ -5,29 +5,29 @@ type NatBetween
     Refined Nat (\value -> (contains (lo .. hi) value) = True)
 
 -- Spec 16.1.9 single evaluation and ownership: base-to-refinement
--- insertion binds the source to one stable representative, refers every
--- generated predicate goal and the target construction to it, and MUST
--- NOT duplicate, discard, or consume it beyond the original quantity
--- demand. A linear source makes that observable in the checker: the
--- erased IsProp and proof goals demand `x` at quantity 0, and the single
--- runtime-relevant demand is the one transfer into the refinement
--- (Spec 12.2.6), so linear accounting accepts exactly when insertion
--- evaluates the source once.
-refineLinearOnce :
-    (1 x : Nat) ->
+-- insertion evaluates the source exactly once, binds it to one stable
+-- representative when needed, and refers every generated predicate
+-- goal and the target construction to that representative. It MUST NOT
+-- duplicate, discard, or consume the source beyond what the original
+-- expected-type boundary permits. (The quantity boundary itself —
+-- a linear source cannot meet the unrestricted base demand of
+-- `refine` — is pinned by negative/refined-linear-construction.)
+refineOnce :
+    (x : Nat) ->
     (@0 inRange : (contains (2 .. 30) x) = True) ->
     NatBetween 2 30
 
-let refineLinearOnce x @inRange =
+let refineOnce x =
     x
 
--- The reverse boundary performs exactly one `refinementValue` projection
--- (Spec 16.1.9 case 2), so the round trip observes the original value.
+-- The reverse boundary performs exactly one `refinementValue`
+-- projection (Spec 16.1.9 case 2), so the round trip observes the
+-- original value.
 observedOnce :
     Nat
 
 let observedOnce =
-    refineLinearOnce 7 @refl
+    refineOnce 7 @refl
 
 --! assertNoErrors
 --! assertEval observedOnce 7

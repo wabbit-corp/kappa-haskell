@@ -1,0 +1,25 @@
+-- Spec 28.2: natAdd recurses on its FIRST argument, so `1 + m` reduces
+-- definitionally (natAdd (Succ Zero) m -> Succ (natAdd Zero m) -> Succ m)
+-- while `m + 1` is STUCK for neutral m and needs a 15.8 solver proof
+-- consumed by 16.1.8 transport. Both directions are accepted, through
+-- different channels — a non-obvious asymmetry worth pinning separately.
+data Idx (n : Nat) : Type =
+    Idx
+
+onePlus :
+    (m : Nat) ->
+    Idx (1 + m) ->
+    Idx (Nat.Succ m)
+
+let onePlus m v =
+    v
+
+plusOne :
+    (m : Nat) ->
+    Idx (m + 1) ->
+    Idx (Nat.Succ m)
+
+let plusOne m v =
+    v
+
+--! assertNoErrors

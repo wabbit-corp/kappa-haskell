@@ -11,4 +11,4 @@ let outside =
     31
 
 --! assertErrorCount 1
---! assertDiagnostic error E_TYPE_MISMATCH
+--! assertDiagnostic error E_NUMERIC_LITERAL_DOMAIN_MISMATCH

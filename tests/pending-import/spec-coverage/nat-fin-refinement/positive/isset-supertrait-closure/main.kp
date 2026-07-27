@@ -1,34 +1,24 @@
--- Spec 14.1 declares `trait IsSet a => Eq (parametric 0 a : Type)`: a
--- well-formed Eq instance must discharge its IsSet supertrait, so the
--- standard `Eq a => Eq (Option a)` and `Eq a => Eq (List a)` instances
--- (Spec 28.2.3) force the conditional IsSet lifts to exist, and
--- supertrait projection from Eq evidence yields IsSet coherently
--- (Spec 14.1.4, 14.3.3, 16.3.3 step 1). Pre-revision, `IsSet String`
--- was the prelude's only h-level instance and these goals were pinned
--- unresolvable; that pin is inverted here.
+-- Spec 14.1 declares `trait IsSet a => Eq (parametric 0 a : Type)`: Eq
+-- evidence carries IsSet in its uniquely determined supertrait closure,
+-- and supertrait projection from LOCAL evidence yields it
+-- (Spec 14.1.4, 14.3.3, 16.3.3 step 1). Projection is evidence
+-- projection, not ambient global instance generation, and Spec 28.2
+-- requires no `Eq (Option a)` or `Eq (List a)` prelude instances, so
+-- the probes bind abstract Eq evidence and project IsSet from it; no
+-- global summon appears here.
 
-eqOptionBool : Eq (Option Bool)
-let eqOptionBool = summon (Eq (Option Bool))
+isSetFromEqOption :
+    (@evidence : Eq (Option Bool)) ->
+    IsSet (Option Bool)
 
-eqListBool : Eq (List Bool)
-let eqListBool = summon (Eq (List Bool))
+let isSetFromEqOption @evidence =
+    witness
 
--- Local supertrait projection from named Eq evidence (Spec 14.3.3:
--- supertrait projection is evidence projection).
-isSetFromEqOption : (@evidence : Eq (Option Bool)) -> IsSet (Option Bool)
-let isSetFromEqOption @evidence = witness
+isSetFromEqList :
+    (@evidence : Eq (List Bool)) ->
+    IsSet (List Bool)
 
-isSetFromEqList : (@evidence : Eq (List Bool)) -> IsSet (List Bool)
-let isSetFromEqList @evidence = witness
-
--- The set-carrier goals are directly summonable through the forced
--- conditional instances.
-optionBoolIsSet : IsSet (Option Bool)
-let optionBoolIsSet = summon (IsSet (Option Bool))
-
-listBoolIsSet : IsSet (List Bool)
-let listBoolIsSet = summon (IsSet (List Bool))
+let isSetFromEqList @evidence =
+    witness
 
 --! assertNoErrors
---! assertType optionBoolIsSet IsSet (Option Bool)
---! assertType listBoolIsSet IsSet (List Bool)

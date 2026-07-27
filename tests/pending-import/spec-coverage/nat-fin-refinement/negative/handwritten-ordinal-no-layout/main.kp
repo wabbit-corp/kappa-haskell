@@ -1,7 +1,8 @@
--- NOTE: refinedExt/finExt and the trait law binders are declared with
--- forall binders (Spec 28.2); the explicit endpoint applications below
--- track the open forall-explicitness question (OQ-1) and must be
--- revisited with it.
+-- NOTE: refinedExt/finExt endpoints are forall (implicit) binders
+-- (Spec 28.2), so the law proofs below supply them with @-arguments
+-- (Spec 16.1.7.1); if the open forall-explicitness question (OQ-1)
+-- later licenses positional application, that spelling becomes an
+-- additional accepted alternative.
 
 -- Two scattered points: not an inclusive range, and Nat is not a finite
 -- ordinal base, so none of the required structural certificate shapes of
@@ -47,15 +48,15 @@ instance OrdinalRepresentation 2 TwoPoint =
 
     let unrankRank x =
         if x.value == 3 then
-            refinedExt (unrank (rank x)) x (sym witness)
+            refinedExt @(unrank (rank x)) @x (sym witness)
         else
-            refinedExt (unrank (rank x)) x (twoPointForcesSeven x.value @x.proof @witness)
+            refinedExt @(unrank (rank x)) @x (twoPointForcesSeven x.value @x.proof @witness)
 
     let rankUnrank i =
         if i.value == 0 then
-            finExt (rank (unrank i)) i (sym witness)
+            finExt @(rank (unrank i)) @i (sym witness)
         else
-            finExt (rank (unrank i)) i (finTwoForcesOne i.value @i.isLt @witness)
+            finExt @(rank (unrank i)) @i (finTwoForcesOne i.value @i.isLt @witness)
 
 samplePoint :
     TwoPoint
@@ -63,13 +64,20 @@ samplePoint :
 let samplePoint =
     3
 
--- The retained runtime value must keep the exact-natural base
--- representation of the Nat base field: no FiniteOrdinal 2 selection may
--- appear for this type, because no verified certificate exists. Proof
--- erasure is independent of that and still applies.
+sampleValue :
+    Nat
+
+let sampleValue =
+    refinedValue samplePoint
+
+-- No verified certificate exists, so no FiniteOrdinal 2 selection may
+-- appear for this type (Spec 30.2.7B, 34.3.2A). Wrapper retention
+-- itself is a permitted backend choice, so the positive representation
+-- assertion targets the PROJECTED Nat base value, whose exact-natural
+-- class is mandatory on every runnable backend; proof erasure is
+-- independent of layout and still applies to the wrapper.
 --! mode compile
 --! requires capability representationQueries
---! requires capability representationCertificates
 --! assertNoErrors
---! assertRepresentationClass samplePoint ExactNatural
+--! assertRepresentationClass sampleValue ExactNatural
 --! assertRuntimeFieldAbsent samplePoint proof

@@ -1,14 +1,19 @@
 -- Spec 14.5.1: a first-order enumeration is inside the required
 -- conservative structural fragment, so the compiler-owned `derive Eq`
 -- must generate the checked (==)/eqSound/eqComplete members and
--- discharge the IsSet Color supertrait; the derived evidence then
--- exposes IsSet Color by ordinary supertrait projection (Spec 14.3.3),
--- with no direct `derive IsSet Color` present.
+-- discharge the IsSet Color supertrait. `derive IsSet Color` is spelled
+-- alongside it, following the prelude's own pattern (Spec 28.2):
+-- Spec 14.5.1 requires the paired derives to share one canonical
+-- coherent evidence value rather than publishing duplicates, and the
+-- global `summon (IsSet Color)` below resolves through that published
+-- evidence (supertrait projection alone serves only LOCAL resolution,
+-- Spec 14.1.4/14.3.3).
 data Color : Type =
     Red
     Green
     Blue
 
+derive IsSet Color
 derive Eq Color
 
 sameRed : Bool

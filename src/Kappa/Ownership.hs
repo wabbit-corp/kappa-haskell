@@ -120,6 +120,7 @@ import Kappa.Core
   , RecordField (..)
   , Term (..)
   , Value (..)
+  , mapArithmeticCertificate
   , gKey
   )
 import Kappa.CoreOps (patBindersC, spineOfTerm, zonkTermWith)
@@ -829,6 +830,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
     walk ctx ctorTypes tele owner depth scopes useConsumes inner liveOut acc
   CSchemaLift _ _ _ _ _ _ _ _ inner ->
     walk ctx ctorTypes tele owner depth scopes useConsumes inner liveOut acc
+  CArithmeticProof _ -> (acc, liveOut)
 
   CVar i ->
     -- An occurrence of binder at level @lvl@. It is a LAST use on this path iff
@@ -1493,6 +1495,7 @@ substValue ctx subst = go
         VThunkV clo -> VThunkV (substClosure clo)
         VLazyV clo -> VLazyV (substClosure clo)
         VIfN c t f -> VIfN (go c) (substClosure t) (substClosure f)
+        VArithmeticProof certificate -> VArithmeticProof (mapArithmeticCertificate go certificate)
         VPrim p args -> VPrim p (map go args)
         VQuote qs slots -> VQuote qs (map go slots)
         VSort {} -> v
@@ -1856,6 +1859,7 @@ usageIntervals ctx ctorTypes owner body =
     count tele depth scopes uc term next = case term of
       CUniverseLift _ _ _ inner -> count tele depth scopes uc inner next
       CSchemaLift _ _ _ _ _ _ _ _ inner -> count tele depth scopes uc inner next
+      CArithmeticProof _ -> (Map.empty, Map.empty, next)
 
       CVar i ->
         let lvl = depth - 1 - i
@@ -2460,6 +2464,7 @@ argConvFindings ctx owner = goTerm
     goTerm t = case t of
       CUniverseLift _ _ _ inner -> goTerm inner
       CSchemaLift _ _ _ _ _ _ _ _ inner -> goTerm inner
+      CArithmeticProof _ -> []
       CApp {} ->
         let (hd, args) = spineOfTerm t
             here = case hd of

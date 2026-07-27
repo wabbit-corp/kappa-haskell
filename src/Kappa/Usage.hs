@@ -565,7 +565,10 @@ data Env = Env
   -- Source syntax is not an authority for inferred monadic result types.
   , eStaticKindBinders :: !(Set.Set Span)
   , eErasedArgumentSpans :: !(Set.Set Span)
-  -- ^ Checker-proven kind-domain binders, keyed by source identity.
+  -- ^ Checker-proven erased arguments, keyed by source identity.
+  , eImplicitExpressionDemands :: !(Map Span Core.Q)
+  -- ^ Quantities selected for checker-inserted calls whose applications do not
+  -- occur in the source tree. This is typed authority, not syntax recognition.
   , eMonadicResultHeads :: !(Set.Set Text)
   -- ^ Source type heads that import resolution / instance registration proved
   -- denote monadic action carriers. Usage may unwrap action result types only
@@ -641,6 +644,7 @@ usageDiagnostics ::
   Map Span Expr ->
   Set.Set Span ->
   Set.Set Span ->
+  Map Span Core.Q ->
   Map Text [PInfo] ->
   Map Text [FieldShape] ->
   Map Text Expr ->
@@ -662,7 +666,7 @@ usageDiagnostics ::
   Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -722,7 +726,7 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
     localDuplicableAliasHeads =
       fixedAliasHeads Set.empty (length localAliasDecls + 1)
@@ -943,6 +947,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               Map.empty
               staticKindBinders
               erasedArgumentSpans
+              Map.empty
               monadicResultHeads
               duplicableStorageHeads
               unaryStorageHeads
@@ -2462,6 +2467,7 @@ analyzeLet ::
   Map Span Expr ->
   Set.Set Span ->
   Set.Set Span ->
+  Map Span Core.Q ->
   Map Text [PInfo] ->
   Map Text [FieldShape] ->
   Map Text Expr ->
@@ -2486,7 +2492,7 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
+analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -2500,7 +2506,7 @@ analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinder
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
   let env =
-          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
+          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
           {ePendingSig = pendingSig}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
@@ -3108,7 +3114,19 @@ mutableReadPayload vi path =
 -- ── Expression walk ──────────────────────────────────────────────────
 
 walkE :: Env -> Expr -> Analysis WalkResult
-walkE env e0 = case e0 of
+walkE env expression = do
+  result <- walkERaw env expression
+  pure $ case Map.lookup (exprSpan expression) (eImplicitExpressionDemands env) of
+    Nothing -> result
+    Just quantity ->
+      let demand = coreQuantityDemand quantity
+       in result
+            { wrUsage = scaleU demand (wrUsage result)
+            , wrLatent = scaleU demand (wrLatent result)
+            }
+
+walkERaw :: Env -> Expr -> Analysis WalkResult
+walkERaw env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
     Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
     Just vi | zeroQuantity (vQ vi) && vStaticKind vi -> pure rNone
@@ -4590,6 +4608,14 @@ coreQuantity = \case
   Core.QW -> Just QOmega
   Core.QLe1 -> Just QAtMostOne
   Core.QGe1 -> Just QAtLeastOne
+
+coreQuantityDemand :: Core.Q -> (Int, Maybe Int)
+coreQuantityDemand = \case
+  Core.Q0 -> (0, Just 0)
+  Core.Q1 -> (1, Just 1)
+  Core.QW -> (0, Nothing)
+  Core.QLe1 -> (0, Just 1)
+  Core.QGe1 -> (1, Nothing)
 
 coreGNameExpr :: Core.GName -> Expr
 coreGNameExpr (Core.GName (ModuleName segs) nm) =

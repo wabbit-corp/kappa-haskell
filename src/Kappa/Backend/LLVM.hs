@@ -282,6 +282,7 @@ userCtorKeys = goT
     goT t = case t of
       CUniverseLift _ _ _ inner -> goT inner
       CSchemaLift _ _ _ _ _ _ _ _ inner -> goT inner
+      CArithmeticProof _ -> Set.empty
       CVar {} -> Set.empty
       CLocal {} -> Set.empty
       CGlob {} -> Set.empty

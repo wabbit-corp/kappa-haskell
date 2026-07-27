@@ -1,0 +1,54 @@
+-- Spec 15.8.2 (evidence canonicalization): trait coherence means two
+-- abstract CommutativeAdditiveMonoid dictionaries for the SAME carrier
+-- are provably equal (IsSubsingleton via IsTrait, Spec 14.4), so the
+-- solver canonicalizes both to the deterministic representative of
+-- Spec 16.3.3 step 1 before reification and records the identifying
+-- equalities as quantity-0 bridge evidence. No mixing is involved
+-- after canonicalization.
+
+-- Implicit form: both `add` occurrences resolve to the representative
+-- closure, whose CommutativityLaw discharges the goal; acceptance is
+-- through the inserted-transport channel (Spec 16.1.8).
+commuteAcrossDicts :
+    forall (A : Type).
+    (@e1 : CommutativeAdditiveMonoid A) ->
+    (@e2 : CommutativeAdditiveMonoid A) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+let commuteAcrossDicts @e1 @e2 x y =
+    refl
+
+-- Explicit form: the goal is elaborated against the representative
+-- closure, but the discharging law is projected from a NAMED
+-- dictionary. Whichever of e1/e2 the deterministic representative is,
+-- one of these bodies crosses spellings, so acceptance of BOTH pins
+-- that canonicalization bridges the named projection to the
+-- representative (Spec 15.8.2) rather than depending on which
+-- candidate was selected.
+commuteViaFirst :
+    forall (A : Type).
+    (@e1 : CommutativeAdditiveMonoid A) ->
+    (@e2 : CommutativeAdditiveMonoid A) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+let commuteViaFirst @e1 @e2 x y =
+    e1.addCommutative @x @y
+
+commuteViaSecond :
+    forall (A : Type).
+    (@e1 : CommutativeAdditiveMonoid A) ->
+    (@e2 : CommutativeAdditiveMonoid A) ->
+    (x : A) ->
+    (y : A) ->
+    add x y = add y x
+
+let commuteViaSecond @e1 @e2 x y =
+    e2.addCommutative @x @y
+
+--! requires capability arithmeticCertificates
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

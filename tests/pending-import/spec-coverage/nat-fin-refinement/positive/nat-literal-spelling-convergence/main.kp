@@ -1,0 +1,19 @@
+-- Spec 28.2 + 31.1.3: every closed spelling of three — the numeral 3
+-- (FromInteger), Succ applied to the numeral 2, 1 + 2, and the full
+-- constructor spine — is the SAME index up to definitional conversion.
+data Idx (n : Nat) : Type =
+    Idx
+
+viaNumeral : Idx 3
+let viaNumeral = Idx
+
+viaSucc : Idx (Nat.Succ 2)
+let viaSucc = viaNumeral
+
+viaAdd : Idx (1 + 2)
+let viaAdd = viaNumeral
+
+viaSpine : Idx (Nat.Succ (Nat.Succ (Nat.Succ Nat.Zero)))
+let viaSpine = viaNumeral
+
+--! assertNoErrors

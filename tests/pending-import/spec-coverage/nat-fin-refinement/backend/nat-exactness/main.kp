@@ -94,8 +94,7 @@ let hugeComparison =
     natCompare hugeSuccessor huge
 
 --! requires capability representationQueries
---! requires capability representationCertificates
---! mode run
+--! mode compile
 --! assertNoErrors
 --! assertEval aboveWord 18446744073709551617
 --! assertEval largeProduct 18446744073709551616

@@ -5,7 +5,6 @@ type NatBetween
     Refined Nat (\value -> (contains (lo .. hi) value) = True)
 
 --! requires capability symbolicCardinality
---! requires capability representationCertificates
 --! assertNoErrors
 --! assertSymbolicCardinality (if lo <= hi then hi - lo + 1 else 0) for NatBetween lo hi
 --! assertOrdinalRepresentation (if lo <= hi then hi - lo + 1 else 0) for NatBetween lo hi

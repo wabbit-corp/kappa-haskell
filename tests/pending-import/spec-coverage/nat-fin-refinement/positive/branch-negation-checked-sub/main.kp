@@ -1,4 +1,4 @@
--- Spec 16.4.2 + 18.6.2: an if STATEMENT pushes the NEGATED condition
+-- Spec 16.4/16.4.1 + 18.4: an if STATEMENT pushes the NEGATED condition
 -- into its else-suite. With the standard Ord Nat (natCompare
 -- delegation, Spec 28.2) the else of `if x < y` carries
 -- `(x < y) = False`, and the standard CheckedSub Nat definedness goal
@@ -24,7 +24,7 @@ let elseDischarges x y = do
 
 -- The accumulated negation threads through later elif suites the same
 -- way: every earlier condition evaluated False, with no user code
--- between the tests and no loop back-edge (Spec 18.6.2).
+-- between the tests and no loop back-edge (Spec 18.4).
 elifEarlierFalse : Nat -> Nat -> Bool -> UIO Unit
 let elifEarlierFalse x y flag = do
     if x < y then

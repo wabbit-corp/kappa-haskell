@@ -3245,6 +3245,7 @@ identify the reporting campaign lane; many entries cite a pinning test under
 
 - **§14.3.3, §16.3.3, §33.2.1** (L14695-L14701 vs L17307-L17316) `[writer1:traits-instances]`
   §14.3.3 says several local evidence values projecting the same normalized supertrait goal are 'ambiguous unless their projected evidence values are coherent under §33.2.1', but §33.2.1 compares instance-ARTIFACT identities and offers no comparison for symbolic evidence parameters (abstract binders), while §16.3.3 step 1 accepts ANY two same-type local candidates for an IsTrait goal as coherent via proof irrelevance. For two abstract binders (@l : LeftArm T) (@r : RightArm T) both projecting Base T, the sections pull in opposite directions: §14.3.3 suggests reject-unless-provably-coherent, §16.3.3 suggests always-accept.
+  *Status (2026-07-26): RESOLVED in the always-coherent direction. §14.3.3 now defers same-scope projected candidates to the §16.3.3 step 1 multi-candidate rule (coherence supplied by the trait-evidence `IsSubsingleton G` construction of §14.4; §33.2.1 artifact comparison applies to global instance artifacts only), and its path-choice bullet names both coherence channels. §15.8.2 gained the matching solver-side rule: evidence occurrences at the same normalized trait application are canonicalized to the §16.3.3 representative before reification, with the identifying `IsSubsingleton` equalities recorded as quantity-`0` bridge evidence in the proof term or certificate; the no-mixing prohibition is now scoped to closures at DISTINCT normalized trait applications.*
 
 - **§14.5, §14.5.1** (L14956-L14962, L15034-L15038) `[writer1:proofs-deriving-totality]`
   §14.5.1 prescribes record hashing via the canonical record shape and dependency-respecting field order, but §14.5's derive form targets 'eligible declarations' — whether a structural row-record type (or a type alias naming one, e.g. 'type Pt = (x : Int, y : Int)') is an eligible derive target is never specified, leaving the record clauses without a defined derivation vehicle
@@ -3573,3 +3574,111 @@ identify the reporting campaign lane; many entries cite a pinning test under
   rendering is defined anywhere; §30.2.7A shows only "readable mathematical shorthand" and §34.3.2A names the class
   `FiniteOrdinal n` while leaving packed lane widths backend-documented with no portable spelling. Define the
   canonical renderings (or state that the shorthand grammar is the canonical one).
+
+## III.9 Full-tree review pass (2026-07-26)
+
+Findings from the five-way adversarial review of the 103-suite
+nat-fin-refinement pending bundle against the spec at HEAD. Items marked
+DECISION are awaiting an explicit direction call; the rest are recorded gaps.
+
+- **Appendix T vs the implemented harness: `assertEval`** (DECISION)
+  `assertEval <name> <literal>` appears nowhere in Appendix T, yet the
+  in-repo harness implements it (with an `x-assertEval` alias) and roughly
+  290 active conformance files plus 21 bundle suites use it. Under §T.3 an
+  unknown standard directive is a harness error, so the corpus as a whole is
+  not portable-valid against the appendix. Either list `assertEval` as a
+  standard evaluation assertion (semantics: evaluate the named bound
+  top-level definition under `mode check` and compare against the literal)
+  or respell the corpus.
+  *Status (2026-07-26): RESOLVED — Appendix T §T.5.2 now lists
+  `assertEval <name> <literal>` with the evaluation semantics above.*
+
+- **`assertTotal` directive name collides with the §4.4 unsafe modifier** (DECISION)
+  The harness's `--! assertTotal <name>` directive (assert the totality
+  checker certified `<name>`) is absent from Appendix T, and its name
+  collides with the §4.4 `assertTotal let ...` unsafe source modifier, which
+  asserts totality WITHOUT proof behind `allow_assert_terminates`. The
+  directive needs an Appendix T listing under a non-colliding name (or the
+  §4.4 form needs renaming).
+  *Status (2026-07-26): RESOLVED — listed as-is in §T.5.2 with an explicit
+  disambiguation rule (directive-line head vs declaration modifier); the
+  name collision is accepted, and the bundle's totality pins are
+  restored.*
+
+- **§12.1.1/§16.2 vs corpus: bare `@name` definition binders** (DECISION)
+  The accepted corpus (committed conformance tree and the bundle alike)
+  pervasively binds implicit parameters in definition equations as bare
+  `@name` after a separate signature (`let f @evidence x = ...`), but the
+  spec grammar's only implicit binder production is the parenthesized,
+  type-annotated form. Either admit a bare `@ident` implicit binder whose
+  type is supplied by the corresponding signature binder (matching the
+  implementation), or respell the corpus.
+  *Status (2026-07-26): RESOLVED — §9.1 now admits the signature-directed
+  bare `@binderName` definition-equation shorthand (name-matched to the
+  signature's implicit binder, telescope order preserved, unnamed implicit
+  binders auto-inserted), with a §16.2 cross-reference; anonymous lambdas
+  still require the parenthesized annotated forms.*
+
+- **§16.1.8 automatic transport is wholly optional** (DECISION)
+  §16.1.8 says the elaborator "MAY attempt" equality-based transport
+  insertion, and the required plan shapes bind only "a conforming
+  implementation that attempts" it. No required automatic fragment exists
+  anywhere, so every bundle positive whose acceptance rides on inserted
+  transport (the `Indexed (natAdd m n)` -> `Indexed (natAdd n m)` family,
+  the automatic spelling halves, the T.12 catalog's own baseline module) is
+  implementation-optional, while the NFR-3 design and the recent
+  proof-producing-transport implementation treat it as required. Candidate
+  fix: require the attempt when the mismatch fits the required plan shapes
+  and the bridging equalities lie in the §15.8.4 required solver fragment
+  (or another listed proof source), keeping MAY beyond that fragment.
+  *Status (2026-07-26): RESOLVED — §16.1.8 now defines exactly that
+  required automatic transport fragment (MUST find and insert a valid
+  deterministic plan within the required shapes and listed proof sources;
+  MAY beyond), and the explicit-subst bullet notes the untransported
+  spelling is portable within the fragment.*
+
+- **§28.2 requires no `IsSet Bool`/`IsSet Int`/`IsSet Integer`/`IsSet
+  String` instances** (DECISION)
+  The revised `trait IsSet a => Eq a` hierarchy never lists these h-level
+  instances as required prelude contents, yet §16.1.9/§20.2.1 literal
+  refinement synthesis needs `IsProp (b = True)` — hence `IsSet Bool` —
+  virtually everywhere, and supertrait projection serves local resolution
+  only (§14.1.4/§14.3.3), so a required `Eq Bool` instance does not make
+  `IsSet Bool` globally summonable. The required-instance list needs the
+  h-level row (or an explicit statement that Eq-derive publication covers
+  it).
+  *Status (2026-07-26): RESOLVED — §28.2's required instances now open with
+  a full directly declared `IsSet` row mirroring the `Eq` row, with a
+  coherence rule tying each to its `Eq` instance's supertrait closure.*
+
+- **Refinement-representation-certificate generation is never required for
+  builtin `Refined`**
+  `assertRefinementRepresentation` (§T.5.2) demands a verified certificate,
+  and the pseudotest catalog exercises it for `NatBetween 2 30`, but
+  certificate *generation* is only specified on the §14.5.2 derive path for
+  nominal types; §34.3.2A explicitly permits wrapper retention. A conforming
+  wrapper-retaining implementation never produces the certificate, so the
+  assertion is unsatisfiable for builtin `Refined` types. Pin the conditions
+  under which the compiler must produce refinement certificates.
+
+- **No negative representation-class assertion form**
+  Appendix T can assert what representation class a subject HAS, but not
+  that a class was NOT selected (e.g. "no `FiniteOrdinal 2` for an
+  uncertified type"); such negatives can currently only be approximated by
+  asserting the mandatory class of a projected base value.
+
+- **No standard harness directive mirrors §4.2 unsafe build-configuration
+  gates**
+  `allow_unsafe_assert_proof` and friends are build-configuration keys, and
+  T.4 has no passthrough directive, so no portable suite can positively
+  exercise `unsafeAssertProof` or the other gated forms; their obligations
+  can only be probed indirectly (the bundle now demands the IsProp
+  obligation directly via `witness`).
+
+- **Linear payloads cannot enter `Refined`**
+  `Refined`'s `value` field and `refine`'s base binder are unrestricted, and
+  the §12.2 satisfaction table has no `1 satisfies omega` row, so a linear
+  value can never be moved into a refinement wrapper (now pinned by
+  negative/refined-linear-construction). If linear refinement is wanted, the
+  signatures need quantity polymorphism — a deliberate future design item,
+  not an oversight to patch casually.

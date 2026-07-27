@@ -1,0 +1,35 @@
+-- T.12.3 / Spec 14.3.3 + 16.3.3 step 1 + 14.4: Semiring reaches
+-- AdditiveMonoid along two supertrait paths (through
+-- CommutativeAdditiveMonoid and through
+-- AdditivelyNoncommutativeSemiring), and a well-formed Semiring
+-- dictionary projects the SAME coherent AdditiveMonoid evidence along
+-- both (Spec 28.2.2).
+
+-- Path multiplicity within ONE dictionary: a well-formed trait stores
+-- one canonical coherent supertrait projection per normalized goal, and
+-- resolution selects the deterministic representative (Spec 14.3.3).
+coherentWithinOneDictionary :
+    forall (A : Type).
+    (@semiringEvidence : Semiring A) ->
+    AdditiveMonoid A
+
+let coherentWithinOneDictionary @semiringEvidence =
+    witness
+
+-- TWO independent abstract premises projecting the same goal: the
+-- trait-evidence IsSubsingleton construction (Spec 14.4) proves any two
+-- candidates for the trait goal AdditiveMonoid A equal, so Spec 14.3.3
+-- (as amended 2026-07-26) defers to the Spec 16.3.3 step 1
+-- multi-candidate rule: the candidates are coherent WITHOUT any
+-- Spec 33.2.1 artifact comparison, and the implementation selects a
+-- deterministic representative rather than rejecting as ambiguous.
+pickAdditivePath :
+    forall (A : Type).
+    (@commutativePath : CommutativeAdditiveMonoid A) ->
+    (@noncommutativePath : AdditivelyNoncommutativeSemiring A) ->
+    AdditiveMonoid A
+
+let pickAdditivePath @commutativePath @noncommutativePath =
+    witness
+
+--! assertNoErrors

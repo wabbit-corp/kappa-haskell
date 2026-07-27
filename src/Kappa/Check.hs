@@ -77,6 +77,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Builtins
+import Kappa.Arithmetic (deriveArithmeticReplay)
 import Kappa.Core
 import Kappa.CoreOps
   ( declarationUniverseConstraintBinder
@@ -724,6 +725,10 @@ data CheckState = CheckState
   -- ^ Explicit source arguments accepted at a checker-resolved quantity-zero
   -- parameter. Usage consumes this typed fact for projected and aliased
   -- callables whose parameter telescope cannot be reconstructed from syntax.
+  , csImplicitExpressionDemands :: !(Map Span Q)
+  -- ^ Source expressions consumed by checker-inserted calls, keyed by source
+  -- identity. Usage cannot recover these hidden application binders from the
+  -- surface tree, so the checker records their selected Core quantity.
   , csNextRefCellId :: !Int
   -- ^ Fresh counter for optimization-only mutable-cell identities carried by
   -- 'RefLoweringWitness'. These ids are local to the elaborated Core body and
@@ -1124,6 +1129,7 @@ initCheckState =
     , csPatternBinderBorrows = Set.empty
     , csStaticKindBinders = Set.empty
     , csErasedArgumentSpans = Set.empty
+    , csImplicitExpressionDemands = Map.empty
     , csNextRefCellId = 0
     , csNextLevelFieldId = 0
     , csDemand = DemandRead
@@ -4009,7 +4015,8 @@ finalizeLevelArtifacts = do
               0
       resolveTermMeta = resolvedMetaCore st ec
       zonkTermWithLevels resolveLevel =
-        canonicalizeMonomorphicReferences
+        canonicalizeStandardNatOperations (csInstances st)
+          . canonicalizeMonomorphicReferences
           . zonkTermWith resolveTermMeta resolveLevel 0
       zonkTerm = zonkTermWithLevels (substituteLevelMetas assignments)
       ownerLevelResolver owner =
@@ -5142,6 +5149,8 @@ metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
         goV (next n) seen c
           || goClosure 0 (next n) seen t
           || goClosure 0 (next n) seen f
+      VArithmeticProof certificate ->
+        any (goV (next n) seen) (foldMapArithmeticCertificate (: []) certificate)
       VPrim _ args -> any (goV (next n) seen) args
       VRef _ -> False
       VArr _ _ -> False
@@ -6093,21 +6102,49 @@ generatedReflAtM ctx goal = do
         [(Impl, carrier), (Expl, lhs), (Expl, rhs)]
       , Just ctorInfo
       )
+      | equality == prelEqType ->
+          build ctorInfo equality universes carrier lhs rhs
+    ( VCtorI equality universes arguments
+      , Just ctorInfo
+      )
       | equality == prelEqType
-      , ciData ctorInfo == equality
-      , length universes == dutParameterCount (ciUniverses ctorInfo) -> do
-          carrierTerm <- quoteIn ctx carrier
-          lhsTerm <- quoteIn ctx lhs
-          rhsTerm <- quoteIn ctx rhs
-          (headTerm, _) <- specializeCtorAt ctx prelRefl ctorInfo universes
-          -- Constructor interfaces retain the complete data-family prefix.
-          -- Even though refl's result identifies both endpoints with lhs, the
-          -- expected equality's rhs is still a semantic family argument and
-          -- must be supplied to saturate that prefix.
-          pure (CApp Impl (CApp Impl (CApp Impl headTerm carrierTerm) lhsTerm) rhsTerm)
+      , [carrier, lhs, rhs] <-
+          [cvaValue argument | argument <- arguments, cvaPayload argument] ->
+          build ctorInfo equality universes carrier lhs rhs
     _ -> do
       errAt noSpan "E_INTERNAL_REFL_GOAL" Nothing
         "the equality prover produced a witness request without a canonical equality goal"
+      fst <$> anyHole ctx
+  where
+    build ctorInfo equality suppliedUniverses carrier lhs rhs
+      | ciData ctorInfo == equality = do
+          let universeCount = dutParameterCount (ciUniverses ctorInfo)
+          universes <-
+            if length suppliedUniverses == universeCount
+              then pure (Just suppliedUniverses)
+              else
+                if null suppliedUniverses && universeCount == 1
+                  then fmap (fmap pure) (typeValueClassifierLevel ctx carrier)
+                  else pure Nothing
+          case universes of
+            Nothing -> invalidUniverse
+            Just selectedUniverses -> buildAt ctorInfo selectedUniverses carrier lhs rhs
+      | otherwise = invalidUniverse
+
+    buildAt ctorInfo universes carrier lhs rhs = do
+      carrierTerm <- quoteIn ctx carrier
+      lhsTerm <- quoteIn ctx lhs
+      rhsTerm <- quoteIn ctx rhs
+      (headTerm, _) <- specializeCtorAt ctx prelRefl ctorInfo universes
+      -- Constructor interfaces retain the complete data-family prefix.
+      -- Even though refl's result identifies both endpoints with lhs, the
+      -- expected equality's rhs is still a semantic family argument and
+      -- must be supplied to saturate that prefix.
+      pure (CApp Impl (CApp Impl (CApp Impl headTerm carrierTerm) lhsTerm) rhsTerm)
+
+    invalidUniverse = do
+      errAt noSpan "E_INTERNAL_REFL_GOAL" Nothing
+        "the equality prover produced a witness with an invalid universe instantiation"
       fst <$> anyHole ctx
 
 -- | Construct a compiler-generated constructor semantic value from a known
@@ -7557,22 +7594,19 @@ coerceTerm ctx sp term actual expected = do
             Nothing -> pure term
         _ -> pure term
 
--- | The first proof-producing §15.8/§16.1.8 transport shape. A neutral Nat
--- right identity is not conversion: select the ordinary AdditiveMonoid Nat
--- evidence, project its checked law member, and feed that proof to ordinary
--- 'subst'. The recognizer is deliberately semantic and fail-closed:
+-- | Proof-producing §15.8/§16.1.8 transport for one nominal index.
+-- The recognizer is deliberately semantic and fail-closed:
 --
 -- * both types must have the same resolved nominal head and exactly one
 --   differing argument;
--- * that argument must be Nat;
--- * normalization must expose the canonical 'natAdd' identity with a
---   constructor-zero right operand; and
--- * the projected law and final subst application are rechecked against their
---   evolving telescopes.
+-- * both index endpoints must have the same checked carrier;
+-- * the ordinary proposition solver must produce explicit equality evidence;
+--   and
+-- * the final 'subst' application is rechecked against its evolving telescope.
 --
--- Broader provider normalization belongs to the dedicated arithmetic service;
--- this seed path establishes the explicit-transport boundary without
--- extending conversion or admitting a raw proof primitive.
+-- The proposition solver authenticates selected providers and emits a
+-- replayable certificate where applicable. This path never makes an
+-- arithmetic law definitional and never guesses from operation spellings.
 tryArithmeticIndexTransport
   :: Ctx
   -> Span
@@ -7587,36 +7621,24 @@ tryArithmeticIndexTransport ctx site source actual0 expected0 =
     singleNominalIndexDifference ctx actual expected >>= \case
       Nothing -> pure Nothing
       Just (carrier, lhs, rhs) -> do
-        carrier' <- forceM carrier
-        case carrier' of
-          VGlobN natural [] | natural == prelNat -> do
-            -- Force only to weak-head normal form. Eval preserves an open
-            -- canonical Nat operation head, but this step reduces a selected
-            -- Add-Nat dictionary projection to that head. Thus overloaded
-            -- @n + 0@ and explicit @natAdd n Zero@ reach one semantic
-            -- operation identity without making right identity conversion.
-            lhsSemantic <- forceM lhs
-            lhsTerm <- quoteIn ctx lhsSemantic
-            rhsTerm <- quoteIn ctx rhs
-            lhsTerm' <- zonkTermM (ctxLen ctx) lhsTerm
-            rhsTerm' <- zonkTermM (ctxLen ctx) rhsTerm
-            case natRightIdentityOperand lhsTerm' of
-              Just operand | operand == rhsTerm' -> do
-                proof <- natRightIdentityProof ctx site carrier lhs rhs operand
-                Just
-                  <$> buildSingleIndexTransport
-                    ctx
-                    site
-                    source
-                    actual
-                    expected
-                    carrier
-                    lhs
-                    rhs
-                    lhsTerm'
-                    proof
-              _ -> pure Nothing
-          _ -> pure Nothing
+        equality <- globalValueM prelEqType [(Impl, carrier), (Expl, lhs), (Expl, rhs)]
+        equalityTerm <- quoteIn ctx equality >>= zonkTermM (ctxLen ctx)
+        propProofTerm ctx equalityTerm equality >>= \case
+          Nothing -> pure Nothing
+          Just proof -> do
+            lhsTerm <- quoteIn ctx lhs >>= zonkTermM (ctxLen ctx)
+            Just
+              <$> buildSingleIndexTransport
+                ctx
+                site
+                source
+                actual
+                expected
+                carrier
+                lhs
+                rhs
+                lhsTerm
+                proof
   where
     transactional action = do
       saved <- get
@@ -7666,73 +7688,6 @@ singleNominalIndexDifference ctx actual expected =
                 Nothing -> pure Nothing
             _ -> pure Nothing
     _ -> pure Nothing
-
-natRightIdentityOperand :: Term -> Maybe Term
-natRightIdentityOperand expression =
-  case spineOfTerm expression of
-    (CGlob operation, arguments)
-      | operation == prelNatAdd
-      , [left, right] <- [argument | (Expl, argument) <- arguments]
-      , isNatZero right ->
-          Just left
-    _ -> Nothing
-  where
-    isNatZero = \case
-      CCtorI constructor _ _ [] -> constructor == prelNatZero
-      CLit (LitInt 0) -> True
-      _ -> False
-
-natRightIdentityProof
-  :: Ctx
-  -> Span
-  -> Value
-  -> Value
-  -> Value
-  -> Term
-  -> CheckM Term
-natRightIdentityProof ctx site carrier lhs rhs operand = do
-  providerGoal <- globalValueM (gPrel "AdditiveMonoid") [(Expl, carrier)]
-  dictionary <- resolveImplicitQ ctx site Q0 providerGoal
-  (selectedLaw, selectedLawType) <-
-    knownTraitMemberProjection
-      ctx
-      site
-      (gPrel "AdditiveMonoid")
-      "addRightIdentity"
-      [carrier]
-      dictionary
-  (_, selectedProofType) <-
-    applyGeneratedCoreSpine
-      ctx
-      site
-      selectedLaw
-      selectedLawType
-      [(Impl, operand, carrier)]
-  equality <- globalValueM prelEqType [(Impl, carrier), (Expl, lhs), (Expl, rhs)]
-  compatible <- unifyDefinitional ctx selectedProofType equality
-  unless compatible $
-    errAt site "E_INTERNAL_ARITHMETIC_PROOF" Nothing
-      "the selected AdditiveMonoid right-identity law does not prove the requested Nat equality"
-  globalTerm prelNatAddRightIdentity >>= \case
-    Nothing -> do
-      errAt site "E_INTERNAL_MISSING_PRELUDE_DECLARATION" Nothing
-        "the checked prelude has no canonical Nat right-identity theorem"
-      pure (CCtorI prelRefl [] Nothing [])
-    Just (theorem, theoremType) -> do
-      (proof, proofType) <-
-        applyGeneratedCoreSpine
-          ctx
-          site
-          theorem
-          theoremType
-          [ (Impl, dictionary, providerGoal)
-          , (Expl, operand, carrier)
-          ]
-      exact <- unifyDefinitional ctx proofType equality
-      unless exact $
-        errAt site "E_INTERNAL_ARITHMETIC_PROOF" Nothing
-          "the canonical Nat right-identity theorem does not prove the requested equality"
-      pure proof
 
 buildSingleIndexTransport
   :: Ctx
@@ -7902,8 +7857,9 @@ constructRefinement
   -> Term
   -> Value
   -> Term
-  -> CheckM Term
-constructRefinement ctx site sourceTerm baseType dictionary = do
+  -> [Term]
+  -> CheckM (Maybe Term)
+constructRefinement ctx site sourceTerm baseType dictionary premiseDictionaries = do
   baseTypeTerm <- quoteIn ctx baseType
   sourceValue <- evalIn ctx sourceTerm
   let sourceName = "__refinement_source"
@@ -7912,30 +7868,417 @@ constructRefinement ctx site sourceTerm baseType dictionary = do
           entry : rest ->
             knownCtx
               { ctxEntries =
-                  entry {ceCoreQ = Q1} : rest
+                  entry {ceCoreQ = QW} : rest
               }
           [] -> knownCtx
       knownCtx =
         bindCtxLet sourceName False baseType sourceValue ctx
       dictionary' = shiftTerm 1 0 dictionary
+      premiseDictionaries' = map (shiftTerm 1 0) premiseDictionaries
       source = CVar 0
       trait = gPrel "RefinementView"
   predicateMode <- traitMemberObservationMode trait "Predicate"
   refineMode <- traitMemberObservationMode trait "refine"
   let predicateTerm =
         CApp Expl (CProjM predicateMode dictionary' "Predicate") source
-  predicate <- evalIn innerCtx predicateTerm >>= forceM
+  normalizedPredicateTerm <-
+    transparentProofReduce (ctxLen innerCtx) 96 predicateTerm
+  premisePredicates <-
+    fmap (mapMaybe boolEqualityTruePayload) $
+      forM premiseDictionaries' $ \premiseDictionary ->
+        transparentProofReduce
+          (ctxLen innerCtx)
+          96
+          (CApp Expl (CProjM predicateMode premiseDictionary "Predicate") source)
+  predicate <- evalIn innerCtx normalizedPredicateTerm >>= forceM
   isPropGoal <- globalValueM prelIsProp [(Expl, predicate)]
-  predicateIsProp <- resolveImplicitQ innerCtx site Q0 isPropGoal
-  proof <- resolveImplicitQ innerCtx site Q0 predicate
-  let body =
-        CApp Impl
-          ( CApp Impl
-              (CApp Expl (CProjM refineMode dictionary' "refine") source)
-              predicateIsProp
+  resolveRequiredImplicit innerCtx site isPropGoal >>= \case
+    Nothing -> pure Nothing
+    Just predicateIsProp ->
+      withAdditionalBoolFacts innerCtx premisePredicates $
+        resolveRequiredImplicitTerm innerCtx site normalizedPredicateTerm predicate >>= \case
+          Nothing -> pure Nothing
+          Just proof -> do
+            let body =
+                  CApp Impl
+                    ( CApp Impl
+                        (CApp Expl (CProjM refineMode dictionary' "refine") source)
+                        predicateIsProp
+                    )
+                    proof
+            -- The hidden binding preserves single evaluation, but its
+            -- capability must match the generated `refine` base argument.
+            -- V1's RefinementView contract leaves that binder unrestricted;
+            -- recording Q1 here would let generated Core move a linear source
+            -- through an unrestricted call without the source QTT check.
+            recordImplicitExpressionDemand site QW
+            pure (Just (CLetM Ordinary QW sourceName baseTypeTerm sourceTerm body))
+
+-- | Make already-proved boolean propositions available to the bounded
+-- proposition solver for one elaboration action. The caller owns the proof
+-- authority (currently a source 'RefinementView.refinementProof'); this helper
+-- only scopes the corresponding boolean consequences and always restores the
+-- surrounding branch environment.
+withAdditionalBoolFacts :: Ctx -> [Term] -> CheckM a -> CheckM a
+withAdditionalBoolFacts ctx facts action = do
+  previous <- gets csBoolFacts
+  modify' $ \state ->
+    state
+      { csBoolFacts =
+          [ScopedBoolFact (ctxLen ctx) fact True | fact <- facts]
+            ++ previous
+      }
+  result <- action
+  modify' $ \state -> state {csBoolFacts = previous}
+  pure result
+
+-- | A refinement obligation is not an inferable erased parameter: §16.1.9
+-- requires an actual evidence value at this boundary. Ordinary implicit
+-- resolution may return a fresh inference meta for an erased non-trait goal,
+-- so make that speculative attempt transactional and retain it only when the
+-- resulting evidence is already fully determined.
+resolveRequiredImplicit
+  :: Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe Term)
+resolveRequiredImplicit ctx site =
+  resolveRequiredImplicitWithTerm ctx site Nothing
+
+resolveRequiredImplicitTerm
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> CheckM (Maybe Term)
+resolveRequiredImplicitTerm ctx site goalTerm =
+  resolveRequiredImplicitWithTerm ctx site (Just goalTerm)
+
+resolveRequiredImplicitWithTerm
+  :: Ctx
+  -> Span
+  -> Maybe Term
+  -> Value
+  -> CheckM (Maybe Term)
+resolveRequiredImplicitWithTerm ctx site sourceGoal goal = do
+  saved <- get
+  attempt goal >>= \case
+    Just evidence -> pure (Just evidence)
+    Nothing -> do
+      put saved
+      compilerOwnedProof goal >>= \case
+        Just evidence -> pure (Just evidence)
+        Nothing -> do
+          put saved
+          goalTerm <- checkedGoalTerm goal
+          transparentProofNormalize (ctxLen ctx) goalTerm >>= \case
+            Nothing -> pure Nothing
+            Just normalized -> do
+              normalizedGoal <- evalIn ctx normalized
+              attempt normalizedGoal >>= \case
+                Just evidence -> pure (Just evidence)
+                Nothing -> put saved >> pure Nothing
+  where
+    compilerOwnedProof candidate = do
+      settleRequiredProofDependencies ctx candidate
+      refreshedTerm <- checkedGoalTerm candidate
+      refreshed <- evalIn ctx refreshedTerm >>= forceM
+      proof <- propProofTerm ctx refreshedTerm refreshed
+      case proof of
+        Just evidence -> pure (Just evidence)
+        Nothing -> isPropClosure ctx site refreshed
+
+    attempt candidate = do
+      evidence <- resolveImplicitQ ctx site Q0 candidate
+      evidence' <- zonkTermM (ctxLen ctx) evidence
+      state <- get
+      pure $
+        if null (unsolvedMetasOf state evidence')
+          then Just evidence'
+          else Nothing
+
+    checkedGoalTerm candidate =
+      maybe (quoteIn ctx candidate) pure sourceGoal
+        >>= zonkTermM (ctxLen ctx)
+
+recordImplicitExpressionDemand :: Span -> Q -> CheckM ()
+recordImplicitExpressionDemand site quantity =
+  modify' $ \state ->
+    state
+      { csImplicitExpressionDemands =
+          Map.insert site quantity (csImplicitExpressionDemands state)
+      }
+
+-- | Resolve only postponed evidence that the required proposition or its
+-- active branch facts actually mention. This is the local proof-demand
+-- boundary: arithmetic facts checked earlier in the same expression may still
+-- contain deferred @Ord@/@FromInteger@ dictionaries, but unrelated flexible
+-- goals must remain pending for their declaration boundary.
+settleRequiredProofDependencies :: Ctx -> Value -> CheckM ()
+settleRequiredProofDependencies ctx goal = do
+  goalTerm <- quoteIn ctx goal
+  facts <- gets csBoolFacts >>= scopedBoolFactsAt (ctxLen ctx)
+  let factTerms = map fst facts
+  state <- get
+  let reachable =
+        Set.fromList
+          (concatMap (unsolvedMetasOf state) (goalTerm : factTerms))
+      pending =
+        Set.fromList
+          [meta | (meta, _, _, _, _) <- csPending state]
+      selected = Set.intersection reachable pending
+  unless (Set.null selected) $ do
+    settleUniquePendingTraitComponent selected
+    settleSelectedPendingProofDependencies selected
+
+type PendingEvidenceEntry = (MetaId, Value, Span, Ctx, [ScopedBoolFact])
+
+-- | Solve a connected set of demanded trait obligations only when bounded
+-- transactional search yields one principal assignment for the component's
+-- non-evidence metas. This handles associated-member cycles such as
+-- @Contains (Rangeable.Range ?a) Nat@: neither goal is independently rigid,
+-- but only @Rangeable Nat@ lets the complete component resolve.
+--
+-- Candidate enumeration is shared with ordinary instance search. Failed or
+-- ambiguous searches restore the exact baseline, and the finite search stops
+-- after a small deterministic budget; exceeding it is a conservative miss.
+settleUniquePendingTraitComponent :: Set MetaId -> CheckM ()
+settleUniquePendingTraitComponent selected = do
+  baseline <- get
+  let entries =
+        [entry | entry@(meta, _, _, _, _) <- csPending baseline, meta `Set.member` selected]
+      selectedMetas = Set.fromList [meta | (meta, _, _, _, _) <- entries]
+      maxDepth = maximum (0 : [ctxLen pendingCtx | (_, _, _, pendingCtx, _) <- entries])
+      typeMetas =
+        Set.toAscList
+          ( Set.difference
+              ( Set.unions
+                  [ Set.fromList
+                      (unsolvedMetasOf baseline (quote (ecOf baseline) (ctxLen pendingCtx) goal))
+                  | (_, goal, _, pendingCtx, _) <- entries
+                  ]
+              )
+              selectedMetas
           )
-          proof
-  pure (CLetM Ordinary Q1 sourceName baseTypeTerm sourceTerm body)
+  rawSolutions <- pendingTraitComponentSolutions 24 entries
+  let keyed =
+        List.foldl'
+          ( \solutions solution ->
+              Map.insertWith
+                (\_ existing -> existing)
+                (pendingComponentTypeKey maxDepth typeMetas solution)
+                solution
+                solutions
+          )
+          Map.empty
+          (take 65 rawSolutions)
+  case Map.elems keyed of
+    [solution] -> put solution
+    _ -> put baseline
+
+pendingComponentTypeKey :: Int -> [MetaId] -> CheckState -> Text
+pendingComponentTypeKey depth metas state =
+  T.intercalate
+    "\x1f"
+    [ maybe "?" renderStructuralTermKey
+        (resolvedMetaCore state (ecOf state) depth meta)
+    | meta <- metas
+    ]
+
+pendingTraitComponentSolutions
+  :: Int
+  -> [PendingEvidenceEntry]
+  -> CheckM [CheckState]
+pendingTraitComponentSolutions fuel entries
+  | fuel <= 0 = pure []
+  | otherwise = do
+      baseline <- get
+      active <- filterM pendingEntryIsUnsolved entries
+      traitEntries <- filterM pendingEntryIsTrait active
+      if null traitEntries
+        then pure [baseline]
+        else
+          tryDeterministic baseline traitEntries >>= \case
+            Just solutions -> pure (take 65 solutions)
+            Nothing -> branchOnFlexible baseline traitEntries
+  where
+    tryDeterministic _ [] = pure Nothing
+    tryDeterministic baseline (entry : rest) = do
+      put baseline
+      refreshed <- refreshPendingEntry entry
+      rigid <- pendingTraitArgumentsRigid (pendingEntryCtx entry) refreshed
+      resolved <-
+        if rigid
+          then
+            resolvePendingGoal
+              (pendingEntryCtx entry)
+              (pendingEntrySite entry)
+              (pendingEntryFacts entry)
+              Nothing
+              refreshed
+          else
+            resolvePendingFlexibleGoal
+              (pendingEntryCtx entry)
+              (pendingEntrySite entry)
+              refreshed
+      case resolved of
+        Just evidence -> do
+          solvePendingEntry entry refreshed evidence
+          solutions <- pendingTraitComponentSolutions (fuel - 1) entries
+          if null solutions
+            then put baseline >> tryDeterministic baseline rest
+            else pure (Just solutions)
+        Nothing -> put baseline >> tryDeterministic baseline rest
+
+    branchOnFlexible baseline candidates = do
+      groups <- fmap catMaybes . forM candidates $ \entry -> do
+        put baseline
+        refreshed <- refreshPendingEntry entry
+        rigid <- pendingTraitArgumentsRigid (pendingEntryCtx entry) refreshed
+        if rigid
+          then pure Nothing
+          else do
+            trials <- matchingInstanceTrialsForGoal (pendingEntryCtx entry) refreshed
+            put baseline
+            pure $
+              if null trials
+                then Nothing
+                else Just (entry, refreshed, trials)
+      case sortOn (\(entry, _, trials) -> (length trials, pendingEntryMeta entry)) groups of
+        [] -> put baseline >> pure []
+        (entry, refreshed, trials) : _ -> do
+          branchSolutions <- forM trials $ \(_, evidence, trialState) -> do
+            put trialState
+            solvePendingEntry entry refreshed evidence
+            pendingTraitComponentSolutions (fuel - 1) entries
+          put baseline
+          pure (take 65 (concat branchSolutions))
+
+pendingEntryMeta :: PendingEvidenceEntry -> MetaId
+pendingEntryMeta (meta, _, _, _, _) = meta
+
+pendingEntrySite :: PendingEvidenceEntry -> Span
+pendingEntrySite (_, _, site, _, _) = site
+
+pendingEntryCtx :: PendingEvidenceEntry -> Ctx
+pendingEntryCtx (_, _, _, pendingCtx, _) = pendingCtx
+
+pendingEntryFacts :: PendingEvidenceEntry -> [ScopedBoolFact]
+pendingEntryFacts (_, _, _, _, facts) = facts
+
+pendingEntryIsUnsolved :: PendingEvidenceEntry -> CheckM Bool
+pendingEntryIsUnsolved entry =
+  gets $ \state ->
+    case Map.lookup (pendingEntryMeta entry) (csMetas state) of
+      Just Nothing -> True
+      _ -> False
+
+pendingEntryIsTrait :: PendingEvidenceEntry -> CheckM Bool
+pendingEntryIsTrait entry =
+  refreshPendingEntry entry >>= isTraitGoal
+
+refreshPendingEntry :: PendingEvidenceEntry -> CheckM Value
+refreshPendingEntry (_, goal, _, pendingCtx, _) =
+  quoteIn pendingCtx goal
+    >>= zonkTermM (ctxLen pendingCtx)
+    >>= evalIn pendingCtx
+    >>= forceM
+
+solvePendingEntry :: PendingEvidenceEntry -> Value -> Term -> CheckM ()
+solvePendingEntry entry goal evidence = do
+  recordSelectedUniverseEvidence (pendingEntryCtx entry) goal evidence
+  value <- evalIn (pendingEntryCtx entry) evidence
+  solveMeta (pendingEntryMeta entry) value
+
+matchingInstanceTrialsForGoal :: Ctx -> Value -> CheckM [InstanceTrial]
+matchingInstanceTrialsForGoal ctx goal =
+  forceM goal >>= \case
+    VGlobI trait universes arguments -> do
+      state <- get
+      case traitSemanticSpineIn state trait arguments of
+        Nothing -> pure []
+        Just semanticArguments ->
+          snd
+            <$> matchingInstanceTrials
+              0
+              ctx
+              trait
+              universes
+              (map snd semanticArguments)
+    _ -> pure []
+
+-- | Resolve a selected pending trait goal through the full ladder only when
+-- its semantic head arguments are term-rigid. The ordinary pending policy
+-- treats any nested meta as flexible, which is correct before a complete
+-- application is known but too conservative for a local proof boundary:
+-- checked @Ord Nat@ may still carry universe coercion evidence or later
+-- dictionary metas without making its carrier ambiguous. A semantic argument
+-- containing an unsolved term meta remains deferred, so @Ord ?a@ can never
+-- select a global instance by declaration order.
+settleSelectedPendingProofDependencies :: Set MetaId -> CheckM ()
+settleSelectedPendingProofDependencies selected = do
+  state <- get
+  let (inside, outside) =
+        List.partition
+          (\(meta, _, _, _, _) -> meta `Set.member` selected)
+          (csPending state)
+  put state {csPending = outside}
+  forM_ (reverse inside) $ \(meta, goal, site, pendingCtx, facts) -> do
+    current <- get
+    case Map.lookup meta (csMetas current) of
+      Just (Just _) -> retirePendingLevelEvidence meta
+      _ -> do
+        refreshedTerm <-
+          quoteIn pendingCtx goal >>= zonkTermM (ctxLen pendingCtx)
+        refreshed <- evalIn pendingCtx refreshedTerm >>= forceM
+        traitGoal <- isTraitGoal refreshed
+        rigid <-
+          if traitGoal
+            then pendingTraitArgumentsRigid pendingCtx refreshed
+            else pure False
+        recordedLevelConstraint <-
+          gets (fmap pleConstraint . Map.lookup meta . csPendingLevelEvidence)
+        resolved <-
+          if not traitGoal || rigid
+            then
+              resolvePendingGoal
+                pendingCtx
+                site
+                facts
+                recordedLevelConstraint
+                refreshed
+            else resolvePendingFlexibleGoal pendingCtx site refreshed
+        case resolved of
+          Just term -> do
+            value <- evalIn pendingCtx term
+            solveMeta meta value
+            retirePendingLevelEvidence meta
+          Nothing ->
+            modify' $ \next ->
+              next
+                { csPending =
+                    (meta, goal, site, pendingCtx, facts) : csPending next
+                }
+
+pendingTraitArgumentsRigid :: Ctx -> Value -> CheckM Bool
+pendingTraitArgumentsRigid ctx goal =
+  forceM goal >>= \case
+    VGlobI trait _ arguments -> do
+      state <- get
+      case traitSemanticSpineIn state trait arguments of
+        Nothing -> pure False
+        Just semanticArguments ->
+          pure $
+            all
+              ( \(_, argument) ->
+                  null
+                    ( unsolvedMetasOf
+                        state
+                        (quote (ecOf state) (ctxLen ctx) argument)
+                    )
+              )
+              semanticArguments
+    _ -> pure False
 
 -- | Expected-type refinement introduction for bidirectional forms (notably
 -- literals) that cannot first infer a useful base type. Once a coherent target
@@ -7957,13 +8300,16 @@ checkRefinementIntroduction ctx expression expected = do
         then put saved >> pure Nothing
         else do
           source <- check ctx expression base
-          Just
-            <$> constructRefinement
-              ctx
-              (exprSpan expression)
-              source
-              base
-              dictionary
+          constructRefinement
+            ctx
+            (exprSpan expression)
+            source
+            base
+            dictionary
+            []
+            >>= \case
+              Nothing -> put saved >> pure Nothing
+              result -> pure result
 
 -- | The inferred-term half of §16.1.9. Try direct base-to-refinement first,
 -- then refinement-to-base projection. Both attempts are transactional when
@@ -7979,7 +8325,10 @@ tryRefinementCoercion
 tryRefinementCoercion ctx site sourceTerm actual expected = do
   tryIntroduction >>= \case
     Just term -> pure (Just term)
-    Nothing -> tryProjection
+    Nothing ->
+      tryWidening >>= \case
+        Just term -> pure (Just term)
+        Nothing -> tryProjection
   where
     tryIntroduction = transactional $ do
       refinementViewWitness ctx site expected >>= \case
@@ -7987,8 +8336,34 @@ tryRefinementCoercion ctx site sourceTerm actual expected = do
         Just (dictionary, base) -> do
           same <- unifyDefinitional ctx actual base
           if same
-            then Just <$> constructRefinement ctx site sourceTerm base dictionary
+            then constructRefinement ctx site sourceTerm base dictionary []
             else pure Nothing
+    tryWidening = transactional $ do
+      refinementViewWitness ctx site actual >>= \case
+        Nothing -> pure Nothing
+        Just (sourceDictionary, sourceBase) ->
+          refinementViewWitness ctx site expected >>= \case
+            Nothing -> pure Nothing
+            Just (targetDictionary, targetBase) -> do
+              same <- unifyDefinitional ctx sourceBase targetBase
+              if not same
+                then pure Nothing
+                else do
+                  sourceMode <-
+                    traitMemberObservationMode
+                      (gPrel "RefinementView")
+                      "refinementValue"
+                  let projected =
+                        CApp Expl
+                          (CProjM sourceMode sourceDictionary "refinementValue")
+                          sourceTerm
+                  constructRefinement
+                    ctx
+                    site
+                    projected
+                    targetBase
+                    targetDictionary
+                    [sourceDictionary]
     tryProjection = transactional $ do
       refinementViewWitness ctx site actual >>= \case
         Nothing -> pure Nothing
@@ -8001,6 +8376,7 @@ tryRefinementCoercion ctx site sourceTerm actual expected = do
                 traitMemberObservationMode
                   (gPrel "RefinementView")
                   "refinementValue"
+              recordImplicitExpressionDemand site QW
               pure
                 ( Just
                     ( CApp Expl
@@ -10094,7 +10470,10 @@ resolvePendingFlexibleGoal ctx sp goal = do
           Just term -> pure (Just term)
           Nothing -> superThisCandidate ctx goal >>= \case
             Just term -> pure (Just term)
-            Nothing -> nonImprovingFlexibleInstanceSearch ctx sp goal
+            Nothing ->
+              nonImprovingFlexibleInstanceSearch ctx sp goal >>= \case
+                Just term -> pure (Just term)
+                Nothing -> uniqueImprovingFlexibleInstanceSearch ctx sp goal
 
 nonImprovingFlexibleCandidate
   :: Value
@@ -10128,6 +10507,15 @@ nonImprovingFlexibleCandidate goal search = do
 nonImprovingFlexibleInstanceSearch :: Ctx -> Span -> Value -> CheckM (Maybe Term)
 nonImprovingFlexibleInstanceSearch ctx sp goal =
   nonImprovingFlexibleCandidate goal (instanceSearch ctx sp goal)
+
+-- | A flexible trait goal may determine its own indices when exactly one
+-- global instance can solve the complete goal. Candidate trials are isolated
+-- by the ordinary instance-search transaction, so this admits
+-- @Contains (NumericRange ?a) Nat@ when only the canonical @?a := Nat@
+-- instance survives while leaving @Eq ?a@ unresolved when several concrete
+-- carriers match. No declaration-order tie-break is permitted.
+uniqueImprovingFlexibleInstanceSearch :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+uniqueImprovingFlexibleInstanceSearch = instanceSearchUnique
 
 resolvePendingGoal :: Ctx -> Span -> [ScopedBoolFact] -> Maybe UniverseConstraint -> Value -> CheckM (Maybe Term)
 resolvePendingGoal ctx sp bfs recordedLevelConstraint g = do
@@ -10218,51 +10606,12 @@ authenticatedLevelPropositionProof ctx recorded goal = do
           proved = proveLevelLeq assumptions lower upper
       if proved /= Proved
         then pure Nothing
-        else do
-          equalityGoal <- levelConstraintEqualityGoal ctx goal
-          case equalityGoal of
-            -- The embedded prelude can acquire generated declaration
-            -- constraints before the later std.typelevel fragment defines the
-            -- public transparent LevelLe/LevelLt aliases. The binder domain
-            -- remains the ordinary authenticated proposition and is the
-            -- authority checked above; §11.1.2.3A explicitly excludes the
-            -- arbitrary proof-object identity from interface semantics.
-            Nothing -> Just <$> generatedSolvedLevelWitness ctx
-            Just equalityValue -> case equalityValue of
-              VGlobN equality _ | equality == prelEqType ->
-                Just <$> generatedReflAtM ctx equalityValue
-              VCtor equality _ | equality == prelEqType ->
-                Just <$> generatedReflAtM ctx equalityValue
-              _ -> pure Nothing
+        else Just <$> typeLevelPropositionCertificate ctx goal
   where
     toConstraint (operator, lower, upper) =
       UniverseConstraint
         (if operator == LevelOperatorLt then levelSucc lower else lower)
         upper
-
--- | Proof-object representative for a solver-established erased level
--- proposition whose public transparent alias is not yet available during
--- bootstrap. The proposition and its normalized relation remain on the
--- surrounding evidence binder/application slot; this term supplies only the
--- proof-irrelevant inhabitant after the certified solver has accepted it.
-generatedSolvedLevelWitness :: Ctx -> CheckM Term
-generatedSolvedLevelWitness ctx =
-  generatedReflAtM ctx equalityGoal
-  where
-    -- This path can run while final erased evidence is being flushed, after
-    -- the last universe-solver pass.  Generic global lookup would freshen the
-    -- equality declaration schema and leave a new level meta in finalized
-    -- Core.  Bool has the checked classifier Type 0, so its canonical
-    -- equality proposition is the exact Eq.{0} instance and requires no
-    -- inference.
-    boolType = VGlobI prelBool [] []
-    truth = VCtorI prelTrue [] []
-    equalityGoal =
-      VGlobI prelEqType [LZero]
-        [ (Impl, boolType)
-        , (Expl, truth)
-        , (Expl, truth)
-        ]
 
 -- | Expose the equality proposition behind a standard level-relation alias.
 -- Ordinary forcing is preferred.  During an early declaration checkpoint an
@@ -10651,10 +11000,29 @@ isFlexV (VFlex _ _) = True
 isFlexV _ = False
 
 instanceSearch :: Ctx -> Span -> Value -> CheckM (Maybe Term)
-instanceSearch ctx sp goal = searchDepth 0 ctx sp goal
+instanceSearch ctx sp goal =
+  searchDepthWith InstanceSelectCoherent 0 ctx sp goal
+
+instanceSearchUnique :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+instanceSearchUnique ctx sp goal =
+  searchDepthWith InstanceRequireUnique 0 ctx sp goal
+
+data InstanceSearchPolicy
+  = InstanceSelectCoherent
+  | InstanceRequireUnique
+  deriving (Eq)
 
 searchDepth :: Int -> Ctx -> Span -> Value -> CheckM (Maybe Term)
-searchDepth depth ctx sp goal
+searchDepth = searchDepthWith InstanceSelectCoherent
+
+searchDepthWith
+  :: InstanceSearchPolicy
+  -> Int
+  -> Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe Term)
+searchDepthWith policy depth ctx sp goal
   | depth > 16 = pure Nothing -- §14.3.5 termination backstop
   | otherwise = do
       g <- forceM goal
@@ -10677,22 +11045,18 @@ searchDepth depth ctx sp goal
               if depth > 0 && not (null semanticSpine) && and spineFlex
                 then pure Nothing
                 else do
-                  let cands = [ie | ie <- csInstances st, ieTrait ie == traitG]
-                  -- Candidate trials are transactions over one baseline.
-                  -- A successful unification may assign metas, so allowing
-                  -- the next candidate to observe that state makes instance
-                  -- selection depend on declaration order.  Retain each
-                  -- successful snapshot independently and commit exactly one
-                  -- after coherence has been decided.
-                  hits <- fmap catMaybes . forM cands $ \ie -> do
-                    put st
-                    result <- tryInstance depth ctx goalUniverses (map snd semanticSpine) ie
-                    trial <- get
-                    put st
-                    pure ((\term -> (ie, term, trial)) <$> result)
+                  (_, hits) <-
+                    matchingInstanceTrials
+                      depth
+                      ctx
+                      traitG
+                      goalUniverses
+                      (map snd semanticSpine)
                   case sortOn (ieDict . first3) hits of
                     [(_, tm, selectedState)] -> put selectedState >> pure (Just tm)
                     [] -> put st >> pure Nothing
+                    _ | policy == InstanceRequireUnique ->
+                      put st >> pure Nothing
                     ((ie0, tm, selectedState) : rest) -> do
                       -- §33.2.1 step 3: equivalent evidence artifacts are
                       -- harmless overlap — select the deterministic
@@ -10738,6 +11102,32 @@ searchDepth depth ctx sp goal
   where
     first3 (value, _, _) = value
     second3 (_, value, _) = value
+
+type InstanceTrial = (InstanceEntry, Term, CheckState)
+
+-- | Enumerate successful ordinary-instance candidates transactionally from
+-- one baseline. This is the shared candidate authority for ordinary coherent
+-- selection and bounded pending-component solving; neither caller may let one
+-- candidate's metavariable assignments influence another candidate trial.
+matchingInstanceTrials
+  :: Int
+  -> Ctx
+  -> GName
+  -> [Level]
+  -> [Value]
+  -> CheckM (CheckState, [InstanceTrial])
+matchingInstanceTrials depth ctx trait goalUniverses goalArguments = do
+  baseline <- get
+  let candidates =
+        sortOn ieDict
+          [entry | entry <- csInstances baseline, ieTrait entry == trait]
+  trials <- fmap catMaybes . forM candidates $ \entry -> do
+    put baseline
+    result <- tryInstance depth ctx goalUniverses goalArguments entry
+    trialState <- get
+    put baseline
+    pure ((\term -> (entry, term, trialState)) <$> result)
+  pure (baseline, trials)
 
 -- | Whether an instance dictionary's value is still pending (its
 -- declaration's members have not been checked yet — the §14.3
@@ -11024,85 +11414,192 @@ checkInstanceOverlap sp g new prior
 -- checked arithmetic guarded by ordinary control flow, e.g. after
 -- `if x < y then ... else x - y`, the else branch carries `y <= x`.
 propProof :: Ctx -> Value -> CheckM (Maybe Term)
-propProof ctx goal = do
+propProof ctx = propProofWithTerm ctx Nothing
+
+-- | Proposition proof entry used when the caller still owns the checked Core
+-- goal. Keeping that term is semantically significant: evaluating an
+-- authenticated dictionary projection may expose a record value, and
+-- reconstructing Core from that value would lose the selected dictionary
+-- identity required by provider-driven arithmetic proof search.
+propProofTerm :: Ctx -> Term -> Value -> CheckM (Maybe Term)
+propProofTerm ctx goalTerm = propProofWithTerm ctx (Just goalTerm)
+
+propProofWithTerm :: Ctx -> Maybe Term -> Value -> CheckM (Maybe Term)
+propProofWithTerm ctx sourceGoal goal = do
   g <- forceM goal
   case g of
     VGlobN eqG [(_, carrier), (_, l), (_, r)] | eqG == prelEqType ->
-      cachedPropDecision ctx g (tryRefl carrier l r)
+      proveEquality g carrier l r
     VCtor eqG [carrier, l, r] | eqG == prelEqType ->
-      cachedPropDecision ctx g (tryRefl carrier l r)
+      proveEquality g carrier l r
     _ -> pure Nothing
   where
-    tryRefl carrier l r = do
-      mValueLevel <- typeLevelValueEqualityProof ctx carrier l r
-      case mValueLevel of
-        Just True -> pure True
-        _ -> tryOtherProofs l r
+    proveEquality equalityGoal carrier lhs rhs = do
+      definitional <-
+        cachedPropDecision ctx equalityGoal $ do
+          ec <- ec_
+          pure (convertible ec (ctxLen ctx) (force ec lhs) (force ec rhs))
+      case definitional of
+        Just proof -> pure (Just proof)
+        Nothing -> do
+          typeLevelEquality <- typeLevelValueEqualityProof ctx carrier lhs rhs
+          typeLevelRelationEquality <- typeLevelLiteralRelationProof ctx lhs rhs
+          if typeLevelEquality == Just True || typeLevelRelationEquality == Just True
+            then Just <$> typeLevelPropositionCertificate ctx equalityGoal
+            else arithmeticEqualityCertificate ctx sourceGoal equalityGoal carrier lhs rhs
 
-    tryOtherProofs l r = do
-      mLevel <- typeLevelLiteralRelationProof ctx l r
-      case mLevel of
-        Just True -> pure True
-        _ -> do
-          mBranch <- boolLiteralRelationProof l r
-          case mBranch of
-        -- the bounded branch-facts prover proved it (variable/branch case)
-            Just True -> pure True
-        -- it could not prove it (Just False) or the goal is not a boolean
-        -- literal relation (Nothing): fall back to definitional
-        -- convertibility.  A closed/decidable checked-arithmetic obligation
-        -- such as `subDefined 5 3 = True` (§14) is proved by evaluating both
-        -- sides; the bounded prover above deliberately does not force, so
-        -- this fallback restores those proofs (regression fix).
-            _ -> do
-              ec <- ec_
-              let d = ctxLen ctx
-              bfs0 <- gets csBoolFacts
-              if convertible ec d (force ec l) (force ec r)
-                then pure True
-                else
-                  if null bfs0
-                    then pure False
-                    else do
-                      -- boolean branch refinement (§3.2.3 proof source): reduce a
-                      -- side stuck on an in-scope `if` condition using the active
-                      -- branch facts (`c = True`/`c = False`).  This is still a
-                      -- decision procedure for definitional equality; it does not
-                      -- invent user proofs.
-                      bfs <- scopedBoolFactsAt d bfs0
-                      let (lf, lChanged) = factReduce ec d bfs (4 :: Int) l
-                          (rf, rChanged) = factReduce ec d bfs (4 :: Int) r
-                      pure ((lChanged || rChanged) && convertible ec d lf rf)
+-- | Freeze one solver-established first-class TypeLevel proposition as an
+-- explicit proof certificate. Every lexical level assumption is retained as
+-- its actual erased proof-binder proposition; KCoreText re-authenticates the
+-- standard operations and independently replays the goal from exactly this
+-- list. The certificate therefore cannot turn semantic equality into
+-- definitional equality or capture an unrecorded ambient solver fact.
+typeLevelPropositionCertificate :: Ctx -> Value -> CheckM Term
+typeLevelPropositionCertificate ctx goal = do
+  let depth = ctxLen ctx
+  rawGoal <- quoteIn ctx goal >>= zonkTermM depth
+  rawAssumptions <- typeLevelCertificateAssumptions ctx
+  providers <-
+    typeLevelCertificateProviders
+      (rawGoal : [proposition | ArithmeticAssumption _ proposition <- rawAssumptions])
+  normalizedGoal <- do
+    normalized <- transparentProofNormalize depth rawGoal
+    pure (fromMaybe rawGoal normalized)
+  assumptions <-
+    forM rawAssumptions $ \(ArithmeticAssumption truth proposition) -> do
+      normalized <- transparentProofNormalize depth proposition
+      pure (ArithmeticAssumption truth (fromMaybe proposition normalized))
+  pure
+    ( CArithmeticProof
+        ArithmeticCertificate
+          { acVersion = 1
+          , acDomain = ArithmeticTypeLevel
+          , acProviders = providers
+          , acNaturalVariables = []
+          , acAssumptions = assumptions
+          , acGoal = normalizedGoal
+          }
+    )
 
-    boolLiteralRelationProof l r = do
-      case (boolLit l, boolLit r) of
-        (Just want, Nothing) -> Just <$> proveBoolValueFromBranchFacts ctx want r
-        (Nothing, Just want) -> Just <$> proveBoolValueFromBranchFacts ctx want l
-        _ -> pure Nothing
+typeLevelCertificateAssumptions :: Ctx -> CheckM [ArithmeticAssumption Term]
+typeLevelCertificateAssumptions ctx =
+  fmap catMaybes . forM (ctxEntries ctx) $ \entry ->
+    if ceMode entry == Ordinary
+        && ceImplicitLocal entry
+        && ceCoreQ entry == Q0
+      then do
+        authenticatedLevelGoalRelation ctx (ceType entry) >>= \case
+          Nothing -> pure Nothing
+          Just _ -> do
+            proposition <- quoteIn ctx (ceType entry) >>= zonkTermM (ctxLen ctx)
+            pure (Just (ArithmeticAssumption True proposition))
+      else pure Nothing
 
-    boolLit = \case
-      VCtor g [] | g == prelTrue -> Just True
-      VCtor g [] | g == prelFalse -> Just False
-      _ -> Nothing
+typeLevelCertificateProviders
+  :: [Term]
+  -> CheckM [ArithmeticProviderEvidence Term]
+typeLevelCertificateProviders roots = do
+  let candidates =
+        nub
+          [ (trait, dictionary)
+          | root <- roots
+          , (trait, dictionary) <-
+              foldTerm providerCandidate (const []) root
+          ]
+  fmap catMaybes . forM candidates $ \(trait, dictionary) -> do
+    standard <- standardTypeLevelDictionary trait dictionary
+    pure
+      ( if standard
+          then Just (ArithmeticProviderEvidence trait dictionary)
+          else Nothing
+      )
+  where
+    providerCandidate term =
+      case spineOfTerm (stripIdentityWrappers term) of
+        (headTerm, arguments)
+          | Just operation <- termHeadGlob (stripIdentityWrappers headTerm)
+          , Just trait <- Map.lookup operation providerTraits
+          , _carrier : dictionary : _ <-
+              [argument | (Impl, argument) <- arguments] ->
+              [(trait, dictionary)]
+        _ -> []
 
-    factReduce _ _ _ 0 v = (v, False)
-    factReduce ec d facts depth v =
-      let factMap =
-            Map.fromListWith
-              (\new _old -> new)
-              [ (branchFactKey tm, b)
-              | (tm, b) <- facts
-              ]
-          factFor c = neutralValueTerm d c >>= \tm -> Map.lookup (branchFactKey tm) factMap
-          boolV b = VCtor (prelBoolV b) []
-       in case v of
-            _ | Just b <- factFor v -> (boolV b, True)
-            VIfN c t f
-              | Just b <- factFor c ->
-                  let Closure env body = if b then t else f
-                   in let (v', changed) = factReduce ec d facts (depth - 1) (eval ec env body)
-                       in (v', True || changed)
-            _ -> (v, False)
+    providerTraits =
+      Map.fromList
+        [ (gPrel "<", gPrel "Ord")
+        , (gPrel "<=", gPrel "Ord")
+        , (gPrel "add", gPrel "Add")
+        , (gPrel "max", gPrel "Max")
+        , (gPrel "succ", gPrel "Successor")
+        , (gPrel "fromInteger", gPrel "FromInteger")
+        ]
+
+-- | Produce a replayable value-arithmetic proof without extending conversion.
+-- The current certificate fragment covers ordinary Nat equality. Boolean
+-- order/range assumptions and provider-normalized overloaded heads are added
+-- only when their exact selected evidence can be retained and replayed; an
+-- unsupported shape returns 'Nothing' rather than manufacturing reflexivity.
+arithmeticEqualityCertificate
+  :: Ctx
+  -> Maybe Term
+  -> Value
+  -> Value
+  -> Value
+  -> Value
+  -> CheckM (Maybe Term)
+arithmeticEqualityCertificate ctx sourceGoal equalityGoal carrier lhs rhs = do
+  carrier' <- forceM carrier
+  case carrier' of
+    VGlobN natural [] | natural == prelNat -> do
+      let depth = ctxLen ctx
+      rawGoal <- case sourceGoal of
+        Just term -> zonkTermM depth term
+        Nothing -> quoteIn ctx equalityGoal >>= zonkTermM depth
+      normalizedGoal <- do
+        normalized <- transparentProofNormalize depth rawGoal
+        pure (fromMaybe rawGoal normalized)
+      operands <- pure (equalityTermOperands normalizedGoal)
+      case operands of
+        Nothing -> pure Nothing
+        Just (leftTerm, rightTerm) -> do
+          leftExpression <- selectedNatArithmeticExpression depth leftTerm
+          rightExpression <- selectedNatArithmeticExpression depth rightTerm
+          naturalLevels <- ctxNatLevels ctx
+          let goalFact =
+                AFact ACmpEq <$> leftExpression <*> rightExpression
+              replay =
+                goalFact
+                  >>= deriveArithmeticReplay naturalLevels []
+          case replay of
+            Nothing -> pure Nothing
+            Just _ -> do
+              let naturalVariables =
+                    [ CVar (depth - 1 - level)
+                    | level <- Set.toAscList naturalLevels
+                    , level >= 0
+                    , level < depth
+                    ]
+              pure
+                ( Just
+                    ( CArithmeticProof
+                        ArithmeticCertificate
+                          { acVersion = 1
+                          , acDomain = ArithmeticNatural
+                          , acProviders = []
+                          , acNaturalVariables = naturalVariables
+                          , acAssumptions = []
+                          , acGoal = normalizedGoal
+                          }
+                    )
+                )
+    _ -> pure Nothing
+  where
+    equalityTermOperands term =
+      case spineOfTerm (stripIdentityWrappers term) of
+        (headTerm, arguments)
+          | termHeadGlob (stripIdentityWrappers headTerm) == Just prelEqType ->
+              last2 [argument | (Expl, argument) <- arguments]
+        _ -> Nothing
 
 -- | Decide equalities between propositions produced by the standard
 -- @Ord TypeLevel@ comparisons. Open comparisons remain neutral in ordinary
@@ -11543,6 +12040,8 @@ neutralValueTerm lvl = \case
   VRigid l sp -> neutralSpine (CVar (lvl - 1 - l)) sp
   VFlex m sp -> neutralSpine (CMeta m) sp
   VGlobI g universes sp -> neutralSpine (CGlobI g universes) sp
+  VSort level -> Just (CSort level)
+  VLevel level -> Just (CLevel level)
   VLit lit -> Just (CLit lit)
   VCtorI g universes arguments ->
     CCtorI g universes Nothing
@@ -11647,19 +12146,26 @@ proveBoolValueFromBranchFacts ctx want v = do
   let d = ctxLen ctx
   case neutralValueTerm d v of
     Nothing -> pure False
-    Just tm0 -> do
-      -- Resolve solved metavariables in the goal: a deferred proof
-      -- obligation captures fresh evidence/argument metas (instance dict,
-      -- arguments) that are only solved later in elaboration.  The
-      -- term-based decision procedures below render an unzonked solved
-      -- meta as a bare 'CMeta', so the predicate (e.g. 'divDefined') stays
-      -- stuck on a projection out of a meta and never unfolds.  Zonking
-      -- first restores the concrete instance/arguments (regression fix).
-      tm <- zonkTermM d tm0
-      bfs <- normalizeBoolFacts d =<< gets csBoolFacts
-      facts <- arithmeticBranchFacts ctx
-      natLvls <- ctxNatLevels ctx
-      proveBoolValue natLvls bfs facts d want tm
+    Just term -> proveBoolTermFromBranchFacts ctx want term
+
+proveBoolTermFromBranchFacts :: Ctx -> Bool -> Term -> CheckM Bool
+proveBoolTermFromBranchFacts ctx want term = do
+  let depth = ctxLen ctx
+  -- Resolve solved metavariables in the goal: a deferred proof obligation
+  -- captures fresh evidence/argument metas that are only solved later.
+  -- Zonking retains the original selected dictionary applications while
+  -- exposing those solutions to the term-based decision procedures.
+  normalized <- zonkTermM depth term
+  boolFacts <- normalizeBoolFacts depth =<< gets csBoolFacts
+  arithmeticFacts <- arithmeticBranchFacts ctx
+  naturalLevels <- ctxNatLevels ctx
+  proveBoolValue
+    naturalLevels
+    boolFacts
+    arithmeticFacts
+    depth
+    want
+    normalized
 
 arithmeticBranchFacts :: Ctx -> CheckM [AFact]
 arithmeticBranchFacts ctx = do
@@ -11667,10 +12173,17 @@ arithmeticBranchFacts ctx = do
   natLvls <- ctxNatLevels ctx
   bfs <- normalizeBoolFacts d =<< gets csBoolFacts
   fmap concat $ forM bfs $ \(tm, truth) -> do
-    mf <- boolRelBranchM d tm
-    pure $ case mf >>= if truth then Just else negateFactForNat natLvls of
-      Just fact -> [fact]
-      Nothing -> []
+    rangeFacts <-
+      if truth
+        then selectedNatRangeMembershipFacts d tm
+        else pure Nothing
+    case rangeFacts of
+      Just facts -> pure facts
+      Nothing -> do
+        mf <- boolRelBranchM d tm
+        pure $ case mf >>= if truth then Just else negateFactForNat natLvls of
+          Just fact -> [fact]
+          Nothing -> []
 
 -- The complement of equality is not generally a single arithmetic fact.
 -- For a variable whose type is known to be Nat, however, @n /= 0@ entails
@@ -11695,10 +12208,65 @@ normalizeBoolFacts d facts = do
     tm <- zonkTermM d tm0
     mtm <- transparentProofNormalize d tm
     let raw = simplifyDecisionTerm tm
-    pure $ case mtm of
-      Just norm | norm /= raw -> [(raw, truth), (norm, truth)]
-      _ -> [(raw, truth)]
+        candidates = case mtm of
+          Just norm | norm /= raw -> [(raw, truth), (norm, truth)]
+          _ -> [(raw, truth)]
+        decomposed = concatMap (uncurry (decomposeBoolFact 16)) candidates
+    pure decomposed
     )
+
+-- | Extract exactly the polarity-safe propositional consequences of the
+-- standard boolean connectives (§16.4.2). A true conjunction proves both
+-- conjuncts; a false disjunction refutes both disjuncts; negation flips
+-- polarity. False conjunctions and true disjunctions remain atomic because
+-- choosing one side would invent a fact. Resolved global identity, rather
+-- than an operator spelling, is the authority for every decomposition.
+decomposeBoolFact :: Int -> Term -> Bool -> [(Term, Bool)]
+decomposeBoolFact fuel term truth
+  | fuel <= 0 = [(term, truth)]
+  | otherwise =
+      case stripIdentityWrappers term of
+        CThunkE body ->
+          decomposeBoolFact (fuel - 1) body truth
+        CIf condition thenTerm elseTerm
+          | truth
+          , isFalseTerm elseTerm ->
+              decomposeBoolFact (fuel - 1) condition True
+                ++ decomposeBoolFact (fuel - 1) thenTerm True
+          | not truth
+          , isTrueTerm thenTerm ->
+              decomposeBoolFact (fuel - 1) condition False
+                ++ decomposeBoolFact (fuel - 1) elseTerm False
+          | isFalseTerm thenTerm
+          , isTrueTerm elseTerm ->
+              decomposeBoolFact (fuel - 1) condition (not truth)
+        _ -> decomposeSpine
+  where
+    decomposeSpine =
+      case spineOfTerm (stripIdentityWrappers term) of
+        (headTerm, arguments)
+          | termHeadGlob (stripIdentityWrappers headTerm) == Just prelAnd
+          , truth
+          , Just (left, right) <- last2 [argument | (Expl, argument) <- arguments] ->
+              decomposeBoolFact (fuel - 1) left True
+                ++ decomposeBoolFact (fuel - 1) right True
+          | termHeadGlob (stripIdentityWrappers headTerm) == Just prelOr
+          , not truth
+          , Just (left, right) <- last2 [argument | (Expl, argument) <- arguments] ->
+              decomposeBoolFact (fuel - 1) left False
+                ++ decomposeBoolFact (fuel - 1) right False
+          | termHeadGlob (stripIdentityWrappers headTerm) == Just prelNot
+          , [argument] <- [candidate | (Expl, candidate) <- arguments] ->
+              decomposeBoolFact (fuel - 1) argument (not truth)
+        _ -> [(term, truth)]
+
+    isTrueTerm = \case
+      CCtor constructor _ [] -> constructor == prelTrue
+      _ -> False
+
+    isFalseTerm = \case
+      CCtor constructor _ [] -> constructor == prelFalse
+      _ -> False
 
 -- | Weaken branch facts into a descendant lexical context. A fact can only be
 -- consumed at its original depth or below it; seeing it from a shallower
@@ -11732,17 +12300,26 @@ proveBoolValueAttempt natLvls boolFacts facts d want t = do
       case evalBoolTermWithFacts d boolFacts (6 :: Int) t of
         Just got -> pure (Just (got == want))
         Nothing -> do
+          mRangeFacts <- selectedNatRangeMembershipFacts d t
+          rangeResult <- case mRangeFacts of
+            Just rangeFacts -> do
+              proved <- mapM (proveFact natLvls facts) rangeFacts
+              pure (if and proved == want then Just True else Nothing)
+            Nothing -> pure Nothing
+          case rangeResult of
+            Just result -> pure (Just result)
+            Nothing -> do
           -- Branch-refined equality proofs first consume only the visible
           -- boolean/arithmetic shape of the target proposition plus active
           -- branch facts. The caller may then try one bounded transparent
           -- normalization pass through definitions already marked reducible
           -- by the ordinary totality/opacity machinery.
-          mf <- selectedArithmeticPredicateFact d t
-          case mf >>= if want then Just else negateFact of
-            Just fact -> do
-              ok <- proveFact natLvls facts fact
-              pure (if ok then Just True else Nothing)
-            Nothing -> pure Nothing
+              mf <- selectedArithmeticPredicateFact d t
+              case mf >>= if want then Just else negateFact of
+                Just fact -> do
+                  ok <- proveFact natLvls facts fact
+                  pure (if ok then Just True else Nothing)
+                Nothing -> pure Nothing
 
 -- | Decode a boolean arithmetic predicate only after authenticating the
 -- selected provider and member identity. Primitive comparisons are already
@@ -11795,11 +12372,162 @@ selectedNatCheckedSubFact depth term = do
     Nothing -> pure Nothing
     Just (dictionary, left, right) -> do
       standard <- standardNaturalDictionary checkedSub dictionary
-      pure $ do
-        guard standard
-        leftExpression <- arithOf depth left
-        rightExpression <- arithOf depth right
-        pure (AFact ACmpLe rightExpression leftExpression)
+      if not standard
+        then pure Nothing
+        else do
+          leftExpression <- selectedNatArithmeticExpression depth left
+          rightExpression <- selectedNatArithmeticExpression depth right
+          pure (AFact ACmpLe <$> rightExpression <*> leftExpression)
+
+-- | Reify the normative §20.2.1 equations for canonical Nat ranges. Every
+-- semantic step is authenticated: the selected @Contains@ dictionary must be
+-- the prelude instance for @(NumericRange Nat, Nat)@, and the range value must
+-- be built by the selected prelude @Rangeable Nat@ instance (or already be its
+-- checked constructor result). A same-spelled user member or range constructor
+-- cannot enter this proof source.
+selectedNatRangeMembershipFacts :: Int -> Term -> CheckM (Maybe [AFact])
+selectedNatRangeMembershipFacts depth term = do
+  state <- get
+  let containsTrait = gPrel "Contains"
+      containsMember = memberGlobal containsTrait "contains"
+      arguments = snd (spineOfTerm (stripIdentityWrappers term))
+      explicitArguments = [argument | (Expl, argument) <- arguments]
+      implicitArguments = [argument | (Impl, argument) <- arguments]
+      selectedContainsGlobal candidate =
+        case termHeadGlob (stripIdentityWrappers candidate) of
+          Just global ->
+            global == containsMember
+              || Map.lookup global (csBareTraitMembers state)
+                   == Just (containsTrait, "contains")
+          Nothing -> False
+      globalCall candidate = do
+        guard (selectedContainsGlobal candidate)
+        _container : _item : dictionary : _ <- pure implicitArguments
+        (rangeValue, value) <- last2 explicitArguments
+        pure (dictionary, rangeValue, value)
+      projectedCall candidate = case stripIdentityWrappers candidate of
+        CProjM _ dictionary "contains" -> do
+          (rangeValue, value) <- last2 explicitArguments
+          pure (dictionary, rangeValue, value)
+        CProjAtM _ dictionary "contains" _ -> do
+          (rangeValue, value) <- last2 explicitArguments
+          pure (dictionary, rangeValue, value)
+        _ -> Nothing
+      headTerm = fst (spineOfTerm (stripIdentityWrappers term))
+  case globalCall headTerm <|> projectedCall headTerm of
+    Nothing -> pure Nothing
+    Just (dictionary, rangeValue, value) -> do
+      standardContains <-
+        standardPreludeDictionary
+          containsTrait
+          (\case
+            [container, item] ->
+              isNumericRangeNatType container && isNatType item
+            _ -> False)
+          dictionary
+      if not standardContains
+        then pure Nothing
+        else do
+          decodedRange <- decodeSelectedNatRange depth rangeValue
+          case decodedRange of
+            Nothing -> pure Nothing
+            Just (lower, upper, exclusive) -> do
+              lowerExpression <- selectedNatArithmeticExpression depth lower
+              valueExpression <- selectedNatArithmeticExpression depth value
+              upperExpression <- selectedNatArithmeticExpression depth upper
+              pure $ do
+                lower' <- lowerExpression
+                value' <- valueExpression
+                upper' <- upperExpression
+                pure
+                  [ AFact ACmpLe lower' value'
+                  , AFact
+                      (if exclusive then ACmpLt else ACmpLe)
+                      value'
+                      upper'
+                  ]
+
+decodeSelectedNatRange :: Int -> Term -> CheckM (Maybe (Term, Term, Bool))
+decodeSelectedNatRange depth rangeValue = do
+  normalized <- transparentProofReduce depth 48 rangeValue
+  case decodedConstructor normalized of
+    Just decoded -> pure (Just decoded)
+    Nothing -> decodeRangeCall rangeValue
+  where
+    decodedConstructor = \case
+      CCtorI constructor _ _ arguments
+        | constructor == prelNumericRange
+        , [lower, upper, exclusive] <-
+            [caTerm argument | argument <- arguments, caPayload argument]
+        , Just exclusiveValue <- boolLiteralTerm exclusive ->
+            Just (lower, upper, exclusiveValue)
+      _ -> Nothing
+
+    decodeRangeCall term =
+      case spineOfTerm (stripIdentityWrappers term) of
+        (headTerm, arguments)
+          | Just operator <- termHeadGlob (stripIdentityWrappers headTerm)
+          , operator == gPrel ".." || operator == gPrel "..<"
+          , _carrier : dictionary : _ <- [argument | (Impl, argument) <- arguments]
+          , [lower, upper] <- [argument | (Expl, argument) <- arguments] -> do
+              standard <- standardNaturalDictionary (gPrel "Rangeable") dictionary
+              pure $
+                if standard
+                  then Just (lower, upper, operator == gPrel "..<")
+                  else Nothing
+        _ -> pure Nothing
+
+    boolLiteralTerm = \case
+      CCtor constructor _ []
+        | constructor == prelTrue -> Just True
+        | constructor == prelFalse -> Just False
+      _ -> Nothing
+
+isNatType :: Term -> Bool
+isNatType term =
+  termHeadGlob (stripIdentityWrappers term) == Just prelNat
+
+isNumericRangeNatType :: Term -> Bool
+isNumericRangeNatType term =
+  case spineOfTerm (stripIdentityWrappers term) of
+    (headTerm, arguments)
+      | termHeadGlob (stripIdentityWrappers headTerm) == Just prelNumericRange ->
+          case reverse [argument | (_, argument) <- arguments] of
+            item : _ -> isNatType item
+            _ -> False
+    _ -> False
+
+-- | Authenticate a selected premise-free standard dictionary against its
+-- checked trait head. This shared helper is intentionally structural: callers
+-- supply semantic head predicates over resolved Core, never rendered names.
+standardPreludeDictionary
+  :: GName
+  -> ([Term] -> Bool)
+  -> Term
+  -> CheckM Bool
+standardPreludeDictionary trait validHead dictionary = do
+  instances <- gets csInstances
+  pure (standardPreludeDictionaryIn instances trait validHead dictionary)
+
+standardPreludeDictionaryIn
+  :: [InstanceEntry]
+  -> GName
+  -> ([Term] -> Bool)
+  -> Term
+  -> Bool
+standardPreludeDictionaryIn instances trait validHead dictionary =
+  case termHeadGlob (stripIdentityWrappers dictionary) of
+    Just dictionaryGlobal ->
+      dictionaryGlobal `gnameInModule` preludeModule
+        && any
+          ( \entry ->
+              ieDict entry == dictionaryGlobal
+                && ieTrait entry == trait
+                && null (iePremises entry)
+                && validHead (ieHead entry)
+          )
+          instances
+    Nothing -> False
 
 transparentProofNormalize :: Int -> Term -> CheckM (Maybe Term)
 transparentProofNormalize d t = do
@@ -11837,7 +12565,6 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
             Nothing -> selectedNatOrderFact d t >>= \case
               Just _ -> pure (simplifyDecisionTerm t)
               Nothing -> case simplifyDecisionTerm t of
-                CGlob g -> maybe (pure (CGlob g)) (go (fuel - 1)) =<< unfoldReducibleGlobal d g []
                 CGlobal g universes ->
                   maybe (pure (CGlobal g universes)) (go (fuel - 1))
                     =<< unfoldReducibleGlobal d g universes
@@ -11889,11 +12616,6 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
             if hd' == hd
               then pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
               else applySpine (fuel - 1) hd' args
-          (CGlob g, _) -> do
-            mBody <- unfoldReducibleGlobal d g []
-            case mBody of
-              Just body -> applySpine (fuel - 1) body args
-              Nothing -> pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
           (CGlobal g universes, _) -> do
             mBody <- unfoldReducibleGlobal d g universes
             case mBody of
@@ -15126,17 +15848,40 @@ elabSpineWith ctx sp fTm fTy0 (arg : rest) = do
 canonicalizeSelectedNatOperation :: Ctx -> Term -> CheckM Term
 canonicalizeSelectedNatOperation ctx application = do
   finalized <- zonkTermM (ctxLen ctx) application
-  case spineOfTerm (stripIdentityWrappers finalized) of
+  instances <- gets csInstances
+  pure (fromMaybe application (canonicalStandardNatOperation instances finalized))
+
+-- | Revisit selected operations after evidence solving. An application can
+-- be elaborated while its dictionary is still a metavariable and only later
+-- become the coherent standard @Add Nat@ provider. Module finalization runs
+-- this monotone pass over every surviving artifact so early elaboration order
+-- cannot decide whether one semantic operation is canonicalized.
+canonicalizeStandardNatOperations :: [InstanceEntry] -> Term -> Term
+canonicalizeStandardNatOperations instances = fixedPoint
+  where
+    rewrite =
+      mapTermWithDepth
+        (\_ term -> canonicalStandardNatOperation instances term)
+        0
+    fixedPoint term =
+      let term' = rewrite term
+       in if term' == term then term else fixedPoint term'
+
+canonicalStandardNatOperation :: [InstanceEntry] -> Term -> Maybe Term
+canonicalStandardNatOperation instances application =
+  case spineOfTerm (stripIdentityWrappers application) of
     (headTerm, arguments)
       | Just dictionary <- operationDictionary headTerm arguments
-      , [left, right] <- [argument | (Expl, argument) <- arguments] -> do
-          standard <- standardNaturalDictionary prelAdd dictionary
-          pure
-            ( if standard
-                then CApp Expl (CApp Expl (CGlob prelNatAdd) left) right
-                else application
-            )
-    _ -> pure application
+      , [left, right] <- [argument | (Expl, argument) <- arguments]
+      , standardPreludeDictionaryIn
+          instances
+          prelAdd
+          (\case
+             [headType] -> isNatType headType
+             _ -> False)
+          dictionary ->
+          Just (CApp Expl (CApp Expl (CGlob prelNatAdd) left) right)
+    _ -> Nothing
   where
     operationDictionary headTerm arguments = case headTerm of
       CGlobal operation _ ->
@@ -15156,23 +15901,52 @@ canonicalizeSelectedNatOperation ctx application = do
 -- Instance identity, trait identity, premise closure, and checked head carrier
 -- must all agree; rendered dictionary/member spellings are not authority.
 standardNaturalDictionary :: GName -> Term -> CheckM Bool
-standardNaturalDictionary trait dictionary = do
-  instances <- gets csInstances
-  pure $ case termHeadGlob (stripIdentityWrappers dictionary) of
-    Just dictionaryGlobal ->
-      dictionaryGlobal `gnameInModule` preludeModule
-        && any
-          ( \entry ->
-              ieDict entry == dictionaryGlobal
-                && ieTrait entry == trait
-                && null (iePremises entry)
-                && case ieHead entry of
-                     [headType] ->
-                       termHeadGlob (stripIdentityWrappers headType) == Just prelNat
-                     _ -> False
-          )
-          instances
-    Nothing -> False
+standardNaturalDictionary trait =
+  standardPreludeDictionary
+    trait
+    (\case
+      [headType] -> isNatType headType
+      _ -> False)
+
+-- | Reify a Nat arithmetic expression without erasing the authority that
+-- selected its overloaded operations. The shared termination reifier handles
+-- already-canonical Core. Numeric literals may additionally occur as a
+-- checked @FromInteger Nat@ method application; admit that form only after
+-- authenticating the exact coherent standard dictionary. This keeps
+-- arithmetic proof normalization provider-driven instead of unfolding an
+-- arbitrary same-shaped function.
+selectedNatArithmeticExpression :: Int -> Term -> CheckM (Maybe AExpr)
+selectedNatArithmeticExpression depth term =
+  case arithOf depth term of
+    Just expression -> pure (Just expression)
+    Nothing ->
+      case spineOfTerm (stripIdentityWrappers term) of
+        (headTerm, arguments)
+          | [CLit (LitInt literal)] <-
+              [argument | (Expl, argument) <- arguments]
+          , literal >= 0
+          , Just dictionary <- selectedFromIntegerDictionary headTerm arguments -> do
+              standard <- standardNaturalDictionary (gPrel traitFromInteger) dictionary
+              pure (if standard then Just (AConst literal) else Nothing)
+        _ -> pure Nothing
+  where
+    selectedFromIntegerDictionary headTerm arguments =
+      case stripIdentityWrappers headTerm of
+        CProjM _ dictionary member
+          | member == "fromInteger" -> Just dictionary
+        CProjAtM _ dictionary member _
+          | member == "fromInteger" -> Just dictionary
+        candidate
+          | termHeadGlob candidate
+              `elem`
+                [ Just (gPrel "fromInteger")
+                , Just (memberGlobal (gPrel traitFromInteger) "fromInteger")
+                ] ->
+              case [argument | (Impl, argument) <- arguments] of
+                carrier : dictionary : _
+                  | isNatType carrier -> Just dictionary
+                _ -> Nothing
+        _ -> Nothing
 
 elabSpineArg :: Ctx -> Span -> [Value] -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp captureRegions fTm fTy arg rest = do
@@ -33938,6 +34712,8 @@ mentionsGroup groupNames = go
       CUniverseLift _ _ _ inner -> go inner
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
         any go sourceArguments || any go targetArguments || go inner
+      CArithmeticProof certificate ->
+        any go (foldMapArithmeticCertificate (: []) certificate)
       CVar _ -> False
       CLam _ _ _ b -> go b
       CPi _ _ _ _ a b -> go a || go b
@@ -33980,6 +34756,8 @@ mentionsVar = go
       CUniverseLift _ _ _ inner -> go v inner
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
         any (go v) sourceArguments || any (go v) targetArguments || go v inner
+      CArithmeticProof certificate ->
+        any (go v) (foldMapArithmeticCertificate (: []) certificate)
       CGlob _ -> False
       CLam _ _ _ b -> go (v + 1) b
       CPi _ _ _ _ a b -> go v a || go (v + 1) b
@@ -34741,6 +35519,8 @@ coreUsesVar0 = go 0
       CUniverseLift _ _ _ inner -> go d inner
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
         any (go d) sourceArguments || any (go d) targetArguments || go d inner
+      CArithmeticProof certificate ->
+        any (go d) (foldMapArithmeticCertificate (: []) certificate)
       CGlob _ -> False
       CLam _ _ _ b -> go (d + 1) b
       CPi _ _ _ _ a b -> go d a || go (d + 1) b
@@ -35594,6 +36374,8 @@ placesToThis n = go 0
       CSchemaLift family source target roles evidence certificate sourceArguments targetArguments inner ->
         CSchemaLift family source target roles evidence certificate
           (map (go d) sourceArguments) (map (go d) targetArguments) (go d inner)
+      CArithmeticProof certificate ->
+        CArithmeticProof (mapArithmeticCertificate (go d) certificate)
       CSort _ -> t
       CLevel _ -> t
       CLit _ -> t
@@ -37727,16 +38509,17 @@ selectedNatOrderFact depth term =
             (carrier : dictionary : _, Just (left, right))
               | termHeadGlob (stripIdentityWrappers carrier) == Just prelNat -> do
                   standard <- standardNaturalDictionary prelOrd dictionary
-                  pure $ do
-                    guard standard
-                    leftExpression <- arithOf depth left
-                    rightExpression <- arithOf depth right
-                    pure
-                      ( AFact
-                          (if operation == gPrel "<" then ACmpLt else ACmpLe)
-                          leftExpression
-                          rightExpression
-                      )
+                  if not standard
+                    then pure Nothing
+                    else do
+                      leftExpression <- selectedNatArithmeticExpression depth left
+                      rightExpression <- selectedNatArithmeticExpression depth right
+                      pure
+                        ( AFact
+                            (if operation == gPrel "<" then ACmpLt else ACmpLe)
+                            <$> leftExpression
+                            <*> rightExpression
+                        )
             _ -> pure Nothing
     _ -> pure Nothing
 
@@ -37755,9 +38538,12 @@ primitiveEqBranchM d term = case spineOfTerm term of
         case (implicits, last2 explicits) of
           (carrier : dictionary : _, Just (lhs, rhs)) -> do
             authenticated <- standardPrimitiveEqDict carrier dictionary
-            pure $ if authenticated
-              then AFact ACmpEq <$> arithOf d lhs <*> arithOf d rhs
-              else Nothing
+            if not authenticated
+              then pure Nothing
+              else do
+                lhsExpression <- selectedNatArithmeticExpression d lhs
+                rhsExpression <- selectedNatArithmeticExpression d rhs
+                pure (AFact ACmpEq <$> lhsExpression <*> rhsExpression)
           _ -> pure Nothing
   _ -> pure Nothing
 

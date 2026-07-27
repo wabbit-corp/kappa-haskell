@@ -1,0 +1,15 @@
+-- Spec 14.5.1 x 28.2: derive Eq on a wrapper whose field is Fin 5 — the
+-- derivation consumes the required IsSet (Fin 5)/Eq (Fin 5) instances, and
+-- the derived equality is proof-insensitive because Eq (Fin n) compares
+-- only base values (28.2). Two witnesses of the same ordinal are equal.
+data Slot : Type =
+    MkSlot (position : Fin 5)
+
+derive IsSet Slot
+derive Eq Slot
+
+same : Bool
+let same = MkSlot 3 == MkSlot 3
+
+--! assertNoErrors
+--! assertEval same True

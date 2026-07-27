@@ -81,6 +81,8 @@ lintTermHeads ctx who = go
       CUniverseLift _ _ _ t' -> go t'
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
         concatMap go sourceArguments ++ concatMap go targetArguments ++ go t'
+      CArithmeticProof certificate ->
+        concatMap go (foldMapArithmeticCertificate (: []) certificate)
       CSort _ -> []
       CLevel _ -> []
       CLit _ -> []

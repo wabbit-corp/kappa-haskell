@@ -44,7 +44,7 @@ sampleCompassStep :
 let sampleCompassStep =
     CompassStep East sampleFin
 
---! requires capability representationCertificates
+--! requires capability kcoreText
 --! assertNoErrors
 --! assertOrdinalRepresentation 5 for Fin 5
 --! assertOrdinalRepresentation 4 for Compass

@@ -1,0 +1,15 @@
+-- Spec 31.1.3 (index-literal normalization) x 16.1.9 (refinement
+-- insertion at expected-type boundaries): a data family indexed BY Fin 3.
+-- The literal 2 written in the INDEX position elaborates against expected
+-- type Fin 3, so proposition synthesis (2 < 3, closed) runs inside a type
+-- argument. Both spellings of the same index convert.
+data Seat (i : Fin 3) : Type =
+    Seat
+
+second : Seat 2
+let second = Seat
+
+viaSucc : Seat (Nat.Succ 1)
+let viaSucc = second
+
+--! assertNoErrors

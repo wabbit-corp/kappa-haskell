@@ -37,16 +37,23 @@ oldEqIsSetMember :
 let oldEqIsSetMember @evidence =
     evidence.eqIsSet
 
--- REJECTED: Equiv evidence grants no reflection — refl checks at x = x
--- only, and no compiler rule may close the gap from the Equiv
--- hypothesis (Spec 16.3.3 step 5).
+-- REJECTED: Equiv evidence grants no reflection (Spec 16.3.3 step 5,
+-- Spec 14.2). The carrier is ABSTRACT: at a concrete carrier like Int
+-- the prelude's canonical `Eq a => Equiv a` bridge makes `~=` the same
+-- selected operation as `==` (Spec 14.3, 15.8.1 semantic identity), and
+-- Eq.eqSound is a sanctioned Spec 16.1.8 proof source, so rejection
+-- would not be spec-forced there. With only Equiv A in scope no
+-- normalization can expose an `==`, so every conforming implementation
+-- rejects.
 noReflect :
-    (x : Int) ->
-    (y : Int) ->
+    forall (A : Type).
+    (@equivalence : Equiv A) ->
+    (x : A) ->
+    (y : A) ->
     (@0 p : (=) (x ~= y) True) ->
     (=) x y
 
-let noReflect x y @p =
+let noReflect @equivalence x y @p =
     refl
 
 --! assertErrorCount 2

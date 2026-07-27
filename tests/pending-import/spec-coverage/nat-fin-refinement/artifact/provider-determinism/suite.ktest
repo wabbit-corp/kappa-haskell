@@ -1,3 +1,4 @@
---! mode interface
+--! mode check
 --! requires capability arithmeticCertificates
---! assertSemanticHashEquals left.kp right.kp
+--! assertNoErrors
+--! assertArithmeticCertificatesValid

@@ -1,0 +1,16 @@
+-- Spec 14.5.1 (guarded greatest-fixed-point eligibility over the
+-- recursive data group): derive IsSet for a recursive tree whose leaves
+-- hold Nat exercises the recursive-occurrence rule together with the
+-- prelude's derived IsSet Nat.
+data Tree : Type =
+    Leaf (value : Nat)
+    Node (left : Tree) (right : Tree)
+
+derive IsSet Tree
+derive Eq Tree
+
+sameTree : Bool
+let sameTree = Node (Leaf 1) (Leaf 2) == Node (Leaf 1) (Leaf 2)
+
+--! assertNoErrors
+--! assertEval sameTree True

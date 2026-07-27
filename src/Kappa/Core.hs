@@ -61,6 +61,13 @@ module Kappa.Core
   , SchemaRoleEvidence (..)
   , UniverseVariance (..)
   , SchemaActionCertificateId (..)
+  , ArithmeticDomain (..)
+  , ArithmeticProviderEvidence (..)
+  , ArithmeticAssumption (..)
+  , ArithmeticCertificate (..)
+  , mapArithmeticCertificate
+  , traverseArithmeticCertificate
+  , foldMapArithmeticCertificate
   , emptyDeclarationUniverseTelescope
   , finiteLevel
   , levelSucc
@@ -434,6 +441,93 @@ data CoreLocalRecDef = CoreLocalRecDef
   }
   deriving stock (Eq, Show)
 
+-- | Arithmetic proposition domains whose proof rules are independently
+-- replayed at typed checkpoints (§15.8.2/§30.2.0A). First-class
+-- 'TypeLevel' propositions use the universe solver's certified normalization
+-- bridge, but remain explicit proof terms and never extend conversion.
+data ArithmeticDomain
+  = ArithmeticNatural
+  | ArithmeticInteger
+  | ArithmeticTypeLevel
+  deriving stock (Eq, Ord, Show)
+
+-- | One selected provider admitted to an arithmetic proof. The trait identity
+-- and the exact selected evidence term are both retained; a verifier never
+-- reconstructs either from a member spelling.
+data ArithmeticProviderEvidence a = ArithmeticProviderEvidence
+  { apeTrait :: !GName
+  , apeEvidence :: !a
+  }
+  deriving stock (Eq, Show)
+
+data ArithmeticAssumption a = ArithmeticAssumption
+  { aaTruth :: !Bool
+  , aaProposition :: !a
+  }
+  deriving stock (Eq, Show)
+
+-- | A proof-producing arithmetic decision. The portable artifact adds the
+-- canonical replay normal form; Core retains identity-bearing source material
+-- so shifting, substitution, and NbE can transform it without stale variable
+-- numbers.
+data ArithmeticCertificate a = ArithmeticCertificate
+  { acVersion :: !Integer
+  , acDomain :: !ArithmeticDomain
+  , acProviders :: ![ArithmeticProviderEvidence a]
+  , acNaturalVariables :: ![a]
+  , acAssumptions :: ![ArithmeticAssumption a]
+  , acGoal :: !a
+  }
+  deriving stock (Eq, Show)
+
+mapArithmeticCertificate :: (a -> b) -> ArithmeticCertificate a -> ArithmeticCertificate b
+mapArithmeticCertificate transform certificate =
+  ArithmeticCertificate
+    { acVersion = acVersion certificate
+    , acDomain = acDomain certificate
+    , acProviders =
+        [ ArithmeticProviderEvidence trait (transform evidence)
+        | ArithmeticProviderEvidence trait evidence <- acProviders certificate
+        ]
+    , acNaturalVariables = map transform (acNaturalVariables certificate)
+    , acAssumptions =
+        [ ArithmeticAssumption truth (transform proposition)
+        | ArithmeticAssumption truth proposition <- acAssumptions certificate
+        ]
+    , acGoal = transform (acGoal certificate)
+    }
+
+traverseArithmeticCertificate
+  :: Applicative f
+  => (a -> f b)
+  -> ArithmeticCertificate a
+  -> f (ArithmeticCertificate b)
+traverseArithmeticCertificate transform certificate =
+  ArithmeticCertificate
+    (acVersion certificate)
+    (acDomain certificate)
+    <$> traverse
+      (\(ArithmeticProviderEvidence trait evidence) ->
+        ArithmeticProviderEvidence trait <$> transform evidence)
+      (acProviders certificate)
+    <*> traverse transform (acNaturalVariables certificate)
+    <*> traverse
+      (\(ArithmeticAssumption truth proposition) ->
+        ArithmeticAssumption truth <$> transform proposition)
+      (acAssumptions certificate)
+    <*> transform (acGoal certificate)
+
+foldMapArithmeticCertificate
+  :: Monoid m
+  => (a -> m)
+  -> ArithmeticCertificate a
+  -> m
+foldMapArithmeticCertificate transform certificate =
+  foldMap (transform . apeEvidence) (acProviders certificate)
+    <> foldMap transform (acNaturalVariables certificate)
+    <> foldMap (transform . aaProposition) (acAssumptions certificate)
+    <> transform (acGoal certificate)
+
 data Term
   = -- Lambda-calculus core ------------------------------------------------
     CVar !Int -- ^ a bound variable, as a de Bruijn /index/ (0 = nearest binder)
@@ -471,6 +565,10 @@ data Term
     -- complete source and aligned target family argument spines, including
     -- generated erased proof arguments. This node is representation identity
     -- and erases before KBackendIR only after independent verification.
+  | CArithmeticProof !(ArithmeticCertificate Term)
+    -- ^ Runtime-erased proof evidence. KCoreText independently reifies the
+    -- authenticated operations and replays the canonical certificate before
+    -- any backend may erase it.
   | CLit !Literal
   -- Data and pattern matching --------------------------------------------
   -- | Saturated constructor application. The optional 'Term' is the
@@ -560,6 +658,7 @@ instance Eq Term where
   CSchemaLift a b c d e f g h i == CSchemaLift a' b' c' d' e' f' g' h' i' =
     a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
       && g == g' && h == h' && i == i'
+  CArithmeticProof a == CArithmeticProof a' = a == a'
   CLit a == CLit a' = a == a'
   -- The occurrence-local head annotation is fresh-elaboration metadata and is
   -- intentionally ignored. Hidden universes, explicitness, payload marks,
@@ -749,6 +848,7 @@ data Value
     -- 'CPiEvidenceM'. 'Bool' is the binder borrow marker (§12.3).
   | VSort !Level
   | VLevel !Level
+  | VArithmeticProof !(ArithmeticCertificate Value)
   | VLit !Literal
   | VCtorI !GName ![Level] ![ConstructorValueArg]
   | VRecordTQ ![RecordField Value]
@@ -939,36 +1039,36 @@ patternRestName = fmap snd
 -- constructors rather than a compatibility view. This COMPLETE set prevents
 -- GHC from selecting one of the lossy read-only pattern-synonym sets above.
 {-# COMPLETE CVar, CLocal, CGlobal, CLamM, CPiEvidenceM, CApp, CSort, CLevel,
-  CUniverseLift, CSchemaLift, CLit, CCtorI, CMatch, CRecordTQ, CRecordV, CProjM, CProjAtM,
+  CUniverseLift, CSchemaLift, CArithmeticProof, CLit, CCtorI, CMatch, CRecordTQ, CRecordV, CProjM, CProjAtM,
   CVariantT, CInject, CLetM, CLetRecM, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE,
   CLazyE, CForceE, CIf, CQuote #-}
 
-{-# COMPLETE CVar, CLocal, CGlob, CLam, CPiM, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CLit,
+{-# COMPLETE CVar, CLocal, CGlob, CLam, CPiM, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CArithmeticProof, CLit,
   CCtor, CMatch, CRecordT, CRecordV, CProj, CProjAt, CVariantT, CInject,
   CLet, CLetRec, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE, CLazyE, CForceE,
   CIf, CQuote #-}
 
-{-# COMPLETE CVar, CLocal, CGlob, CLam, CPi, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CLit,
+{-# COMPLETE CVar, CLocal, CGlob, CLam, CPi, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CArithmeticProof, CLit,
   CCtor, CMatch, CRecordT, CRecordV, CProj, CProjAt, CVariantT, CInject,
   CLet, CLetRec, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE, CLazyE, CForceE,
   CIf, CQuote #-}
 
-{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiBoundM, VSort, VLevel, VLit, VCtor,
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiBoundM, VSort, VLevel, VArithmeticProof, VLit, VCtor,
   VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
   VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
 
-{-# COMPLETE VRigid, VFlex, VGlobal, VLamM, VPiEvidenceM, VSort, VLevel, VLit,
+{-# COMPLETE VRigid, VFlex, VGlobal, VLamM, VPiEvidenceM, VSort, VLevel, VArithmeticProof, VLit,
   VCtorI, VRecordTQ, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar, VFiber,
   VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
 
-{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiM, VSort, VLevel, VLit, VCtor,
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPiM, VSort, VLevel, VArithmeticProof, VLit, VCtor,
   VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
   VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
 
-{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPi, VSort, VLevel, VLit, VCtor,
+{-# COMPLETE VRigid, VFlex, VGlobN, VLam, VPi, VSort, VLevel, VArithmeticProof, VLit, VCtor,
   VRecordT, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
   VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}

@@ -20,5 +20,6 @@ associateIndex :
 let associateIndex a b c value =
     value
 
+--! requires capability arithmeticCertificates
 --! assertNoErrors
 --! assertArithmeticCertificatesValid

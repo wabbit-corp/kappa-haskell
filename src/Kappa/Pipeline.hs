@@ -744,6 +744,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (csDiscardedResultTypes st1)
                       (csStaticKindBinders st1)
                       (csErasedArgumentSpans st1)
+                      (csImplicitExpressionDemands st1)
                       (usageImportedParams byName st1 ie)
                       (usageImportedInoutResults byName st1 ie)
                       (usageImportedResultTypes byName st1 ie)

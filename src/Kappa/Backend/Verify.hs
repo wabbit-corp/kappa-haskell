@@ -153,6 +153,7 @@ erasureViolations vi ctx who = go
       CUniverseLift _ _ _ inner -> go inner
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
         concatMap go sourceArguments ++ concatMap go targetArguments ++ go inner
+      CArithmeticProof _ -> []
       CApp {} ->
         let (hd, args) = spineOfTerm t
             headDiag = case classifyHead ctx hd of
@@ -287,6 +288,7 @@ arityViolations vi who = go
       CUniverseLift _ _ _ inner -> go inner
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
         concatMap go sourceArguments ++ concatMap go targetArguments ++ go inner
+      CArithmeticProof _ -> []
       CCtor g _ as ->
         let here = case ctorValidPayloadArities vi g of
               Just ns

@@ -1,17 +1,20 @@
 -- Spec 14.5.1: compiler-owned `derive Eq` on first-order data generates
 -- checked (==)/eqSound/eqComplete members and discharges the IsSet
--- supertrait. IntChain is the recursive first-order shape — checked by
+-- supertrait. NatChain is the recursive first-order shape — checked by
 -- the guarded structural fragment, the same generator the mandatory
 -- prelude `derive Eq Nat` uses (Spec 28.2) — and ChainW is a
--- single-constructor wrapper over it.
-data IntChain : Type =
+-- single-constructor wrapper over it. The head field is Nat so the
+-- Spec 14.5.1 field obligation is discharged by the same required
+-- IsSet Nat evidence of Spec 28.2 that the prelude's own paired
+-- derives publish.
+data NatChain : Type =
     ChainNil
-    ChainCons (head : Int) (tail : IntChain)
+    ChainCons (head : Nat) (tail : NatChain)
 
-derive Eq IntChain
+derive Eq NatChain
 
 data ChainW : Type =
-    MkChainW (payload : IntChain)
+    MkChainW (payload : NatChain)
 
 derive Eq ChainW
 

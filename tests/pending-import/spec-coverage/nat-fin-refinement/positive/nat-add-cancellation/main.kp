@@ -1,0 +1,30 @@
+-- Spec 15.8.4 (quantifier-free Presburger over Nat, with lexical erased
+-- assumptions): successor/addition cancellation is a solver consequence,
+-- not a definitional one. From @0 p : (m + 1) = (n + 1) the solver derives
+-- m = n and 16.1.8 transports the index; likewise left-cancellation from
+-- (k + m) = (k + n).
+data Idx (n : Nat) : Type =
+    Idx
+
+cancelSucc :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 p : (m + 1) = (n + 1)) ->
+    Idx m ->
+    Idx n
+
+let cancelSucc m n @p v =
+    v
+
+cancelLeft :
+    (k : Nat) ->
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 p : (k + m) = (k + n)) ->
+    Idx m ->
+    Idx n
+
+let cancelLeft k m n @p v =
+    v
+
+--! assertNoErrors

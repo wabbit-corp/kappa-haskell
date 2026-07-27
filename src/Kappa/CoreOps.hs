@@ -320,6 +320,7 @@ foldTerm termF itemF = go
       CUniverseLift _ _ _ t' -> go t'
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
         foldMap go sourceArguments <> foldMap go targetArguments <> go t'
+      CArithmeticProof certificate -> foldMapArithmeticCertificate go certificate
       CLit _ -> mempty
       CCtorI _ _ ann arguments -> foldMap go ann <> foldMap (go . caTerm) arguments
       CMatch s ann alts -> go s <> foldMap go ann <> foldMap goAlt alts
@@ -422,6 +423,8 @@ foldTermWithDepth termF = go
       CUniverseLift _ _ _ t' -> go d t'
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
         foldMap (go d) sourceArguments <> foldMap (go d) targetArguments <> go d t'
+      CArithmeticProof certificate ->
+        foldMapArithmeticCertificate (go d) certificate
       CLit _ -> mempty
       CCtorI _ _ ann arguments -> foldMap (go d) ann <> foldMap (go d . caTerm) arguments
       CMatch s ann alts -> go d s <> foldMap (go d) ann <> foldMap (goAlt d) alts
@@ -570,6 +573,8 @@ mapTermAndPatternsWithDepth f rewritePattern = go
         CSchemaLift family source target roles evidence certificate sourceArguments targetArguments t' ->
           CSchemaLift family source target roles evidence certificate
             (map (go d) sourceArguments) (map (go d) targetArguments) (go d t')
+        CArithmeticProof certificate ->
+          CArithmeticProof (mapArithmeticCertificate (go d) certificate)
         CLit l -> CLit l
         CCtorI g universes ann arguments ->
           CCtorI g universes (fmap (go d) ann) (map (\argument -> argument {caTerm = go d (caTerm argument)}) arguments)
@@ -912,6 +917,9 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
           (map (go seen resolve d) sourceArguments)
           (map (go seen resolve d) targetArguments)
           (go seen resolve d t)
+      CArithmeticProof certificate ->
+        CArithmeticProof
+          (mapArithmeticCertificate (go seen resolve d) certificate)
       CLit l -> CLit l
       CCtorI g universes ann arguments ->
         CCtorI g (map resolve universes) (fmap (go seen resolve d) ann)

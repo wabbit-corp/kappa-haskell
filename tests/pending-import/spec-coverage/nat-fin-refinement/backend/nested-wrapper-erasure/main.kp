@@ -1,0 +1,31 @@
+-- Spec 34.3.2A x 30.2.7B/C: a refinement OVER Fin — two wrapper layers,
+-- two certificates (refinement over the ordinal base). With the compact
+-- and unboxed capabilities, both layers erase and the stored value shares
+-- the Fin ordinal's compact class; the erased proof fields of BOTH layers
+-- are absent from KBackendIR.
+type SmallSlot : Type =
+    Refined (Fin 200) (\value -> True = True)
+
+slot : SmallSlot
+let slot = 17
+
+data Holder : Type =
+    MkHolder (stored : SmallSlot)
+
+holder : Holder
+let holder = MkHolder slot
+
+-- assertRuntimeFieldAbsent names a source field OF ITS SUBJECT; isLt is
+-- a field of the inner Fin, so the inner layer is asserted through an
+-- explicit refinedValue projection.
+inner : Fin 200
+let inner = refinedValue slot
+
+--! mode compile
+--! requires capability representationQueries
+--! requires capability rt-compact-finite-ordinal
+--! requires capability rt-unboxed-refinement
+--! assertNoErrors
+--! assertRuntimeFieldAbsent slot proof
+--! assertRuntimeFieldAbsent inner isLt
+--! assertRepresentationClass Holder.stored FiniteOrdinal 200

@@ -3,8 +3,11 @@
 -- The No branch composes 16.4.1 branch facts with 31.1.2 branch-local
 -- normalization: under `else`, p's type normalizes to False = True, whose
 -- 10.2.1 constructor disjointness makes `case impossible` exhaustive.
--- tryRefine's @0 predicateIsProp argument is left to implicit synthesis
--- (IsProp of a Bool equality via IsSet Bool from Eq's supertrait).
+-- tryRefine's @0 predicateIsProp argument is Pi-typed, and Spec 16.3.3
+-- has no synthesis rule for Pi-typed implicit goals, so it is supplied
+-- explicitly as a pointwise lambda; each instantiated IsProp fiber is a
+-- Bool equality discharged by witness via IsSet Bool from Eq's
+-- supertrait.
 --! mode run
 decEven :
     (x : Nat) ->
@@ -26,8 +29,8 @@ let report result =
 
 main : UIO Unit
 let main = do
-    printlnString (report (tryRefine decEven 4))
-    printlnString (report (tryRefine decEven 5))
+    printlnString (report (tryRefine @(\(@0 x : Nat) -> witness) decEven 4))
+    printlnString (report (tryRefine @(\(@0 x : Nat) -> witness) decEven 5))
 
 --! assertNoErrors
 --! assertStdout "even\nodd\n"

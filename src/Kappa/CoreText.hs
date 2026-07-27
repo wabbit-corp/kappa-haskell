@@ -25,6 +25,7 @@ module Kappa.CoreText
   , verifyKCoreTextWithInterfaces
   , printCanonicalKCoreText
   , semanticHashKCoreText
+  , kcoreArithmeticCertificateCount
   , kcoreHasValidSchemaCertificate
   , kcoreLevelCertificateDependencies
   , kcoreNominalRoles
@@ -50,6 +51,16 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (cast)
 import Data.Word (Word8)
+import Kappa.Arithmetic
+  ( ACmp (..)
+  , AExpr (..)
+  , AFact (..)
+  , ArithmeticNormalForm (..)
+  , ArithmeticProofRule (..)
+  , ArithmeticReplay (..)
+  , deriveArithmeticReplay
+  , reindexArithmeticFact
+  )
 import Kappa.Builtins
   ( gPrel
   , prelBool
@@ -65,10 +76,16 @@ import Kappa.Builtins
   , prelFalse
   , prelGrapheme
   , prelInt
+  , prelInteger
   , prelList
   , prelMonotone
+  , prelNat
+  , prelNatAdd
+  , prelNatCompare
+  , prelNatMultiply
   , prelNatSucc
   , prelNatZero
+  , prelOrdering
   , prelString
   , prelSyntax
   , prelThis
@@ -78,8 +95,10 @@ import Kappa.Builtins
   , prelRefl
   , prelTypeLevel
   , prelTypeLevelAdd
+  , prelTypeLevelFromInteger
   , prelTypeLevelMax
   , prelTypeLevelOmega
+  , prelTypeLevelOne
   , prelTypeLevelSucc
   , prelTypeLevelZero
   , prelUnicodeScalar
@@ -105,6 +124,7 @@ import Kappa.Level
   , insertAssumption
   , instantiateLocalLevelParams
   , levelFields
+  , proveLevelEq
   , levelVars
   , normalizeLevel
   , proveLevelLeq
@@ -515,6 +535,7 @@ data VerifyContext = VerifyContext
   , vcGlobalBodies :: !(Map StableRef ([UniverseRef], KTerm))
   , vcRecordInterfaces :: !(Map StableRef ([UniverseRef], KTerm))
   , vcConstructorTypes :: !(Map StableRef ([UniverseRef], [KBinder], KTerm))
+  , vcConstructorFields :: !(Map StableRef (Map StableRef Int))
   , vcLevelCertificates :: !(Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof))
   , vcSchemaCertificates :: !(Map StableRef KSchemaCertificate)
   , vcNominalFamilies :: !(Map StableRef KNominalFamily)
@@ -623,6 +644,169 @@ lexKCore = go . T.unpack
 
 invalid :: Text -> KCoreTextError
 invalid = KCoreTextError "E_KCORE_TEXT_INVALID"
+
+arithmeticCertificateInvalid :: Text -> KCoreTextError
+arithmeticCertificateInvalid =
+  KCoreTextError "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID"
+
+encodeArithmeticReplay :: ArithmeticReplay -> KValueNode
+encodeArithmeticReplay replay =
+  KVList
+    [ encodeArithmeticFact (arGoal replay)
+    , KVText (encodeArithmeticRule (arRule replay))
+    , encodeArithmeticNormalForm (arNormalForm replay)
+    ]
+
+encodeArithmeticFact :: AFact -> KValueNode
+encodeArithmeticFact (AFact comparison lhs rhs) =
+  KVList
+    [ KVText $ case comparison of
+        ACmpLt -> "lt"
+        ACmpLe -> "le"
+        ACmpEq -> "eq"
+    , encodeArithmeticExpression lhs
+    , encodeArithmeticExpression rhs
+    ]
+
+encodeArithmeticExpression :: AExpr -> KValueNode
+encodeArithmeticExpression = \case
+  AConst value -> node "constant" [KVInteger value]
+  AVar variable -> node "variable" [KVInteger (toInteger variable)]
+  AScale scale expression -> node "scale" [KVInteger scale, encodeArithmeticExpression expression]
+  AAdd lhs rhs -> binary "add" lhs rhs
+  ASub lhs rhs -> binary "subtract" lhs rhs
+  AMul lhs rhs -> binary "multiply" lhs rhs
+  ADiv lhs rhs -> binary "divide" lhs rhs
+  AMod lhs rhs -> binary "modulo" lhs rhs
+  ANeg expression -> node "negate" [encodeArithmeticExpression expression]
+  AMax lhs rhs -> binary "maximum" lhs rhs
+  AMin lhs rhs -> binary "minimum" lhs rhs
+  where
+    node tag fields = KVList (KVText tag : fields)
+    binary tag lhs rhs =
+      node tag [encodeArithmeticExpression lhs, encodeArithmeticExpression rhs]
+
+encodeArithmeticRule :: ArithmeticProofRule -> Text
+encodeArithmeticRule = \case
+  ProvePolynomialEquality -> "polynomial-equality"
+  ProveLinearEquality -> "linear-equality"
+  ProveStrictLowerBound -> "strict-lower-bound"
+  ProveNonStrictLowerBound -> "nonstrict-lower-bound"
+
+encodeArithmeticNormalForm :: ArithmeticNormalForm -> KValueNode
+encodeArithmeticNormalForm = \case
+  NormalPolynomial monomials ->
+    KVList
+      [ KVText "polynomial"
+      , KVList
+          [ KVList
+              [ KVList
+                  [KVList [KVInteger (toInteger variable), KVInteger (toInteger exponent)] | (variable, exponent) <- variables]
+              , KVInteger coefficient
+              ]
+          | (variables, coefficient) <- monomials
+          ]
+      ]
+  NormalLinear constant coefficients ->
+    KVList
+      [ KVText "linear"
+      , KVInteger constant
+      , KVList
+          [KVList [KVInteger (toInteger variable), KVInteger coefficient] | (variable, coefficient) <- coefficients]
+      ]
+  NormalLowerBound lower ->
+    KVList [KVText "lower-bound", KVInteger lower]
+
+decodeArithmeticReplay :: KValueNode -> Either KCoreTextError ArithmeticReplay
+decodeArithmeticReplay = \case
+  KVList [fact, KVText rule, normalForm] ->
+    ArithmeticReplay
+      <$> decodeArithmeticFact fact
+      <*> decodeArithmeticRule rule
+      <*> decodeArithmeticNormalForm normalForm
+  _ -> malformed "arithmetic replay must contain goal, rule, and normal form"
+  where
+    malformed = Left . arithmeticCertificateInvalid
+
+decodeArithmeticFact :: KValueNode -> Either KCoreTextError AFact
+decodeArithmeticFact = \case
+  KVList [KVText comparison, lhs, rhs] ->
+    AFact
+      <$> case comparison of
+        "lt" -> pure ACmpLt
+        "le" -> pure ACmpLe
+        "eq" -> pure ACmpEq
+        _ -> malformed "arithmetic fact has an unknown comparison"
+      <*> decodeArithmeticExpression lhs
+      <*> decodeArithmeticExpression rhs
+  _ -> malformed "arithmetic fact must contain a comparison and two expressions"
+  where
+    malformed = Left . arithmeticCertificateInvalid
+
+decodeArithmeticExpression :: KValueNode -> Either KCoreTextError AExpr
+decodeArithmeticExpression encoded =
+  case encoded of
+    KVList [KVText "constant", KVInteger value] -> pure (AConst value)
+    KVList [KVText "variable", KVInteger variable] ->
+      AVar <$> checkedInt "arithmetic variable identity" variable
+    KVList [KVText "scale", KVInteger scale, expression] ->
+      AScale scale <$> recurse expression
+    KVList [KVText "add", lhs, rhs] -> binary AAdd lhs rhs
+    KVList [KVText "subtract", lhs, rhs] -> binary ASub lhs rhs
+    KVList [KVText "multiply", lhs, rhs] -> binary AMul lhs rhs
+    KVList [KVText "divide", lhs, rhs] -> binary ADiv lhs rhs
+    KVList [KVText "modulo", lhs, rhs] -> binary AMod lhs rhs
+    KVList [KVText "negate", expression] -> ANeg <$> recurse expression
+    KVList [KVText "maximum", lhs, rhs] -> binary AMax lhs rhs
+    KVList [KVText "minimum", lhs, rhs] -> binary AMin lhs rhs
+    _ -> malformed "arithmetic expression has an invalid structural encoding"
+  where
+    recurse = decodeArithmeticExpression
+    binary constructor lhs rhs = constructor <$> recurse lhs <*> recurse rhs
+    malformed = Left . arithmeticCertificateInvalid
+
+decodeArithmeticRule :: Text -> Either KCoreTextError ArithmeticProofRule
+decodeArithmeticRule = \case
+  "polynomial-equality" -> pure ProvePolynomialEquality
+  "linear-equality" -> pure ProveLinearEquality
+  "strict-lower-bound" -> pure ProveStrictLowerBound
+  "nonstrict-lower-bound" -> pure ProveNonStrictLowerBound
+  _ -> Left (arithmeticCertificateInvalid "arithmetic replay has an unknown proof rule")
+
+decodeArithmeticNormalForm :: KValueNode -> Either KCoreTextError ArithmeticNormalForm
+decodeArithmeticNormalForm = \case
+  KVList [KVText "polynomial", KVList monomials] ->
+    NormalPolynomial <$> mapM decodeMonomial monomials
+  KVList [KVText "linear", KVInteger constant, KVList coefficients] ->
+    NormalLinear constant <$> mapM decodeCoefficient coefficients
+  KVList [KVText "lower-bound", KVInteger lower] ->
+    pure (NormalLowerBound lower)
+  _ -> malformed "arithmetic normal form has an invalid structural encoding"
+  where
+    decodeMonomial = \case
+      KVList [KVList variables, KVInteger coefficient] ->
+        (, coefficient) <$> mapM decodePower variables
+      _ -> malformed "polynomial monomial has an invalid structural encoding"
+    decodePower = \case
+      KVList [KVInteger variable, KVInteger exponent] ->
+        (,)
+          <$> checkedInt "polynomial variable identity" variable
+          <*> checkedInt "polynomial exponent" exponent
+      _ -> malformed "polynomial power has an invalid structural encoding"
+    decodeCoefficient = \case
+      KVList [KVInteger variable, KVInteger coefficient] ->
+        (, coefficient) <$> checkedInt "linear variable identity" variable
+      _ -> malformed "linear coefficient has an invalid structural encoding"
+    malformed = Left . arithmeticCertificateInvalid
+
+checkedInt :: Text -> Integer -> Either KCoreTextError Int
+checkedInt label value
+  | toInteger decoded == value = pure decoded
+  | otherwise =
+      Left
+        (arithmeticCertificateInvalid (label <> " is outside the portable Int range"))
+  where
+    decoded = fromInteger value
 
 -- Deterministic token parser -------------------------------------------------
 
@@ -2102,6 +2286,7 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
           ]
       schemaCertificates = Map.union localSchemaCertificates externalSchemaCertificates
       nominalFamilies = Map.union localNominalFamilies externalNominalFamilies
+      constructorFields = nominalConstructorFields nominalFamilies
       externalCertificateContext =
         VerifyContext
           globalArities
@@ -2110,6 +2295,7 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
           globalBodies
           externalRecordInterfaces
           constructorTypes
+          constructorFields
           certificates
           schemaCertificates
           nominalFamilies
@@ -2134,7 +2320,15 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
     (Map.keysSet localNominalFamilies)
     nominalFamilies
     schemaCertificates
-  mapM_ (verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes certificates schemaCertificates nominalFamilies) modules
+  mapM_ (verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes constructorFields certificates schemaCertificates nominalFamilies) modules
+
+nominalConstructorFields :: Map StableRef KNominalFamily -> Map StableRef (Map StableRef Int)
+nominalConstructorFields families =
+  Map.fromList
+    [ (constructor, Map.fromList fields)
+    | family <- Map.elems families
+    , KCtorDecl constructor _ fields _ <- knfConstructors family
+    ]
 
 verifyStableIdentities :: [StableRef] -> KCoreFile -> Either KCoreTextError ()
 verifyStableIdentities externalRefs file = do
@@ -2446,8 +2640,8 @@ familyTermLevelParameters family = nub . go
       KVList values -> concatMap value values
       _ -> []
 
-verifyModule :: Map StableRef Int -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ObservationMode -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], [KBinder], KTerm) -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof) -> Map StableRef KSchemaCertificate -> Map StableRef KNominalFamily -> KModule -> Either KCoreTextError ()
-verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes certificates schemaCertificates nominalFamilies KModule {..} = do
+verifyModule :: Map StableRef Int -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ObservationMode -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], [KBinder], KTerm) -> Map StableRef (Map StableRef Int) -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof) -> Map StableRef KSchemaCertificate -> Map StableRef KNominalFamily -> KModule -> Either KCoreTextError ()
+verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes constructorFields certificates schemaCertificates nominalFamilies KModule {..} = do
   let metadata = Map.fromList kmMetadata
       required =
         [ "languageVersion"
@@ -2511,7 +2705,7 @@ verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces
                   <> tshow extensionVersion
               )
           )
-  let context = VerifyContext globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes certificates schemaCertificates nominalFamilies extensions
+  let context = VerifyContext globalArities globalTypes globalModes globalBodies recordInterfaces constructorTypes constructorFields certificates schemaCertificates nominalFamilies extensions
       localSchemaCertificateRefs =
         Set.fromList
           [ kscRef certificate
@@ -3860,6 +4054,7 @@ kObservationDependencies context universes assumptions locals expected =
     genericDependencies path dependencyEnv tag fields = case tag of
       "impl.kappa.core.body-unavailable" -> dependencyFailure "an unavailable body reached term dependency checking"
       "impl.kappa.level-value" -> pure Set.empty
+      "impl.kappa.core.arithmetic-proof" -> pure Set.empty
       "impl.kappa.core.inject" -> requiredPayload "value"
       "impl.kappa.core.seal" -> requiredPayload "value"
       "impl.kappa.core.thunk" -> requiredPayload "value"
@@ -4783,6 +4978,12 @@ sameKCoreTypeWith sameLevel context lhs0 rhs0 =
        in length lhsArguments == length rhsArguments
             && same lhsFunction rhsFunction
             && and (zipWith sameArgument lhsArguments rhsArguments)
+    go (KTConstruct lhsConstructor lhsLevels lhsArguments) (KTConstruct rhsConstructor rhsLevels rhsArguments) =
+      lhsConstructor == rhsConstructor
+        && length lhsLevels == length rhsLevels
+        && and (zipWith sameLevel lhsLevels rhsLevels)
+        && length lhsArguments == length rhsArguments
+        && and (zipWith sameArgument lhsArguments rhsArguments)
     go (KTRecordType lhsFields) (KTRecordType rhsFields) = sameFields lhsFields rhsFields
     go lhs rhs = lhs == rhs
     sameArgument (KArgument lhsExplicitness lhsTerm) (KArgument rhsExplicitness rhsTerm) =
@@ -4808,15 +5009,7 @@ sameKCoreTypeWith sameLevel context lhs0 rhs0 =
           lhsRest
           [(field, renameBinderLocal (kbRef rhs) (kbRef lhs) binder) | (field, binder) <- rhsRest]
     sameFields _ _ = False
-    logicalNaturalValue = \case
-      KTLiteral (LitInt value) | value >= 0 -> Just value
-      KTConstruct constructor [] []
-        | constructor == stableRefForConstructor prelNatZero ->
-            Just 0
-      KTConstruct constructor [] [KArgument KExplicit predecessor]
-        | constructor == stableRefForConstructor prelNatSucc ->
-            (+ 1) <$> logicalNaturalValue predecessor
-      _ -> Nothing
+    logicalNaturalValue = logicalNaturalKTermValue
 
 renameBinderLocal :: LocalRef -> LocalRef -> KBinder -> KBinder
 renameBinderLocal old new binder = binder {kbType = renameLocal old new (kbType binder)}
@@ -4831,8 +5024,16 @@ unfoldTypeHead context = go Set.empty
           go
             (Set.insert ref seen)
             (substituteUniverseParameters (Map.fromList (zip (map urId parameters) levels)) body)
-    go seen (KTApply function arguments) =
-      apply seen (go seen function) arguments
+    go seen (KTApply function arguments)
+      | Just reduced <- reduceLogicalNaturalApplication function arguments =
+          go seen reduced
+      | otherwise =
+          apply seen (go seen function) arguments
+    go seen (KTProject field receiver) =
+      let receiver' = go seen receiver
+       in case reduceProjection field receiver' of
+            Just value -> go seen value
+            Nothing -> KTProject field receiver'
     go seen (KTAscribe value _) = go seen value
     go seen generic@(KTGeneric tag fields)
       | tag `Set.member` decodedBuiltinTermTags =
@@ -4847,8 +5048,134 @@ unfoldTypeHead context = go Set.empty
     -- before clients compare carriers or expose a Pi/record head.
     apply seen (KTLambda binder body) (argument : rest) =
       apply seen (go seen (substituteLocal (kbRef binder) (argumentTerm argument) body)) rest
+    apply seen function arguments
+      | Just reduced <- reduceLogicalNaturalApplication function arguments =
+          go seen reduced
     apply _ function [] = function
     apply _ function arguments = KTApply function arguments
+
+    -- Projection from an already constructed value is ordinary definitional
+    -- computation. Structural records carry readable field names directly;
+    -- nominal dictionaries and records use the checked constructor field map
+    -- from their data declaration. This is intentionally identity-driven:
+    -- no source/member spelling can authorize a reduction.
+    reduceProjection field = \case
+      KTRecordValue fields -> lookup (srName field) fields
+      KTConstruct constructor _ arguments -> do
+        fieldPositions <- Map.lookup constructor (vcConstructorFields context)
+        position <- Map.lookup field fieldPositions
+        argumentTerm <$> atMay arguments position
+      _ -> Nothing
+
+    atMay values index
+      | index < 0 = Nothing
+      | otherwise = case drop index values of
+          value : _ -> Just value
+          [] -> Nothing
+
+-- | One source computation step for the canonical logical-Nat operations.
+-- The KCore verifier cannot depend on evaluator state or imported definition
+-- bodies, so it replays the §28.2 equations from stable declaration and
+-- constructor identities. This is deliberately only definitional reduction:
+-- right identity, commutativity, and other algebraic laws stay out.
+reduceLogicalNaturalApplication :: KTerm -> [KArgument] -> Maybe KTerm
+reduceLogicalNaturalApplication function arguments = do
+  operation <- case function of
+    KTGlobal ref [] -> Just ref
+    _ -> Nothing
+  (left, right) <- case arguments of
+    [KArgument KExplicit lhs, KArgument KExplicit rhs] -> Just (lhs, rhs)
+    _ -> Nothing
+  if operation == stableRefForGlobal prelNatAdd
+    then case logicalNaturalKTermView left of
+      Just LogicalNatZero -> Just right
+      Just (LogicalNatSucc predecessor) ->
+        Just
+          ( logicalNaturalKTermSucc
+              ( KTApply
+                  (KTGlobal operation [])
+                  [KArgument KExplicit predecessor, KArgument KExplicit right]
+              )
+          )
+      Nothing -> Nothing
+    else if operation == stableRefForGlobal prelNatMultiply
+      then case logicalNaturalKTermView left of
+        Just LogicalNatZero -> Just logicalNaturalKTermZero
+        Just (LogicalNatSucc predecessor) ->
+          Just
+            ( KTApply
+                (KTGlobal (stableRefForGlobal prelNatAdd) [])
+                [ KArgument KExplicit right
+                , KArgument KExplicit
+                    ( KTApply
+                        (KTGlobal operation [])
+                        [KArgument KExplicit predecessor, KArgument KExplicit right]
+                    )
+                ]
+            )
+        Nothing -> Nothing
+      else if operation == stableRefForGlobal prelNatCompare
+        then reduceCompare left right
+        else Nothing
+  where
+    reduceCompare left right =
+      case (logicalNaturalKTermView left, logicalNaturalKTermView right) of
+        (Just LogicalNatZero, Just LogicalNatZero) -> ordering EQ
+        (Just LogicalNatZero, Just LogicalNatSucc {}) -> ordering LT
+        (Just LogicalNatSucc {}, Just LogicalNatZero) -> ordering GT
+        (Just (LogicalNatSucc leftPred), Just (LogicalNatSucc rightPred)) ->
+          Just
+            ( KTApply
+                (KTGlobal (stableRefForGlobal prelNatCompare) [])
+                [KArgument KExplicit leftPred, KArgument KExplicit rightPred]
+            )
+        _ -> Nothing
+    ordering =
+      Just
+        . (\constructor -> KTConstruct (stableRefForConstructor constructor) [] [])
+        . prelOrdering
+
+data LogicalNaturalKTermView
+  = LogicalNatZero
+  | LogicalNatSucc !KTerm
+
+logicalNaturalKTermView :: KTerm -> Maybe LogicalNaturalKTermView
+logicalNaturalKTermView = \case
+  generic@(KTGeneric tag fields)
+    | tag `Set.member` decodedBuiltinTermTags ->
+        case decodeBuiltinTermNode tag fields of
+          Right decoded
+            | decoded /= generic -> logicalNaturalKTermView decoded
+          _ -> Nothing
+  KTLiteral (LitInt value)
+    | value == 0 -> Just LogicalNatZero
+    | value > 0 -> Just (LogicalNatSucc (KTLiteral (LitInt (value - 1))))
+  KTConstruct constructor [] []
+    | constructor == stableRefForConstructor prelNatZero ->
+        Just LogicalNatZero
+  KTConstruct constructor [] [KArgument KExplicit predecessor]
+    | constructor == stableRefForConstructor prelNatSucc ->
+        Just (LogicalNatSucc predecessor)
+  _ -> Nothing
+
+logicalNaturalKTermValue :: KTerm -> Maybe Integer
+logicalNaturalKTermValue term =
+  case logicalNaturalKTermView term of
+    Just LogicalNatZero -> Just 0
+    Just (LogicalNatSucc predecessor) ->
+      (+ 1) <$> logicalNaturalKTermValue predecessor
+    Nothing -> Nothing
+
+logicalNaturalKTermZero :: KTerm
+logicalNaturalKTermZero =
+  KTConstruct (stableRefForConstructor prelNatZero) [] []
+
+logicalNaturalKTermSucc :: KTerm -> KTerm
+logicalNaturalKTermSucc predecessor =
+  KTConstruct
+    (stableRefForConstructor prelNatSucc)
+    []
+    [KArgument KExplicit predecessor]
 
 -- Opaque trait heads are not definitionally equal to their dictionary record
 -- representation, but record construction and projection still need the
@@ -6019,6 +6346,8 @@ verifyImplGenericSemantics
   -> Either KCoreTextError ()
 verifyImplGenericSemantics context universes assumptions env tag fields =
   case tag of
+    "impl.kappa.core.arithmetic-proof" ->
+      verifyArithmeticCertificate context universes assumptions env fields
     "impl.kappa.core.variant-type" -> verifyVariantType
     "impl.kappa.core.signature-type" -> verifySignatureType
     "impl.kappa.core.inject" -> do
@@ -6190,10 +6519,604 @@ verifyImplGenericSemantics context universes assumptions env tag fields =
       Just (KVTerm value) -> pure value
       _ -> Left (invalid ("generic type interface is missing term field '" <> name <> "'"))
 
+verifyArithmeticCertificate
+  :: VerifyContext
+  -> Set Int
+  -> Assumptions
+  -> LocalEnv
+  -> [(Text, KValueNode)]
+  -> Either KCoreTextError ()
+verifyArithmeticCertificate context universes assumptions env fields =
+  mapLeftArithmetic $ do
+    version <- case lookup "version" fields of
+      Just (KVInteger value) -> pure value
+      _ -> invalidArithmetic "certificate version must be an integer"
+    unless (version == 1) $
+      invalidArithmetic "certificate version is unsupported"
+    domain <- case lookup "domain" fields of
+      Just (KVText "Natural") -> pure ArithmeticNatural
+      Just (KVText "Integer") -> pure ArithmeticInteger
+      Just (KVText "TypeLevel") -> pure ArithmeticTypeLevel
+      _ -> invalidArithmetic "certificate arithmetic domain is unsupported"
+    providers <- requiredList "providers" >>= mapM verifyProvider
+    unless (providers == sort providers && length providers == Set.size (Set.fromList providers)) $
+      invalidArithmetic "provider evidence must be unique and canonically ordered"
+    naturalTerms <- requiredTermList "natural-variables"
+    naturalVariables <- mapM verifyNaturalVariable naturalTerms
+    unless
+      ( naturalVariables == sort naturalVariables
+          && length naturalVariables == Set.size (Set.fromList naturalVariables)
+      ) $
+      invalidArithmetic "natural-variable identities must be unique and canonically ordered"
+    goalTerm <- requiredTerm "result-type"
+    replayNode <- case lookup "replay" fields of
+      Just encoded -> pure encoded
+      Nothing -> invalidArithmetic "certificate replay is missing"
+    case domain of
+      ArithmeticTypeLevel -> do
+        unless (null naturalVariables) $
+          invalidArithmetic "TypeLevel certificates cannot declare Nat arithmetic variables"
+        assumptionEntries <-
+          requiredList "assumptions"
+            >>= mapM (decodeTypeLevelAssumption providers)
+        unless (map fst assumptionEntries == sort (map fst assumptionEntries)) $
+          invalidArithmetic "arithmetic assumptions must be canonically ordered"
+        expectedReplay <- maybe
+          (invalidArithmetic "TypeLevel certificate goal is not derivable from its recorded assumptions")
+          pure
+          (deriveTypeLevelReplay providers (map snd assumptionEntries) goalTerm)
+        unless (replayNode == expectedReplay) $
+          invalidArithmetic "TypeLevel certificate replay does not match the independently derived goal"
+      _ -> do
+        assumptionEntries <- requiredList "assumptions" >>= mapM (decodeAssumption domain)
+        let assumptionFacts = map snd assumptionEntries
+        unless (assumptionEntries == sort assumptionEntries) $
+          invalidArithmetic "arithmetic assumptions must be canonically ordered"
+        goal <- maybe
+          (invalidArithmetic "certificate goal is outside the authenticated arithmetic fragment")
+          pure
+          (arithmeticFactFromKTerm domain goalTerm)
+        let variableContext =
+              Map.fromList (zip naturalVariables [0 ..])
+            canonicalNaturalSet =
+              Set.fromList [0 .. length naturalVariables - 1]
+        canonicalGoal <- maybe
+          (invalidArithmetic "certificate goal refers to a variable outside its recorded context")
+          pure
+          (reindexArithmeticFact variableContext goal)
+        canonicalAssumptions <- maybe
+          (invalidArithmetic "certificate assumption refers to a variable outside its recorded context")
+          pure
+          (traverse (reindexArithmeticFact variableContext) assumptionFacts)
+        replay <- decodeArithmeticReplay replayNode
+        unless (arGoal replay == canonicalGoal) $
+          invalidArithmetic "certificate replay proves a different goal"
+        unless (deriveArithmeticReplay canonicalNaturalSet canonicalAssumptions canonicalGoal == Just replay) $
+          invalidArithmetic "certificate replay does not independently derive from its context and goal"
+  where
+    invalidArithmetic = Left . arithmeticCertificateInvalid
+    mapLeftArithmetic =
+      either
+        (Left . arithmeticCertificateInvalid . kcteMessage)
+        Right
+
+    requiredList name = case lookup name fields of
+      Just (KVList values) -> pure values
+      _ -> invalidArithmetic ("certificate field '" <> name <> "' must be a list")
+
+    requiredTerm name = case lookup name fields of
+      Just (KVTerm term) -> pure term
+      _ -> invalidArithmetic ("certificate field '" <> name <> "' must be a term")
+
+    requiredTermList name =
+      requiredList name
+        >>= mapM
+          ( \case
+              KVTerm term -> pure term
+              _ -> invalidArithmetic ("certificate field '" <> name <> "' must contain only terms")
+          )
+
+    verifyProvider = \case
+      KVList [KVText readable, KVText identity, KVTerm evidence] -> do
+        let trait = StableRef readable identity
+        unless (trait `Map.member` vcGlobalArities context) $
+          invalidArithmetic "provider trait identity is unavailable"
+        verifyTerm context universes assumptions env evidence
+        evidenceType <- inferSimple context universes assumptions env evidence >>= maybe
+          (invalidArithmetic "provider evidence type cannot be inferred")
+          pure
+        unless (kTermHeadGlobal (unfoldTypeHead context evidenceType) == Just trait) $
+          invalidArithmetic "provider evidence does not implement its recorded trait identity"
+        pure (trait, evidence)
+      _ -> invalidArithmetic "provider entry must contain a stable trait identity and evidence term"
+
+    verifyNaturalVariable term = case stripArithmeticTermWrappers term of
+      KTLocal ref [] -> do
+        verifyTerm context universes assumptions env term
+        inferred <- inferSimple context universes assumptions env term >>= maybe
+          (invalidArithmetic "natural variable type cannot be inferred")
+          pure
+        unless
+          (sameKCoreTypeUnder assumptions context inferred (KTGlobal (stableRefForGlobal prelNat) [])) $
+          invalidArithmetic "natural-variable entry does not have type Nat"
+        pure (lrId ref)
+      _ -> invalidArithmetic "natural-variable entry must be a monomorphic local identity"
+
+    decodeAssumption domain = \case
+      KVList [KVInteger polarity, KVTerm proposition]
+        | polarity == 0 || polarity == 1 -> do
+            verifyTerm context universes assumptions env proposition
+            fact <- maybe
+              (invalidArithmetic "arithmetic assumption is outside the authenticated fragment")
+              pure
+              (arithmeticFactFromKTerm domain proposition)
+            selected <-
+              if polarity == 1
+                then pure fact
+                else maybe
+                  (invalidArithmetic "false arithmetic equality has no single fact complement")
+                  pure
+                  (negateArithmeticFact fact)
+            pure ((polarity, proposition), selected)
+      _ -> invalidArithmetic "arithmetic assumption must contain a Boolean polarity and proposition"
+
+    decodeTypeLevelAssumption providers = \case
+      KVList [KVInteger polarity, KVTerm proposition]
+        | polarity == 0 || polarity == 1 -> do
+            verifyTerm context universes assumptions env proposition
+            constraint <- maybe
+              (invalidArithmetic "TypeLevel assumption is outside the authenticated comparison fragment")
+              pure
+              (typeLevelAssumptionConstraint providers (polarity == 1) proposition)
+            pure ((polarity, proposition), constraint)
+      _ -> invalidArithmetic "arithmetic assumption must contain a Boolean polarity and proposition"
+
+arithmeticFactFromKTerm :: ArithmeticDomain -> KTerm -> Maybe AFact
+arithmeticFactFromKTerm domain proposition = do
+  (headTerm, arguments) <- pure (collectKApplication (stripArithmeticTermWrappers proposition))
+  headRef <- kTermHeadGlobal headTerm
+  guard (headRef == stableRefForGlobal prelEqType)
+  let explicit = [term | KArgument KExplicit term <- arguments]
+      implicit = [term | KArgument KImplicit term <- arguments]
+  (lhs, rhs) <- lastTwo explicit
+  carrier <- listToMaybe implicit
+  if arithmeticCarrier domain carrier
+    then
+      AFact ACmpEq
+        <$> arithmeticExpressionFromKTerm domain lhs
+        <*> arithmeticExpressionFromKTerm domain rhs
+    else if boolCarrier carrier
+      then
+        ( arithmeticBooleanFactFromKTerm domain lhs
+            <* guard (isTrueKTerm rhs)
+        )
+          <|> ( arithmeticBooleanFactFromKTerm domain rhs
+                  <* guard (isTrueKTerm lhs)
+              )
+      else Nothing
+  where
+    arithmeticCarrier ArithmeticNatural term =
+      stripArithmeticTermWrappers term == KTGlobal (stableRefForGlobal prelNat) []
+    arithmeticCarrier ArithmeticInteger term =
+      stripArithmeticTermWrappers term
+        `elem`
+          [ KTGlobal (stableRefForGlobal prelInteger) []
+          , KTGlobal (stableRefForGlobal prelInt) []
+          ]
+    -- Type-level comparison certificates have their own authenticated
+    -- constraint decoder above. They are never value-arithmetic facts.
+    arithmeticCarrier ArithmeticTypeLevel _ = False
+    boolCarrier term =
+      stripArithmeticTermWrappers term == KTGlobal (stableRefForGlobal prelBool) []
+
+arithmeticBooleanFactFromKTerm :: ArithmeticDomain -> KTerm -> Maybe AFact
+arithmeticBooleanFactFromKTerm domain term = do
+  let (headTerm, arguments) = collectKApplication (stripArithmeticTermWrappers term)
+      explicit = [argument | KArgument KExplicit argument <- arguments]
+  headRef <- kTermHeadGlobal headTerm
+  (lhs, rhs) <- lastTwo explicit
+  comparison <-
+    if headRef == stableRefForGlobal (GName primModule "ltInt")
+      then Just ACmpLt
+      else if headRef == stableRefForGlobal (GName primModule "leInt")
+        then Just ACmpLe
+        else if headRef == stableRefForGlobal (GName primModule "eqInt")
+          then Just ACmpEq
+          else Nothing
+  AFact comparison
+    <$> arithmeticExpressionFromKTerm domain lhs
+    <*> arithmeticExpressionFromKTerm domain rhs
+
+arithmeticExpressionFromKTerm :: ArithmeticDomain -> KTerm -> Maybe AExpr
+arithmeticExpressionFromKTerm domain term0 =
+  case stripArithmeticTermWrappers term0 of
+    KTLiteral (LitInt value)
+      | domain == ArithmeticInteger || value >= 0 -> Just (AConst value)
+    KTLocal ref [] -> Just (AVar (lrId ref))
+    KTConstruct constructor [] []
+      | domain == ArithmeticNatural
+      , constructor == stableRefForConstructor prelNatZero ->
+          Just (AConst 0)
+    KTConstruct constructor [] [KArgument _ argument]
+      | domain == ArithmeticNatural
+      , constructor == stableRefForConstructor prelNatSucc ->
+          AAdd (AConst 1) <$> recurse argument
+    application@KTApply {} -> arithmeticApplication application
+    _ -> Nothing
+  where
+    recurse = arithmeticExpressionFromKTerm domain
+    arithmeticApplication application = do
+      let (headTerm, arguments) = collectKApplication application
+          explicit = [argument | KArgument KExplicit argument <- arguments]
+          binary constructor = do
+            (lhs, rhs) <- lastTwo explicit
+            constructor <$> recurse lhs <*> recurse rhs
+          unary constructor = do
+            argument <- listToMaybe (reverse explicit)
+            constructor <$> recurse argument
+      headRef <- kTermHeadGlobal headTerm
+      if domain == ArithmeticNatural && headRef == stableRefForGlobal prelNatAdd
+        then binary AAdd
+        else if domain == ArithmeticNatural && headRef == stableRefForGlobal prelNatMultiply
+          then binary AMul
+          else case primitiveArithmeticOperation headRef of
+            Just ("add", 2) -> binary AAdd
+            Just ("subtract", 2) -> binary ASub
+            Just ("multiply", 2) -> binary AMul
+            Just ("divide", 2) -> binary ADiv
+            Just ("modulo", 2) -> binary AMod
+            Just ("negate", 1) -> unary ANeg
+            Just ("identity", 1) -> unary id
+            _ -> Nothing
+
+primitiveArithmeticOperation :: StableRef -> Maybe (Text, Int)
+primitiveArithmeticOperation ref
+  | ref == primitive "addInt" = Just ("add", 2)
+  | ref == primitive "subInt" = Just ("subtract", 2)
+  | ref == primitive "mulInt" = Just ("multiply", 2)
+  | ref == primitive "divInt" = Just ("divide", 2)
+  | ref == primitive "modInt" = Just ("modulo", 2)
+  | ref == primitive "negInt" = Just ("negate", 1)
+  | ref == primitive "natToInt" = Just ("identity", 1)
+  | ref == primitive "natOfInt" = Just ("identity", 1)
+  | ref == primitive "intToNat" = Just ("identity", 1)
+  | otherwise = Nothing
+  where
+    primitive = stableRefForGlobal . GName primModule
+
+negateArithmeticFact :: AFact -> Maybe AFact
+negateArithmeticFact = \case
+  AFact ACmpLt lhs rhs -> Just (AFact ACmpLe rhs lhs)
+  AFact ACmpLe lhs rhs -> Just (AFact ACmpLt rhs lhs)
+  AFact ACmpEq _ _ -> Nothing
+
+collectKApplication :: KTerm -> (KTerm, [KArgument])
+collectKApplication = go []
+  where
+    go arguments (KTApply function more) = go (more ++ arguments) function
+    go arguments headTerm = (headTerm, arguments)
+
+kTermHeadGlobal :: KTerm -> Maybe StableRef
+kTermHeadGlobal term =
+  case stripArithmeticTermWrappers term of
+    KTGlobal ref _ -> Just ref
+    KTApply function _ -> kTermHeadGlobal function
+    _ -> Nothing
+
+stripArithmeticTermWrappers :: KTerm -> KTerm
+stripArithmeticTermWrappers = \case
+  KTAscribe term _ -> stripArithmeticTermWrappers term
+  KTLift _ _ _ term -> stripArithmeticTermWrappers term
+  KTSchemaLift _ _ _ _ _ _ term -> stripArithmeticTermWrappers term
+  generic@(KTGeneric tag fields)
+    | tag `Set.member` decodedBuiltinTermTags ->
+        case decodeBuiltinTermNode tag fields of
+          Right decoded
+            | decoded /= generic -> stripArithmeticTermWrappers decoded
+          _ -> generic
+  term -> term
+
+data TypeLevelBoolean
+  = TypeLevelBooleanLiteral !Bool
+  | TypeLevelBooleanConstraint !Level !Level
+  deriving stock (Eq, Ord, Show)
+
+-- | Replay one first-class TypeLevel proposition through the same canonical
+-- level language used by the universe solver. Provider evidence is consulted
+-- only for generic trait-member applications; direct std.typelevel operation
+-- identities are self-authenticating.
+deriveTypeLevelReplay
+  :: [(StableRef, KTerm)]
+  -> [(Level, Level)]
+  -> KTerm
+  -> Maybe KValueNode
+deriveTypeLevelReplay providers assumptionPairs proposition = do
+  goalEncoding <- proveGoal
+  pure
+    ( KVList
+        [ KVText "type-level-proposition"
+        , goalEncoding
+        , KVList
+            [ KVList [encodeTypeLevel lower, encodeTypeLevel upper]
+            | (lower, upper) <- canonicalAssumptions
+            ]
+        ]
+    )
+  where
+    assumptions =
+      foldr (uncurry insertAssumption) emptyAssumptions canonicalAssumptions
+    canonicalAssumptions =
+      sort . nub $
+        [ (normalizeLevel lower, normalizeLevel upper)
+        | (lower, upper) <- assumptionPairs
+        ]
+
+    proveGoal = do
+      (carrier, lhs, rhs) <- equalityOperands proposition
+      if isTypeLevelCarrier carrier
+        then do
+          lhsLevel <- typeLevelTerm providers lhs
+          rhsLevel <- typeLevelTerm providers rhs
+          guard (proveLevelEq assumptions lhsLevel rhsLevel == Proved)
+          pure
+            ( KVList
+                [ KVText "value-equality"
+                , encodeTypeLevel (normalizeLevel lhsLevel)
+                , encodeTypeLevel (normalizeLevel rhsLevel)
+                ]
+            )
+        else do
+          guard (isBoolCarrier carrier)
+          lhsBoolean <- typeLevelBoolean providers lhs
+          rhsBoolean <- typeLevelBoolean providers rhs
+          guard (booleanEqual lhsBoolean rhsBoolean)
+          pure
+            ( KVList
+                [ KVText "boolean-equality"
+                , encodeTypeLevelBoolean lhsBoolean
+                , encodeTypeLevelBoolean rhsBoolean
+                ]
+            )
+
+    booleanEqual lhs rhs =
+      canonicalBoolean lhs == canonicalBoolean rhs
+        || case (booleanTruth lhs, booleanTruth rhs) of
+             (Just left, Just right) -> left == right
+             _ -> False
+
+    canonicalBoolean = \case
+      TypeLevelBooleanLiteral truth -> Left truth
+      TypeLevelBooleanConstraint lower upper ->
+        Right (normalizeLevel lower, normalizeLevel upper)
+
+    booleanTruth = \case
+      TypeLevelBooleanLiteral truth -> Just truth
+      TypeLevelBooleanConstraint lower upper ->
+        case proveLevelLeq assumptions lower upper of
+          Proved -> Just True
+          Disproved -> Just False
+          _ -> Nothing
+
+typeLevelAssumptionConstraint
+  :: [(StableRef, KTerm)]
+  -> Bool
+  -> KTerm
+  -> Maybe (Level, Level)
+typeLevelAssumptionConstraint providers truth proposition = do
+  (carrier, lhs, rhs) <- equalityOperands proposition
+  guard (isBoolCarrier carrier)
+  comparison <-
+    (typeLevelBoolean providers lhs <* guard (isTrueTerm rhs))
+      <|> (typeLevelBoolean providers rhs <* guard (isTrueTerm lhs))
+  case comparison of
+    TypeLevelBooleanLiteral actual ->
+      guard (actual == truth) >> pure (LZero, LZero)
+    TypeLevelBooleanConstraint lower upper
+      | truth -> pure (normalizeLevel lower, normalizeLevel upper)
+      | otherwise -> pure (levelSucc (normalizeLevel upper), normalizeLevel lower)
+
+typeLevelBoolean
+  :: [(StableRef, KTerm)]
+  -> KTerm
+  -> Maybe TypeLevelBoolean
+typeLevelBoolean providers term
+  | isTrueTerm term = Just (TypeLevelBooleanLiteral True)
+  | isFalseTerm term = Just (TypeLevelBooleanLiteral False)
+  | Just () <- finiteBelowOmega term = Just (TypeLevelBooleanLiteral True)
+  | otherwise = do
+      let (headTerm, arguments) =
+            collectKApplication (stripArithmeticTermWrappers term)
+          explicit = [argument | KArgument KExplicit argument <- arguments]
+          implicit = [argument | KArgument KImplicit argument <- arguments]
+      relation <- kTermHeadGlobal headTerm
+      strict <-
+        if relation == stableRefForGlobal (gPrel "<")
+          then Just True
+          else if relation == stableRefForGlobal (gPrel "<=")
+            then Just False
+            else Nothing
+      carrier : dictionary : _ <- pure implicit
+      guard (isTypeLevelCarrier carrier)
+      guard (providerContains (stableRefForGlobal (gPrel "Ord")) dictionary providers)
+      (lhs, rhs) <- lastTwo explicit
+      lower <- typeLevelTerm providers lhs
+      upper <- typeLevelTerm providers rhs
+      pure
+        ( TypeLevelBooleanConstraint
+            (normalizeLevel (if strict then levelSucc lower else lower))
+            (normalizeLevel upper)
+        )
+  where
+    finiteBelowOmega candidate = do
+      let (headTerm, arguments) =
+            collectKApplication (stripArithmeticTermWrappers candidate)
+          explicit = [argument | KArgument KExplicit argument <- arguments]
+          implicit = [argument | KArgument KImplicit argument <- arguments]
+      relation <- kTermHeadGlobal headTerm
+      guard (relation == stableRefForGlobal (gPrel "<"))
+      carrier : dictionary : _ <- pure implicit
+      guard (isTypeLevelCarrier carrier)
+      guard (providerContains (stableRefForGlobal (gPrel "Ord")) dictionary providers)
+      (lower, upper) <- lastTwo explicit
+      guard (isFiniteTypeLevelTerm lower && isOmegaTypeLevelTerm upper)
+
+typeLevelTerm :: [(StableRef, KTerm)] -> KTerm -> Maybe Level
+typeLevelTerm providers term0 =
+  direct (stripArithmeticTermWrappers term0) <|> selectedOperation
+  where
+    term = stripArithmeticTermWrappers term0
+    direct = \case
+      KTLocal ref [] -> Just (LVar (lrId ref))
+      KTGeneric "impl.kappa.level-value" [("level", KVLevel level)] ->
+        toLevel level
+      KTGlobal ref []
+        | ref == stableRefForGlobal prelTypeLevelZero -> Just LZero
+        | ref == stableRefForGlobal prelTypeLevelOne -> Just (finiteLevel (1 :: Integer))
+        | ref == stableRefForGlobal prelTypeLevelOmega -> Just LOmega
+      KTApply (KTGlobal ref []) [KArgument KExplicit (KTLiteral (LitInt value))]
+        | ref == stableRefForGlobal prelTypeLevelFromInteger
+        , value >= 0 -> Just (finiteLevel value)
+      KTApply (KTGlobal ref []) [KArgument KExplicit argument]
+        | ref == stableRefForGlobal prelTypeLevelSucc ->
+            levelSucc <$> typeLevelTerm providers argument
+      KTApply (KTGlobal ref []) [KArgument KExplicit lhs, KArgument KExplicit rhs]
+        | ref == stableRefForGlobal prelTypeLevelAdd ->
+            levelAdd <$> typeLevelTerm providers lhs <*> typeLevelTerm providers rhs
+        | ref == stableRefForGlobal prelTypeLevelMax ->
+            levelMax <$> typeLevelTerm providers lhs <*> typeLevelTerm providers rhs
+      _ -> Nothing
+
+    selectedOperation = do
+      let (headTerm, arguments) = collectKApplication term
+          explicit = [argument | KArgument KExplicit argument <- arguments]
+          implicit = [argument | KArgument KImplicit argument <- arguments]
+      carrier : dictionary : _ <- pure implicit
+      guard (isTypeLevelCarrier carrier)
+      operation <- kTermHeadGlobal headTerm
+      if operation == stableRefForGlobal (gPrel "add")
+          && providerContains (stableRefForGlobal (gPrel "Add")) dictionary providers
+        then do
+          (lhs, rhs) <- lastTwo explicit
+          levelAdd <$> typeLevelTerm providers lhs <*> typeLevelTerm providers rhs
+        else if operation == stableRefForGlobal (gPrel "max")
+          && providerContains (stableRefForGlobal (gPrel "Max")) dictionary providers
+          then do
+            (lhs, rhs) <- lastTwo explicit
+            levelMax <$> typeLevelTerm providers lhs <*> typeLevelTerm providers rhs
+          else if operation == stableRefForGlobal (gPrel "succ")
+            && providerContains (stableRefForGlobal (gPrel "Successor")) dictionary providers
+            then do
+              argument <- listToMaybe (reverse explicit)
+              levelSucc <$> typeLevelTerm providers argument
+            else Nothing
+
+equalityOperands :: KTerm -> Maybe (KTerm, KTerm, KTerm)
+equalityOperands proposition = do
+  let (headTerm, arguments) =
+        collectKApplication (stripArithmeticTermWrappers proposition)
+      explicit = [argument | KArgument KExplicit argument <- arguments]
+      implicit = [argument | KArgument KImplicit argument <- arguments]
+  guard (kTermHeadGlobal headTerm == Just (stableRefForGlobal prelEqType))
+  carrier <- listToMaybe implicit
+  (lhs, rhs) <- lastTwo explicit
+  pure (carrier, lhs, rhs)
+
+providerContains :: StableRef -> KTerm -> [(StableRef, KTerm)] -> Bool
+providerContains trait evidence =
+  any (\(candidateTrait, candidateEvidence) -> candidateTrait == trait && candidateEvidence == evidence)
+
+isTypeLevelCarrier :: KTerm -> Bool
+isTypeLevelCarrier term =
+  stripArithmeticTermWrappers term
+    == KTGlobal (stableRefForGlobal prelTypeLevel) []
+
+isBoolCarrier :: KTerm -> Bool
+isBoolCarrier term =
+  stripArithmeticTermWrappers term
+    == KTGlobal (stableRefForGlobal prelBool) []
+
+isTrueTerm :: KTerm -> Bool
+isTrueTerm term =
+  stripArithmeticTermWrappers term
+    == KTConstruct (stableRefForConstructor prelTrue) [] []
+
+isFalseTerm :: KTerm -> Bool
+isFalseTerm term =
+  stripArithmeticTermWrappers term
+    == KTConstruct (stableRefForConstructor prelFalse) [] []
+
+isOmegaTypeLevelTerm :: KTerm -> Bool
+isOmegaTypeLevelTerm term =
+  stripArithmeticTermWrappers term
+    == KTGlobal (stableRefForGlobal prelTypeLevelOmega) []
+
+isFiniteTypeLevelTerm :: KTerm -> Bool
+isFiniteTypeLevelTerm term =
+  case collectKApplication (stripArithmeticTermWrappers term) of
+    (KTGlobal ref [], [_])
+      | ref == stableRefForGlobal prelTypeLevelFromInteger -> True
+    _ -> False
+
+encodeTypeLevelBoolean :: TypeLevelBoolean -> KValueNode
+encodeTypeLevelBoolean = \case
+  TypeLevelBooleanLiteral truth ->
+    KVList [KVText "literal", KVInteger (if truth then 1 else 0)]
+  TypeLevelBooleanConstraint lower upper ->
+    KVList
+      [ KVText "constraint"
+      , encodeTypeLevel (normalizeLevel lower)
+      , encodeTypeLevel (normalizeLevel upper)
+      ]
+
+encodeTypeLevel :: Level -> KValueNode
+encodeTypeLevel = \case
+  LZero -> KVList [KVText "zero"]
+  LFinite value -> KVList [KVText "finite", KVInteger value]
+  LOmega -> KVList [KVText "omega"]
+  LSucc level -> KVList [KVText "successor", encodeTypeLevel level]
+  LAdd lhs rhs -> KVList [KVText "add", encodeTypeLevel lhs, encodeTypeLevel rhs]
+  LMax lhs rhs -> KVList [KVText "maximum", encodeTypeLevel lhs, encodeTypeLevel rhs]
+  LVar variable -> KVList [KVText "local", KVInteger (toInteger variable)]
+  LParam parameter -> KVList [KVText "universe", KVInteger (toInteger parameter)]
+  LField field name ->
+    KVList [KVText "field", KVInteger (toInteger field), KVText name]
+  LProjection root fields ->
+    KVList
+      [ KVText "projection"
+      , KVInteger (toInteger root)
+      , KVList (map KVText fields)
+      ]
+  LNeutral atom ->
+    KVList [KVText "neutral", KVText (neutralLevelTermDigestFromAtom atom)]
+  LMeta meta ->
+    KVList [KVText "meta", KVInteger (toInteger meta)]
+
+neutralLevelTermDigestFromAtom :: NeutralLevelAtom -> Text
+neutralLevelTermDigestFromAtom = \case
+  NeutralLevelTermAtom digest _ -> digest
+  NeutralLevelSymbol identity arguments ->
+    sha256Hex
+      ( "KAPPA:v1:NeutralLevelSymbol:"
+          <> identity
+          <> ":"
+          <> T.intercalate "," (map renderLevel arguments)
+      )
+
+isTrueKTerm :: KTerm -> Bool
+isTrueKTerm term =
+  stripArithmeticTermWrappers term
+    == KTConstruct (stableRefForConstructor prelTrue) [] []
+
+lastTwo :: [a] -> Maybe (a, a)
+lastTwo values = case reverse values of
+  rhs : lhs : _ -> Just (lhs, rhs)
+  _ -> Nothing
+
 typedImplGenericTags :: Set Text
 typedImplGenericTags =
   Set.fromList
-    [ "impl.kappa.core.inject"
+    [ "impl.kappa.core.arithmetic-proof"
+    , "impl.kappa.core.inject"
     , "impl.kappa.core.seal"
     , "impl.kappa.core.thunk"
     , "impl.kappa.core.lazy"
@@ -6228,6 +7151,7 @@ verifyImplGenericSchema tag fields = do
     schemas =
       Map.fromList
         [ ("impl.kappa.core.literal", ["kind", "value"])
+        , ("impl.kappa.core.arithmetic-proof", typed ["version", "domain", "providers", "natural-variables", "assumptions", "replay"])
         , ("impl.kappa.core.record-type", ["names", "fields"])
         , ("impl.kappa.core.record-value", ["names", "values"])
         , ("impl.kappa.core.if", ["condition", "then", "else"])
@@ -7658,6 +8582,122 @@ semanticNormalizeLiftEvidence (KCoreFile version modules) =
       KVList nodes -> KVList (map value nodes)
       node -> node
 
+-- | Count independently verified arithmetic proof nodes in a KCore artifact.
+-- A 'KCoreFile' is only returned after certificate replay succeeds, so this
+-- query is structural and never infers proof validity from rendered text.
+kcoreArithmeticCertificateCount :: KCoreFile -> Int
+kcoreArithmeticCertificateCount (KCoreFile _ modules) =
+  sum
+    [ sum (map declarationCount declarations)
+    | KModule {kmDecls = declarations} <- modules
+    ]
+  where
+    declarationCount = \case
+      KDDef _ _ _ ty body -> termCount ty + termCount body
+      KDAxiom _ _ _ ty -> termCount ty
+      KDInterface _ _ ty -> termCount ty
+      KDData _ _ parameters result _ constructors ->
+        sum (map (termCount . kbType) parameters)
+          + termCount result
+          + sum [termCount ty | KCtorDecl _ _ _ ty <- constructors]
+      KDSchemaCertificate certificate ->
+        sum
+          [ termCount (kmwOperator witness)
+              + termCount (kmwGoal witness)
+              + termCount (kmwEvidence witness)
+          | witness <- kscMonotoneWitnesses certificate
+          ]
+      KDTermProbe term -> termCount term
+      KDLevelCertificate _ _ constraints theorem _ ->
+        sum (map constraintCount constraints) + constraintCount theorem
+      KDGeneric _ fields -> sum (map (valueCount . snd) fields)
+      KDExtension {} -> 0
+
+    constraintCount (KConstraint _ lower upper) =
+      levelCount lower + levelCount upper
+
+    termCount = \case
+      KTLocal _ levels -> sum (map levelCount levels)
+      KTGlobal _ levels -> sum (map levelCount levels)
+      KTType level -> levelCount level
+      KTPi binder body -> binderCount binder + termCount body
+      KTSigma binder body -> binderCount binder + termCount body
+      KTLambda binder body -> binderCount binder + termCount body
+      KTApply function arguments ->
+        termCount function + sum (map (termCount . argumentTerm) arguments)
+      KTBlock items result ->
+        sum [binderCount binder + termCount rhs | KBLet binder rhs <- items]
+          + termCount result
+      KTLetRec definitions result ->
+        sum [termCount (kldType definition) + termCount (kldBody definition) | definition <- definitions]
+          + termCount result
+      KTCase scrutinee result alternatives ->
+        termCount scrutinee + termCount result + sum (map alternativeCount alternatives)
+      KTConstruct _ levels arguments ->
+        sum (map levelCount levels) + sum (map (termCount . argumentTerm) arguments)
+      KTProject _ record -> termCount record
+      KTLift lower upper _ term ->
+        levelCount lower + levelCount upper + termCount term
+      KTSchemaLift _ source target _ _ arguments term ->
+        sum (map levelCount (source ++ target))
+          + sum (map (termCount . argumentTerm) arguments)
+          + termCount term
+      KTAscribe term ty -> termCount term + termCount ty
+      KTLiteral _ -> 0
+      KTRecordType fields -> sum [binderCount binder | (_, binder) <- fields]
+      KTRecordValue fields -> sum [termCount term | (_, term) <- fields]
+      KTIf condition yes no ->
+        termCount condition + termCount yes + termCount no
+      KTGeneric tag fields ->
+        (if tag == "impl.kappa.core.arithmetic-proof" then 1 else 0)
+          + sum (map (valueCount . snd) fields)
+
+    alternativeCount = \case
+      KCaseConstructor _ levels binders body ->
+        sum (map levelCount levels)
+          + sum (map binderCount binders)
+          + termCount body
+      KCaseDefault body -> termCount body
+      KCasePattern pattern' guard' body ->
+        patternCount pattern' + maybe 0 termCount guard' + termCount body
+
+    patternCount (KPattern slot _ node) =
+      binderCount slot + case node of
+        KPNWild -> 0
+        KPNLiteral _ -> 0
+        KPNConstructor _ levels binders fields ->
+          sum (map levelCount levels)
+            + sum (map binderCount binders)
+            + sum (map patternCount fields)
+        KPNTuple fields -> sum (map patternCount fields)
+        KPNRecord fields rest ->
+          sum [patternCount pattern' | (_, _, pattern') <- fields]
+            + maybe 0 patternCount rest
+        KPNInject _ payload -> patternCount payload
+        KPNInjectRest _ -> 0
+        KPNOr alternatives _ -> sum (map patternCount alternatives)
+        KPNAs payload -> patternCount payload
+
+    binderCount = termCount . kbType
+
+    levelCount = \case
+      KLSucc level -> levelCount level
+      KLMax left right -> levelCount left + levelCount right
+      KLAdd left right -> levelCount left + levelCount right
+      KLTerm term -> termCount term
+      _ -> 0
+
+    valueCount = \case
+      KVTerm term -> termCount term
+      KVLevel level -> levelCount level
+      KVQuantity (KQTerm term) -> termCount term
+      KVGlobal _ levels -> sum (map levelCount levels)
+      KVLocal _ levels -> sum (map levelCount levels)
+      KVBinder binder -> binderCount binder
+      KVPattern pattern' -> patternCount pattern'
+      KVList values -> sum (map valueCount values)
+      _ -> 0
+
 kcoreHasValidSchemaCertificate :: KCoreFile -> Text -> Bool
 kcoreHasValidSchemaCertificate (KCoreFile _ modules) requestedFamily =
   case verifySchemaCertificates (Map.keysSet families) families certificates of
@@ -8317,6 +9357,122 @@ coreToTextWithExpected conversionContext certificates expected term =
             certificateRef = stableSchemaCertificateRef certificateName
         KTSchemaLift (stableRefForGlobal family) source' target' certificateRef renderedRoles arguments'
           <$> go env Nothing inner
+      CArithmeticProof certificate -> do
+        goal <- go env Nothing (acGoal certificate)
+        providers <-
+          fmap sort . forM (acProviders certificate) $ \(ArithmeticProviderEvidence trait evidence) -> do
+            evidence' <- go env Nothing evidence
+            let traitRef = stableRefForGlobal trait
+            pure
+              ( traitRef
+              , evidence'
+              , KVList [KVText (srName traitRef), KVText (srId traitRef), KVTerm evidence']
+              )
+        naturalEntries <-
+          forM (acNaturalVariables certificate) $ \variable -> do
+            variable' <- go env Nothing variable
+            variableId <-
+              case stripArithmeticTermWrappers variable' of
+                KTLocal ref [] -> pure (lrId ref)
+                _ -> conversionError "arithmetic certificate natural-variable entry is not a monomorphic local"
+            pure (variableId, variable')
+        let canonicalNaturalEntries = sortOn fst naturalEntries
+            naturalVariables = map fst canonicalNaturalEntries
+            naturalTerms = map snd canonicalNaturalEntries
+        (assumptionNodes, replayNode) <-
+          case acDomain certificate of
+            ArithmeticTypeLevel -> do
+              unless (null naturalVariables) $
+                conversionError "TypeLevel certificates cannot declare Nat arithmetic variables"
+              assumptions' <-
+                fmap sort . forM (acAssumptions certificate) $ \(ArithmeticAssumption truth proposition) -> do
+                  proposition' <- go env Nothing proposition
+                  constraint <- maybe
+                    (conversionError "TypeLevel certificate assumption is outside the authenticated comparison fragment")
+                    pure
+                    ( typeLevelAssumptionConstraint
+                        [(trait, evidence) | (trait, evidence, _) <- providers]
+                        truth
+                        proposition'
+                    )
+                  pure
+                    ( (if truth then 1 else 0, proposition')
+                    , constraint
+                    , KVList [KVInteger (if truth then 1 else 0), KVTerm proposition']
+                    )
+              replay <- maybe
+                (conversionError "TypeLevel certificate goal is not derivable from its recorded assumptions")
+                pure
+                ( deriveTypeLevelReplay
+                    [(trait, evidence) | (trait, evidence, _) <- providers]
+                    [constraint | (_, constraint, _) <- assumptions']
+                    goal
+                )
+              pure ([encoded | (_, _, encoded) <- assumptions'], replay)
+            domain -> do
+              assumptions' <-
+                fmap sort . forM (acAssumptions certificate) $ \(ArithmeticAssumption truth proposition) -> do
+                  proposition' <- go env Nothing proposition
+                  fact <- maybe
+                    (conversionError "arithmetic certificate assumption is outside the authenticated fragment")
+                    pure
+                    (arithmeticFactFromKTerm domain proposition')
+                  selected <-
+                    if truth
+                      then pure fact
+                      else maybe
+                        (conversionError "false arithmetic equality has no single fact complement")
+                        pure
+                        (negateArithmeticFact fact)
+                  pure
+                    ( (if truth then 1 else 0, proposition')
+                    , selected
+                    , KVList [KVInteger (if truth then 1 else 0), KVTerm proposition']
+                    )
+              goalFact <- maybe
+                (conversionError "arithmetic certificate goal is outside the authenticated fragment")
+                pure
+                (arithmeticFactFromKTerm domain goal)
+              let variableContext =
+                    Map.fromList (zip naturalVariables [0 ..])
+                  canonicalNaturalSet =
+                    Set.fromList [0 .. length naturalVariables - 1]
+              canonicalGoal <- maybe
+                (conversionError "arithmetic certificate goal refers to a variable outside its recorded context")
+                pure
+                (reindexArithmeticFact variableContext goalFact)
+              canonicalAssumptions <- maybe
+                (conversionError "arithmetic certificate assumption refers to a variable outside its recorded context")
+                pure
+                ( traverse
+                    (reindexArithmeticFact variableContext)
+                    [fact | (_, fact, _) <- assumptions']
+                )
+              replay <- maybe
+                (conversionError "arithmetic certificate goal is not derivable from its recorded assumptions")
+                pure
+                ( deriveArithmeticReplay
+                    canonicalNaturalSet
+                    canonicalAssumptions
+                    canonicalGoal
+                )
+              pure ([encoded | (_, _, encoded) <- assumptions'], encodeArithmeticReplay replay)
+        let domainName = case acDomain certificate of
+              ArithmeticNatural -> "Natural"
+              ArithmeticInteger -> "Integer"
+              ArithmeticTypeLevel -> "TypeLevel"
+        pure
+          ( KTGeneric
+              "impl.kappa.core.arithmetic-proof"
+              [ ("result-type", KVTerm goal)
+              , ("version", KVInteger (acVersion certificate))
+              , ("domain", KVText domainName)
+              , ("providers", KVList [encoded | (_, _, encoded) <- providers])
+              , ("natural-variables", KVList (map KVTerm naturalTerms))
+              , ("assumptions", KVList assumptionNodes)
+              , ("replay", replayNode)
+              ]
+          )
       CLit literal -> pure (KTLiteral literal)
       CCtorI constructor levels annotation arguments ->
         case Map.lookup constructor (cccConstructors conversionContext) of

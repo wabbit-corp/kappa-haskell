@@ -14,6 +14,15 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (forM, unless, when)
+import Kappa.Arithmetic
+  ( ACmp (..)
+  , AExpr (..)
+  , AFact (..)
+  , ArithmeticNormalForm (..)
+  , ArithmeticReplay (..)
+  , deriveArithmeticReplay
+  , verifyArithmeticReplay
+  )
 import Kappa.Backend.C (generateC)
 import Kappa.Backend.IR
   ( BackendAlt (..)
@@ -235,6 +244,7 @@ main = do
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
   semanticHashOk <- semanticHashDomain
+  arithmeticReplayOk <- arithmeticReplayDomain
   inhabitanceOk <- inhabitanceIntervalDomain
   universeLevelOk <- universeLevelDomain
   universeLiftOk <- universeLiftEvidenceDomain
@@ -275,6 +285,7 @@ main = do
         , ("harnessFaithful", harnessOk)
         , ("jsonEncoderSound", jsonOk)
         , ("semanticHashDomain", semanticHashOk)
+        , ("arithmeticReplayDomain", arithmeticReplayOk)
         , ("inhabitanceIntervalDomain", inhabitanceOk)
         , ("universeLevelDomain", universeLevelOk)
         , ("universeLiftEvidenceDomain", universeLiftOk)
@@ -2457,6 +2468,54 @@ reprScalarIdentity = do
           ++ " userDouble=" ++ show userDouble
           ++ " (a user type spelling 'Double' must NOT unbox)"
       )
+
+-- | §15.8.2/§15.8.4: value arithmetic produces deterministic replay data,
+-- not a checker-owned Boolean assertion. Mutation and underconstraint must
+-- fail when the same pure kernel replays the artifact.
+arithmeticReplayDomain :: IO Bool
+arithmeticReplayDomain = do
+  let n = AVar 0
+      m = AVar 1
+      naturalVariables = Set.fromList [0, 1]
+      polynomialGoal =
+        AFact
+          ACmpEq
+          (AAdd (AMul (AConst 2) n) (AConst 3))
+          (AAdd (AAdd n n) (AConst 3))
+      boundedAssumption = AFact ACmpLe (AAdd n (AConst 1)) m
+      strictGoal = AFact ACmpLt n m
+      polynomialReplay =
+        deriveArithmeticReplay naturalVariables [] polynomialGoal
+      strictReplay =
+        deriveArithmeticReplay naturalVariables [boundedAssumption] strictGoal
+      mutated = do
+        replay <- polynomialReplay
+        pure replay {arNormalForm = NormalLowerBound 0}
+      distinctMonomials =
+        let x = AVar 0
+            y = AVar 1
+         in arNormalForm
+              <$> deriveArithmeticReplay
+                (Set.fromList [0, 1])
+                []
+                (AFact ACmpEq (AAdd (AMul x y) (AConst 1)) (AAdd (AConst 1) (AMul y x)))
+      checks =
+        [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay naturalVariables []) polynomialReplay)
+        , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay naturalVariables [boundedAssumption]) strictReplay)
+        , ("mutated normal form rejects", maybe True (not . verifyArithmeticReplay naturalVariables []) mutated)
+        , ( "polynomial replay preserves monomial boundaries"
+          , case distinctMonomials of
+              Just (NormalPolynomial monomials) ->
+                any (\(variables, _) -> variables == [(0, 1), (1, 1)]) monomials
+              _ -> False
+          )
+        , ("underconstrained order remains unknown", deriveArithmeticReplay naturalVariables [] strictGoal == Nothing)
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "arithmeticReplayDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+  pure (null failures)
   pure ok
 
 -- | Perceus S2.3c/S3.1 regression: primitive call conventions are not the source

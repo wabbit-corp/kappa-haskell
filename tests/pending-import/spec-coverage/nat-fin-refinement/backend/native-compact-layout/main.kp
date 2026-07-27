@@ -27,6 +27,7 @@ let unboxedRefinement =
 -- FiniteOrdinal n is the specced representation class (Spec 34.3.2A); the
 -- concrete packed lane width remains backend-documented, so the assertions
 -- name the parameterized class, not a lane spelling.
+--! requires capability representationQueries
 --! requires capability rt-compact-finite-ordinal
 --! requires capability rt-packed-finite-fields
 --! requires capability rt-unboxed-refinement
@@ -35,5 +36,10 @@ let unboxedRefinement =
 --! assertRefinementRepresentation Nat for SmallNat
 --! assertRepresentationClass small FiniteOrdinal 200
 --! assertRepresentationClass PackedHolder.finiteField FiniteOrdinal 200
---! assertRepresentationClass unboxedRefinement ExactNatural
+-- SmallNat carries the required inclusive-range ordinal certificate
+-- (Spec 30.2.7B) with closed cardinality 256, and this suite requires
+-- rt-compact-finite-ordinal, so Spec 34.3.2A's compact-selection MUST
+-- applies: the unboxed refinement shares the compact ordinal class,
+-- not the unbounded exact-natural class.
+--! assertRepresentationClass unboxedRefinement FiniteOrdinal 256
 --! assertRuntimeFieldAbsent unboxedRefinement proof

@@ -11,6 +11,7 @@ data Vec (n : Nat) (0 a : Type) : Type =
 
 -- natAdd Zero n -> n
 idLeft :
+    forall (a : Type).
     (n : Nat) ->
     Vec (natAdd Nat.Zero n) a ->
     Vec n a
@@ -20,6 +21,7 @@ let idLeft n xs =
 
 -- natAdd (Succ m) n -> Succ (natAdd m n)
 addSuccCase :
+    forall (a : Type).
     (m : Nat) ->
     (n : Nat) ->
     Vec (natAdd (Nat.Succ m) n) a ->
@@ -30,6 +32,7 @@ let addSuccCase m n xs =
 
 -- natMultiply Zero n -> Zero
 multiplyZeroCase :
+    forall (a : Type).
     (n : Nat) ->
     Vec (natMultiply Nat.Zero n) a ->
     Vec Nat.Zero a
@@ -39,6 +42,7 @@ let multiplyZeroCase n xs =
 
 -- natMultiply (Succ m) n -> natAdd n (natMultiply m n)
 multiplySuccCase :
+    forall (a : Type).
     (m : Nat) ->
     (n : Nat) ->
     Vec (natMultiply (Nat.Succ m) n) a ->

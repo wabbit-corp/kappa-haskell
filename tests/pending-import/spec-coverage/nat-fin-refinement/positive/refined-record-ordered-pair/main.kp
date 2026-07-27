@@ -1,6 +1,9 @@
 -- Spec 16.1.9 over a structural record base: an ordered-pair refinement
 -- whose predicate projects both fields. Construction from a closed record
--- literal discharges (2 <= 30) = True; projection returns the record.
+-- literal discharges (2 <= 30) = True. Refinement-to-base fires only at
+-- expected-type boundaries (Spec 16.1.9 case 2), never inside dotted
+-- member resolution (Spec 7.3), so reading a base field goes through an
+-- explicit refinedValue projection.
 type OrderedPair : Type =
     Refined (lo : Nat, hi : Nat) (\value -> (value.lo <= value.hi) = True)
 
@@ -12,7 +15,7 @@ loOf :
     Nat
 
 let loOf value =
-    value.lo
+    (refinedValue value).lo
 
 spanLo : Nat
 let spanLo = loOf span

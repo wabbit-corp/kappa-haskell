@@ -1,0 +1,10 @@
+-- Spec 15.8.6: ?n * 0 = 0 holds for EVERY ?n — there is no unique
+-- principal solution, so arithmetic automation must not guess and the
+-- hole stays unsolved.
+data Holds (n : Nat) : Type =
+    MkHolds (@0 p : (n * 0) = 0)
+
+unsolved : Holds ?n
+let unsolved = MkHolds @refl
+
+--! assertDiagnostic error E_HOLE_UNSOLVED

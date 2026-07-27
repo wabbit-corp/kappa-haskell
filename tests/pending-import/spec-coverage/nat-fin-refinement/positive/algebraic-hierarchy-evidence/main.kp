@@ -59,8 +59,11 @@ semiringAddCommutes :
     (y : a) ->
     add x y = add y x
 
+-- addCommutative's endpoints are forall (implicit) binders behind the
+-- carrier and evidence implicits, so the bare projection is used and
+-- the endpoints unify against the stated goal (Spec 16.1.7.1).
 let semiringAddCommutes @evidence x y =
-    addCommutative @x @y
+    addCommutative
 
 -- Note (Spec 28.2.2): neither Semiring nor Ring permits reordering
 -- MULTIPLICATIVE factors — that requires a separate checked

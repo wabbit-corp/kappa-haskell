@@ -1,12 +1,16 @@
--- Spec 30.2.7A/B + 15.8.4 (finite domains <= 256): a NON-range refinement
--- over a verified finite ordinal base gets exact cardinality by complete
--- enumeration — the even values among 0..10 are 6 — and the required
--- Refined-over-ordinal certificate of 30.2.7B.
+-- Spec 30.2.7A/B + 15.8.4 (finite domains <= 256): a NON-range
+-- refinement over the verified finite ordinal base Fin 11. The base
+-- carries the required Fin ordinal certificate (Spec 30.2.7B), the
+-- parity predicate is a total transparent decision procedure whose
+-- applications normalize for each enumerated inhabitant, and complete
+-- filtering stays within the Spec 15.8.4 finite-domain threshold, so
+-- the type gets exact cardinality by complete enumeration — the even
+-- values among 0..10 are 6 — and the required Refined-over-ordinal
+-- certificate of Spec 30.2.7B.
 type SmallEven : Type =
-    Refined Nat (\value -> ((value <= 10) && (value % 2 == 0)) = True)
+    Refined (Fin 11) (\value -> (value.value % 2 == 0) = True)
 
 --! requires capability symbolicCardinality
---! requires capability representationCertificates
 --! assertNoErrors
 --! assertInhabitance SourceReachability Finite(6) for SmallEven
 --! assertSymbolicCardinality 6 for SmallEven

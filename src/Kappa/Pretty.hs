@@ -50,6 +50,8 @@ renderTerm = go 0
           "schemaLift [" <> gnameText family <> ".{" <> renderLevels source
             <> "} => .{" <> renderLevels target <> "}; "
             <> T.pack (show roles) <> "; " <> T.pack (show certificate) <> "] " <> go 1 t
+      CArithmeticProof certificate ->
+        "<arithmetic-proof:" <> T.pack (show (acDomain certificate)) <> ">"
       CLit l -> renderLit l
       CCtorI g _ _ constructorArgs
         | null args -> gnameText g

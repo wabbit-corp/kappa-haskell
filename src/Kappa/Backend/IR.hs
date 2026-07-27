@@ -578,6 +578,7 @@ validateObservationModeFlows st =
         CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
           concatMap (checkTerm owner depth scopes modes Nothing) (sourceArguments ++ targetArguments)
             ++ checkTerm owner depth scopes modes expected inner
+        CArithmeticProof _ -> []
         CCtorI g universes annotation arguments ->
           constructorChecks owner depth scopes modes g universes annotation True
             (zip [0 :: Int ..] arguments)
@@ -1287,6 +1288,8 @@ validateFinalizedLevelScopes st =
         CUniverseLift _ _ _ inner -> recur inner
         CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
           concatMap recur sourceArguments ++ concatMap recur targetArguments ++ recur inner
+        CArithmeticProof certificate ->
+          concatMap recur (foldMapArithmeticCertificate (: []) certificate)
         CCtorI _ _ ann arguments -> maybe [] recur ann ++ concatMap (recur . caTerm) arguments
         CMatch scrut ann alts ->
           recur scrut
@@ -3281,6 +3284,7 @@ lowerTermExpected expected term depth scopes = case term of
         body' <- lowerTermExpected mCod body (depth + 1) (ScopeSlot (fmap bbBinderId mb) mDom Nothing : scopes)
         pure (BLam meta mb ic declQ nm body')
   CApp {} -> lowerApp expected term depth scopes
+  CArithmeticProof _ -> BUnit <$> metaAt
   CSort {} -> metaAt >>= \meta -> erasedRuntimeAt meta "sort/type term reached a runtime BackendIR value position"
   CLevel {} -> metaAt >>= \meta -> erasedRuntimeAt meta "declaration universe identity reached a runtime BackendIR value position"
   CPiEvidenceM {} -> metaAt >>= \meta -> erasedRuntimeAt meta "function type reached a runtime BackendIR value position"
@@ -3646,8 +3650,13 @@ proofIsDefinitionallyRefl ctx depth proof =
 -- eliminator telescope cannot recover the selected IsSet evidence from the
 -- equality type alone.
 proofHeadIsRuntimeErased :: Set GName -> Term -> Bool
-proofHeadIsRuntimeErased runtimeErasedHeads proof =
-  maybe False (`Set.member` runtimeErasedHeads) (coreHeadGlobal proof)
+proofHeadIsRuntimeErased runtimeErasedHeads = \case
+  -- Arithmetic certificates are independently checked proof-only KCore
+  -- nodes and lower directly to BUnit. Treating one as a runtime equality
+  -- object would contradict both that representation and §15.8.7.
+  CArithmeticProof _ -> True
+  proof ->
+    maybe False (`Set.member` runtimeErasedHeads) (coreHeadGlobal proof)
 
 lowerCtorTerm :: BackendMeta -> GName -> Maybe Term -> [Term] -> Int -> ScopeStack -> Lower BackendTerm
 lowerCtorTerm meta g _ [] _ _

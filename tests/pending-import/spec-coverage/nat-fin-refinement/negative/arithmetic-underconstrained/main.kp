@@ -8,7 +8,7 @@ ambiguousSplit :
     SplitFour
 
 let ambiguousSplit =
-    SplitFour ?left ?right refl
+    SplitFour ?left ?right @refl
 
 -- The arithmetic solver must not choose one of the five possible splits.
 --! assertDiagnostic error E_HOLE_UNSOLVED

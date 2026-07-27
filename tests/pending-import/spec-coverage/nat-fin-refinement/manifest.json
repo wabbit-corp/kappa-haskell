@@ -8,7 +8,7 @@
   "sourceAppendixSha256": "05a13050cafc77360a2acfb79fb74eac46c9037e1a20067ec2b042ffe4be9b13",
   "sourcePseudotests": "docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Additional-Backend-and-Certificate-Pseudotests.md",
   "sourcePseudotestsSha256": "76f676e6c6ae0b7b39e0151b0242143f7b0d9fef1b8494e29ae4061c49a21ff0",
-  "suiteCount": 83,
+  "suiteCount": 103,
   "suites": [
     {
       "path": "analysis/erased-impossible-field-empty",
@@ -19,9 +19,7 @@
       "appendixSections": [
         "T.12.8"
       ],
-      "capabilities": [
-        "symbolicCardinality"
-      ],
+      "capabilities": [],
       "files": [
         "main.kp"
       ],
@@ -39,7 +37,6 @@
         "T.12.8"
       ],
       "capabilities": [
-        "representationCertificates",
         "symbolicCardinality"
       ],
       "files": [
@@ -75,7 +72,6 @@
         "T.12.8"
       ],
       "capabilities": [
-        "representationCertificates",
         "symbolicCardinality"
       ],
       "files": [
@@ -93,13 +89,12 @@
         "T.12.8"
       ],
       "capabilities": [
-        "representationCertificates",
         "symbolicCardinality"
       ],
       "files": [
         "main.kp"
       ],
-      "description": "Spec 30.2.7A/B + 15.8.4 (finite domains <= 256): a NON-range refinement over a verified finite ordinal base gets exact cardinality by complete",
+      "description": "A non-range (parity) refinement over the verified finite ordinal base Fin 11: complete enumeration within the Spec 15.8.4 finite-domain threshold yields exact cardinality 6 and the required Refined-over-ordinal certificate of Spec 30.2.7B.",
       "provenance": "post-import addition (2026-07-26 non-range refinement pass)"
     },
     {
@@ -112,7 +107,6 @@
         "T.12.8"
       ],
       "capabilities": [
-        "representationCertificates",
         "symbolicCardinality"
       ],
       "files": [
@@ -177,7 +171,7 @@
         "right.kp",
         "suite.ktest"
       ],
-      "description": "Paired source variants establish equal accepted interface semantics after adding an unrelated import; NFR-0 must add target-specific provider and certificate-byte comparison before promotion."
+      "description": "Two modules differing only in an unrelated std.hash import elaborate with valid arithmetic certificates as the well-formed smoke check; comparing selected provider identity and certificate bytes across the variants is the NFR-0 extended-harness deliverable."
     },
     {
       "path": "artifact/representation-certificates",
@@ -190,8 +184,7 @@
         "T.12.9"
       ],
       "capabilities": [
-        "kcoreText",
-        "representationCertificates"
+        "kcoreText"
       ],
       "files": [
         "main.kp",
@@ -210,7 +203,6 @@
         "T.12.9"
       ],
       "capabilities": [
-        "representationCertificates",
         "representationQueries"
       ],
       "files": [
@@ -228,7 +220,6 @@
         "T.12.9"
       ],
       "capabilities": [
-        "representationCertificates",
         "representationQueries",
         "rt-compact-finite-ordinal",
         "rt-packed-finite-fields",
@@ -237,7 +228,27 @@
       "files": [
         "main.kp"
       ],
-      "description": "A full native layout profile honors its compact finite ordinal, packed field, and unboxed refinement capabilities."
+      "description": "Native compact layouts behind advertised rt-* capabilities: Fin 200 values and packed fields take FiniteOrdinal 200, and the certified 0..255 range refinement MUST take the compact FiniteOrdinal 256 class under rt-compact-finite-ordinal (Spec 34.3.2A), with the erased proof field absent."
+    },
+    {
+      "path": "backend/nested-wrapper-erasure",
+      "category": "backend",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-7",
+      "appendixSections": [
+        "T.12.9"
+      ],
+      "capabilities": [
+        "representationQueries",
+        "rt-compact-finite-ordinal",
+        "rt-unboxed-refinement"
+      ],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Refined over Fin: both wrapper layers erase and the stored field shares the compact ordinal class.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "backend/proof-erasure",
@@ -251,7 +262,6 @@
         "T.12.9"
       ],
       "capabilities": [
-        "representationCertificates",
         "representationQueries"
       ],
       "files": [
@@ -289,6 +299,22 @@
       ],
       "description": "Spec 11.4.2 lists the only positions where a bare Bool is promoted to `b = True`; an arbitrary lambda result in Refined's Type-valued",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "negative/checked-sub-no-proof",
+      "category": "negative",
+      "expectedOutcome": "reject",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.4"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Without the domain proof, checked subtraction is not reified and (m - n) + n never simplifies to m; saturating subtraction is never inferred.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "negative/derive-eq-function-field",
@@ -334,7 +360,7 @@
       "files": [
         "main.kp"
       ],
-      "description": "Spec 14.1.1 + 16.3.3 step 5: Eq is reflective decidable observational identity \u2014 `trait IsSet a => Eq` carries required",
+      "description": "Eq is the sole reflective equality: eqSound reflection and IsSet supertrait projection accept, the deleted eqIsSet member rejects, and reflection from Equiv evidence rejects at an ABSTRACT carrier (where no prelude bridge can expose ==; at Int the canonical Eq=>Equiv bridge plus Spec 15.8.1/16.1.8 would license acceptance).",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
@@ -395,7 +421,6 @@
         "T.12.9"
       ],
       "capabilities": [
-        "representationCertificates",
         "representationQueries"
       ],
       "files": [
@@ -432,8 +457,40 @@
       "files": [
         "main.kp"
       ],
-      "description": "Spec 14.4 soundness \u2014 carrier-recovery integrity in the IsProp solver. The carrier of an equality is the equands' OWN homogeneous",
+      "description": "Carrier-recovery integrity: the IsProp obligation for an equality at carrier Bool -> Bool stays unsolved even though a String rigid (whose IsSet exists) occurs inside the equand; a solver recovering the carrier from a foreign occurring type would forge h-propositionality.",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "negative/isprop-function-carrier-unsolved",
+      "category": "negative",
+      "expectedOutcome": "reject",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-2",
+      "appendixSections": [
+        "T.12.2"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "IsProp of a function-carrier equality stays unsolved: Bool -> Bool has no Eq and no IsSet in any coherent closure and Spec 14.5.1 refuses function extensionality, so the demanded IsProp goal fails with kappa.implicit.unsolved (the obligation unsafeAssertProof's Spec 4.5 gate consumes, demanded directly via witness because no standard harness directive enables the unsafe form).",
+      "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass); rewritten 2026-07-26 (review pass): the allow_unsafe_assert_proof directive is not an Appendix T directive, so the IsProp obligation is demanded directly"
+    },
+    {
+      "path": "negative/meta-principal-mult-zero",
+      "category": "negative",
+      "expectedOutcome": "reject",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.4"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "?n * 0 = 0 has no unique solution; the metavariable stays unsolved.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "negative/nat-gadt-unknown-bridge",
@@ -483,6 +540,22 @@
       "description": "AdditivelyNoncommutativeSemiring evidence alone must not authorize commutative addition."
     },
     {
+      "path": "negative/provider-closure-distinct-goal-types",
+      "category": "negative",
+      "expectedOutcome": "reject",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.3"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Evidence canonicalization stops at distinct normalized trait applications (Spec 15.8.2): an AdditiveMonoid A closure without a commutativity law cannot borrow one from a CommutativeAdditiveMonoid closure at a different carrier; the commuted goal at A is rejected.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass); sibling retained-boundary negative for the Spec 15.8.2 evidence-canonicalization amendment"
+    },
+    {
       "path": "negative/range-membership-outside",
       "category": "negative",
       "expectedOutcome": "reject",
@@ -512,6 +585,22 @@
       ],
       "description": "Spec 14.5.2: derive RefinementView fails (rather than guessing) when the visible shape has TWO retained runtime fields after erasure \u2014 there is no",
       "provenance": "post-import addition (2026-07-26 non-range refinement pass)"
+    },
+    {
+      "path": "negative/refined-linear-construction",
+      "category": "negative",
+      "expectedOutcome": "reject",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.6"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "A linear payload cannot enter a refinement wrapper: Refined's value field and refine's base binder are unrestricted (Spec 12.1.1), and the Spec 12.2 quantity-satisfaction table has no `1 satisfies omega` row, so Spec 16.1.9 insertion elaborates to a refine application whose base demand the linear capability cannot meet.",
+      "provenance": "split 2026-07-26 (review pass) from positive/refined-linear-base, whose construction half over-claimed linear transfer into the unrestricted value field"
     },
     {
       "path": "negative/refined-non-prop-fiber",
@@ -594,22 +683,6 @@
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
-      "path": "negative/semiring-supertrait-incoherence",
-      "category": "negative",
-      "expectedOutcome": "reject",
-      "currentStatus": "pending",
-      "ownerStage": "NFR-3",
-      "appendixSections": [
-        "T.12.3"
-      ],
-      "capabilities": [],
-      "files": [
-        "main.kp"
-      ],
-      "description": "T.12.3 / Spec 14.3.3 + 33.2.1: Semiring reaches AdditiveMonoid along two supertrait paths (Semiring => CommutativeAdditiveMonoid =>",
-      "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
-    },
-    {
       "path": "negative/subst-transport-stuck-index",
       "category": "negative",
       "expectedOutcome": "reject",
@@ -622,23 +695,7 @@
       "files": [
         "main.kp"
       ],
-      "description": "Spec 16.1.8 + 11.4: explicit user-written subst is the portable way to request a transport outside the automatic fragment. The index",
-      "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
-    },
-    {
-      "path": "negative/unsafe-assert-no-isset-function-carrier",
-      "category": "negative",
-      "expectedOutcome": "reject",
-      "currentStatus": "pending",
-      "ownerStage": "NFR-2",
-      "appendixSections": [
-        "T.12.2"
-      ],
-      "capabilities": [],
-      "files": [
-        "main.kp"
-      ],
-      "description": "Spec 14.4 soundness: Kappa equality is intensional and does not assume UIP. `unsafeAssertProof` may construct an equality proof only",
+      "description": "Neutral index endpoints over an abstract function symbol do not convert and, with no lexical equality hypothesis in scope, no Spec 16.1.8 proof source or Spec 15.8 domain applies, so every conforming profile rejects the untransported term while the paired explicit subst forms accept.",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
@@ -774,6 +831,22 @@
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
+      "path": "positive/checked-sub-reified-simplification",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.4"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "With the n <= m proof in scope, checked subtraction reifies and Presburger closes (m - n) + n = m.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/derive-eq-enumeration",
       "category": "positive",
       "expectedOutcome": "accept",
@@ -790,6 +863,22 @@
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
+      "path": "positive/derive-eq-fin-field",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-2",
+      "appendixSections": [
+        "T.12.2"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "derive Eq through a Fin-carrying field consumes the required proof-insensitive Fin instances.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/derive-eq-recursive-wrapper",
       "category": "positive",
       "expectedOutcome": "accept",
@@ -802,8 +891,24 @@
       "files": [
         "main.kp"
       ],
-      "description": "Spec 14.5.1: compiler-owned `derive Eq` on first-order data generates checked (==)/eqSound/eqComplete members and discharges the IsSet",
+      "description": "Checked derive Eq over a recursive first-order chain with Nat head fields (field IsSet obligations discharged by the required derive IsSet Nat) and a single-constructor wrapper over it, exposing the IsSet supertrait and evaluating derived equality.",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/derive-isset-recursive-tree",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-2",
+      "appendixSections": [
+        "T.12.2"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "derive IsSet/Eq for a recursive tree exercises the guarded fixed-point eligibility rule.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/div-mod-literal-congruence",
@@ -837,6 +942,22 @@
       "description": "The standard Fin constructors, weakenings, extensionality, and declared helper types are available."
     },
     {
+      "path": "positive/fin-auto-weaken-via-refinement",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.6"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Deliberate-surprise pin: refinement widening plus the required Fin view makes Fin n to Fin (n+1) automatic without finWeaken.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/fin-cases-induction-semantics",
       "category": "positive",
       "expectedOutcome": "accept",
@@ -851,6 +972,38 @@
       ],
       "description": "finCases (Spec 28.2) covers Fin (n + 1) with exactly one zero case and one successor case; evaluating every inhabitant of Fin 3 shows",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/fin-literal-index-position",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.5"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Literal at Fin type written in a data-family INDEX position; proposition synthesis inside a type argument.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
+      "path": "positive/fin-zero-case-impossible",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.5"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Source-level case impossible on Fin 0 via the required value < 0 refutation.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/finite-domain-enumeration",
@@ -915,8 +1068,24 @@
       "files": [
         "main.kp"
       ],
-      "description": "Spec 14.1 declares `trait IsSet a => Eq (parametric 0 a : Type)`: a well-formed Eq instance must discharge its IsSet supertrait, so the",
+      "description": "Eq evidence carries IsSet in its supertrait closure and LOCAL projection yields it (Spec 14.1.4/14.3.3/16.3.3 step 1); projection is not ambient instance generation and Spec 28.2 requires no Eq (Option a)/Eq (List a) instances, so the probes bind abstract Eq evidence rather than summoning globals.",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/meta-principal-mult-literal",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.4"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "2 * ?n = 6 assigns the unique principal solution ?n := 3.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/meta-principal-solution",
@@ -949,6 +1118,22 @@
       ],
       "description": "The prelude fixes no canonical Nat min/max/clamp terms, so these are ordinary local transparent definitions. Spec 15.8.1 reifies after",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/nat-add-cancellation",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.4"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Successor and left-addition cancellation from lexical erased assumptions via Presburger, consumed by index transport.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/nat-additive-identity-channels",
@@ -1030,6 +1215,22 @@
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
+      "path": "positive/nat-giant-range-literal",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-1",
+      "appendixSections": [
+        "T.12.1"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Refinement synthesis with beyond-word bounds; closed comparisons stay exact.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/nat-index-reduction-boundary",
       "category": "positive",
       "expectedOutcome": "accept",
@@ -1076,6 +1277,22 @@
       ],
       "description": "T.12.1 / Spec 28.2: natAdd, natMultiply, and natCompare are ordinary total-certified source definitions, so their first-argument computation",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/nat-literal-spelling-convergence",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-1",
+      "appendixSections": [
+        "T.12.1"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Numeral, Succ-of-numeral, closed addition, and full constructor spine converge to one index.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/nat-no-confusion-derived-hlevel",
@@ -1125,6 +1342,22 @@
       "description": "Right identity remains non-definitional, but expected-type checking accepts it using solver-produced equality evidence and an explicit KCore transport."
     },
     {
+      "path": "positive/nat-succ-add-asymmetry",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-1",
+      "appendixSections": [
+        "T.12.1"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "1 + m reduces definitionally while m + 1 needs solver transport: the natAdd left-recursion asymmetry, both accepted.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/presburger-linear",
       "category": "positive",
       "expectedOutcome": "accept",
@@ -1157,6 +1390,40 @@
       ],
       "description": "NOTE: refinedExt is declared with forall binders (Spec 28.2); the explicit endpoint applications below track the open forall-explicitness",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/provider-evidence-canonicalization",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.3"
+      ],
+      "capabilities": [
+        "arithmeticCertificates"
+      ],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Two abstract CommutativeAdditiveMonoid dictionaries at one carrier canonicalize to the deterministic representative (Spec 15.8.2 + 16.3.3 step 1): the commuted goal is solvable implicitly, and the explicit law projection from EITHER named dictionary discharges it via recorded IsSubsingleton bridge evidence.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass); rewritten from negative/provider-closure-no-mixing after the 2026-07-26 Spec 15.8.2 evidence-canonicalization amendment"
+    },
+    {
+      "path": "positive/range-integer-negative-bounds",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.7"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Integer range refinement with negative bounds constructed from a negative literal.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/range-membership",
@@ -1236,6 +1503,22 @@
       ],
       "description": "Spec 28.2 (Refined) + 11.4.1 + 16.1.9: a TYPE-VALUED propositional predicate (\\x -> x = 5) refines Nat to a singleton. IsProp of each fiber",
       "provenance": "post-import addition (2026-07-26 non-range refinement pass)"
+    },
+    {
+      "path": "positive/refined-linear-base",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.6"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Refinement wrappers and ownership: construction demands the base at the unrestricted quantity (Refined's value field), while ELIMINATION of a linear refined value consumes the scrutinee exactly once by constructor pattern with erased evidence fields imposing no extra demand; the construction-side quantity boundary is pinned by negative/refined-linear-construction.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
     },
     {
       "path": "positive/refined-literal-synthesis",
@@ -1318,20 +1601,52 @@
       "provenance": "post-import addition (2026-07-26 non-range refinement pass)"
     },
     {
+      "path": "positive/refined-widening-alias-base",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-4",
+      "appendixSections": [
+        "T.12.6"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Widening across definitionally equal (transparent-alias) bases.",
+      "provenance": "post-import addition (2026-07-26 corner-case and interaction pass)"
+    },
+    {
       "path": "positive/refinement-single-evaluation",
       "category": "positive",
       "expectedOutcome": "accept",
       "currentStatus": "pending",
       "ownerStage": "NFR-4",
       "appendixSections": [
-        "T.12.5"
+        "T.12.6"
       ],
       "capabilities": [],
       "files": [
         "main.kp"
       ],
-      "description": "Spec 16.1.9 single evaluation and ownership: base-to-refinement insertion binds the source to one stable representative, refers every",
+      "description": "Spec 16.1.9 single evaluation: base-to-refinement insertion evaluates an unrestricted source exactly once against one stable representative shared by all generated goals, and the reverse boundary performs exactly one refinementValue projection observing the original value.",
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
+    },
+    {
+      "path": "positive/supertrait-projection-coherent",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "pending",
+      "ownerStage": "NFR-3",
+      "appendixSections": [
+        "T.12.3"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "Supertrait projection reaching one goal along multiple paths is coherent: within one Semiring dictionary (canonical projection) and across two independent abstract premises, where the amended Spec 14.3.3 defers to Spec 16.3.3 step 1 (IsSubsingleton coherence, deterministic representative) instead of rejecting as ambiguous.",
+      "provenance": "converted 2026-07-26 from negative/semiring-supertrait-incoherence, whose ambiguity premise the Spec 14.3.3/15.8.2 evidence-canonicalization amendment flipped"
     },
     {
       "path": "positive/symbolic-add-identity-boundary",
@@ -1356,7 +1671,8 @@
       "currentStatus": "pending",
       "ownerStage": "NFR-4",
       "appendixSections": [
-        "T.12.5"
+        "T.12.6",
+        "T.12.7"
       ],
       "capabilities": [],
       "files": [
@@ -1372,7 +1688,8 @@
       "currentStatus": "pending",
       "ownerStage": "NFR-4",
       "appendixSections": [
-        "T.12.5"
+        "T.12.6",
+        "T.12.7"
       ],
       "capabilities": [],
       "files": [
