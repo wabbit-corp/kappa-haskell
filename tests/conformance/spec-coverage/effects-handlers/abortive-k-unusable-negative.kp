@@ -2,26 +2,26 @@
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
 
--- §18.1.17.1: in an abortive operation clause (declared resumption
--- quantity 0), the bound resumption k has quantity 0 and is unusable by
--- the ordinary quantity rules (§12.2); applying k in the clause body is
--- a quantity error (runtime use of a 0-quantity binding).
+-- §18.1.17.1: an abortive operation (resumption quantity 0) binds the
+-- resumption k at quantity 0, so k is unusable by the ordinary quantity
+-- rules — applying it in the clause body is a quantity error.
 module main
 
-bad : Int
-let bad : Int =
-    block
-        scoped effect Fail =
-            0 raise : Unit -> Int
+effect Fail =
+    0 raise : Unit -> Int
 
-        let comp : Eff <[Fail : Fail]> Int =
-            do
-                let x <- Fail.raise ()
-                pure x
+comp : Eff <[Fail : Fail]> Int
+let comp =
+    do
+        let a <- Fail.raise ()
+        pure a
 
-        let handled =
-            deep handle Fail comp with
-                case return x -> pure x
-                case raise _ k -> k 5
+bad : Eff <[ ]> Int
+let bad =
+    deep handle Fail comp with
+        case return x -> pure x
+        case raise _ k -> k 5 --!! E_QTT_ERASED_RUNTIME_USE
 
-        runPure handled
+result : Int
+let result = runPure bad
+-- STATUS(a0497523): PASS
