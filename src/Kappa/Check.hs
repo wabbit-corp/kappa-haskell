@@ -11946,12 +11946,15 @@ flushPendingWith final defaultNumerics deferLevelEvidence =
 flushPendingWithPolicy :: Bool -> Bool -> Bool -> Bool -> CheckM ()
 flushPendingWithPolicy final True deferLevelEvidence reportUnsolved = do
   -- §6.1.5 defaults a numeric literal only after ordinary term inference for
-  -- its enclosing declaration, but before evidence search is allowed to
-  -- improve the still-flexible carrier. Otherwise a currently unique global
-  -- instance, or a nearest lexical dictionary such as @Score Bool@, can choose
-  -- the literal's type and make the open-world instance environment part of
-  -- numeric type inference. Contextual unification has already run by this
-  -- boundary; default the residual carriers, then solve their now-rigid goals.
+  -- its enclosing declaration. First close any coupled constraint component
+  -- rooted in numeric evidence: all contextual equations are now available,
+  -- and a unique principal solution such as @Rangeable ?a@ together with
+  -- @Contains (Rangeable.Range ?a) Nat@ must determine @?a := Nat@ before
+  -- defaulting. Isolated numeric evidence remains ambiguous and is left for
+  -- the ordinary default below, so the open global instance set still cannot
+  -- choose an otherwise unconstrained literal carrier.
+  pending <- gets csPending
+  settlePendingNumericComponents pending
   defaultPendingNumericGoals
   flushPendingWithPolicy final False deferLevelEvidence reportUnsolved
 flushPendingWithPolicy final False deferLevelEvidence reportUnsolved = do
@@ -12187,47 +12190,103 @@ pendingEvidenceComponentFromSeed
   :: Ctx
   -> Set MetaId
   -> CheckM (Set MetaId)
-pendingEvidenceComponentFromSeed ctx rawSeed = do
-  st <- get
+pendingEvidenceComponentFromSeed _ rawSeed = do
+  graph <- buildPendingEvidenceGraph
+  pure (pendingEvidenceComponentIn graph rawSeed)
+
+data PendingEvidenceGraph = PendingEvidenceGraph
+  { pegPendingIds :: !(Set MetaId)
+  , pegDependencies :: !(Map MetaId (Set MetaId))
+  , pegReverseIndex :: !(Map MetaId (Set MetaId))
+  , pegClassifierDependencies :: !(Map MetaId (Set MetaId))
+  }
+
+buildPendingEvidenceGraph :: CheckM PendingEvidenceGraph
+buildPendingEvidenceGraph = do
+  state <- get
   ec <- ec_
-  let classifierDependencies metas =
-        Set.unions
-          [ Set.fromList (unsolvedMetasOf st (micType classifier))
-          | meta <- Set.toList metas
-          , Just classifier <- [Map.lookup meta (csMetaClassifiers st)]
+  let classifierDependencies =
+        Map.map
+          (Set.fromList . unsolvedMetasOf state . micType)
+          (csMetaClassifiers state)
+      closeClassifiers = closeClassifierDependencies classifierDependencies
+      entries = csPending state
+      dependencies =
+        Map.fromList
+          [ ( pendingEntryMeta entry
+            , closeClassifiers
+                ( Set.insert
+                    (pendingEntryMeta entry)
+                    ( Set.fromList
+                        ( unsolvedMetasOf
+                            state
+                            (quote ec (ctxLen pendingCtx) goal)
+                        )
+                    )
+                )
+            )
+          | entry@(_, goal, _, pendingCtx, _) <- entries
           ]
-      closeClassifiers metas =
-        let expanded = Set.union metas (classifierDependencies metas)
-         in if expanded == metas then metas else closeClassifiers expanded
-      seed = closeClassifiers rawSeed
-      entries =
-        [ ( mid
-          , closeClassifiers
-              ( Set.insert
-                  mid
-                  ( Set.fromList
-                      ( unsolvedMetasOf
-                          st
-                          (quote ec (ctxLen pendingCtx) goal)
-                      )
+      reverseIndex =
+        Map.fromListWith Set.union
+          [ (meta, Set.singleton evidence)
+          | (evidence, metas) <- Map.toList dependencies
+          , meta <- Set.toList metas
+          ]
+  pure
+    PendingEvidenceGraph
+      { pegPendingIds =
+          Set.fromList [pendingEntryMeta entry | entry <- entries]
+      , pegDependencies = dependencies
+      , pegReverseIndex = reverseIndex
+      , pegClassifierDependencies = classifierDependencies
+      }
+
+closeClassifierDependencies
+  :: Map MetaId (Set MetaId)
+  -> Set MetaId
+  -> Set MetaId
+closeClassifierDependencies dependencies initial = close initial initial
+  where
+    close reached frontier
+      | Set.null frontier = reached
+      | otherwise =
+          let discovered =
+                Set.unions
+                  [ Map.findWithDefault Set.empty meta dependencies
+                  | meta <- Set.toList frontier
+                  ]
+              fresh = Set.difference discovered reached
+           in close (Set.union reached fresh) fresh
+
+pendingEvidenceComponentIn
+  :: PendingEvidenceGraph
+  -> Set MetaId
+  -> Set MetaId
+pendingEvidenceComponentIn graph rawSeed = close seed Set.empty
+  where
+    closeClassifiers =
+      closeClassifierDependencies (pegClassifierDependencies graph)
+    seed = closeClassifiers rawSeed
+    close reachable evidence =
+      let connected =
+            Set.unions
+              [ Map.findWithDefault Set.empty meta (pegReverseIndex graph)
+              | meta <- Set.toList reachable
+              ]
+          evidence' = Set.union evidence connected
+          reachable' =
+            closeClassifiers
+              ( Set.unions
+                  ( reachable
+                      : [ Map.findWithDefault Set.empty meta (pegDependencies graph)
+                        | meta <- Set.toList evidence'
+                        ]
                   )
               )
-          )
-        | (mid, goal, _, pendingCtx, _) <- csPending st
-        ]
-      closePending reachable =
-        let connected =
-              [ (mid, dependencies)
-              | (mid, dependencies) <- entries
-              , not (Set.disjoint reachable dependencies)
-              ]
-            reachable' =
-              closeClassifiers
-                (Set.unions (reachable : map snd connected))
-         in if reachable' == reachable
-              then Set.fromList (map fst connected)
-              else closePending reachable'
-  pure (closePending seed)
+       in if reachable' == reachable && evidence' == evidence
+            then evidence
+            else close reachable' evidence'
 
 
 -- | Commit only numeric-literal carrier choices without resolving or emitting
@@ -19710,6 +19769,126 @@ withApplicationEvidenceScope action = do
                 Map.restrictKeys (csPendingLevelEvidence st) retainedIds
             }
   pure result
+
+-- | Complete inference may connect an overloaded literal to a later operand
+-- through associated members. For example, after checking both arguments of
+-- @contains (0 .. 5) value@ with @value : Nat@, the pending component contains
+-- @FromInteger ?a@, @Rangeable ?a@, and
+-- @Contains (Rangeable.Range ?a) Nat@. Defaulting the literal before solving
+-- that complete component would incorrectly commit @?a := Int@.
+--
+-- Close only components rooted in numeric evidence retained by the current
+-- inference boundary, and only when another pending obligation is connected.
+-- An isolated @FromInteger ?a@ remains subject to the ordinary
+-- declaration-level default, and unrelated flexible trait goals cannot infer
+-- their carriers from the open global instance set.
+-- 'settleUniquePendingTraitComponent' provides the bounded transactional
+-- search and commits only one principal assignment for the component's
+-- non-evidence metas.
+settlePendingNumericComponents :: [PendingEvidenceEntry] -> CheckM ()
+settlePendingNumericComponents pendingEntries = do
+  numericRoots <-
+    Set.fromList . map pendingEntryMeta . catMaybes
+      <$> forM pendingEntries
+        (\entry -> do
+           numeric <- pendingEntryIsNumericLiteral entry
+           pure (if numeric then Just entry else Nothing)
+        )
+  associatedProjectionEntries <-
+    Set.fromList . map pendingEntryMeta . catMaybes
+      <$> forM pendingEntries
+        (\entry -> do
+           associated <- pendingEntryUsesAssociatedEvidenceProjection entry
+           pure (if associated then Just entry else Nothing)
+        )
+  components <- pendingEvidenceComponentsFromRoots numericRoots
+  pending <- gets csPending
+  forM_ components $ \component -> do
+    active <-
+      filterM
+        pendingEntryIsUnsolved
+        [ entry
+        | entry <- pending
+        , pendingEntryMeta entry `Set.member` component
+        ]
+    -- 'pendingTraitComponentSolutions' has an explicit 24-step search
+    -- budget. A larger active component cannot reach a complete solution
+    -- within that budget, so fail closed without paying for a search whose
+    -- result is predetermined to be inconclusive.
+    when
+      ( length active > 1
+          && length active <= 24
+          && not
+               (Set.disjoint component associatedProjectionEntries)
+      )
+      (settleUniquePendingTraitComponent component)
+
+-- | Compute connected pending-evidence components for a set of roots in one
+-- indexed graph pass. Re-running 'pendingEvidenceComponentFromSeed' once per
+-- numeric literal made declaration finalization quadratic on large generated
+-- declarations. The graph here is the same semantic graph: an evidence node
+-- is connected through unsolved metas in its checked goal and transitively
+-- through those metas' creation-site classifiers.
+pendingEvidenceComponentsFromRoots :: Set MetaId -> CheckM [Set MetaId]
+pendingEvidenceComponentsFromRoots roots = do
+  graph <- buildPendingEvidenceGraph
+  let componentFrom root =
+        pendingEvidenceComponentIn graph (Set.singleton root)
+      collect remaining
+        | Set.null remaining = []
+        | otherwise =
+            let root = Set.findMin remaining
+                component = componentFrom root
+             in component : collect (Set.difference remaining component)
+  pure (collect (Set.intersection roots (pegPendingIds graph)))
+
+pendingEntryIsNumericLiteral :: PendingEvidenceEntry -> CheckM Bool
+pendingEntryIsNumericLiteral entry =
+  refreshPendingEntry entry >>= \case
+    VGlobN trait _
+      | trait == gPrel traitFromInteger
+          || trait == gPrel traitFromFloat ->
+          pure True
+    VGlobI trait _ _
+      | trait == gPrel traitFromInteger
+          || trait == gPrel traitFromFloat ->
+          pure True
+    _ -> pure False
+
+-- | Does a pending goal depend on an authenticated associated static member
+-- of another evidence placeholder? This is the typed dependency that permits
+-- complete-component improvement before numeric defaulting. A mere pair of
+-- ordinary goals such as @FromInteger ?a@ and @Sized ?a@ has no such edge and
+-- must not let the currently imported instance set choose @?a@.
+pendingEntryUsesAssociatedEvidenceProjection
+  :: PendingEvidenceEntry
+  -> CheckM Bool
+pendingEntryUsesAssociatedEvidenceProjection (_, goal, _, pendingCtx, _) = do
+  goalTerm <-
+    quoteIn pendingCtx goal >>= zonkTermM (ctxLen pendingCtx)
+  state <- get
+  pure
+    ( getAny
+        (foldTerm (projectionNode state) (const mempty) goalTerm)
+    )
+  where
+    projectionNode state = \case
+      CProjM Parametric receiver field ->
+        Any (authenticatedAssociatedMember state receiver field)
+      CProjAtM Parametric receiver field _ ->
+        Any (authenticatedAssociatedMember state receiver field)
+      _ -> mempty
+
+    authenticatedAssociatedMember state receiver field =
+      isJust $ do
+        evidenceMeta <- case stripIdentityWrappers receiver of
+          CMeta meta -> Just meta
+          _ -> Nothing
+        classifier <- Map.lookup evidenceMeta (csMetaClassifiers state)
+        trait <- termHeadGlob (stripIdentityWrappers (micType classifier))
+        traitInfo <- Map.lookup trait (csTraits state)
+        guard (Map.lookup field (tiMemberModes traitInfo) == Just Parametric)
+        guard (Map.lookup field (tiMemberQs traitInfo) == Just Q0)
 
 applicationShapeFailure :: Diagnostic -> Bool
 applicationShapeFailure diagnostic =
