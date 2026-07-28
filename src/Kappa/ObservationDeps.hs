@@ -511,6 +511,7 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VQuote _ slots -> any (go seen) slots
           VSort {} -> False
           VLevel {} -> False
+          VUniverseLift _ _ _ inner -> go seen inner
           VArithmeticProof certificate ->
             getAny
               (foldMapArithmeticCertificate (Any . go seen) certificate)
@@ -569,6 +570,8 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VQuote syntax slots -> VQuote syntax (map (go resolving) slots)
           VSort {} -> value
           VLevel {} -> value
+          VUniverseLift from to evidence inner ->
+            VUniverseLift from to evidence (go resolving inner)
           VLit {} -> value
           VRef {} -> value
           VArr {} -> value
@@ -855,7 +858,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
           | (index, evidenceTerm) <-
               zip [0 ..]
                 ( map apeEvidence (acProviders certificate)
-                    ++ acNaturalVariables certificate
+                    ++ map avTerm (acVariables certificate)
                     ++ map aaProposition (acAssumptions certificate)
                     ++ [acGoal certificate]
                 )
@@ -890,8 +893,14 @@ observationDependencies oracle bindings expected = go [] bindings expected
                  _ -> True)
               dependencies
       CRecordV fields -> recordDependencies path env wanted fields
-      CProjM mode receiver field -> projectionDependencies path env mode receiver field Nothing
-      CProjAtM mode receiver field index -> projectionDependencies path env mode receiver field (Just index)
+      CProjM mode receiver field ->
+        case recordProjectionValue field Nothing receiver of
+          Just value -> go (child path 0) env wanted value
+          Nothing -> projectionDependencies path env mode receiver field Nothing
+      CProjAtM mode receiver field index ->
+        case recordProjectionValue field (Just index) receiver of
+          Just value -> go (child path 0) env wanted value
+          Nothing -> projectionDependencies path env mode receiver field (Just index)
       CVariantT members -> Set.unions
         [go (child path index) env Nothing member | (index, member) <- zip [0 ..] members]
       CInject _ value -> go (child path 0) env Nothing value
@@ -1404,6 +1413,22 @@ observationDependencies oracle bindings expected = go [] bindings expected
           mode <- ooProjectionMode oracle classifier name
           pure (mode, ooProjectionType oracle (length env) classifier name)
 
+    -- Record projection is a definitional reduction. Analyzing the complete
+    -- literal receiver is both imprecise and violates beta/zeta invariance:
+    -- dependencies in unselected fields would taint the result, and an
+    -- otherwise well-typed generated literal has no standalone interface from
+    -- which to recover field modes. For stored-offset projections, reduce only
+    -- when the authenticated name and physical index agree; malformed KCore
+    -- remains on the generic fail-closed path.
+    recordProjectionValue field storedIndex = \case
+      CRecordV fields -> case storedIndex of
+        Nothing -> lookup field fields
+        Just index -> do
+          (storedField, value) <- listAt index fields
+          guard (storedField == field)
+          pure value
+      _ -> Nothing
+
     projectionDependencies path env mode receiver field storedIndex =
       let receiverDeps = go (child path 0) env Nothing receiver
           receiverType = inferAt env receiver
@@ -1501,7 +1526,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CPWild -> []
       CPVarM mode _ -> [(mode, expectedType)]
       CPLit _ -> []
-      CPCtorM existentialModes constructor universes patterns ->
+      CPCtorM existentialModes bridges constructor universes patterns ->
         let explicitSites = do
               constructorType <- ooConstructorType oracle constructor (Just universes)
               scrutineeType <- expectedType
@@ -1509,6 +1534,9 @@ observationDependencies oracle bindings expected = go [] bindings expected
                 ctx (ooProvisionalUniverseMetadata oracle) depth
                 (length patterns) constructorType scrutineeType
          in [(mode, Nothing) | mode <- existentialModes]
+              ++ replicate
+                (constructorBridgeBinderCount bridges)
+                (Parametric, Nothing)
               ++ case explicitSites of
                    Just sites -> concat
                      [ patternSites depth (Just fieldType) pattern'

@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+
+getOption :
+    Monad m =>
+    (@d : MonadRef m) ->
+    (A : Type) ->
+    d.Ref (Option A) ->
+    m Unit
+let getOption (@d : MonadRef m) A r = do
+    let parametric get = \() -> d.readRef r
+    let _ <- d.readRef r
+    pure Unit

@@ -3,6 +3,8 @@
 -- bounded by its closed scalar count (Spec 6.3 names the counted unit;
 -- there is no ambiguous String length), and a List bounded by its closed
 -- length all discharge by closed computation, not by range machinery.
+import std.unicode.(scalarCount)
+
 type TrueBool : Type =
     Refined Bool (\value -> value = True)
 

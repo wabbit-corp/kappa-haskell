@@ -1,0 +1,22 @@
+-- §14.3.3 / §16.3.3: a trait-evidence goal may return the deterministic
+-- representative projected from multiple symbolic local roots because
+-- IsSubsingleton supplies their coherence proof.
+module main
+
+trait Root (0 a : Type)
+
+trait Root a => LeftRoot (0 a : Type)
+
+trait Root a => RightRoot (0 a : Type)
+
+coherentWitness :
+    forall (a : Type).
+    (@left : LeftRoot a) ->
+    (@right : RightRoot a) ->
+    Root a
+
+let coherentWitness @left @right =
+    witness
+
+--! mode check
+--! assertNoErrors

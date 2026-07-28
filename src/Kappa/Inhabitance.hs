@@ -41,10 +41,18 @@ module Kappa.Inhabitance
   , multiplySummaries
   , addSummaries
   , inhabitanceSummary
+  , symbolicCardinality
   ) where
 
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Kappa.Cardinality
+  ( CardExpr
+  , cardAdd
+  , cardLiteral
+  , cardMul
+  , normalizeCardExpr
+  )
 import Kappa.Core (GName, Value (..), pattern VRecordT)
 import Numeric.Natural (Natural)
 
@@ -139,6 +147,17 @@ data InhabEnv m = InhabEnv
   { -- | Reduce a value to weak-head normal form (NbE force, honouring active
     -- refinement facts). The analysis only ever inspects forced heads.
     ieForce :: Value -> m Value
+  , -- | Recognize a compiler-authenticated finite family application and
+    -- return its exact source cardinality. The callback is deliberately
+    -- semantic rather than spelling-based: the elaborator owns resolved
+    -- declaration identity and index normalization, while this generic
+    -- analysis owns the cardinality projection. Returning 'Nothing' keeps the
+    -- ordinary structural analysis in control.
+    ieExactFiniteFamilyCardinality :: Value -> m (Maybe Natural)
+  , -- | Symbolic counterpart of 'ieExactFiniteFamilyCardinality'. The lexical
+    -- depth lets the elaborator quote stable Nat indices into scope-correct
+    -- KCore terms.
+    ieExactSymbolicFamilyCardinality :: Int -> Value -> m (Maybe CardExpr)
   , -- | Classify a forced 'VGlobN' head. 'Nothing' means "not a closed
     -- algebraic data type I should reason about structurally" (parameterised
     -- abstract types, type families, opaque imports, …) and the caller must
@@ -231,31 +250,35 @@ inhabitanceSummary env purpose ty0
   where
     go :: Set GName -> Value -> m InhabitanceSummary
     go seen ty = do
-      t <- ieForce env ty
-      case t of
-        -- Records / closed nondependent products: exact multiplication.
-        VRecordT fields -> productOf seen (map snd fields)
-        -- Closed `Variant` rows: exact addition over the member types.
-        VVariantT members -> sumOf seen members
-        -- A nominal data head. First consult the no-confusion / evidence rules
-        -- that key on the type as a whole, then fall through to the structural
-        -- data-type analysis.
-        VGlobal g _ _ -> do
-          mverdict <- ieEqualityVerdict env t
-          case mverdict of
-            Just True -> pure Empty
-            Just False -> pure Contractible
-            Nothing -> do
+      mfinite <- ieExactFiniteFamilyCardinality env ty
+      case mfinite of
+        Just cardinality -> pure (canonicalizeFinite cardinality)
+        Nothing -> do
+          t <- ieForce env ty
+          case t of
+            -- Records / closed nondependent products: exact multiplication.
+            VRecordT fields -> productOf seen (map snd fields)
+            -- Closed `Variant` rows: exact addition over the member types.
+            VVariantT members -> sumOf seen members
+            -- A nominal data head. First consult the no-confusion / evidence rules
+            -- that key on the type as a whole, then fall through to the structural
+            -- data-type analysis.
+            VGlobal g _ _ -> do
+              mverdict <- ieEqualityVerdict env t
+              case mverdict of
+                Just True -> pure Empty
+                Just False -> pure Contractible
+                Nothing -> do
+                  evid <- classifyByEvidence env t
+                  case evid of
+                    Just s -> pure s
+                    Nothing -> dataHead seen g t
+            _ -> do
+              -- Not a structural-fragment head: still admit proof-classification
+              -- evidence (IsEmpty/IsContr/IsSubsingleton) keyed on the type, then
+              -- conservatively give up.
               evid <- classifyByEvidence env t
-              case evid of
-                Just s -> pure s
-                Nothing -> dataHead seen g t
-        _ -> do
-          -- Not a structural-fragment head: still admit proof-classification
-          -- evidence (IsEmpty/IsContr/IsSubsingleton) keyed on the type, then
-          -- conservatively give up.
-          evid <- classifyByEvidence env t
-          pure (maybe Unknown id evid)
+              pure (maybe Unknown id evid)
 
     -- A nominal data type. Guard against recursive unfolding, then summarise as
     -- a closed sum over its constructors with per-constructor GADT refinement.
@@ -302,6 +325,71 @@ inhabitanceSummary env purpose ty0
         CtorRefined fieldTys -> productOf seen fieldTys
         CtorContradiction -> pure Empty -- ground-index no-confusion: arm is Empty
         CtorIndexUnknown -> pure Unknown -- rigid index: emptiness undecidable
+
+-- | Exact symbolic cardinality for the required first-order finite fragment.
+-- The result is absent rather than guessed when any component is unsupported.
+-- Recursive nominal heads are guarded exactly as in 'inhabitanceSummary'.
+symbolicCardinality
+  :: forall m
+   . Monad m
+  => InhabEnv m
+  -> Int
+  -> Value
+  -> m (Maybe CardExpr)
+symbolicCardinality env depth ty0 =
+  fmap normalizeCardExpr <$> go Set.empty ty0
+  where
+    go :: Set GName -> Value -> m (Maybe CardExpr)
+    go seen ty = do
+      mspecial <- ieExactSymbolicFamilyCardinality env depth ty
+      case mspecial of
+        Just cardinality -> pure (Just cardinality)
+        Nothing -> do
+          normalized <- ieForce env ty
+          case normalized of
+            VRecordT fields -> productOf seen (map snd fields)
+            VVariantT members -> sumOf seen members
+            VGlobal global _ _ -> dataHead seen global normalized
+            _ -> concreteFallback normalized
+
+    dataHead seen global scrutinee
+      | global `Set.member` seen = pure Nothing
+      | otherwise = do
+          classification <- ieClassifyHead env scrutinee
+          case classification of
+            Nothing -> concreteFallback scrutinee
+            Just (IsData refined constructors) -> do
+              arms <- mapM (arm (Set.insert global seen) refined) constructors
+              pure (foldExact cardAdd (cardLiteral 0) arms)
+
+    arm seen scrutinee constructor = do
+      fiber <- ieCtorFiber env scrutinee constructor
+      case fiber of
+        CtorRefined fields -> productOf seen fields
+        CtorContradiction -> pure (Just (cardLiteral 0))
+        CtorIndexUnknown -> pure Nothing
+
+    productOf seen fields = do
+      factors <- mapM (go seen) fields
+      pure (foldExact cardMul (cardLiteral 1) factors)
+
+    sumOf seen members = do
+      summands <- mapM (go seen) members
+      pure (foldExact cardAdd (cardLiteral 0) summands)
+
+    concreteFallback ty = do
+      summary <- inhabitanceSummary env SourceReachability ty
+      pure $ case summary of
+        Empty -> Just (cardLiteral 0)
+        Contractible -> Just (cardLiteral 1)
+        Finite cardinality -> Just (cardLiteral cardinality)
+        _ -> Nothing
+
+    foldExact combine identity values =
+      foldr
+        (\value accumulated -> combine <$> value <*> accumulated)
+        (Just identity)
+        values
 
 -- | Proof-classification evidence (§30.2.7). Precedence is exact-over-bound:
 -- 'IsEmpty' and 'IsContr' win over 'IsSubsingleton'. 'Nothing' means no

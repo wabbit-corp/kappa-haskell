@@ -18,8 +18,9 @@ petDog : Dog -> String
 let petDog (Dog name) = "pet " ++ name
 
 badPet : String
-let badPet = petDog (Cat "Whiskers")   --!! kappa.type.mismatch
+let badPet = petDog (Cat "Whiskers")   --!! kappa.application.argument-mismatch
 
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertDiagnosticFamily error kappa.type.mismatch
 
 -- NEGATIVE: binding a Cat value to a Dog annotation.
@@ -57,4 +58,3 @@ let ok3 = greet (Cat "Mia")
 
 ok4 : String
 let ok4 = greet (Dog "Buddy")
-

@@ -4,10 +4,8 @@
 --   souffle-lang #832 (subtyping not checked — crash instead of error).
 -- Spec: §16.1.7.1 argument checking; §6.1.5 integer-literal domains
 --   (family kappa.type.literal-domain-mismatch); §13.1 union membership;
---   §3.2.4 (family kappa.type.mismatch — §3.1 admits either the ordinary
---   expected-versus-actual family or kappa.application.argument-mismatch
---   for a mismatching argument, and this implementation reports a
---   checked-argument application in the ordinary family).
+--   §3.2.4 (ordinary family kappa.type.mismatch) and §16.1.7.1
+--   (application-boundary family kappa.application.argument-mismatch).
 -- Pins: incompatible values are rejected at every surface Souffle's
 -- "argument type is not a subtype" covers — wrong data type as an argument,
 -- an integer literal against a type with no FromInteger witness, and a
@@ -38,7 +36,7 @@ let ok2 = showNum (IntVal 7)
 
 -- NEGATIVE: passing SymbolLike where NumberLike is expected.
 bad1 : String
-let bad1 = showNum (StrVal "x")    --!! kappa.type.mismatch
+let bad1 = showNum (StrVal "x")    --!! kappa.application.argument-mismatch
 
 -- NEGATIVE: an integer literal where NumberLike is expected; NumberLike has
 -- no FromInteger witness, so no literal domain admits it (§6.1.5).
@@ -59,6 +57,7 @@ let bad3 = 99    --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertErrorCount 3
 
 -- STATUS(a0497523): PASS

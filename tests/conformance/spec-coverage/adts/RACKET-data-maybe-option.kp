@@ -4,8 +4,9 @@
 -- Pins: a user-declared parametric two-constructor optional type (Maybe/Option
 -- shape); every consumer match covers both constructors; the type parameter is
 -- threaded through map/bind/fromOpt/andOpt/guardedOpt via §11.3.3 implicit
--- universalization. Negatives: an Opt Bool argument where Opt Int is required,
--- and a non-Opt value at Opt type, are type mismatches.
+-- universalization. Negatives: an Opt Bool argument where Opt Int is required
+-- is an application-argument mismatch, while a non-Opt value checked at Opt
+-- type is an ordinary type mismatch.
 
 --! mode check
 
@@ -60,12 +61,13 @@ let okDefault = fromOpt 0 (OSome 42)
 
 -- NEGATIVE: mapOpt isPos demands Opt Int, but the argument is Opt Bool.
 badMap : Opt Bool
-let badMap = mapOpt isPos (OSome True)   --!! E_TYPE_MISMATCH
+let badMap = mapOpt isPos (OSome True)   --!! E_APPLICATION_ARGUMENT_MISMATCH
 
 -- NEGATIVE: a non-Opt value where Opt Int is expected.
 badOpt : Opt Int
 let badOpt = True    --!! E_TYPE_MISMATCH
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertEval okDefault 42
 -- STATUS(a0497523): PASS

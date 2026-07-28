@@ -11,6 +11,9 @@ module Kappa.CoreOps
   , mapTermWithDepth
   , mapPatternConstructorUniverses
   , patBindersC
+  , CorePatternDecision (..)
+  , matchCorePattern
+  , instantiateCorePatternBody
   , mentionsGlobal
   , projectionDepsOf
   , substGlobal
@@ -48,7 +51,7 @@ module Kappa.CoreOps
 import Control.Applicative ((<|>))
 import Data.Bifunctor (bimap)
 import qualified Data.ByteString as BS
-import Data.List (nub)
+import Data.List (foldl', nub)
 import Data.Monoid (All (..), Any (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -478,9 +481,10 @@ mapPatternConstructorUniverses rewrite =
       CPWild -> CPWild
       CPVarM mode name -> CPVarM mode name
       CPLit literal -> CPLit literal
-      CPCtorM existentialModes constructor universes patterns ->
+      CPCtorM existentialModes bridges constructor universes patterns ->
         CPCtorM
           existentialModes
+          bridges
           constructor
           (transform constructor universes)
           (map (goPattern transform) patterns)
@@ -514,15 +518,15 @@ mapTermAndPatternsWithDepth f rewritePattern = go
 
     goItem d = \case
       KBind q p t w ->
-        let p' = rewritePattern p
+        let p' = rewritePatternAt d p
          in (KBind q p' (go d t) w, d + patBindersC p')
       KLet q p t ->
-        let p' = rewritePattern p
+        let p' = rewritePatternAt d p
          in (KLet q p' (go d t), d + patBindersC p')
       KLetQ p t mElse ->
-        let p' = rewritePattern p
+        let p' = rewritePatternAt d p
             rewriteRecovery (rp, e) =
-              let rp' = rewritePattern rp
+              let rp' = rewritePatternAt d rp
                in (rp', go (d + patBindersC rp') e)
          in
           ( KLetQ p' (go d t) (fmap rewriteRecovery mElse)
@@ -538,7 +542,7 @@ mapTermAndPatternsWithDepth f rewritePattern = go
       KWhile label condition body mElse ->
         (KWhile label (goCondition d condition) (goItems d body) (fmap (goItems d) mElse), d)
       KFor label p source body mElse ->
-        let p' = rewritePattern p
+        let p' = rewritePatternAt d p
          in
           ( KFor label p' (go d source)
               (goItems (d + patBindersC p') body)
@@ -549,7 +553,7 @@ mapTermAndPatternsWithDepth f rewritePattern = go
         (KIf [(go d condition, goItems d body) | (condition, body) <- alternatives] (fmap (goItems d) mElse), d)
       KDefer label action -> (KDefer label (go d action), d)
       KUsing p acquire release ->
-        (KUsing (rewritePattern p) (go d acquire) (go d release), d)
+        (KUsing (rewritePatternAt d p) (go d acquire) (go d release), d)
       KSubDo label body -> (KSubDo label (goItems d body), d)
 
     goCondition d = \case
@@ -612,9 +616,59 @@ mapTermAndPatternsWithDepth f rewritePattern = go
         CQuote qs slots -> CQuote qs (map (go d) slots)
 
     goAlt d (CaseAlt p gd b) =
-      let p' = rewritePattern p
+      let p' = rewritePatternAt d p
           d' = d + patBindersC p'
        in CaseAlt p' (go d' <$> gd) (go d' b)
+
+    rewritePatternAt d =
+      transformPatternTerms d . rewritePattern
+
+    -- Bridge types and proofs are ordinary Core terms checked before their
+    -- corresponding erased binder is introduced. Traverse them under the
+    -- exact left-to-right pattern telescope so de Bruijn rewrites cannot
+    -- capture or skip branch evidence.
+    transformPatternTerms d = \case
+      CPWild -> CPWild
+      CPVarM mode name -> CPVarM mode name
+      CPLit literal -> CPLit literal
+      CPCtorM existentialModes bridges constructor universes patterns ->
+        let bridgeDepth = d + length existentialModes
+            (bridges', fieldDepth) = transformBridges bridgeDepth bridges
+            patterns' = fst (transformPatternList fieldDepth patterns)
+         in CPCtorM existentialModes bridges' constructor universes patterns'
+      CPTuple patterns ->
+        CPTuple (fst (transformPatternList d patterns))
+      CPRecordM fields rest ->
+        let (patterns', _) = transformPatternList d (map snd fields)
+         in CPRecordM (zip (map fst fields) patterns') rest
+      CPInject tag pattern' ->
+        CPInject tag (transformPatternTerms d pattern')
+      CPInjectRestM mode tags -> CPInjectRestM mode tags
+      CPOr patterns permutations ->
+        CPOr (map (transformPatternTerms d) patterns) permutations
+      CPAsM mode name pattern' ->
+        CPAsM mode name (transformPatternTerms (d + 1) pattern')
+
+    transformPatternList d [] = ([], d)
+    transformPatternList d (pattern' : rest) =
+      let pattern'' = transformPatternTerms d pattern'
+          d' = d + patBindersC pattern''
+          (rest', endDepth) = transformPatternList d' rest
+       in (pattern'' : rest', endDepth)
+
+    transformBridges d [] = ([], d)
+    transformBridges d (bridge : rest) =
+      case bridge of
+        ConstructorForcedEquality left right ->
+          let bridge' =
+                ConstructorForcedEquality (go d left) (go d right)
+              (rest', endDepth) = transformBridges d rest
+           in (bridge' : rest', endDepth)
+        ConstructorPropositionalBridge ty proof ->
+          let bridge' =
+                ConstructorPropositionalBridge (go d ty) (go d proof)
+              (rest', endDepth) = transformBridges (d + 1) rest
+           in (bridge' : rest', endDepth)
 
 -- | Number of de Bruijn binders introduced by a core pattern.  This is the
 -- structural binder count used when descending into match guards/bodies and
@@ -628,7 +682,10 @@ patBindersC = \case
   CPLit _ -> 0
   -- @nEx@ existential-skolem placeholder slots (§17.1) sit below the field
   -- binders; they push real runtime slots, so they count.
-  CPCtorM existentialModes _ _ ps -> length existentialModes + sum (map patBindersC ps)
+  CPCtorM existentialModes bridges _ _ ps ->
+    length existentialModes
+      + constructorBridgeBinderCount bridges
+      + sum (map patBindersC ps)
   CPTuple ps -> sum (map patBindersC ps)
   CPRecordM fs rest -> sum (map (patBindersC . snd) fs) + case rest of
     Just (_, nm) | not (T.null nm) -> 1
@@ -639,6 +696,123 @@ patBindersC = \case
     p : _ -> patBindersC p
     [] -> 0
   CPAsM _ _ p -> 1 + patBindersC p
+
+-- | A first-order decision for matching a checked Core pattern against a
+-- syntactically known Core value.  'CorePatternUndecided' is distinct from a
+-- definite mismatch: reducers must preserve the whole match when the
+-- scrutinee is neutral or an erased existential value would have to be
+-- reconstructed.
+data CorePatternDecision
+  = CorePatternMatched ![Term]
+  | CorePatternMismatch
+  | CorePatternUndecided
+  deriving (Eq, Show)
+
+-- | Match only representation-independent Core values.  The returned terms
+-- are in the same outer-to-inner structural order as 'Kappa.Eval.matchPat';
+-- callers instantiate a branch with 'instantiateCorePatternBody'.
+matchCorePattern :: CorePat -> Term -> CorePatternDecision
+matchCorePattern pattern' value =
+  case (pattern', value) of
+    (CPWild, _) -> CorePatternMatched []
+    (CPVarM _ _, _) -> CorePatternMatched [value]
+    (CPLit expected, CLit actual)
+      | expected == actual -> CorePatternMatched []
+      | otherwise -> CorePatternMismatch
+    (CPCtorM existentialModes bridges expected _ fields, CCtorI actual _ _ arguments)
+      | expected /= actual -> CorePatternMismatch
+      | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
+      | length fields <= length arguments ->
+          combinePatternDecisions
+            [ matchCorePattern field (caTerm argument)
+            | (field, argument) <-
+                zip fields (drop (length arguments - length fields) arguments)
+            ]
+      | otherwise -> CorePatternMismatch
+    (CPCtorM existentialModes bridges expected _ fields, CCtor actual _ arguments)
+      | expected /= actual -> CorePatternMismatch
+      | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
+      | length fields <= length arguments ->
+          combinePatternDecisions
+            (zipWith matchCorePattern fields (drop (length arguments - length fields) arguments))
+      | otherwise -> CorePatternMismatch
+    (CPTuple fields, CRecordV actual)
+      | length fields == length actual ->
+          combinePatternDecisions
+            (zipWith matchCorePattern fields (map snd actual))
+      | otherwise -> CorePatternMismatch
+    (CPRecordM fields rest, CRecordV actual) ->
+      case traverse (\(name, field) -> (field,) <$> lookup name actual) fields of
+        Nothing -> CorePatternMismatch
+        Just selected ->
+          case combinePatternDecisions
+            [matchCorePattern field fieldValue | (field, fieldValue) <- selected] of
+            CorePatternMatched bindings ->
+              case rest of
+                Just (_, name) | not (T.null name) ->
+                  let selectedNames = map fst fields
+                   in CorePatternMatched
+                        ( bindings
+                            ++ [ CRecordV
+                                  [ entry
+                                  | entry@(fieldName, _) <- actual
+                                  , fieldName `notElem` selectedNames
+                                  ]
+                               ]
+                        )
+                _ -> CorePatternMatched bindings
+            decision -> decision
+    (CPInject expected field, CInject actual payload)
+      | expected == actual -> matchCorePattern field payload
+      | otherwise -> CorePatternMismatch
+    (CPInjectRestM _ excluded, CInject actual _)
+      | actual `elem` excluded -> CorePatternMismatch
+      | otherwise -> CorePatternMatched [value]
+    (CPOr alternatives permutations, _) ->
+      chooseAlternative
+        [ reorder permutation (matchCorePattern alternative value)
+        | (alternative, permutation) <- zip alternatives permutations
+        ]
+    (CPAsM _ _ inner, _) ->
+      case matchCorePattern inner value of
+        CorePatternMatched bindings -> CorePatternMatched (value : bindings)
+        decision -> decision
+    _ -> CorePatternUndecided
+  where
+    reorder permutation = \case
+      CorePatternMatched bindings
+        | all (\index -> index >= 0 && index < length bindings) permutation ->
+            CorePatternMatched [bindings !! index | index <- permutation]
+        | otherwise -> CorePatternUndecided
+      decision -> decision
+
+    chooseAlternative [] = CorePatternMismatch
+    chooseAlternative (decision : rest) =
+      case decision of
+        CorePatternMatched {} -> decision
+        CorePatternMismatch -> chooseAlternative rest
+        CorePatternUndecided ->
+          case chooseAlternative rest of
+            CorePatternMatched {} -> CorePatternUndecided
+            _ -> CorePatternUndecided
+
+combinePatternDecisions :: [CorePatternDecision] -> CorePatternDecision
+combinePatternDecisions decisions
+  | any (== CorePatternMismatch) decisions = CorePatternMismatch
+  | any (== CorePatternUndecided) decisions = CorePatternUndecided
+  | otherwise =
+      CorePatternMatched
+        (concat [bindings | CorePatternMatched bindings <- decisions])
+
+-- | Eliminate all binders introduced by one successfully matched pattern.
+-- 'matchCorePattern' returns source-order bindings, while de Bruijn index zero
+-- denotes the last binding, so substitution proceeds in reverse order.
+instantiateCorePatternBody :: Int -> [Term] -> Term -> Term
+instantiateCorePatternBody outerDepth bindings body =
+  foldl'
+    (\body binding -> substTopTermAt outerDepth binding body)
+    body
+    (reverse bindings)
 
 -- | Whether a global name occurs anywhere in the pure Core term tree.  This
 -- deliberately uses the depth-aware fold even though it does not inspect depth,
@@ -864,10 +1038,18 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
        in k' : goItems seen resolve d' ks
 
     goItem seen resolve d = \case
-      KBind q p t w -> (KBind q (goPat resolve p) (go seen resolve d t) w, d + patBindersC p)
-      KLet q p t -> (KLet q (goPat resolve p) (go seen resolve d t), d + patBindersC p)
+      KBind q p t w -> (KBind q (goPat seen resolve d p) (go seen resolve d t) w, d + patBindersC p)
+      KLet q p t -> (KLet q (goPat seen resolve d p) (go seen resolve d t), d + patBindersC p)
       KLetQ p t mElse ->
-        ( KLetQ (goPat resolve p) (go seen resolve d t) (fmap (\(rp, e) -> (goPat resolve rp, go seen resolve (d + patBindersC rp) e)) mElse)
+        ( KLetQ
+            (goPat seen resolve d p)
+            (go seen resolve d t)
+            (fmap
+              (\(rp, e) ->
+                ( goPat seen resolve d rp
+                , go seen resolve (d + patBindersC rp) e
+                ))
+              mElse)
         , d + patBindersC p
         )
       KExpr t -> (KExpr (go seen resolve d t), d)
@@ -877,10 +1059,10 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       k@KBreak {} -> (k, d)
       k@KContinue {} -> (k, d)
       KWhile l c b e -> (KWhile l (goCond seen resolve d c) (goItems seen resolve d b) (fmap (goItems seen resolve d) e), d)
-      KFor l p s b e -> (KFor l (goPat resolve p) (go seen resolve d s) (goItems seen resolve (d + patBindersC p) b) (fmap (goItems seen resolve d) e), d)
+      KFor l p s b e -> (KFor l (goPat seen resolve d p) (go seen resolve d s) (goItems seen resolve (d + patBindersC p) b) (fmap (goItems seen resolve d) e), d)
       KIf alts e -> (KIf [(go seen resolve d c, goItems seen resolve d b) | (c, b) <- alts] (fmap (goItems seen resolve d) e), d)
       KDefer ml t -> (KDefer ml (go seen resolve d t), d)
-      KUsing p a r -> (KUsing (goPat resolve p) (go seen resolve d a) (go seen resolve d r), d)
+      KUsing p a r -> (KUsing (goPat seen resolve d p) (go seen resolve d a) (go seen resolve d r), d)
       KSubDo l b -> (KSubDo l (goItems seen resolve d b), d)
 
     goCond seen resolve d = \case
@@ -926,7 +1108,7 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
           (map (\argument -> argument {caTerm = go seen resolve d (caTerm argument)}) arguments)
       CMatch s ann alts ->
         CMatch (go seen resolve d s) (fmap (go seen resolve d) ann)
-          [ CaseAlt (goPat resolve p)
+          [ CaseAlt (goPat seen resolve d p)
               (fmap (go seen resolve (d + patBindersC p)) gd)
               (go seen resolve (d + patBindersC p) b)
           | CaseAlt p gd b <- alts
@@ -974,18 +1156,49 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
         , rfType = go seen resolve d (rfType field)
         }
 
-    goPat resolve = \case
+    goPat seen resolve d = \case
       CPWild -> CPWild
       CPVarM mode name -> CPVarM mode name
       CPLit literal -> CPLit literal
-      CPCtorM existentialModes constructor universes patterns ->
-        CPCtorM existentialModes constructor (map resolve universes) (map (goPat resolve) patterns)
-      CPTuple patterns -> CPTuple (map (goPat resolve) patterns)
-      CPRecordM fields rest -> CPRecordM [(name, goPat resolve pattern') | (name, pattern') <- fields] rest
-      CPInject tag pattern' -> CPInject tag (goPat resolve pattern')
+      CPCtorM existentialModes bridges constructor universes patterns ->
+        let bridgeDepth = d + length existentialModes
+            (bridges', fieldDepth) =
+              goBridges seen resolve bridgeDepth bridges
+            patterns' = fst (goPatList seen resolve fieldDepth patterns)
+         in CPCtorM existentialModes bridges' constructor (map resolve universes) patterns'
+      CPTuple patterns -> CPTuple (fst (goPatList seen resolve d patterns))
+      CPRecordM fields rest ->
+        let (patterns', _) = goPatList seen resolve d (map snd fields)
+         in CPRecordM (zip (map fst fields) patterns') rest
+      CPInject tag pattern' -> CPInject tag (goPat seen resolve d pattern')
       CPInjectRestM mode tags -> CPInjectRestM mode tags
-      CPOr patterns permutations -> CPOr (map (goPat resolve) patterns) permutations
-      CPAsM mode name pattern' -> CPAsM mode name (goPat resolve pattern')
+      CPOr patterns permutations -> CPOr (map (goPat seen resolve d) patterns) permutations
+      CPAsM mode name pattern' -> CPAsM mode name (goPat seen resolve (d + 1) pattern')
+
+    goPatList _ _ d [] = ([], d)
+    goPatList seen resolve d (pattern' : rest) =
+      let pattern'' = goPat seen resolve d pattern'
+          d' = d + patBindersC pattern''
+          (rest', endDepth) = goPatList seen resolve d' rest
+       in (pattern'' : rest', endDepth)
+
+    goBridges _ _ d [] = ([], d)
+    goBridges seen resolve d (bridge : rest) =
+      case bridge of
+        ConstructorForcedEquality left right ->
+          let bridge' =
+                ConstructorForcedEquality
+                  (go seen resolve d left)
+                  (go seen resolve d right)
+              (rest', endDepth) = goBridges seen resolve d rest
+           in (bridge' : rest', endDepth)
+        ConstructorPropositionalBridge ty proof ->
+          let bridge' =
+                ConstructorPropositionalBridge
+                  (go seen resolve d ty)
+                  (go seen resolve d proof)
+              (rest', endDepth) = goBridges seen resolve (d + 1) rest
+           in (bridge' : rest', endDepth)
 
     resolveTelescope _ telescope = telescope
 
@@ -1089,13 +1302,24 @@ termNodeLevels = \case
 -- principalization but remain visible to backend validation.
 corePatternLevels :: CorePat -> [Level]
 corePatternLevels = \case
-  CPCtorM _ _ universes patterns -> universes ++ concatMap corePatternLevels patterns
+  CPCtorM _ bridges _ universes patterns ->
+    universes
+      ++ concatMap
+        (\case
+          ConstructorForcedEquality left right ->
+            termLevels left ++ termLevels right
+          ConstructorPropositionalBridge ty proof ->
+            termLevels ty ++ termLevels proof)
+        bridges
+      ++ concatMap corePatternLevels patterns
   CPTuple patterns -> concatMap corePatternLevels patterns
   CPRecordM fields _ -> concatMap (corePatternLevels . snd) fields
   CPInject _ pattern' -> corePatternLevels pattern'
   CPOr patterns _ -> concatMap corePatternLevels patterns
   CPAsM _ _ pattern' -> corePatternLevels pattern'
   _ -> []
+  where
+    termLevels = foldTerm termNodeLevels itemPatternLevels
 
 itemPatternLevels :: KItem -> [Level]
 itemPatternLevels = \case

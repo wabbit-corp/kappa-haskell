@@ -15,8 +15,8 @@ decEven :
 
 let decEven x =
     if x % 2 == 0
-    then Yes refl
-    else No (\p -> match p case impossible)
+    then Dec.Yes refl
+    else Dec.No (\p -> match p case impossible)
 
 report :
     Option (Refined Nat (\value -> (value % 2 == 0) = True)) ->
@@ -29,8 +29,20 @@ let report result =
 
 main : UIO Unit
 let main = do
-    printlnString (report (tryRefine @(\(@0 x : Nat) -> witness) decEven 4))
-    printlnString (report (tryRefine @(\(@0 x : Nat) -> witness) decEven 5))
+    printlnString (report
+        (tryRefine
+            @Nat
+            @(\value -> (value % 2 == 0) = True)
+            @(\(@0 x : Nat) -> witness)
+            decEven
+            4))
+    printlnString (report
+        (tryRefine
+            @Nat
+            @(\value -> (value % 2 == 0) = True)
+            @(\(@0 x : Nat) -> witness)
+            decEven
+            5))
 
 --! assertNoErrors
 --! assertStdout "even\nodd\n"

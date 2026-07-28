@@ -1569,9 +1569,14 @@ pBinderBody sp allowDefault = implicitB <|> inoutB <|> explicitB
       susp <- pSuspension
       (recv, names) <- pBinderNames
       token TokColon
-      ty <- tyP
-      def <- pDefault
-      pure [Binder True prefix susp recv False n False (Just ty) def sp | n <- names]
+      -- §10.1 permits constructor defaults only on explicit named
+      -- parameters. An implicit constructor field therefore has no
+      -- type/default ambiguity at '=': equality is part of its full type.
+      -- Parsing it with the explicit-default grammar truncated
+      -- `(@0 proof : lhs = rhs)` to the non-type `lhs` and treated `rhs` as
+      -- an illegal default.
+      ty <- pExpr
+      pure [Binder True prefix susp recv False n False (Just ty) Nothing sp | n <- names]
     inoutB = do
       void $ try $ do
         n <- pIdent
@@ -3495,13 +3500,51 @@ pForall :: P Expr
 pForall = do
   start <- currentSpan
   pKeyword "forall"
-  bs <- concat <$> many1 pQuantBinder
+  (bs, continued) <- pQuantBinders
   token TokDot
-  pQuantBodyNewline
-  body <- pExpr
+  body <- pQuantBody continued
   EForall bs body <$> spanFrom start
 
--- the body of a quantifier may continue on the next line (§5.4)
+-- A quantifier telescope may continue below @forall@/@exists@. The layout
+-- block belongs to the telescope, so a body aligned with the quantifier
+-- resumes after its dedent; a body kept inside that block is parsed before
+-- the dedent. This is the expression-level counterpart of
+-- 'pDeclParamBinders'.
+pQuantBinders :: P ([Binder], Bool)
+pQuantBinders = do
+  inline <- concat <$> many pQuantBinder
+  continued <- optionMaybe . try $ do
+    pNewline
+    token TokIndent
+    first <- concat <$> many1 pQuantBinder
+    rest <- many . try $ do
+      void (many1 pNewline)
+      binders <- concat <$> many1 pQuantBinder
+      pure binders
+    pure (first ++ concat rest)
+  let binders = inline ++ fromMaybe [] continued
+  guard (not (null binders))
+  pure (binders, isJust continued)
+
+pQuantBody :: Bool -> P Expr
+pQuantBody telescopeContinued
+  | telescopeContinued =
+      try
+        ( do
+            pNewline
+            token TokDedent
+            pExpr
+        )
+        <|> do
+          body <- pExpr
+          void (many pNewline)
+          token TokDedent
+          pure body
+  | otherwise = do
+      pQuantBodyNewline
+      pExpr
+
+-- the body of an inline quantifier may continue on the next line (§5.4)
 pQuantBodyNewline :: P ()
 pQuantBodyNewline = do
   t <- peekToken
@@ -3520,10 +3563,9 @@ pExists :: P Expr
 pExists = do
   start <- currentSpan
   pKeyword "exists"
-  bs <- concat <$> many1 pQuantBinder
+  (bs, continued) <- pQuantBinders
   token TokDot
-  pQuantBodyNewline
-  body <- pExpr
+  body <- pQuantBody continued
   EExists bs body <$> spanFrom start
 
 -- forall/exists binders: a (b : T) (@0 c : T) (x y : m)

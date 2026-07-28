@@ -117,6 +117,7 @@ seededTypeUniverseArities =
     , (prel "Fiber", 2)
     , (prel "FiberRef", 1)
     , (prel "IO", 2)
+    , (prel "IsSubsingleton", 1)
     , (prel "IsTrait", 1)
     , (prel "List", 1)
     , (prel "Map", 2)
@@ -314,6 +315,17 @@ builtinState =
         -- implicit resolution when the head is a declared trait)
         (prel "IsTrait", opaqueTy (tyV (pi0 "t" tType tType)))
       , (prel "__isTraitWitness", opaqueTy (tyV (piI Q0 "t" tType (CApp Expl (tcon "IsTrait") (CVar 0)))))
+      , ( prel "__traitSubsingletonWitness"
+        , opaqueTy
+            ( tyV
+                ( piI Q0 "t" tType
+                    ( piI Q0 "_trait"
+                        (CApp Expl (tcon "IsTrait") (CVar 0))
+                        (CApp Expl (tcon "IsSubsingleton") (CVar 1))
+                    )
+                )
+            )
+        )
       ]
     coreUniverses = DeclarationUniverseTelescope 1 False
     coreEqUniverses = DeclarationUniverseTelescope 2 False
@@ -397,7 +409,6 @@ builtinState =
     tInt = tcon "Integer"
     tNat = tcon "Nat"
     tLevel = CGlob prelTypeLevel
-    tType1 = CSort (finiteLevel (1 :: Integer))
     synT a = CApp Expl (tcon "Syntax") a
     elabT a = CApp Expl (tcon "Elab") a
     elabTAt level a = CApp Expl (CGlobI (prel "Elab") [level]) a
@@ -1015,20 +1026,20 @@ builtinState =
       , -- §21.5/§21.9 elaboration-time reflection and diagnostics
         -- (interpreted by the elaborator's §21.8 Elab runner; stuck as
         -- values everywhere else)
-        prim "renderSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT tStr)))
-      , prim "syntaxOrigin" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT tOrigin)))
-      , prim "normalizeSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT (CVar 1)))))
-      , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType1 (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
-      , prim "whnfSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+        prim "renderSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT tStr)))
+      , prim "syntaxOrigin" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT tOrigin)))
+      , prim "normalizeSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+      , prim "withSyntaxOrigin" (tyV (piI Q0 "t" (tTypeAt 0) (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
+      , prim "whnfSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT (CVar 1)))))
       , -- §21.6 'typeOfSyntax': the type of a quoted expression, reified as
         -- 'Syntax Type' (forall t. Syntax t -> Elab (Syntax Type))
-        prim "typeOfSyntax" (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (synT tType))))
+        prim "typeOfSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT tType))))
       , -- §21.6 semantic-reflection convenience queries (elaboration-time;
         -- interpreted by 'Kappa.Check.runElab')
         prim "defEqSyntax"
-          (tyV (piI Q0 "a" tType1 (piI Q0 "b" tType1 (synT (CVar 1) ~> synT (CVar 1) ~> elabT tBool))))
+          (tyV (piI Q0 "a" (tTypeAt 0) (piI Q0 "b" (tTypeAt 1) (synT (CVar 1) ~> synT (CVar 1) ~> elabT tBool))))
       , prim "headSymbolSyntax"
-          (tyV (piI Q0 "t" tType1 (synT (CVar 0) ~> elabT (optionT (tcon "Symbol")))))
+          (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (optionT (tcon "Symbol")))))
       , -- §21.6 'sameSymbol' compares resolved declaration identity
         prim "sameSymbol" (tyV (tcon "Symbol" ~> tcon "Symbol" ~> tBool))
       , -- §23 staged code: '.< e >.' elaborates to '__codeQuote e' (the
@@ -2216,6 +2227,29 @@ preludeSource =
     , "    case Nat.Zero -> __transport zeroCase"
     , "    case Nat.Succ predecessor -> __transport (successorCase (Fin predecessor @(unsafeAssertProof \"Fin successor elimination preserves the bound\")))"
     , ""
+    , -- The worker recurses on the retained ordinal, not on the erased bound.
+      -- Its predecessor-bound changes are justified by the Fin proof and are
+      -- transported only through erased indices; runtime computation is the
+      -- ordinary zero/successor fold required by §28.2.
+      "__finBoundPred : Nat -> Nat"
+    , "let __finBoundPred n ="
+    , "    match n"
+    , "    case Nat.Zero -> Nat.Zero"
+    , "    case Nat.Succ predecessor -> predecessor"
+    , ""
+    , "__finInductionByValue : forall (parametric 0 motive : (k : Nat) -> Fin k -> Type). (forall (k : Nat). motive (natAdd k 1) finZero) -> (forall (k : Nat) (i : Fin k). motive k i -> motive (natAdd k 1) (finSucc i)) -> forall (n : Nat). (value : Nat) -> (@0 isLt : (value < n) = True) -> motive n (Fin value @isLt)"
+    , "let __finInductionByValue @motive zeroCase successorCase @n value @isLt ="
+    , "    match value"
+    , "    case Nat.Zero -> __transport (zeroCase @(__finBoundPred n))"
+    , "    case Nat.Succ predecessor ->"
+    , "        let predecessorIndex : Fin (__finBoundPred n) = Fin predecessor @(unsafeAssertProof \"Fin induction predecessor preserves the reduced bound\")"
+    , "        let induction : motive (__finBoundPred n) predecessorIndex = __finInductionByValue zeroCase successorCase @(__finBoundPred n) predecessorIndex.value @predecessorIndex.isLt"
+    , "        __transport (successorCase @(__finBoundPred n) @predecessorIndex induction)"
+    , ""
+    , "finInduction : forall (n : Nat) (parametric 0 motive : (k : Nat) -> Fin k -> Type). (forall (k : Nat). motive (natAdd k 1) finZero) -> (forall (k : Nat) (i : Fin k). motive k i -> motive (natAdd k 1) (finSucc i)) -> (i : Fin n) -> motive n i"
+    , "let finInduction @n @motive zeroCase successorCase i ="
+    , "    __transport (__finInductionByValue zeroCase successorCase @n i.value @i.isLt)"
+    , ""
     , "instance IsSet (Fin n)"
     , ""
     , "instance Eq (Fin n) ="
@@ -2633,6 +2667,27 @@ preludeSource =
       -- unreachable under the supplied proof).
       "arrayIndex : forall (a : Type). (xs : Array a) -> (i : Nat) -> (@_ : (i < arrayLength xs) = True) -> a"
     , "let arrayIndex xs i = __arrayIndexUnsafe xs (natToInt i)"
+    , ""
+    , "sizedArrayLength : forall (n : Nat) (a : Type). SizedArray n a -> Nat"
+    , "let sizedArrayLength xs ="
+    , "    match xs"
+    , "    case MkSizedArray elements -> natOfInt (listLength elements)"
+    , ""
+    , "__sizedArrayIndexNat : forall (n : Nat) (a : Type). (xs : SizedArray n a) -> (i : Nat) -> (@_ : (i < n) = True) -> a"
+    , "let __sizedArrayIndexNat xs i ="
+    , "    match xs"
+    , "    case MkSizedArray elements -> __arrayIndexUnsafe (__arrayFromList elements) (natToInt i)"
+    , ""
+    , "sizedArrayIndex : forall (n : Nat) (a : Type). SizedArray n a -> Fin n -> a"
+    , "let sizedArrayIndex xs i = __sizedArrayIndexNat xs i.value @i.isLt"
+    , ""
+    , "sizedArrayToArray : forall (n : Nat) (a : Type). SizedArray n a -> Array a"
+    , "let sizedArrayToArray xs ="
+    , "    match xs"
+    , "    case MkSizedArray elements -> __arrayFromList elements"
+    , ""
+    , "arrayAsSized : forall (a : Type). (xs : Array a) -> exists (n : Nat). SizedArray n a"
+    , "let arrayAsSized xs = seal exists (n = arrayLength xs). MkSizedArray (__arrayToList xs) as exists (n : Nat). SizedArray n a"
     , ""
     , "setEmpty : forall (a : Type). (@_ : Eq a) -> Set a"
     , "let setEmpty = __setFromList Nil"

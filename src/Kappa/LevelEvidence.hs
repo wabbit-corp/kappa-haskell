@@ -5,6 +5,7 @@
 -- never recover proof authority by inspecting a Core term's source shape.
 module Kappa.LevelEvidence
   ( coreTypeIsTypeLevel
+  , scopeRecordFields
   , scopeRecordLevelAssumption
   , scopeRecordLevelFields
   ) where
@@ -31,34 +32,48 @@ coreTypeIsTypeLevel = \case
   CSchemaLift _ _ _ _ _ _ _ _ inner -> coreTypeIsTypeLevel inner
   _ -> False
 
--- | Replace record-telescope-local field identities by the rigid level locals
--- introduced by the already typed preceding fields. Field names are unique in
--- a checked record telescope, so the field metadata is a semantic binder
--- identity here, not a source-name lookup. Unknown fields remain unchanged and
--- are rejected by the finalized-Core scope validator.
-scopeRecordLevelFields :: Int -> Int -> Map Text Int -> Term -> Term
-scopeRecordLevelFields outerDepth fieldCount fields =
+-- | Replace record-telescope-local projections by the binders introduced for
+-- already typed preceding fields. Field names are unique in a checked record
+-- telescope, so the field metadata is a semantic binder identity here, not a
+-- source-name lookup. Unknown and forward fields remain unchanged and are
+-- rejected by finalized-Core scope validation.
+scopeRecordFields :: Int -> Int -> Map Text Int -> Map Text Int -> Term -> Term
+scopeRecordFields outerDepth fieldCount fields levelFields =
   zonkTermWith (\_ _ -> Nothing) scopeLevel scopedDepth
     . mapTermWithDepth scopeProjection scopedDepth
     . shiftTerm fieldCount 0
   where
     scopedDepth = outerDepth + fieldCount
-    scopeProjection _ = \case
+    scopeProjection depth = \case
       CProjM _ (CGlobal receiver []) field
         | receiver == prelThis
-        , Just level <- Map.lookup field fields -> Just (CLevel (LVar level))
+        , Just level <- Map.lookup field levelFields ->
+            Just (CLevel (LVar level))
+        | receiver == prelThis
+        , Just level <- Map.lookup field fields ->
+            Just (CVar (depth - level - 1))
       CProjAtM _ (CGlobal receiver []) field _
         | receiver == prelThis
-        , Just level <- Map.lookup field fields -> Just (CLevel (LVar level))
+        , Just level <- Map.lookup field levelFields ->
+            Just (CLevel (LVar level))
+        | receiver == prelThis
+        , Just level <- Map.lookup field fields ->
+            Just (CVar (depth - level - 1))
       _ -> Nothing
     scopeLevel = \case
       LField _ field
-        | Just level <- Map.lookup field fields -> LVar level
+        | Just level <- Map.lookup field levelFields -> LVar level
       LSucc level -> levelSucc (scopeLevel level)
       LAdd lhs rhs -> levelAdd (scopeLevel lhs) (scopeLevel rhs)
       LMax lhs rhs -> levelMax (scopeLevel lhs) (scopeLevel rhs)
       LNeutral atom -> LNeutral (mapNeutralLevelAtomLevels scopeLevel atom)
       other -> other
+
+-- | Scope the TypeLevel subset of preceding record fields and then rewrite
+-- their authenticated level expressions to the same rigid locals.
+scopeRecordLevelFields :: Int -> Int -> Map Text Int -> Term -> Term
+scopeRecordLevelFields outerDepth fieldCount fields =
+  scopeRecordFields outerDepth fieldCount fields fields
 
 -- | Scope the authenticated assumption metadata of a dependent record field
 -- by the same field-identity map used for its type. The metadata and term must

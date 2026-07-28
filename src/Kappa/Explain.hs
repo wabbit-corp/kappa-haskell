@@ -425,6 +425,8 @@ registry =
       "A KCoreText artifact declares a well-formed schema version that this compiler does not support."
   , ent "E_KCORE_LEVEL_CERTIFICATE_INVALID" (Just "kappa.kcore.level-certificate-invalid")
       "A KCoreText level certificate is malformed, out of scope, or does not prove its claimed universe relation."
+  , ent "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID" (Just "kappa.kcore.arithmetic-certificate-invalid")
+      "A KCoreText arithmetic certificate is malformed, out of scope, or does not prove its claimed arithmetic relation."
   , ent "E_KCORE_SCHEMA_CERTIFICATE_INVALID" (Just "kappa.kcore.schema-certificate-invalid")
       "A KCoreText nominal action certificate is missing, stale, forged, unsupported, or fails independent replay (§30.2.1B)."
   , ent "E_UNSOLVED_METAVARIABLE" (Just "kappa.type.unsolved-metavariable")
@@ -640,6 +642,8 @@ registry =
       "'skip'/'take' paging is applied to an unordered pipeline (§20.3.3)."
   , ent "E_SINK_ITEM_MISMATCH" (Just "kappa-hs.query.sink")
       "A comprehension's yield item type does not match the sink collection's element shape (§20.9)."
+  , ent "E_INTERNAL_PRELUDE_INTERFACE" (Just "kappa-hs.internal.prelude-interface")
+      "A compiler-generated term requires a checked standard-library interface that is unavailable. This indicates an invalid or incomplete compiler environment, not a source-program type error."
   , -- Records, rows, seals (§11.3.1A, §13.2)
     ent "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
       "A dependent record type's 'this' field references form a cycle (§13.2.1)."

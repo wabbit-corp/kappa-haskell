@@ -125,3 +125,5 @@ let clampedHigh =
 
 --! assertNoErrors
 --! assertEval clampedHigh 30
+--! requires capability arithmeticCertificates
+--! assertArithmeticCertificatesValid

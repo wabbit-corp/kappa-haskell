@@ -24,7 +24,7 @@ instance RefinementView AtMost7 =
     let valueAfterRefine = refl
     let refineAfterValue (@0 x : AtMost7) =
         match x
-        case MkAtMost7 v @ip @p -> refl
+        case MkAtMost7 v -> refl
 
 three : AtMost7
 let three = 3

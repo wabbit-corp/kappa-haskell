@@ -1,0 +1,40 @@
+-- Spec §10.2.1 / §16.3.3: generated no-confusion proof search is derived
+-- from checked data and constructor identities. A user-defined reflexive
+-- equality family therefore supports the same constructor injectivity proof
+-- as the standard (=)/refl declaration; neither spelling is privileged.
+module main
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+data PairNat : Type =
+    MkPairNat (left : Nat) (right : Nat)
+
+leftInjective :
+    (a : Nat) ->
+    (b : Nat) ->
+    (c : Nat) ->
+    (d : Nat) ->
+    (@same : Equal (MkPairNat a b) (MkPairNat c d)) ->
+    a = c
+
+let leftInjective a b c d @same =
+    witness
+
+rightInjective :
+    (a : Nat) ->
+    (b : Nat) ->
+    (c : Nat) ->
+    (d : Nat) ->
+    (@same : Equal (MkPairNat a b) (MkPairNat c d)) ->
+    b = d
+
+let rightInjective a b c d @same =
+    witness
+
+--! mode check
+--! assertNoErrors

@@ -68,6 +68,8 @@ module Kappa.Builtins
   , prelQueryCore
   , prelQZeroOrMore
   , prelReusable
+  , prelFin
+  , prelRefined
 
     -- * Prelude constructors
   , prelTrue
@@ -135,6 +137,7 @@ module Kappa.Builtins
   , prelFromComprehensionRaw
   , prelFromComprehensionPlan
   , prelIsTraitWitness
+  , prelTraitSubsingletonWitness
   , prelIsPropEq
   , prelIsPropPi
   , prelIsProp
@@ -314,11 +317,13 @@ prelRecRow, prelLacksRec :: GName
 prelRecRow = gPrel "RecRow"
 prelLacksRec = gPrel "LacksRec"
 
-prelQueryMode, prelQueryCore, prelQZeroOrMore, prelReusable :: GName
+prelQueryMode, prelQueryCore, prelQZeroOrMore, prelReusable, prelFin, prelRefined :: GName
 prelQueryMode = gPrel "QueryMode"
 prelQueryCore = gPrel "QueryCore"
 prelQZeroOrMore = gPrel "QZeroOrMore"
 prelReusable = gPrel "Reusable"
+prelFin = gPrel "Fin"
+prelRefined = gPrel "Refined"
 
 -- ── Prelude constructors ─────────────────────────────────────────────
 
@@ -433,10 +438,11 @@ prelRangeable = gPrel "Rangeable"
 prelIntoQuery = gPrel "IntoQuery"
 prelReleasable = gPrel "Releasable"
 
-prelFromComprehensionRaw, prelFromComprehensionPlan, prelIsTraitWitness :: GName
+prelFromComprehensionRaw, prelFromComprehensionPlan, prelIsTraitWitness, prelTraitSubsingletonWitness :: GName
 prelFromComprehensionRaw = gPrel "FromComprehensionRaw"
 prelFromComprehensionPlan = gPrel "FromComprehensionPlan"
 prelIsTraitWitness = gPrel "__isTraitWitness"
+prelTraitSubsingletonWitness = gPrel "__traitSubsingletonWitness"
 
 -- §11.4/§14.4 h-prop closure lemmas consulted by the compiler-owned
 -- IsProp-under-Pi solver (Kappa.Check): the equality base case 'isPropEq'
@@ -718,6 +724,8 @@ wiredInPreludeNames =
     , (prelQueryCore, BKType)
     , (prelQZeroOrMore, BKType)
     , (prelReusable, BKType)
+    , (prelFin, BKType)
+    , (prelRefined, BKType)
     , (prelTrue, BKCtor)
     , (prelFalse, BKCtor)
     , (prelNatZero, BKCtor)
@@ -804,6 +812,7 @@ wiredInPreludeNames =
     , (prelArrayFromList, BKIntrinsic)
     , (prelQueryFromList, BKIntrinsic)
     , (prelIsTraitWitness, BKIntrinsic)
+    , (prelTraitSubsingletonWitness, BKIntrinsic)
     , (prelCodeQuote, BKIntrinsic)
     , (prelCodeEscape, BKIntrinsic)
     ]

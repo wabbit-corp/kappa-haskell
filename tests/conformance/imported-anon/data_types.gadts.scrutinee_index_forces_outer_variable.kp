@@ -27,10 +27,12 @@ let eval _ e =
 --! mode check
 
 -- The narrowed type is visible in branches: operations valid for the narrowed
--- type must type-check without explicit annotation.
+-- type must type-check without explicit annotation. The omitted BExpr arm is
+-- still required: §30.2.7 does not refute equality between distinct
+-- inhabitants of Type merely from nominal head inequality.
 addOne : Expr Int -> Int
 let addOne e =
-    match e
+    match e   --!! kappa.pattern.non-exhaustive
     case (IExpr i) -> i + 1  -- i : Int in this branch, + is Int -> Int -> Int
 
 
@@ -40,6 +42,7 @@ wrongBranch : (t : Type) -> Expr t -> t
 let wrongBranch _ e =
     match e
     case (IExpr _) -> 1
-    case (BExpr _) -> 1   --!! kappa.type.mismatch
+    case (BExpr _) -> 1   --!! kappa.type.literal-domain-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

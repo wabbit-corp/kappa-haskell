@@ -150,6 +150,7 @@ FIRST_CLASS_LEVEL_OWNER_STAGES = {
         "positive/action_value_generalizes_outer_parameter",
         "positive/explicit_schema_constraint_proof_binder",
         "positive/inferred_schema_constraint_becomes_binder",
+        "positive/local_closure_body_constraint",
         "positive/local_declaration_universe_generalization",
         "positive/unbounded_parametric_package_projection",
         "positive/unbounded_parametric_package_repack",
@@ -162,6 +163,7 @@ FIRST_CLASS_LEVEL_STRENGTHENING = {
     "kcore/monotone_witness_proof_irrelevant_hash",
     "kcore/reject_unwitnessed_neutral_covariance",
     "positive/imported_monotone_certificate",
+    "positive/local_closure_body_constraint",
 }
 
 CONTRACTS = [
@@ -189,7 +191,7 @@ CONTRACTS = [
     (
         ROOT / "tests/conformance/spec-coverage/first-class-levels-solver-generalization",
         ["manifest.json"],
-        71,
+        72,
         FIRST_CLASS_LEVEL_OWNER_STAGES,
         (67, FIRST_CLASS_LEVEL_STRENGTHENING),
     ),
@@ -401,8 +403,9 @@ def main() -> int:
             print(f"  - {error}", file=sys.stderr)
         return 1
     print(
-        "universe contract validation passed: 47 + 71 + 17 pre-variance, "
-        "34 current variance, 8 gated future variance, 67 first-class-level suites + 4 strengthening suites"
+        "universe contract validation passed: 47 ordinary-parametric, "
+        "88 parametric-package, 34 current variance + 8 gated future variance, "
+        "67 first-class-level base + 5 strengthening suites"
     )
     return 0
 

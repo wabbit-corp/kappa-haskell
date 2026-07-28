@@ -4,7 +4,7 @@
 -- different line than the source compiler (verified count-faithful at import).
 -- Source issues: odin#1675 (uncaught erroneous implicit conversion through distinct
 --               union variant), odin#4249 (compiler ignores distinct for generic types)
--- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+-- Spec: §16.1.7.1 (kappa.application.argument-mismatch),
 --       OSA-ODIN-03
 -- A nominally distinct wrapper type is not interchangeable with its wrapped type.
 -- A function that accepts `T` must not accept `Wrapper(T)`, and a function that
@@ -33,9 +33,9 @@ let okCelsius : Int =
 -- NEGATIVE: passing a Fahrenheit value where Celsius is expected.
 -- Structurally both wrap Int, but they are nominally distinct.
 let badFahrenheit : Int =
-    toCelsius (Fahrenheit 212)
+    toCelsius (Fahrenheit 212) --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- A second pair: a named record wrapper.
 data Metres : Type = Metres Int
@@ -54,15 +54,15 @@ let okAddMetres : Metres =
 
 -- NEGATIVE: second argument is Miles, not Metres.
 let badMixUnits : Metres =
-    addMetres (Metres 3) (Miles 4)
+    addMetres (Metres 3) (Miles 4) --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- NEGATIVE: first argument is Miles, second is Metres.
 let badMixUnits2 : Metres =
-    addMetres (Miles 3) (Metres 4)
+    addMetres (Miles 3) (Metres 4) --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- POSITIVE: converting explicitly is allowed (explicit coercion).
 let convertMilesToMetres (mi : Miles) : Metres =

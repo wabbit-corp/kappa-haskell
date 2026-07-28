@@ -123,6 +123,7 @@ import Kappa.Core
   , Q (..)
   , RecordField (..)
   , Term (..)
+  , constructorBridgeBinderCount
   , foldMapArithmeticCertificate
   , pattern CLam
   , pattern CPi
@@ -746,7 +747,10 @@ patBinders = \case
   CPWild -> 0
   CPVarM _ _ -> 1
   CPLit _ -> 0
-  CPCtorM existentialModes _ _ ps -> length existentialModes + sum (map patBinders ps)
+  CPCtorM existentialModes bridges _ _ ps ->
+    length existentialModes
+      + constructorBridgeBinderCount bridges
+      + sum (map patBinders ps)
   CPTuple ps -> sum (map patBinders ps)
   CPRecordM fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
   CPInject _ p -> patBinders p

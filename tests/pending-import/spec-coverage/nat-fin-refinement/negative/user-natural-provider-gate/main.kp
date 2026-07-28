@@ -43,7 +43,7 @@ plusZeroRight : (n : UNat) -> (=) (plus n Z) n
 let plusZeroRight n =
     match n
     case Z -> refl
-    case S k -> cong @UNat @UNat @(\ (x : UNat) -> S x) (plusZeroRight k)
+    case S k -> cong @UNat @UNat @(plus k Z) @k (\ (x : UNat) -> S x) (plusZeroRight k)
 
 -- REJECTED (the provider gate): no Spec 15.8.2 provider evidence exists
 -- for UNat, so the solver returns Unknown, Spec 16.1.8 finds no

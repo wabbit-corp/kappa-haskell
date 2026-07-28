@@ -31,6 +31,7 @@ module Kappa.Termination
   , instantiateByLevelMaybe
   , maxFreeIndexTerm
   , simplifyDecisionTerm
+  , simplifyDecisionTermAt
   , negateFact
   , intArithPrim
   , intCmpPrim
@@ -75,6 +76,7 @@ import Kappa.CoreOps
   , patBindersC
   , shiftTerm
   , spineOfTerm
+  , substTopTermAt
   )
 import Kappa.Source (ModuleName, Span)
 import Kappa.Syntax (Binder, Decreases)
@@ -214,55 +216,92 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
     traverseField curDepth fs = traverse (\(n, x) -> (,) n <$> go curDepth x) fs
 
 simplifyDecisionTerm :: Term -> Term
-simplifyDecisionTerm = go
+simplifyDecisionTerm = simplifyDecisionTermAt 0
+
+-- | Reduce local decision structure without unfolding global definitions.
+-- Keeping selected operation heads intact is important for proof-producing
+-- arithmetic: their checked identities are part of the solver authority.
+-- The ambient depth makes beta reduction correct for Core level variables.
+simplifyDecisionTermAt :: Int -> Term -> Term
+simplifyDecisionTermAt = go
   where
-    go = \case
+    go depth = \case
       CIf c t e ->
-        let c' = go c
-            t' = go t
-            e' = go e
+        let c' = go depth c
+            t' = go depth t
+            e' = go depth e
          in case (c', t', e') of
               (CCtor g _ [], _, _) | g == prelTrue -> t'
               (CCtor g _ [], _, _) | g == prelFalse -> e'
               (_, CCtor gt _ [], CCtor gf _ []) | gt == prelTrue, gf == prelFalse -> c'
               _ -> CIf c' t' e'
       CMatch (CIf c t e) ann alts | all ((== 0) . patBindersC . caPat) alts ->
-        go (CIf c (CMatch t ann alts) (CMatch e ann alts))
+        go depth (CIf c (CMatch t ann alts) (CMatch e ann alts))
       CMatch s ann alts ->
-        let s' = go s
-            alts' = [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
+        let s' = go depth s
+            alts' =
+              [ let branchDepth = depth + patBindersC p
+                 in CaseAlt p (fmap (go branchDepth) gd) (go branchDepth b)
+              | CaseAlt p gd b <- alts
+              ]
          in fromMaybe (CMatch s' ann alts') (reduceSimpleMatch s' alts')
-      CApp ic f a -> CApp ic (go f) (go a)
-      CUniverseLift from to evidence t -> CUniverseLift from to evidence (go t)
+      CApp ic f a ->
+        let function = go depth f
+            argument = go depth a
+         in case function of
+              CLamM _ binderIcit _ _ body
+                | binderIcit == ic ->
+                    go depth (substTopTermAt depth argument body)
+              _ -> CApp ic function argument
+      CUniverseLift from to evidence t ->
+        CUniverseLift from to evidence (go depth t)
       CSchemaLift family source target roles evidence certificate sourceArguments targetArguments t ->
         CSchemaLift family source target roles evidence certificate
-          (map go sourceArguments) (map go targetArguments) (go t)
-      CLamM mode ic q n b -> CLamM mode ic q n (go b)
+          (map (go depth) sourceArguments)
+          (map (go depth) targetArguments)
+          (go depth t)
+      CLamM mode ic q n b -> CLamM mode ic q n (go (depth + 1) b)
       CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-        CPiEvidenceM mode formation ic q brw n assumption origin (go a) (go b)
+        CPiEvidenceM mode formation ic q brw n assumption origin
+          (go depth a)
+          (go (depth + 1) b)
       CCtorI g universes ann arguments ->
-        CCtorI g universes (fmap go ann)
-          [argument {caTerm = go (caTerm argument)} | argument <- arguments]
-      CRecordTQ fs -> CRecordTQ (map (fmap go) fs)
-      CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
-      CProjM mode e f -> CProjM mode (go e) f
-      CProjAtM mode e f i -> CProjAtM mode (go e) f i
-      CVariantT ms -> CVariantT (map go ms)
-      CInject tag e -> CInject tag (go e)
-      CLetM mode q n a b c -> CLetM mode q n (go a) (go b) (go c)
-      CLetRecM mode q n a b c -> CLetRecM mode q n (go a) (go b) (go c)
-      CLetPolyM mode q n telescope a b c -> CLetPolyM mode q n telescope (go a) (go b) (go c)
-      CLetRecPolyM mode q n telescope a b c -> CLetRecPolyM mode q n telescope (go a) (go b) (go c)
+        CCtorI g universes (fmap (go depth) ann)
+          [argument {caTerm = go depth (caTerm argument)} | argument <- arguments]
+      CRecordTQ fs ->
+        CRecordTQ
+          [ fmap (go (depth + index)) field
+          | (index, field) <- zip [0 :: Int ..] fs
+          ]
+      CRecordV fs -> CRecordV [(n, go depth x) | (n, x) <- fs]
+      CProjM mode e f -> CProjM mode (go depth e) f
+      CProjAtM mode e f i -> CProjAtM mode (go depth e) f i
+      CVariantT ms -> CVariantT (map (go depth) ms)
+      CInject tag e -> CInject tag (go depth e)
+      CLetM mode q n a b c ->
+        CLetM mode q n (go depth a) (go depth b) (go (depth + 1) c)
+      CLetRecM mode q n a b c ->
+        CLetRecM mode q n (go depth a) (go (depth + 1) b) (go (depth + 1) c)
+      CLetPolyM mode q n telescope a b c ->
+        CLetPolyM mode q n telescope (go depth a) (go depth b) (go (depth + 1) c)
+      CLetRecPolyM mode q n telescope a b c ->
+        CLetRecPolyM mode q n telescope (go depth a) (go (depth + 1) b) (go (depth + 1) c)
       CLetRecGroupM telescope definitions body ->
-        CLetRecGroupM telescope
-          [definition {clrdType = go (clrdType definition), clrdRhs = go (clrdRhs definition)} | definition <- definitions]
-          (go body)
-      CThunkE e -> CThunkE (go e)
-      CLazyE e -> CLazyE (go e)
-      CForceE e -> CForceE (go e)
-      CSealE ls e -> CSealE ls (go e)
-      CSigT ls e -> CSigT ls (go e)
-      CQuote qs slots -> CQuote qs (map go slots)
+        let groupDepth = depth + length definitions
+         in CLetRecGroupM telescope
+              [ definition
+                  { clrdType = go depth (clrdType definition)
+                  , clrdRhs = go groupDepth (clrdRhs definition)
+                  }
+              | definition <- definitions
+              ]
+              (go groupDepth body)
+      CThunkE e -> CThunkE (go depth e)
+      CLazyE e -> CLazyE (go depth e)
+      CForceE e -> CForceE (go depth e)
+      CSealE ls e -> CSealE ls (go depth e)
+      CSigT ls e -> CSigT ls (go depth e)
+      CQuote qs slots -> CQuote qs (map (go depth) slots)
       other -> other
 
     reduceSimpleMatch s = goAlts
@@ -404,6 +443,8 @@ lastExplicitArg args = lastMaybe [a | (Expl, a) <- args]
 -- Bruijn index into the level 'AVar' stores.
 arithOf :: Int -> Term -> Maybe AExpr
 arithOf d t0 = case simplifyDecisionTerm t0 of
+  CUniverseLift _ _ _ term -> arithOf d term
+  CSchemaLift _ _ _ _ _ _ _ _ term -> arithOf d term
   CLit (LitInt n) -> Just (AConst n)
   CCtorI g _ _ []
     | g == prelNatZero -> Just (AConst 0)

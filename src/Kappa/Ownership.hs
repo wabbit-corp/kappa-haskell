@@ -120,6 +120,7 @@ import Kappa.Core
   , RecordField (..)
   , Term (..)
   , Value (..)
+  , constructorBridgeBinderCount
   , mapArithmeticCertificate
   , gKey
   )
@@ -1339,8 +1340,9 @@ patBindingTypes ctx ctorTypes depth pat mTy =
     CPLit _ -> []
     CPVarM _ _ -> [mTy]
     CPAsM _ _ p -> mTy : patBindingTypes ctx ctorTypes depth p mTy
-    CPCtorM existentialModes g universes ps ->
-      let nEx = length existentialModes
+    CPCtorM existentialModes bridges g universes ps ->
+      let nEx =
+            length existentialModes + constructorBridgeBinderCount bridges
           fields = ctorFieldDomains ctx ctorTypes depth g universes (length ps) mTy
        in replicate nEx Nothing
             ++ concat [patBindingTypes ctx ctorTypes depth p (indexMaybe i fields >>= id) | (i, p) <- zip [0 ..] ps]
@@ -1500,6 +1502,8 @@ substValue ctx subst = go
         VQuote qs slots -> VQuote qs (map go slots)
         VSort {} -> v
         VLevel {} -> v
+        VUniverseLift from to evidence inner ->
+          VUniverseLift from to evidence (go inner)
         VLit {} -> v
         VRef {} -> v
         VArr {} -> v

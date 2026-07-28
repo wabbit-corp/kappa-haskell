@@ -4,10 +4,10 @@
 -- (one HoleId). Here both `?h` occurrences are forced to `Integer` (the
 -- two components of the expected pair type), which is definitionally
 -- equal, so the occurrences are CONSISTENT: the only diagnostics are the
--- two §16.3.2 "hole still unsolved" reports (one per occurrence), with no
--- kappa.hole.inconsistent and no type mismatch. Both report the shared
--- expected type, evidencing that they denote one unknown.
---! assertErrorCount 2
+-- single §16.3.2 "hole still unsolved" report (one per HoleId), with no
+-- kappa.hole.inconsistent and no type mismatch. Its related locations retain
+-- both occurrences, evidencing that they denote one unknown.
+--! assertErrorCount 1
 --! assertDiagnostic error E_HOLE_UNSOLVED
 --! assertDiagnosticPayload error kappa.hole.unsolved /payload/hole ?h
 --! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected Integer

@@ -48,8 +48,18 @@ main :
     UIO Unit
 
 let main = do
-    printOutcome (tryRefine @(\(@0 x : Nat) -> witness) decideBetween 7)
-    printOutcome (tryRefine @(\(@0 x : Nat) -> witness) decideBetween 31)
+    printOutcome (tryRefine
+            @Nat
+            @(\value -> (contains (2 .. 30) value) = True)
+            @(\(@0 x : Nat) -> witness)
+            decideBetween
+            7)
+    printOutcome (tryRefine
+            @Nat
+            @(\value -> (contains (2 .. 30) value) = True)
+            @(\(@0 x : Nat) -> witness)
+            decideBetween
+            31)
 
 --! mode run
 --! assertNoErrors

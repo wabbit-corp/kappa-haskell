@@ -155,17 +155,22 @@ reservedInfix = \case
   ":=" -> Nothing
   _ -> Nothing
 
-opApply :: Name -> Expr -> Expr -> Expr
-opApply op l r = EApp (EVar op) [ArgExplicit l, ArgExplicit r]
+opApply :: FixityKind -> Name -> Expr -> Expr -> Expr
+opApply kind op l r =
+  EApp (EOpRef (Just kind) op (nameSpan op)) [ArgExplicit l, ArgExplicit r]
 
-opApply1 :: Name -> Expr -> Expr
-opApply1 op x
+opApply1 :: FixityKind -> Name -> Expr -> Expr
+opApply1 kind op x
   -- `-` is a unary operator, not part of the literal: `-123` is
   -- `negate 123`, even for literal operands (§6.1.4, §6.1.5). The
   -- literal payload stays nonnegative; `-123 : Nat` is rejected
   -- because the portable prelude provides no `Negatable Nat`.
-  | nameText op == "-" = EApp (EVar op {nameText = "negate"}) [ArgExplicit x]
-  | otherwise = EApp (EVar op) [ArgExplicit x]
+  | nameText op == "-" =
+      EApp
+        (EOpRef (Just kind) op {nameText = "negate"} (nameSpan op))
+        [ArgExplicit x]
+  | otherwise =
+      EApp (EOpRef (Just kind) op (nameSpan op)) [ArgExplicit x]
 
 -- | Turn one flat operator chain (the 'EOpChain' the parser left
 -- un-associated, e.g. @[a, +, b, *, c]@) into a proper application tree,
@@ -206,11 +211,11 @@ reassoc env sp els0 = do
       case prefixOf env (nameText op) of
         Just f -> do
           (operand, rest') <- parsePrefixOperand (fPrec f) rest
-          pure (opApply1 op operand, rest')
+          pure (opApply1 Prefix op operand, rest')
         Nothing -> do
           emit (gatingErrPrefix op)
           (operand, rest') <- parseOperand rest
-          pure (opApply1 op operand, rest')
+          pure (opApply1 Prefix op operand, rest')
     parseOperand (ChainOperand e : rest) = applyPostfix e rest
     parseOperand [] = pure (EHole Nothing sp, [])
 
@@ -224,7 +229,7 @@ reassoc env sp els0 = do
         | Just f <- fixFor op
         , fPrec f > prec -> do
             (rhs, rest') <- parseExprAt (fPrec f + 1) rest
-            loopTight (opApply op lhs rhs) prec rest'
+            loopTight (opApply (fKind f) op lhs rhs) prec rest'
       _ -> pure (lhs, els)
 
     gatingErrPrefix op =
@@ -243,7 +248,7 @@ reassoc env sp els0 = do
       (ChainOp op : rest)
         | Just _ <- postfixOf env (nameText op)
         , postfixApplies rest ->
-            applyPostfix (opApply1 op e) rest
+            applyPostfix (opApply1 Postfix op e) rest
       _ -> pure (e, els)
 
     -- a postfix op applies if the next element is another operator or
@@ -285,13 +290,14 @@ reassoc env sp els0 = do
                 emit (gatingErr op)
                 -- recover: treat as left-assoc tight application
                 (rhs, rest') <- parseExprAt 100 rest
-                loop (opApply op lhs rhs) minPrec rest'
+                loop (opApply InfixL op lhs rhs) minPrec rest'
       _ -> pure (lhs, els)
 
     -- `?:` is reserved syntax (§16.1.2): elaborated as the Elvis form
     mkOp op l r
       | nameText op == "?:" = EElvis l r (nameSpan op)
-      | otherwise = opApply op l r
+      | Just fixity <- fixFor op = opApply (fKind fixity) op l r
+      | otherwise = opApply InfixL op l r
 
 -- ── Traversal ────────────────────────────────────────────────────────
 

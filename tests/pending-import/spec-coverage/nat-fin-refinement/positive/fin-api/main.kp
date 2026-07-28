@@ -43,7 +43,7 @@ sameValue :
     x = y
 
 let sameValue n x y proof =
-    finExt @x @y proof
+    finExt @n @x @y proof
 
 --! assertNoErrors
 --! assertType finValue forall (n : Nat). Fin n -> Nat

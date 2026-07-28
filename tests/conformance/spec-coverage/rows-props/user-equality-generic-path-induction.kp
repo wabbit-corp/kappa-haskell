@@ -1,0 +1,29 @@
+-- Spec §10.2.1 / §11.4.1 / §30.2.7: dependent-constructor elimination is
+-- determined by the checked constructor result, not by the standard equality
+-- family or its constructor spelling. This user declaration must therefore
+-- refine y to x in the Refl branch exactly as (=)/refl does.
+module main
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+transportEqual :
+    forall
+        (@0 A : Type)
+        (@0 C : A -> Type)
+        (@0 x : A)
+        (@0 y : A).
+    Equal x y ->
+    C x ->
+    C y
+
+let transportEqual proof value =
+    match proof
+    case Refl -> value
+
+--! mode check
+--! assertNoErrors

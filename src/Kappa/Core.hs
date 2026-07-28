@@ -62,7 +62,12 @@ module Kappa.Core
   , UniverseVariance (..)
   , SchemaActionCertificateId (..)
   , ArithmeticDomain (..)
+  , ArithmeticNormalizationTheory (..)
+  , ArithmeticNormalizationProvider (..)
+  , ArithmeticVariableKind (..)
+  , ArithmeticVariable (..)
   , ArithmeticProviderEvidence (..)
+  , ArithmeticAssumptionSource (..)
   , ArithmeticAssumption (..)
   , ArithmeticCertificate (..)
   , mapArithmeticCertificate
@@ -98,6 +103,9 @@ module Kappa.Core
   , pattern CPInjectRest
   , pattern CPAs
   , CaseAlt (..)
+  , ConstructorBridge (..)
+  , constructorBridgeBinderCount
+  , propositionalConstructorBridges
   , CorePat (..)
   , KItem (..)
   , KCond (..)
@@ -449,20 +457,66 @@ data ArithmeticDomain
   = ArithmeticNatural
   | ArithmeticInteger
   | ArithmeticTypeLevel
+  | ArithmeticProviderLaw
   deriving stock (Eq, Ord, Show)
+
+-- | A portable algebraic theory understood by the proof-normalization
+-- service.  These are semantic roles, not source trait names.
+data ArithmeticNormalizationTheory
+  = ArithmeticMonoid
+  | ArithmeticCommutativeMonoid
+  deriving stock (Eq, Ord, Show)
+
+-- | The identity-bearing, versioned part of one §15.8.2 provider artifact.
+-- The selected dictionary remains occurrence-specific and is stored alongside
+-- this descriptor in 'ArithmeticProviderEvidence'.
+data ArithmeticNormalizationProvider = ArithmeticNormalizationProvider
+  { anpIdentity :: !Text
+  , anpTheory :: !ArithmeticNormalizationTheory
+  , anpLawIdentity :: !GName
+  , anpNormalFormVersion :: !Integer
+  , anpProviderVersion :: !Integer
+  , anpCheckerVersion :: !Integer
+  }
+  deriving stock (Eq, Ord, Show)
+
+data ArithmeticVariableKind
+  = ArithmeticVariableNatural
+  | ArithmeticVariableInteger
+  deriving stock (Eq, Ord, Show)
+
+data ArithmeticVariable a = ArithmeticVariable
+  { avKind :: !ArithmeticVariableKind
+  , avTerm :: !a
+  }
+  deriving stock (Eq, Show)
 
 -- | One selected provider admitted to an arithmetic proof. The trait identity
 -- and the exact selected evidence term are both retained; a verifier never
 -- reconstructs either from a member spelling.
 data ArithmeticProviderEvidence a = ArithmeticProviderEvidence
-  { apeTrait :: !GName
+  { apeNormalizationProvider :: !(Maybe ArithmeticNormalizationProvider)
+  , apeTrait :: !GName
   , apeEvidence :: !a
   }
+  deriving stock (Eq, Show)
+
+data ArithmeticAssumptionSource a
+  = ArithmeticAssumptionProof
+      { aasProposition :: !a
+      , aasEvidence :: !a
+      }
+  | ArithmeticAssumptionBranch
+      { aasBranchTruth :: !Bool
+      , aasBranchCondition :: !a
+      }
   deriving stock (Eq, Show)
 
 data ArithmeticAssumption a = ArithmeticAssumption
   { aaTruth :: !Bool
   , aaProposition :: !a
+  , aaReplayProposition :: !a
+  , aaSource :: !(ArithmeticAssumptionSource a)
   }
   deriving stock (Eq, Show)
 
@@ -474,9 +528,14 @@ data ArithmeticCertificate a = ArithmeticCertificate
   { acVersion :: !Integer
   , acDomain :: !ArithmeticDomain
   , acProviders :: ![ArithmeticProviderEvidence a]
-  , acNaturalVariables :: ![a]
+  , acVariables :: ![ArithmeticVariable a]
   , acAssumptions :: ![ArithmeticAssumption a]
   , acGoal :: !a
+  -- ^ The original checked proposition inhabited by this proof.
+  , acReplayGoal :: !a
+  -- ^ A definitionally equal view in the portable arithmetic fragment.
+  -- It is explicit so independent artifact verification never has to trust
+  -- elaborator-only normalization state.
   }
   deriving stock (Eq, Show)
 
@@ -486,15 +545,23 @@ mapArithmeticCertificate transform certificate =
     { acVersion = acVersion certificate
     , acDomain = acDomain certificate
     , acProviders =
-        [ ArithmeticProviderEvidence trait (transform evidence)
-        | ArithmeticProviderEvidence trait evidence <- acProviders certificate
+        [ ArithmeticProviderEvidence provider trait (transform evidence)
+        | ArithmeticProviderEvidence provider trait evidence <- acProviders certificate
         ]
-    , acNaturalVariables = map transform (acNaturalVariables certificate)
+    , acVariables =
+        [ ArithmeticVariable kind (transform variable)
+        | ArithmeticVariable kind variable <- acVariables certificate
+        ]
     , acAssumptions =
-        [ ArithmeticAssumption truth (transform proposition)
-        | ArithmeticAssumption truth proposition <- acAssumptions certificate
+        [ ArithmeticAssumption
+            truth
+            (transform proposition)
+            (transform replayProposition)
+            (mapArithmeticAssumptionSource transform source)
+        | ArithmeticAssumption truth proposition replayProposition source <- acAssumptions certificate
         ]
     , acGoal = transform (acGoal certificate)
+    , acReplayGoal = transform (acReplayGoal certificate)
     }
 
 traverseArithmeticCertificate
@@ -507,15 +574,22 @@ traverseArithmeticCertificate transform certificate =
     (acVersion certificate)
     (acDomain certificate)
     <$> traverse
-      (\(ArithmeticProviderEvidence trait evidence) ->
-        ArithmeticProviderEvidence trait <$> transform evidence)
+      (\(ArithmeticProviderEvidence provider trait evidence) ->
+        ArithmeticProviderEvidence provider trait <$> transform evidence)
       (acProviders certificate)
-    <*> traverse transform (acNaturalVariables certificate)
     <*> traverse
-      (\(ArithmeticAssumption truth proposition) ->
-        ArithmeticAssumption truth <$> transform proposition)
+      (\(ArithmeticVariable kind variable) ->
+        ArithmeticVariable kind <$> transform variable)
+      (acVariables certificate)
+    <*> traverse
+      (\(ArithmeticAssumption truth proposition replayProposition source) ->
+        ArithmeticAssumption truth
+          <$> transform proposition
+          <*> transform replayProposition
+          <*> traverseArithmeticAssumptionSource transform source)
       (acAssumptions certificate)
     <*> transform (acGoal certificate)
+    <*> transform (acReplayGoal certificate)
 
 foldMapArithmeticCertificate
   :: Monoid m
@@ -524,9 +598,49 @@ foldMapArithmeticCertificate
   -> m
 foldMapArithmeticCertificate transform certificate =
   foldMap (transform . apeEvidence) (acProviders certificate)
-    <> foldMap transform (acNaturalVariables certificate)
-    <> foldMap (transform . aaProposition) (acAssumptions certificate)
+    <> foldMap (transform . avTerm) (acVariables certificate)
+    <> foldMap
+      (\assumption ->
+        transform (aaProposition assumption)
+          <> transform (aaReplayProposition assumption)
+          <> foldMapArithmeticAssumptionSource transform (aaSource assumption))
+      (acAssumptions certificate)
     <> transform (acGoal certificate)
+    <> transform (acReplayGoal certificate)
+
+mapArithmeticAssumptionSource
+  :: (a -> b)
+  -> ArithmeticAssumptionSource a
+  -> ArithmeticAssumptionSource b
+mapArithmeticAssumptionSource transform = \case
+  ArithmeticAssumptionProof proposition evidence ->
+    ArithmeticAssumptionProof (transform proposition) (transform evidence)
+  ArithmeticAssumptionBranch truth condition ->
+    ArithmeticAssumptionBranch truth (transform condition)
+
+traverseArithmeticAssumptionSource
+  :: Applicative f
+  => (a -> f b)
+  -> ArithmeticAssumptionSource a
+  -> f (ArithmeticAssumptionSource b)
+traverseArithmeticAssumptionSource transform = \case
+  ArithmeticAssumptionProof proposition evidence ->
+    ArithmeticAssumptionProof
+      <$> transform proposition
+      <*> transform evidence
+  ArithmeticAssumptionBranch truth condition ->
+    ArithmeticAssumptionBranch truth <$> transform condition
+
+foldMapArithmeticAssumptionSource
+  :: Monoid m
+  => (a -> m)
+  -> ArithmeticAssumptionSource a
+  -> m
+foldMapArithmeticAssumptionSource transform = \case
+  ArithmeticAssumptionProof proposition evidence ->
+    transform proposition <> transform evidence
+  ArithmeticAssumptionBranch _ condition ->
+    transform condition
 
 data Term
   = -- Lambda-calculus core ------------------------------------------------
@@ -731,6 +845,38 @@ data CaseAlt = CaseAlt
   }
   deriving stock (Eq, Show)
 
+-- | One proof-producing compatibility step for a constructor branch whose
+-- result indices are propositionally, but not definitionally, compatible with
+-- the demanded scrutinee instance (§30.2.2.11 / §30.2.7).
+--
+-- Entries are dependency ordered.  Each entry is checked in the context of
+-- the constructor existentials and the preceding entries, then introduces one
+-- erased parametric binder before the source-field binders.  Runtime matching
+-- therefore needs only a placeholder slot, while KCore retains and
+-- independently checks the proof that licenses the branch.
+data ConstructorBridge
+  = ConstructorForcedEquality
+      { cbLeft :: !Term
+      , cbRight :: !Term
+      }
+  | ConstructorPropositionalBridge
+      { cbType :: !Term
+      , cbProof :: !Term
+      }
+  deriving stock (Eq, Show)
+
+constructorBridgeBinderCount :: [ConstructorBridge] -> Int
+constructorBridgeBinderCount =
+  length . propositionalConstructorBridges
+
+propositionalConstructorBridges
+  :: [ConstructorBridge]
+  -> [ConstructorBridge]
+propositionalConstructorBridges =
+  filter $ \case
+    ConstructorPropositionalBridge {} -> True
+    ConstructorForcedEquality {} -> False
+
 data CorePat
   = CPWild
   | CPVarM !ObservationMode !Text
@@ -753,7 +899,7 @@ data CorePat
     -- elaborating this occurrence.  It is identity-bearing checkpoint data:
     -- later passes validate/specialize it and never reconstruct it from the
     -- scrutinee result type.
-    CPCtorM ![ObservationMode] !GName ![Level] ![CorePat]
+    CPCtorM ![ObservationMode] ![ConstructorBridge] !GName ![Level] ![CorePat]
   | CPTuple ![CorePat]
   | CPRecordM ![(Text, CorePat)] !(Maybe (ObservationMode, Text))
   -- ^ fields, optional rest binder (binds the remaining fields; @Just ""@
@@ -848,6 +994,11 @@ data Value
     -- 'CPiEvidenceM'. 'Bool' is the binder borrow marker (§12.3).
   | VSort !Level
   | VLevel !Level
+  | VUniverseLift !Level !Level !UniverseEvidence !Value
+    -- ^ Proof-carrying semantic universe lift. It is transparent to
+    -- conversion and forcing, but quotation retains it so dependent
+    -- substitution and inferred-type readback do not erase the explicit
+    -- cumulative-use node required at KCore checkpoints (§30.2.1A).
   | VArithmeticProof !(ArithmeticCertificate Value)
   | VLit !Literal
   | VCtorI !GName ![Level] ![ConstructorValueArg]
@@ -988,7 +1139,18 @@ pattern CPVar :: Text -> CorePat
 pattern CPVar name <- CPVarM _ name
 
 pattern CPCtor :: GName -> Int -> [CorePat] -> CorePat
-pattern CPCtor constructor existentialCount fields <- CPCtorM (length -> existentialCount) constructor _ fields
+pattern CPCtor constructor erasedBinderCount fields <-
+  (viewConstructorPattern -> Just (constructor, erasedBinderCount, fields))
+
+viewConstructorPattern :: CorePat -> Maybe (GName, Int, [CorePat])
+viewConstructorPattern = \case
+  CPCtorM existentials bridges constructor _ fields ->
+    Just
+      ( constructor
+      , length existentials + constructorBridgeBinderCount bridges
+      , fields
+      )
+  _ -> Nothing
 
 pattern CPRecord :: [(Text, CorePat)] -> Maybe Text -> CorePat
 pattern CPRecord fields rest <- CPRecordM fields (patternRestName -> rest)

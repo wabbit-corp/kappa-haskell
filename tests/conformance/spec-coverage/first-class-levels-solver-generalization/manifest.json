@@ -7,14 +7,15 @@
   "sourceSpecPatchSha256": "4906eb0998386889dc51d39971742f354b32a1b21ef98c5f00a4fa8298730d15",
   "name": "kappa-first-class-levels-solver-generalization-tests",
   "schemaVersion": 1,
-  "strengtheningSuiteCount": 4,
+  "strengtheningSuiteCount": 5,
   "strengtheningSuites": [
     "kcore/monotone_witness_alpha_roundtrip",
     "kcore/monotone_witness_proof_irrelevant_hash",
     "kcore/reject_unwitnessed_neutral_covariance",
-    "positive/imported_monotone_certificate"
+    "positive/imported_monotone_certificate",
+    "positive/local_closure_body_constraint"
   ],
-  "suiteCount": 71,
+  "suiteCount": 72,
   "suites": [
     {
       "name": "arithmetic_certificate_bad_assumption",
@@ -532,6 +533,19 @@
       "harnessOutcome": "pass",
       "capabilities": [],
       "ownerStage": "U-G1"
+    },
+    {
+      "name": "local_closure_body_constraint",
+      "path": "positive/local_closure_body_constraint",
+      "category": "positive",
+      "description": "A generated constraint discovered inside a local closure is published once through the enclosing declaration interface.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-G3"
     },
     {
       "name": "local_declaration_universe_generalization",

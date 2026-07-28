@@ -56,6 +56,7 @@ library
         Kappa.Build.Provenance
         Kappa.Build.Reify
         Kappa.Build.Types
+        Kappa.Cardinality
         Kappa.Check
         Kappa.Config
         Kappa.Core

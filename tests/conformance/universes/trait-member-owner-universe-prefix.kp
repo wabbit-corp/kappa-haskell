@@ -1,0 +1,27 @@
+module trait_member_owner_universe_prefix
+
+trait Associated (0 A : Type) =
+    Item : Type
+
+instance Associated Int =
+    let Item = Int
+
+keepAssociated :
+    forall (A : Type).
+    (@d : Associated A) ->
+    d.Item ->
+    d.Item
+let keepAssociated A @d value = value
+
+trait Add A => AddLaw (0 A : Type) =
+    duplicateIsStable : forall (x : A). add x x = add x x
+
+useAddLaw :
+    forall (A : Type).
+    (@d : AddLaw A) ->
+    (x : A) ->
+    add x x = add x x
+let useAddLaw A @d x = d.duplicateIsStable @x
+
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

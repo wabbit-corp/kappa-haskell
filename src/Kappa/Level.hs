@@ -21,6 +21,7 @@ module Kappa.Level
   , LevelConstraint (..)
   , LevelSolveError (..)
   , LevelAssignmentGraphError (..)
+  , LevelAssignmentGraphBudget
   , LevelSolution (..)
   , PrincipalInferenceOutcome (..)
   , PrincipalNonLeastWitness (..)
@@ -51,7 +52,10 @@ module Kappa.Level
   , solveLevelConstraintsFor
   , inferPrincipalLevelsFor
   , mergeLevelAssignments
+  , emptyLevelAssignmentGraphBudget
+  , rebuildLevelAssignmentGraphBudget
   , extendLevelAssignmentGraph
+  , extendLevelAssignmentGraphWithBudget
   , proveLevelLeq
   , proveLevelEq
   , compareClosedLevel
@@ -391,6 +395,18 @@ data LevelAssignmentGraphError
   | LevelAssignmentGraphResourceLimit !Int
   deriving stock (Eq, Show)
 
+-- | Incremental certificate that the installed assignment graph remains
+-- inside the portable materialization budget. The constructor is private so
+-- callers cannot pair an arbitrary summary with a different graph.
+data LevelAssignmentGraphBudget = LevelAssignmentGraphBudget
+  { lagbRootCosts :: !(Map LevelMeta Int)
+  , lagbTotalCost :: !Int
+  }
+  deriving stock (Eq, Show)
+
+emptyLevelAssignmentGraphBudget :: LevelAssignmentGraphBudget
+emptyLevelAssignmentGraphBudget = LevelAssignmentGraphBudget Map.empty 0
+
 -- The portable solver is exact inside this explicit resource boundary.
 -- Crossing it is never interpreted as proof or satisfiability failure:
 -- callers receive the §11.1.2.4A indeterminate classification and fail
@@ -427,11 +443,36 @@ levelNodeCostCapped remaining level
         base
         children
 
+rebuildLevelAssignmentGraphBudget
+  :: Map LevelMeta Level
+  -> Either LevelAssignmentGraphError LevelAssignmentGraphBudget
+rebuildLevelAssignmentGraphBudget assignments = do
+  (costs, total) <-
+    assignmentRootCosts
+      assignments
+      (Map.keysSet assignments)
+      Map.empty
+      solverNodeBudget
+      (Map.keys assignments)
+  pure (LevelAssignmentGraphBudget costs total)
+
 assignmentGraphWithinBudget :: Map LevelMeta Level -> Bool
 assignmentGraphWithinBudget assignments =
-  case foldl visitRoot (Right (Map.empty, 0)) (Map.keys assignments) of
-    Right (_, total) -> total <= solverNodeBudget
-    Left () -> False
+  case rebuildLevelAssignmentGraphBudget assignments of
+    Right _ -> True
+    Left _ -> False
+
+assignmentRootCosts
+  :: Map LevelMeta Level
+  -> Set.Set LevelMeta
+  -> Map LevelMeta Int
+  -> Int
+  -> [LevelMeta]
+  -> Either LevelAssignmentGraphError (Map LevelMeta Int, Int)
+assignmentRootCosts assignments recomputed fallbackCosts totalBudget roots =
+  case foldl' visitRoot (Right (Map.empty, 0)) roots of
+    Right result -> Right result
+    Left () -> Left (LevelAssignmentGraphResourceLimit solverNodeBudget)
   where
     visitRoot (Left ()) _ = Left ()
     visitRoot (Right (memo, total)) meta =
@@ -439,12 +480,15 @@ assignmentGraphWithinBudget assignments =
         Left () -> Left ()
         Right (cost, memo') ->
           let total' = total + cost
-           in if total' > solverNodeBudget
+           in if total' > totalBudget
                 then Left ()
                 else Right (memo', total')
 
     costMeta visiting memo meta
       | Just cost <- Map.lookup meta memo = Right (cost, memo)
+      | meta `Set.notMember` recomputed
+      , Just cost <- Map.lookup meta fallbackCosts =
+          Right (cost, memo)
       | meta `Set.member` visiting = Right (1, memo)
       | Just replacement <- Map.lookup meta assignments = do
           (cost, memo') <- costLevel (Set.insert meta visiting) memo replacement
@@ -540,14 +584,43 @@ extendLevelAssignmentGraph
   -> Either
        LevelAssignmentGraphError
        (Map LevelMeta Level, Map LevelMeta (Set.Set LevelMeta), Set.Set LevelMeta)
-extendLevelAssignmentGraph old oldDependents new =
-  if not (assignmentGraphWithinBudget combined)
-    then Left (LevelAssignmentGraphResourceLimit solverNodeBudget)
-    else case conflicts of
-      (meta, installed, requested) : _ ->
-        Left (LevelAssignmentGraphConflict meta installed requested)
-      [] -> Right (combined, dependents, affected)
+extendLevelAssignmentGraph old oldDependents new = do
+  budget <- rebuildLevelAssignmentGraphBudget old
+  (combined, dependents, _, affected) <-
+    extendLevelAssignmentGraphWithBudget old oldDependents budget new
+  pure (combined, dependents, affected)
+
+-- | Incremental form of 'extendLevelAssignmentGraph'. The supplied budget is
+-- the opaque certificate returned by a previous call (or
+-- 'emptyLevelAssignmentGraphBudget' for an empty graph). Only assignments in
+-- the reverse dependency closure of this update are re-costed; exact replay
+-- of an already-installed substitution is a constant-state no-op.
+extendLevelAssignmentGraphWithBudget
+  :: Map LevelMeta Level
+  -> Map LevelMeta (Set.Set LevelMeta)
+  -> LevelAssignmentGraphBudget
+  -> Map LevelMeta Level
+  -> Either
+       LevelAssignmentGraphError
+       ( Map LevelMeta Level
+       , Map LevelMeta (Set.Set LevelMeta)
+       , LevelAssignmentGraphBudget
+       , Set.Set LevelMeta
+       )
+extendLevelAssignmentGraphWithBudget old oldDependents oldBudget new
+  | exactReplay =
+      Right (old, oldDependents, oldBudget, Set.empty)
+  | otherwise = do
+      budget <- recomputeAffectedBudget
+      case conflicts of
+        (meta, installed, requested) : _ ->
+          Left (LevelAssignmentGraphConflict meta installed requested)
+        [] -> Right (combined, dependents, budget, affected)
   where
+    exactReplay =
+      all
+        (\(meta, requested) -> Map.lookup meta old == Just requested)
+        (Map.toAscList new)
     combined = Map.union new old
     zonk = normalizeLevel . substituteLevelMetas combined
     conflicts =
@@ -601,6 +674,29 @@ extendLevelAssignmentGraph old oldDependents new =
                     ])
                   seen
            in close (Set.union seen next) next
+
+    oldAffectedTotal =
+      Set.foldl'
+        (\total meta ->
+          total + Map.findWithDefault 0 meta (lagbRootCosts oldBudget))
+        0
+        affected
+    unaffectedTotal =
+      lagbTotalCost oldBudget - oldAffectedTotal
+    affectedRoots = Set.toAscList affected
+    recomputeAffectedBudget = do
+      (affectedCosts, affectedTotal) <-
+        assignmentRootCosts
+          combined
+          affected
+          (lagbRootCosts oldBudget)
+          (solverNodeBudget - unaffectedTotal)
+          affectedRoots
+      let costs = Map.union affectedCosts (lagbRootCosts oldBudget)
+          total = unaffectedTotal + affectedTotal
+      if total > solverNodeBudget
+        then Left (LevelAssignmentGraphResourceLimit solverNodeBudget)
+        else Right (LevelAssignmentGraphBudget costs total)
 
 emptyAssumptions :: Assumptions
 emptyAssumptions = Assumptions []

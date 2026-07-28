@@ -41,6 +41,6 @@ let inferredCallStr = sumContainer (Pair "a" "b")
 -- Asking for Pair Int but the expression supplies Pair String; the
 -- explicit T = Int does not match.
 conflictAnnotation : List Int
-let conflictAnnotation = sumContainer (Pair "x" "y")  --!! kappa.type.mismatch
+let conflictAnnotation = sumContainer (Pair "x" "y")  --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

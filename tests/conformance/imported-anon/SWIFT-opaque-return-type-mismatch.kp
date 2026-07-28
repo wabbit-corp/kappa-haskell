@@ -50,6 +50,7 @@ requireCircle : Circle -> Nat
 let requireCircle c = area c
 
 badCall : Nat
-let badCall = requireCircle (Square 4)    --!! kappa.type.mismatch
+let badCall = requireCircle (Square 4)    --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

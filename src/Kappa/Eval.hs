@@ -34,6 +34,7 @@ module Kappa.Eval
   , force
   , quote
   , convertible
+  , globalSpineRelevantPairs
   , matchPat
   , vapp
   , vproj
@@ -42,6 +43,7 @@ module Kappa.Eval
   , lookupEnv
   ) where
 
+import Control.Monad (guard)
 import Data.Bits (xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Char (chr, ord)
@@ -86,10 +88,11 @@ foreign import ccall unsafe "math.h atan2"
 data GlobalDef = GlobalDefData
   { gdUniverses :: !DeclarationUniverseTelescope
   , gdProvisionalUniverseProjection :: ![(LevelMeta, Int)]
-  -- ^ Temporary source-meta to occurrence-spine projection of an inferred
-  -- declaration before its SCC installs the stable hidden telescope. Only
-  -- metas authenticated as declaration-owned schema parameters appear here;
-  -- minimizable classifiers and dependency occurrences remain solver-owned.
+  -- ^ Source-meta to occurrence-spine projection for an inferred declaration.
+  -- Before SCC finalization it covers the complete provisional source spine,
+  -- so reducible occurrences freshen every interface meta. Finalization
+  -- replaces it with the exact retained source-meta to stable hidden-telescope
+  -- projection; discarded provisional positions never become final params.
   , gdObservationMode :: !ObservationMode
   , gdNominalSummary :: !(Maybe NominalCumulativitySummary)
   , gdType :: !Value
@@ -200,6 +203,34 @@ data EvalCtx = EvalCtx
 lookupGlobal :: EvalCtx -> GName -> Maybe GlobalDef
 lookupGlobal ctx g = Map.lookup g (globalsMap (ecGlobals ctx))
 
+-- | Align two occurrences of one checked global and return the arguments
+-- whose values participate in definitional equality.  Generated
+-- declaration-universe proofs are an authenticated leading prefix: their
+-- propositions are part of the global interface, but §11.1.2.3A explicitly
+-- excludes the arbitrary witness identity from interface semantics.  All
+-- other implicit and explicit arguments remain relevant.
+globalSpineRelevantPairs
+  :: EvalCtx
+  -> GName
+  -> [(Icit, Value)]
+  -> [(Icit, Value)]
+  -> Maybe [(Value, Value)]
+globalSpineRelevantPairs ctx global left right = do
+  guard (length left == length right)
+  guard (and (zipWith (\(leftIcit, _) (rightIcit, _) -> leftIcit == rightIcit) left right))
+  let proofCount =
+        maybe 0 (maybe 0 generatedProofPrefixLength . gdCoreType) (lookupGlobal ctx global)
+      skipped = min proofCount (length left)
+  pure
+    [ (leftValue, rightValue)
+    | ((_, leftValue), (_, rightValue)) <- zip (drop skipped left) (drop skipped right)
+    ]
+  where
+    generatedProofPrefixLength = \case
+      CPiEvidenceM _ _ Impl Q0 _ _ (Just _) BinderGenerated _ codomain ->
+        1 + generatedProofPrefixLength codomain
+      _ -> 0
+
 -- ── Evaluation ───────────────────────────────────────────────────────
 
 -- | Checked de Bruijn lookup. An out-of-range index is an elaborator
@@ -251,7 +282,15 @@ eval ctx env = \case
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
   CSort n -> VSort (evalLevel ctx env n)
   CLevel n -> VLevel (evalLevel ctx env n)
-  CUniverseLift _ _ _ t -> eval ctx env t
+  CUniverseLift from to evidence t
+    | ecRuntime ctx -> eval ctx env t
+    | otherwise ->
+        let resolve = evalLevel ctx env
+         in VUniverseLift
+              (resolve from)
+              (resolve to)
+              (mapUniverseEvidenceLevels resolve evidence)
+              (eval ctx env t)
   CSchemaLift _ _ _ _ _ _ _ _ t -> eval ctx env t
   CArithmeticProof certificate ->
     VArithmeticProof (mapArithmeticCertificate (eval ctx env) certificate)
@@ -446,6 +485,8 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
+      VUniverseLift _ _ _ inner ->
+        go (fuel - 1) inner
       -- branch-local dependent-match solution for a rigid (§7.4.1)
       VRigid l []
         | Just (FactIs sol) <- Map.lookup l (ecFacts ctx) ->
@@ -742,6 +783,8 @@ quote ctx lvl v = case forceQ ctx v of
       (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n
   VLevel n -> CLevel n
+  VUniverseLift from to evidence inner ->
+    CUniverseLift from to evidence (quote ctx lvl inner)
   VArithmeticProof certificate ->
     CArithmeticProof (mapArithmeticCertificate (quote ctx lvl) certificate)
   VLit l -> CLit l
@@ -815,8 +858,8 @@ convertible ctx = go (200 :: Int)
       , VGlobI g2 us2 sp2 <- forceQ ctx v2
       , g1 == g2
       , hiddenUniversesCompatible us1 us2
-      , length sp1 == length sp2
-      , and (zipWith (\(_, a) (_, b) -> go (fuel - 1) lvl a b) sp1 sp2) =
+      , Just relevant <- globalSpineRelevantPairs ctx g1 sp1 sp2
+      , and (map (\(a, b) -> go (fuel - 1) lvl a b) relevant) =
           True
     go fuel lvl v1 v2 = case (force ctx v1, force ctx v2) of
       (VSort a, VSort b) -> a == b
@@ -852,7 +895,10 @@ convertible ctx = go (200 :: Int)
       (VRigid l1 sp1, VRigid l2 sp2) -> l1 == l2 && goSpine fuel lvl sp1 sp2
       (VFlex m1 sp1, VFlex m2 sp2) -> m1 == m2 && goSpine fuel lvl sp1 sp2
       (VGlobI g1 us1 sp1, VGlobI g2 us2 sp2)
-        | g1 == g2, hiddenUniversesCompatible us1 us2, goSpine fuel lvl sp1 sp2 -> True
+        | g1 == g2
+        , hiddenUniversesCompatible us1 us2
+        , Just relevant <- globalSpineRelevantPairs ctx g1 sp1 sp2
+        , and (map (\(a, b) -> go (fuel - 1) lvl a b) relevant) -> True
       -- unfold non-reducible-blocked globals only if reducible (force
       -- already unfolded those); different heads -> try nothing more
       (VCtorI g1 universes1 arguments1, VCtorI g2 universes2 arguments2) ->
@@ -930,7 +976,10 @@ convertible ctx = go (200 :: Int)
           CPWild -> 0
           CPVarM _ _ -> 1
           CPLit _ -> 0
-          CPCtorM existentialModes _ _ ps -> length existentialModes + sum (map patBinders ps)
+          CPCtorM existentialModes bridges _ _ ps ->
+            length existentialModes
+              + constructorBridgeBinderCount bridges
+              + sum (map patBinders ps)
           CPTuple ps -> sum (map patBinders ps)
           CPRecordM fs rest ->
             sum (map (patBinders . snd) fs)

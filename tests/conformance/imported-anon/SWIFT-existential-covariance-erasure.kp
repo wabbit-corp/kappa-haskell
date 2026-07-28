@@ -25,11 +25,11 @@ instance Describable Square =
     let size (Square s) = s
 
 -- POSITIVE: a polymorphic function uses the trait interface — result is String.
-describeAny : forall {a : Type} -> (@_ : Describable a) -> a -> String
+describeAny : forall (a : Type). (@_ : Describable a) -> a -> String
 let describeAny x = describe x
 
 -- POSITIVE: size returns Nat (concrete type, no erasure issue).
-sizeAny : forall {a : Type} -> (@_ : Describable a) -> a -> Nat
+sizeAny : forall (a : Type). (@_ : Describable a) -> a -> Nat
 let sizeAny x = size x
 
 circleDesc : String
@@ -42,17 +42,17 @@ circleSize : Nat
 let circleSize = sizeAny (Circle 5)
 
 -- POSITIVE: composing polymorphic calls stays within the trait interface.
-describeAndSize : forall {a : Type} -> (@_ : Describable a) -> a -> (String, Nat)
+describeAndSize : forall (a : Type). (@_ : Describable a) -> a -> (String, Nat)
 let describeAndSize x = (describe x, size x)
 
 -- NEGATIVE: trying to return the abstract value as a concrete Circle.
 -- `a` is universally abstract; it cannot be unified with Circle.
-toCircle : forall {a : Type} -> (@_ : Describable a) -> a -> Circle
+toCircle : forall (a : Type). (@_ : Describable a) -> a -> Circle
 let toCircle x = x    --!! kappa.type.mismatch
 
 -- NEGATIVE: annotating the abstract value as Circle at a let binding.
 -- Opening the binder gives an abstract `a`, not Circle.
-useAsCircle : forall {a : Type} -> (@_ : Describable a) -> a -> Nat
+useAsCircle : forall (a : Type). (@_ : Describable a) -> a -> Nat
 let useAsCircle x =
     let c : Circle = x    --!! kappa.type.mismatch
     size c

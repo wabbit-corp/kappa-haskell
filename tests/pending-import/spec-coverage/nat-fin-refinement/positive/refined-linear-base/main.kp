@@ -25,6 +25,6 @@ release :
 
 let release r =
     match r
-    case Refined v @ip @p -> v
+    case Refined v -> v
 
 --! assertNoErrors

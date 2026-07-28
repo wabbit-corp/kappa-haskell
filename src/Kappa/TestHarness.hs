@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | Appendix T standard test harness.
 --
 -- Implements the §T.3 directive syntax, the §T.4 configuration subset
@@ -31,7 +33,7 @@ module Kappa.TestHarness
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Control.Monad.State.Strict qualified as State
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isDigit, isLower)
 import Data.List (find, isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -41,6 +43,8 @@ import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Numeric.Natural (Natural)
+import Text.Read (readMaybe)
 import Kappa.Check
   ( AuditRecord (..)
   , CheckState (..)
@@ -50,9 +54,11 @@ import Kappa.Check
   , checkModule
   , declarationTypesConvertibleAtUse
   , defaultUnsafeConfig
+  , inhabitanceSummaryForState
   , recursiveSchemaEdgeRecorded
   , scriptUnsafeConfig
   , selectedUniverseEvidenceRecorded
+  , symbolicCardinalityForState
   , UniverseInferenceClass (..)
   , UniverseInferenceRecord (..)
   , universeInferenceRecord
@@ -60,10 +66,21 @@ import Kappa.Check
 import Kappa.Core
 import Kappa.CoreText
 import Kappa.CoreOps (foldTerm)
+import Kappa.Cardinality
+  ( CardExpr
+  , normalizeCardExpr
+  , parseCardExpr
+  , renderCardExpr
+  )
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), force, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
+import Kappa.Inhabitance
+  ( InhabitancePurpose (..)
+  , InhabitanceSummary (Empty, Subsingleton, Contractible, Unknown)
+  , canonicalizeFinite
+  )
 import Kappa.Level
   ( ConstraintOrigin (..)
   , LevelConstraint (..)
@@ -218,6 +235,8 @@ data Assertion
   | AInterfaceContainsCurrentUniverseRoles !Text ![UniverseVariance]
   | ATotal !Text
   | AArithmeticCertificatesValid
+  | AInhabitance !InhabitancePurpose !InhabitanceSummary !Text
+  | ASymbolicCardinality !Text !Text
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -269,6 +288,7 @@ supportedCapabilities :: [Text]
 supportedCapabilities =
   [ "runTask", "pipelineTrace", "stageDumps", "kcoreText"
   , "arithmeticCertificates"
+  , "symbolicCardinality"
   , "mutualNominalVariance"
   , "legacyCharAlias", "unicodeSourceWarnings"
   ]
@@ -560,13 +580,19 @@ parseDirective allLines lno body =
       "assertInhabitance" ->
         case splitDirectiveInfix " for " rest of
           Just (summary, ty)
-            | (purpose : _) <- T.words summary
-            , purpose `elem` ["SourceReachability", "Completion", "RuntimeShape", "Optimization"]
+            | [purposeText, summaryText] <- T.words summary
+            , Just purpose <- parseInhabitancePurpose purposeText
+            , Just expected <- parseInhabitanceSummary summaryText
             , not (T.null (T.strip ty)) ->
-                unsup "assertInhabitance requires capability symbolicCardinality: not provided"
+                ok (SAssert (AInhabitance purpose expected (T.strip ty)))
           _ -> bad "malformed 'assertInhabitance' directive"
       "assertSymbolicCardinality" ->
-        unavailableTypeQuery "assertSymbolicCardinality" "symbolicCardinality"
+        case splitDirectiveInfix " for " rest of
+          Just (expected, ty)
+            | not (T.null (T.strip expected))
+            , not (T.null (T.strip ty)) ->
+                ok (SAssert (ASymbolicCardinality (T.strip expected) (T.strip ty)))
+          _ -> bad "malformed 'assertSymbolicCardinality' directive"
       "assertOrdinalRepresentation" ->
         unavailableTypeQuery "assertOrdinalRepresentation" "representationCertificates"
       "assertExactNaturalRepresentation" ->
@@ -874,6 +900,34 @@ parseNat t
       let v = read (T.unpack t) :: Integer
        in if v > toInteger (maxBound :: Int) then Nothing else Just (fromInteger v)
   | otherwise = Nothing
+
+parseNatural :: Text -> Maybe Natural
+parseNatural text
+  | not (T.null text)
+  , T.all isDigit text =
+      readMaybe (T.unpack text)
+  | otherwise = Nothing
+
+parseInhabitancePurpose :: Text -> Maybe InhabitancePurpose
+parseInhabitancePurpose = \case
+  "SourceReachability" -> Just SourceReachability
+  "Completion" -> Just Completion
+  "RuntimeShape" -> Just RuntimeShape
+  "Optimization" -> Just Optimization
+  _ -> Nothing
+
+parseInhabitanceSummary :: Text -> Maybe InhabitanceSummary
+parseInhabitanceSummary = \case
+  "Empty" -> Just Empty
+  "Subsingleton" -> Just Subsingleton
+  "Contractible" -> Just Contractible
+  "Unknown" -> Just Unknown
+  summary -> do
+    cardinalityText <- T.stripPrefix "Finite(" summary >>= T.stripSuffix ")"
+    cardinality <- parseNatural cardinalityText
+    if cardinality >= 2
+      then Just (canonicalizeFinite cardinality)
+      else Nothing
 
 parseCommaNats :: Text -> Maybe [Int]
 parseCommaNats text =
@@ -2066,6 +2120,44 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                   parseKCore
                   "generated arithmetic-certificate KCore"
                   dump
+  AInhabitance purpose expected tyExpr ->
+    pure $ case elaborateQueryType [] tyExpr of
+      Left detail -> AssertFail ("assertInhabitance: " <> detail)
+      Right (queryState, _, queryType) ->
+        let actual = inhabitanceSummaryForState queryState purpose queryType
+         in requirePure
+              (actual == expected)
+              ( "assertInhabitance: " <> tyExpr <> " has " <> tshow actual
+                  <> " for " <> T.pack (show purpose)
+                  <> ", expected " <> tshow expected
+              )
+  ASymbolicCardinality expectedText tyExpr ->
+    pure $
+      let indexes = queryIndexNames expectedText tyExpr
+          depth = length indexes
+          indexTerms =
+            Map.fromList
+              [ (name, CVar (depth - ordinal - 1))
+              | (ordinal, name) <- zip [0 :: Int ..] indexes
+              ]
+       in case parseCardExpr indexTerms expectedText of
+            Left detail ->
+              AssertFail ("assertSymbolicCardinality: invalid expected expression: " <> detail)
+            Right expected ->
+              case elaborateQueryType indexes tyExpr of
+                Left detail -> AssertFail ("assertSymbolicCardinality: " <> detail)
+                Right (queryState, queryDepth, queryType) ->
+                  case symbolicCardinalityForState queryState queryDepth queryType of
+                    Nothing ->
+                      AssertFail
+                        ("assertSymbolicCardinality: no exact symbolic cardinality for " <> tyExpr)
+                    Just actual ->
+                      requirePure
+                        (normalizeCardExpr actual == normalizeCardExpr expected)
+                        ( "assertSymbolicCardinality: " <> tyExpr <> " has "
+                            <> renderCardExpr actual <> ", expected "
+                            <> renderCardExpr expected
+                        )
   where
     checkpointState = cuState cu
     -- The verifier's external environment is an import environment. The
@@ -2094,7 +2186,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
              ciData
              ciUniverses
              ciType
-             (map fst ciFields))
+             ciSourceFields)
         (csCtors checkpointState)
     renderCheckpointKCore =
       firstKCoreError $
@@ -2134,6 +2226,72 @@ checkAssertion compileWith root path src files cu diags mRun = \case
             | global <- candidates
             , Just definition <- [Map.lookup global (csGlobals state)]
             ]
+    elaborateQueryType indexes tyExpr =
+      case parseModule "<type-query>" querySource of
+        Left _ -> Left ("type does not parse: " <> tyExpr)
+        Right (queryModule, _) ->
+          let fixities = fileFixities path src
+              (resolvedModule, _) = resolveModule fixities queryModule
+              state0 =
+                (cuState cu)
+                  { csModule = cuModule cu
+                  , csScope = queryScope
+                  , csDiags = []
+                  , csScopeNameCache = Nothing
+                  }
+              (state1, diagnostics) = checkModule state0 resolvedModule
+              probe = GName (cuModule cu) "__assert_type_query_probe"
+           in if hasErrors diagnostics
+                then Left
+                  ( "type does not elaborate: " <> tyExpr <> " ("
+                      <> T.intercalate ", " [dCode diagnostic | diagnostic <- diagnostics, isError diagnostic]
+                      <> ")"
+                  )
+                else case Map.lookup probe (csGlobals state1) >>= gdValue of
+                  Just querySchema ->
+                    case applyQueryIndexes state1 querySchema of
+                      Just queryType -> Right (state1, length indexes, queryType)
+                      Nothing -> Left ("type-query telescope does not match its Nat indices: " <> tyExpr)
+                  Nothing -> Left ("type query produced no transparent type value: " <> tyExpr)
+      where
+        querySource =
+          "type __assert_type_query_probe"
+            <> T.concat [" (" <> index <> " : Nat)" | index <- indexes]
+            <> " = " <> tyExpr <> "\n"
+        queryScope = case parseModule path src of
+          Right (originModule, _) -> importScopeForWithConfig (csUnsafe (cuState cu)) (cuState cu) originModule
+          Left _ -> csScope (cuState cu)
+        applyQueryIndexes state value =
+          go 0 value
+          where
+            evaluation = EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty
+            go ordinal current
+              | ordinal == length indexes = Just current
+              | otherwise =
+                  case force evaluation current of
+                    VLam _ _ _ (Closure environment body) ->
+                      go
+                        (ordinal + 1)
+                        (eval evaluation (VRigid ordinal [] : environment) body)
+                    _ -> Nothing
+    queryIndexNames expectedText tyExpr =
+      nub
+        [ identifier
+        | identifier <- textIdentifiers tyExpr
+        , isLower (T.head identifier)
+        , identifier `elem` textIdentifiers expectedText
+        ]
+    textIdentifiers =
+      map T.pack . wordsBy (not . identifierCharacter) . T.unpack
+      where
+        identifierCharacter character =
+          isAlphaNum character || character == '_' || character == '\''
+        wordsBy separator = filter (not . null) . foldr step [[]]
+          where
+            step character (current : rest)
+              | separator character = [] : current : rest
+              | otherwise = (character : current) : rest
+            step _ [] = []
     nominalSummaryFor unit family =
       listToMaybe
         [ summary
@@ -2162,7 +2320,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                   ciData
                   ciUniverses
                   ciType
-                  (map fst ciFields))
+                  ciSourceFields)
               (Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csCtors state))
           dataInterfaces = Map.map (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount) (csDatas state)
           constructorInterfaces =
@@ -2172,7 +2330,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                   ciData
                   ciUniverses
                   ciType
-                  (map fst ciFields))
+                  ciSourceFields)
               (csCtors state)
           importedEval = EvalCtx (Globals importedGlobals) (csMetas state) False mempty
       dump <- firstKCoreError $ renderKCoreModule ownModule fullEval (csGlobals state) (csCoreBodies state) dataInterfaces constructorInterfaces

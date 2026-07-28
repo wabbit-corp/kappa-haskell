@@ -139,8 +139,8 @@ import Kappa.NominalVariance
   )
 import Kappa.LevelEvidence
   ( coreTypeIsTypeLevel
+  , scopeRecordFields
   , scopeRecordLevelAssumption
-  , scopeRecordLevelFields
   )
 import Kappa.Ownership
   ( BinderOwn (..)
@@ -1034,7 +1034,7 @@ validateObservationModeFlows st =
           CPWild -> []
           CPVarM actualMode _ -> maybe [] (\wanted -> modeMismatch owner "pattern binder" wanted actualMode) mode
           CPLit _ -> []
-          CPCtorM _ constructor universes patterns ->
+          CPCtorM _ _ constructor universes patterns ->
             case Map.lookup constructor (csCtors st) of
               Nothing ->
                 [modeViolation owner "E_BACKENDIR_CONSTRUCTOR_INTERFACE"
@@ -1090,13 +1090,15 @@ validateObservationModeFlows st =
       CPWild -> []
       CPVarM mode _ -> [(mode, expectedType)]
       CPLit _ -> []
-      CPCtorM existentialModes constructor universes patterns ->
+      CPCtorM existentialModes bridges constructor universes patterns ->
         case Map.lookup constructor (csCtors st) of
           Nothing -> [(mode, Nothing) | mode <- existentialModes]
+            ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
             ++ concatMap (patternSites depth Nothing) patterns
           Just info ->
             case specializeConstructorType ctx (Just universes) info of
               Nothing -> [(mode, Nothing) | mode <- existentialModes]
+                ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
                 ++ concatMap (patternSites depth Nothing) patterns
               Just constructorType ->
                 let sites = do
@@ -1104,6 +1106,7 @@ validateObservationModeFlows st =
                       constructorPatternObservationSites
                         ctx False depth (length (ciFields info)) constructorType scrutineeType
                  in [(mode, Nothing) | mode <- existentialModes]
+                      ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
                       ++ case sites of
                            Just aligned -> concat
                              [ patternSites depth (Just fieldType) pattern'
@@ -1390,17 +1393,19 @@ validateFinalizedLevelScopes st =
                   | otherwise -> (scopedRelationErrors, authenticated)
 
     checkRecordFields interfaceArtifact depth owner universeArity assumptions localSchemas =
-      go Map.empty 0 assumptions
+      go Map.empty Map.empty 0 assumptions
       where
-        go _ _ _ [] = []
-        go fieldLevels fieldCount fieldAssumptions (field : rest) =
+        go _ _ _ _ [] = []
+        go fieldLocals fieldLevels fieldCount fieldAssumptions (field : rest) =
           let fieldDepth = depth + fieldCount
-              scopedType = scopeRecordLevelFields depth fieldCount fieldLevels (rfType field)
+              scopedType =
+                scopeRecordFields depth fieldCount fieldLocals fieldLevels (rfType field)
               scopedRelation =
                 scopeRecordLevelAssumption fieldLevels (rfLevelAssumption field)
               (assumptionErrors, authenticated) =
                 authenticateRecordAssumption fieldDepth field scopedType scopedRelation
               nextAssumptions = addAssumption authenticated fieldAssumptions
+              nextLocals = Map.insert (rfName field) fieldDepth fieldLocals
               nextFields =
                 if coreTypeIsTypeLevel scopedType
                   then Map.insert (rfName field) fieldDepth fieldLevels
@@ -1408,7 +1413,7 @@ validateFinalizedLevelScopes st =
            in assumptionErrors
                 ++ checkTerm interfaceArtifact fieldDepth owner universeArity fieldAssumptions
                   (replicate fieldCount Nothing ++ localSchemas) scopedType
-                ++ go nextFields (fieldCount + 1) nextAssumptions rest
+                ++ go nextLocals nextFields (fieldCount + 1) nextAssumptions rest
 
         authenticateRecordAssumption fieldDepth field domain relation =
           let modeValid =
@@ -1450,7 +1455,7 @@ validateFinalizedLevelScopes st =
       CPWild -> []
       CPVarM {} -> []
       CPLit {} -> []
-      CPCtorM _ constructor universes patterns ->
+      CPCtorM _ _ constructor universes patterns ->
         concatMap (checkLevel interfaceArtifact owner depth universeArity) universes
           ++ concatMap (checkPattern interfaceArtifact depth owner universeArity) patterns
           ++ case globalUniverseArity constructor of
@@ -3559,7 +3564,14 @@ lowerApp expected term depth scopes = do
           Nothing -> lowerGeneric
           Just transport ->
             let proofErased =
-                  proofHeadIsRuntimeErased runtimeErasedProofHeads (rtaProof transport)
+                  proofTermIsRuntimeErased
+                    globals
+                    traits
+                    ctx
+                    depth
+                    scopes
+                    runtimeErasedProofHeads
+                    (rtaProof transport)
                     || case [erased | (index, _, erased, _, _, _) <- aligned, index == rtaProofIndex transport] of
                       erased : _ -> erased
                       [] -> True
@@ -3649,6 +3661,76 @@ proofIsDefinitionallyRefl ctx depth proof =
 -- those accessors is an erased proof producer even when the generic
 -- eliminator telescope cannot recover the selected IsSet evidence from the
 -- equality type alone.
+proofTermIsRuntimeErased
+  :: Map GName GlobalDef
+  -> Map GName TraitInfo
+  -> EvalCtx
+  -> Int
+  -> ScopeStack
+  -> Set GName
+  -> Term
+  -> Bool
+proofTermIsRuntimeErased globals traits ctx depth scopes runtimeErasedHeads proof =
+  go proof
+  where
+    go candidate =
+      proofHeadIsRuntimeErased runtimeErasedHeads candidate
+        || projectedTraitMemberIsRuntimeErased candidate
+        || proofCombinatorHasOnlyErasedEvidence candidate
+        -- Erasure demand propagates through the exact checked equality
+        -- eliminators. If their payload is already runtime-erased, using the
+        -- transported result in an erased proof slot makes the nested
+        -- transport erased as well; its abstract equality witness is not a
+        -- runtime dependency (§11.4.1, §31.2).
+        || maybe False (go . rtaReduced) (runtimeTransportApplication candidate)
+
+    -- The standard equality combinators do not manufacture a runtime path:
+    -- they only rearrange already-checked equality evidence. Their result is
+    -- therefore runtime-erased exactly when every proof input is independently
+    -- runtime-erased. This is deliberately recursive rather than a head-only
+    -- classification: @sym p@ for an abstract runtime proof remains
+    -- proof-relevant and is rejected by the transport lowerability gate.
+    proofCombinatorHasOnlyErasedEvidence candidate =
+      let (headTerm, arguments) = spineOfTerm candidate
+          explicit = [argument | (Expl, argument) <- arguments]
+          evidenceInputs =
+            case coreHeadGlobal headTerm of
+              Just global
+                | global == gPrel "sym" ->
+                    takeLast 1 explicit
+                | global == gPrel "trans" ->
+                    takeLast 2 explicit
+              _ -> []
+       in not (null evidenceInputs) && all go evidenceInputs
+
+    takeLast count values =
+      drop (max 0 (length values - count)) values
+
+    projectedTraitMemberIsRuntimeErased candidate =
+      case projectionHead candidate of
+        Just (receiver, field) ->
+          case force ctx <$> termTypeAt globals traits ctx depth scopes receiver of
+            Just (VGlobN trait _) ->
+              maybe False
+                ((== Just Q0) . Map.lookup field . tiMemberQs)
+                (Map.lookup trait traits)
+            _ -> False
+        Nothing -> False
+
+    projectionHead candidate =
+      case fst (spineOfTerm (stripWrappers candidate)) of
+        CProjM _ receiver field -> Just (receiver, field)
+        CProjAtM _ receiver field _ -> Just (receiver, field)
+        _ -> Nothing
+
+    stripWrappers = \case
+      CUniverseLift _ _ _ inner -> stripWrappers inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripWrappers inner
+      inner -> inner
+
+-- The projection case above is intentionally tied to both the resolved
+-- receiver trait identity and its finalized member layout. A field spelling
+-- by itself is not erasure authority.
 proofHeadIsRuntimeErased :: Set GName -> Term -> Bool
 proofHeadIsRuntimeErased runtimeErasedHeads = \case
   -- Arithmetic certificates are independently checked proof-only KCore
@@ -4165,12 +4247,32 @@ coreEtaCtorApp term =
       , let supplied = length sargs
       , k >= 1
       , supplied <= k
-      , all ((== Q0) . snd) (drop supplied binders)
-      , CCtorI g universes ann constructorArgs <- body ->
-          (\picks -> (g, universes, ann, k, concat picks))
-            <$> traverse (pick (map snd sargs) k) (zip [0 :: Int ..] constructorArgs)
+      , all ((== Q0) . snd) (drop supplied binders) ->
+          case betaReduceEtaHead hd sargs of
+            Just (CCtorI g universes ann constructorArgs)
+              | supplied == k ->
+                  Just
+                    ( g
+                    , universes
+                    , ann
+                    , k
+                    , zip [0 :: Int ..] constructorArgs
+                    )
+            _
+              | CCtorI g universes ann constructorArgs <- body ->
+                  (\picks -> (g, universes, ann, k, concat picks))
+                    <$> traverse (pick (map snd sargs) k) (zip [0 :: Int ..] constructorArgs)
+            _ -> Nothing
     _ -> Nothing
   where
+    betaReduceEtaHead = go
+      where
+        go function [] = Just function
+        go (CLamM _ expectedIcit _ _ body) ((actualIcit, argument) : rest)
+          | expectedIcit == actualIcit =
+              go (substTopTermAt 0 argument body) rest
+        go _ _ = Nothing
+
     pick args k (argumentIndex, argument) = case caTerm argument of
       CVar j
         | j >= 0

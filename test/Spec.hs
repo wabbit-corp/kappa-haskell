@@ -10,6 +10,7 @@ import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Control.Applicative ((<|>))
 import Data.List (isInfixOf, isSuffixOf, nub, permutations, sort)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -20,7 +21,10 @@ import Kappa.Arithmetic
   , AFact (..)
   , ArithmeticNormalForm (..)
   , ArithmeticReplay (..)
+  , ArithmeticSemantics (..)
+  , derivePrincipalAffineAssignment
   , deriveArithmeticReplay
+  , negateFact
   , verifyArithmeticReplay
   )
 import Kappa.Backend.C (generateC)
@@ -114,7 +118,6 @@ import Kappa.CoreText
   ( KCoreTextError (..)
   , KCoreDataInfo (..)
   , KCoreConstructorInfo (..)
-  , parseAndVerifyKCoreTextWithGlobals
   , parseAndVerifyKCoreTextWithEnvironment
   , parseAndVerifyKCoreInterface
   , parseAndVerifyKCoreInterfaceWithInterfaces
@@ -174,6 +177,7 @@ import Kappa.Level
   , NeutralLevelTerm (..)
   , LevelConstraint (..)
   , LevelAssignmentGraphError (..)
+  , LevelAssignmentGraphBudget
   , LevelSolveError (..)
   , LevelSolution (..)
   , PrincipalInferenceOutcome (..)
@@ -182,7 +186,9 @@ import Kappa.Level
   , assumptionsConsistent
   , emptyAssumptions
   , finiteLevel
+  , emptyLevelAssignmentGraphBudget
   , extendLevelAssignmentGraph
+  , extendLevelAssignmentGraphWithBudget
   , inferPrincipalLevelsFor
   , insertAssumption
   , levelAdd
@@ -191,6 +197,7 @@ import Kappa.Level
   , mergeLevelAssignments
   , levelSucc
   , normalizeLevel
+  , rebuildLevelAssignmentGraphBudget
   , proveLevelLeq
   , solveLevelConstraints
   , solveLevelConstraintsFor
@@ -910,6 +917,53 @@ universeLevelDomain = do
                     && Map.findWithDefault Set.empty 41 dependents == Set.singleton 40
                 Left _ -> False
           Left _ -> False
+      incrementalAssignmentBudgetMatchesFullRebuild =
+        case
+          extendLevelAssignmentGraphWithBudget
+            Map.empty
+            Map.empty
+            emptyLevelAssignmentGraphBudget
+            (Map.fromList
+              [ (70, levelAdd (LMeta 71) (LMeta 72))
+              , (73, levelSucc (LMeta 70))
+              , (74, neutralP)
+              ])
+        of
+          Right (initial, initialDependents, initialBudget, _) ->
+            case
+              extendLevelAssignmentGraphWithBudget
+                initial
+                initialDependents
+                initialBudget
+                (Map.fromList [(71, LZero), (72, levelSucc LZero)])
+            of
+              Right (combined, _, incrementalBudget, affected) ->
+                rebuildLevelAssignmentGraphBudget combined
+                  == Right incrementalBudget
+                  && affected == Set.fromList [70, 71, 72, 73]
+              Left _ -> False
+          Left _ -> False
+      exactAssignmentGraphUpdateIsANoOp =
+        case
+          extendLevelAssignmentGraphWithBudget
+            Map.empty
+            Map.empty
+            emptyLevelAssignmentGraphBudget
+            (Map.fromList [(75, neutralP), (76, levelSucc neutralP)])
+        of
+          Right (initial, initialDependents, initialBudget, _) ->
+            extendLevelAssignmentGraphWithBudget
+              initial
+              initialDependents
+              initialBudget
+              (Map.fromList [(75, neutralP), (76, levelSucc neutralP)])
+              == Right
+                ( initial
+                , initialDependents
+                , initialBudget
+                , Set.empty
+                )
+          Left _ -> False
       noPointwiseLeastClass =
         case inferPrincipalLevelsFor
           (Set.fromList [32, 33])
@@ -1033,13 +1087,24 @@ universeLevelDomain = do
          in proveLevelLeq crowded (LMeta 1000) (LMeta 1001)
               == IndeterminateResourceLimit
       incrementalAssignmentGraphFailsBeforeExpansion =
-        let extendOne (Right (assignments, dependents, _)) meta =
-              extendLevelAssignmentGraph
+        let extendOne (Right (assignments, dependents, budget, _)) meta =
+              extendLevelAssignmentGraphWithBudget
                 assignments
                 dependents
+                budget
                 (Map.singleton meta (levelAdd (LMeta (meta + 1)) (LMeta (meta + 1))))
             extendOne failure _ = failure
-         in case foldl extendOne (Right (Map.empty, Map.empty, Set.empty)) [100 .. 130] of
+         in case
+              foldl
+                extendOne
+                (Right
+                  ( Map.empty
+                  , Map.empty
+                  , emptyLevelAssignmentGraphBudget
+                  , Set.empty
+                  ))
+                [100 .. 130]
+            of
               Left (LevelAssignmentGraphResourceLimit _) -> True
               _ -> False
       outsidePortableClass =
@@ -1169,6 +1234,8 @@ universeLevelDomain = do
         , ("principal assignments compose through later substitutions", principalAssignmentsComposeWithoutRevision)
         , ("principal assignments cannot be revised by a later join", principalAssignmentsRejectRevision)
         , ("incremental assignment graph tracks transitive dependents", incrementalAssignmentGraphTracksTransitiveDependents)
+        , ("incremental assignment budget matches a full rebuild", incrementalAssignmentBudgetMatchesFullRebuild)
+        , ("exact assignment graph updates are constant-state no-ops", exactAssignmentGraphUpdateIsANoOp)
         , ("principal inference detects incomparable max minima", noPointwiseLeastClass)
         , ("max-split certificates satisfy the complete constraint system", maxSplitWitnessChecksCompleteSystem)
         , ("single-meta max inference retains a rigid symbolic lower bound", rigidMaxArmHasSymbolicPrincipal)
@@ -1322,6 +1389,15 @@ universeLiftEvidenceDomain = do
               )
           )
       syntheticGlobals = Map.insert syntheticOwner syntheticDefinition (csGlobals sourceState)
+      sourceConstructorInterfaces =
+        Map.map
+          (\info ->
+             KCoreConstructorInfo
+               (ciData info)
+               (ciUniverses info)
+               (ciType info)
+               (ciSourceFields info))
+          (csCtors sourceState)
       composedKCoreRoundTrip = do
         dump <-
           renderKCoreModule
@@ -1330,19 +1406,19 @@ universeLiftEvidenceDomain = do
             syntheticGlobals
             (Map.singleton syntheticOwner syntheticBody)
             (Map.empty :: Map.Map GName KCoreDataInfo)
-            (Map.empty :: Map.Map GName KCoreConstructorInfo)
+            sourceConstructorInterfaces
         parsed <-
           parseAndVerifyKCoreTextWithEnvironment
             sourceEval
             (csGlobals sourceState)
-            Map.empty
+            sourceConstructorInterfaces
             dump
         let canonical = printCanonicalKCoreText parsed
         reparsed <-
           parseAndVerifyKCoreTextWithEnvironment
             sourceEval
             (csGlobals sourceState)
-            Map.empty
+            sourceConstructorInterfaces
             canonical
         pure
           ( "arithmetic [0, 1]" `T.isInfixOf` canonical
@@ -1352,8 +1428,8 @@ universeLiftEvidenceDomain = do
           )
       runtimeIdentity =
         case
-          ( eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) [] composed
-          , eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) [] payload
+          ( eval (EvalCtx (Globals Map.empty) emptyMetas True Map.empty) [] composed
+          , eval (EvalCtx (Globals Map.empty) emptyMetas True Map.empty) [] payload
           ) of
           (VGlobal g us [], VGlobal g' us' []) -> g == g' && us == us'
           _ -> False
@@ -1532,7 +1608,20 @@ kcoreTextCanonicalDomain = do
   let envUnit = compileSourceWithPrelude "kcore-environment.kp" "module kcore_environment\n"
       envState = cuState envUnit
       envEval = EvalCtx (Globals (csGlobals envState)) (csMetas envState) False mempty
-      parseVerified = parseAndVerifyKCoreTextWithGlobals envEval (csGlobals envState)
+      envConstructorInterfaces =
+        Map.map
+          (\info ->
+             KCoreConstructorInfo
+               (ciData info)
+               (ciUniverses info)
+               (ciType info)
+               (ciSourceFields info))
+          (csCtors envState)
+      parseVerified =
+        parseAndVerifyKCoreTextWithEnvironment
+          envEval
+          (csGlobals envState)
+          envConstructorInterfaces
       semanticVersionMetadata =
         ", typeLevelAlgebraVersion = \"1\""
           <> ", levelConstructorNormalizerVersion = \"1\""
@@ -1856,6 +1945,22 @@ kcoreTextCanonicalDomain = do
           <> "lambda (parametric parametric 0 explicit value %A#1 : Type 0) { "
           <> "apply @test.constant-parametric-application.constant#2 (explicit %A#1) }; }\n"
           <> footer
+      captureAvoidingDependentApplication =
+        header "test.capture-avoiding-dependent-application" ""
+          <> "axiom ordinary @test.capture-avoiding-dependent-application.select#2 : "
+          <> "((parametric parametric 0 explicit value %A#0 : Type 0) -> "
+          <> "((ordinary ordinary omega implicit value %proof#1 : %A#0) -> "
+          <> "((ordinary ordinary omega explicit value %value#2 : %A#0) -> %A#0)));\n"
+          <> "def ordinary @test.capture-avoiding-dependent-application.use#3 : "
+          <> "((parametric parametric 0 explicit value %A#2 : Type 0) -> "
+          <> "((ordinary ordinary omega implicit value %proof#3 : %A#2) -> "
+          <> "((ordinary ordinary omega explicit value %value#4 : %A#2) -> %A#2))) { body = "
+          <> "lambda (parametric parametric 0 explicit value %A#2 : Type 0) { "
+          <> "lambda (ordinary ordinary omega implicit value %proof#3 : %A#2) { "
+          <> "lambda (ordinary ordinary omega explicit value %value#4 : %A#2) { "
+          <> "apply @test.capture-avoiding-dependent-application.select#2 "
+          <> "(explicit %A#2, implicit %proof#3, explicit %value#4) } } }; }\n"
+          <> footer
       unordered =
         header "test.order" ""
           <> "axiom ordinary @test.order.z#20 : Type 0;\n"
@@ -1982,6 +2087,7 @@ kcoreTextCanonicalDomain = do
         , ("parametric global facets cannot enter ordinary positions", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" parametricGlobalPromotion)
         , ("dependent parametric application preserves its argument dependency", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" dependentParametricApplication)
         , ("constant parametric application remains ordinary", either (const False) (const True) (parseVerified constantParametricApplication))
+        , ("dependent application substitution avoids independently canonicalized binder ids", either (const False) (const True) (parseVerified captureAvoidingDependentApplication))
         , ("canonical declarations use dependency/identity order", canonicalOrdered)
         , ("canonical local binders are numbered in preorder", canonicalLocals)
         , ("canonical text and semantic hashes are alpha-invariant", either (const False) id alphaStable)
@@ -2468,6 +2574,7 @@ reprScalarIdentity = do
           ++ " userDouble=" ++ show userDouble
           ++ " (a user type spelling 'Double' must NOT unbox)"
       )
+  pure ok
 
 -- | §15.8.2/§15.8.4: value arithmetic produces deterministic replay data,
 -- not a checker-owned Boolean assertion. Mutation and underconstraint must
@@ -2484,10 +2591,55 @@ arithmeticReplayDomain = do
           (AAdd (AAdd n n) (AConst 3))
       boundedAssumption = AFact ACmpLe (AAdd n (AConst 1)) m
       strictGoal = AFact ACmpLt n m
+      equalityAssumption =
+        AFact ACmpEq
+          (AAdd m (AConst 1))
+          (AAdd n (AConst 1))
+      cancellationGoal = AFact ACmpEq m n
+      affineConsequence =
+        AFact ACmpLt n (AConst 10)
+      affinePremise =
+        AFact ACmpLt n (AConst 5)
+      exactDivisionGoal =
+        AFact ACmpEq
+          (ADiv (AAdd (AMul (AConst 4) n) (AConst 6)) (AConst 2))
+          (AAdd (AMul (AConst 2) n) (AConst 3))
+      exactModuloGoal =
+        AFact ACmpEq
+          (AMod (AAdd (AMul (AConst 4) n) (AConst 6)) (AConst 2))
+          (AConst 0)
+      shiftedModuloPremise =
+        AFact ACmpEq (AMod n (AConst 3)) (AConst 1)
+      shiftedModuloGoal =
+        AFact ACmpEq (AMod (AAdd n (AConst 2)) (AConst 3)) (AConst 0)
+      idempotentMaximumGoal =
+        AFact ACmpEq (AMax n n) n
+      uncheckedNaturalSubtraction =
+        AFact ACmpEq (ASub n (AConst 1)) (ASub n (AConst 1))
+      checkedNaturalSubtractionPremise =
+        AFact ACmpLe (AConst 1) n
+      zeroDivisor =
+        AFact ACmpEq (ADiv n (AConst 0)) (ADiv n (AConst 0))
+      nonzeroNatural = AFact ACmpNe n (AConst 0)
+      naturalPositiveFromNonzero = AFact ACmpLe (AConst 1) n
+      negativeIntegerDivisor =
+        AFact ACmpEq
+          (ADiv (AConst 6) (AConst (-2)))
+          (AConst (-3))
+      principalMeta = AVar 7
+      principalAssignable = Set.singleton 7
+      principalAddGoal =
+        AFact ACmpEq (AAdd principalMeta (AConst 1)) (AConst 4)
+      principalScaleGoal =
+        AFact ACmpEq (AMul (AConst 2) principalMeta) (AConst 6)
+      underconstrainedPrincipalGoal =
+        AFact ACmpEq (AAdd principalMeta n) (AConst 4)
+      nonPrincipalZeroGoal =
+        AFact ACmpEq (AMul principalMeta (AConst 0)) (AConst 0)
       polynomialReplay =
-        deriveArithmeticReplay naturalVariables [] polynomialGoal
+        deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] polynomialGoal
       strictReplay =
-        deriveArithmeticReplay naturalVariables [boundedAssumption] strictGoal
+        deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [boundedAssumption] strictGoal
       mutated = do
         replay <- polynomialReplay
         pure replay {arNormalForm = NormalLowerBound 0}
@@ -2496,27 +2648,139 @@ arithmeticReplayDomain = do
             y = AVar 1
          in arNormalForm
               <$> deriveArithmeticReplay
+                ArithmeticNaturalSemantics
                 (Set.fromList [0, 1])
                 []
                 (AFact ACmpEq (AAdd (AMul x y) (AConst 1)) (AAdd (AConst 1) (AMul y x)))
       checks =
-        [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay naturalVariables []) polynomialReplay)
-        , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay naturalVariables [boundedAssumption]) strictReplay)
-        , ("mutated normal form rejects", maybe True (not . verifyArithmeticReplay naturalVariables []) mutated)
+        [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) polynomialReplay)
+        , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [boundedAssumption]) strictReplay)
+        , ("mutated normal form rejects", maybe True (not . verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) mutated)
         , ( "polynomial replay preserves monomial boundaries"
           , case distinctMonomials of
               Just (NormalPolynomial monomials) ->
                 any (\(variables, _) -> variables == [(0, 1), (1, 1)]) monomials
               _ -> False
           )
-        , ("underconstrained order remains unknown", deriveArithmeticReplay naturalVariables [] strictGoal == Nothing)
+        , ("underconstrained order remains unknown", deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] strictGoal == Nothing)
+        , ( "equality assumptions support cancellation"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [equalityAssumption])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [equalityAssumption] cancellationGoal)
+          )
+        , ( "affine assumptions support strict consequences"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [affinePremise])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [affinePremise] affineConsequence)
+          )
+        , ( "exact affine division normalizes"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] exactDivisionGoal)
+          )
+        , ( "literal modular congruence normalizes"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] exactModuloGoal)
+          )
+        , ( "modular assumptions transport residues"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [shiftedModuloPremise])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [shiftedModuloPremise] shiftedModuloGoal)
+          )
+        , ( "piecewise idempotence normalizes"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] idempotentMaximumGoal)
+          )
+        , ( "unchecked natural subtraction is not proof evidence"
+          , deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] uncheckedNaturalSubtraction == Nothing
+          )
+        , ( "natural subtraction accepts an independently proved domain"
+          , isJust
+              ( deriveArithmeticReplay
+                  ArithmeticNaturalSemantics
+                  naturalVariables
+                  [checkedNaturalSubtractionPremise]
+                  uncheckedNaturalSubtraction
+              )
+          )
+        , ( "zero divisors fail closed"
+          , deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] zeroDivisor == Nothing
+          )
+        , ( "equality negation is represented as disequality"
+          , negateFact (AFact ACmpEq n (AConst 0))
+              == Just nonzeroNatural
+          )
+        , ( "Nat nonzero entails positivity"
+          , isJust
+              ( deriveArithmeticReplay
+                  ArithmeticNaturalSemantics
+                  naturalVariables
+                  [nonzeroNatural]
+                  naturalPositiveFromNonzero
+              )
+          )
+        , ( "Integer division accepts a negative nonzero divisor"
+          , isJust
+              ( deriveArithmeticReplay
+                  ArithmeticIntegerSemantics
+                  Set.empty
+                  []
+                  negativeIntegerDivisor
+              )
+          )
+        , ( "integer subtraction remains total"
+          , isJust
+              ( deriveArithmeticReplay
+                  ArithmeticIntegerSemantics
+                  Set.empty
+                  []
+                  uncheckedNaturalSubtraction
+              )
+          )
+        , ( "affine Nat meta has a unique principal assignment"
+          , derivePrincipalAffineAssignment
+              ArithmeticNaturalSemantics
+              (Set.insert 7 naturalVariables)
+              principalAssignable
+              []
+              principalAddGoal
+              == Just (7, 3)
+          )
+        , ( "literal-scaled Nat meta has a unique principal assignment"
+          , derivePrincipalAffineAssignment
+              ArithmeticNaturalSemantics
+              (Set.insert 7 naturalVariables)
+              principalAssignable
+              []
+              principalScaleGoal
+              == Just (7, 3)
+          )
+        , ( "an equation retaining a rigid variable is not principal"
+          , derivePrincipalAffineAssignment
+              ArithmeticNaturalSemantics
+              (Set.insert 7 naturalVariables)
+              principalAssignable
+              []
+              underconstrainedPrincipalGoal
+              == Nothing
+          )
+        , ( "a zero coefficient does not determine a meta"
+          , derivePrincipalAffineAssignment
+              ArithmeticNaturalSemantics
+              (Set.insert 7 naturalVariables)
+              principalAssignable
+              []
+              nonPrincipalZeroGoal
+              == Nothing
+          )
         ]
       failures = [label | (label, False) <- checks]
   unless (null failures) $ do
     putStrLn "arithmeticReplayDomain FAILED:"
     mapM_ (putStrLn . ("  " ++)) failures
   pure (null failures)
-  pure ok
 
 -- | Perceus S2.3c/S3.1 regression: primitive call conventions are not the source
 -- arrows' blanket @QW@, and the ownership override arity check must skip the

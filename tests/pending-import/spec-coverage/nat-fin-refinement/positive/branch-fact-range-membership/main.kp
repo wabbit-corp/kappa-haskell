@@ -40,4 +40,5 @@ let rejectedAtRuntime =
     clampToRange 40
 
 --! assertNoErrors
+--! assertArithmeticCertificatesValid
 --! assertEval rejectedAtRuntime None

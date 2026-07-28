@@ -36,7 +36,7 @@ let noFinal b =
     case TakeA (n) -> n
 
 --! assertErrorCount 2
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertDiagnosticFamily error kappa.pattern.non-exhaustive
 
 -- STATUS(a51e1bf): PASS
