@@ -54,6 +54,9 @@ module Kappa.Check
   , declarationTypesConvertibleAtUse
   , inhabitanceSummaryForState
   , symbolicCardinalityForState
+  , ordinalRepresentationForState
+  , exactNaturalRepresentationForState
+  , refinementRepresentationForState
   , invalidateSemanticCaches
   , metaObservationMode
   , nominalHiddenProjectionInfo
@@ -81,9 +84,15 @@ import qualified Data.Text as T
 import Numeric.Natural (Natural)
 import Kappa.Builtins
 import Kappa.Cardinality
-  ( CardExpr
+  ( CardConstraint (..)
+  , CardExpr (..)
+  , cardAdd
+  , cardGuardedSub
+  , cardIf
   , cardIndex
   , cardLiteral
+  , cardMul
+  , normalizeCardExpr
   )
 import Kappa.Arithmetic
   ( AFormula (..)
@@ -132,7 +141,7 @@ import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Inhabitance
   ( InhabEnv (..)
-  , InhabitanceSummary
+  , InhabitanceSummary (Empty, Contractible, Unknown)
   , InhabitancePurpose (..)
   , HeadClass (..)
   , CtorFiber (..)
@@ -194,6 +203,7 @@ import Kappa.ObservationDeps
   )
 import Kappa.Pretty (renderTerm)
 import Kappa.Parser (parseExprText)
+import Kappa.Representation
 import Kappa.Source
 import Kappa.Syntax hiding (CompClause (..), Quantity (..))
 import qualified Kappa.Syntax as S
@@ -16132,6 +16142,34 @@ standardCheckedPredicates =
 -- cannot enter this proof source.
 selectedNatRangeMembershipFacts :: Int -> Term -> CheckM (Maybe [AFact])
 selectedNatRangeMembershipFacts depth term = do
+  selectedNatRangeMembershipOperands term >>= \case
+    Nothing -> pure Nothing
+    Just (rangeValue, value) -> do
+      decodedRange <- decodeSelectedNatRange depth rangeValue
+      case decodedRange of
+        Nothing -> pure Nothing
+        Just (lower, upper, exclusive) -> do
+          lowerExpression <- selectedNatArithmeticExpression depth lower
+          valueExpression <- selectedNatArithmeticExpression depth value
+          upperExpression <- selectedNatArithmeticExpression depth upper
+          pure $ do
+            lower' <- lowerExpression
+            value' <- valueExpression
+            upper' <- upperExpression
+            pure
+              [ AFact ACmpLe lower' value'
+              , AFact
+                  (if exclusive then ACmpLt else ACmpLe)
+                  value'
+                  upper'
+              ]
+
+-- | Authenticate one selected @Contains (NumericRange Nat) Nat@ application
+-- and recover its range/value operands. Dictionary discovery is by checked
+-- instance identity, not by a source-spine position: generated erased proof
+-- arguments may be interleaved with ordinary implicits.
+selectedNatRangeMembershipOperands :: Term -> CheckM (Maybe (Term, Term))
+selectedNatRangeMembershipOperands term = do
   state <- get
   let containsTrait = gPrel "Contains"
       containsMember = memberGlobal containsTrait "contains"
@@ -16147,50 +16185,31 @@ selectedNatRangeMembershipFacts depth term = do
           Nothing -> False
       globalCall candidate = do
         guard (selectedContainsGlobal candidate)
-        _container : _item : dictionary : _ <- pure implicitArguments
         (rangeValue, value) <- last2 explicitArguments
-        pure (dictionary, rangeValue, value)
+        pure (implicitArguments, rangeValue, value)
       projectedCall candidate = case stripIdentityWrappers candidate of
         CProjM _ dictionary "contains" -> do
           (rangeValue, value) <- last2 explicitArguments
-          pure (dictionary, rangeValue, value)
+          pure ([dictionary], rangeValue, value)
         CProjAtM _ dictionary "contains" _ -> do
           (rangeValue, value) <- last2 explicitArguments
-          pure (dictionary, rangeValue, value)
+          pure ([dictionary], rangeValue, value)
         _ -> Nothing
       headTerm = fst (spineOfTerm (stripIdentityWrappers term))
   case globalCall headTerm <|> projectedCall headTerm of
     Nothing -> pure Nothing
-    Just (dictionary, rangeValue, value) -> do
-      standardContains <-
-        standardPreludeDictionary
+    Just (dictionaryCandidates, rangeValue, value) -> do
+      selectedDictionary <-
+        uniqueStandardPreludeDictionaryArgument
           containsTrait
           (\case
             [container, item] ->
               isNumericRangeNatType container && isNatType item
             _ -> False)
-          dictionary
-      if not standardContains
-        then pure Nothing
-        else do
-          decodedRange <- decodeSelectedNatRange depth rangeValue
-          case decodedRange of
-            Nothing -> pure Nothing
-            Just (lower, upper, exclusive) -> do
-              lowerExpression <- selectedNatArithmeticExpression depth lower
-              valueExpression <- selectedNatArithmeticExpression depth value
-              upperExpression <- selectedNatArithmeticExpression depth upper
-              pure $ do
-                lower' <- lowerExpression
-                value' <- valueExpression
-                upper' <- upperExpression
-                pure
-                  [ AFact ACmpLe lower' value'
-                  , AFact
-                      (if exclusive then ACmpLt else ACmpLe)
-                      value'
-                      upper'
-                  ]
+          dictionaryCandidates
+      case selectedDictionary of
+        Nothing -> pure Nothing
+        Just _ -> pure (Just (rangeValue, value))
 
 decodeSelectedNatRange :: Int -> Term -> CheckM (Maybe (Term, Term, Bool))
 decodeSelectedNatRange depth rangeValue = do
@@ -16213,13 +16232,18 @@ decodeSelectedNatRange depth rangeValue = do
         (headTerm, arguments)
           | Just operator <- termHeadGlob (stripIdentityWrappers headTerm)
           , operator == gPrel ".." || operator == gPrel "..<"
-          , _carrier : dictionary : _ <- [argument | (Impl, argument) <- arguments]
           , [lower, upper] <- [argument | (Expl, argument) <- arguments] -> do
-              standard <- standardNaturalDictionary (gPrel "Rangeable") dictionary
+              dictionary <-
+                uniqueStandardPreludeDictionaryArgument
+                  (gPrel "Rangeable")
+                  (\case
+                    [headType] -> isNatType headType
+                    _ -> False)
+                  [argument | (Impl, argument) <- arguments]
               pure $
-                if standard
-                  then Just (lower, upper, operator == gPrel "..<")
-                  else Nothing
+                case dictionary of
+                  Just _ -> Just (lower, upper, operator == gPrel "..<")
+                  Nothing -> Nothing
         _ -> pure Nothing
 
     boolLiteralTerm = \case
@@ -16253,6 +16277,26 @@ standardPreludeDictionary
 standardPreludeDictionary trait validHead dictionary = do
   instances <- gets csInstances
   pure (standardPreludeDictionaryIn instances trait validHead dictionary)
+
+-- | Select one authenticated dictionary from an application implicit spine.
+-- Generated universe-relation proofs and other erased implicits may precede
+-- or follow source dictionaries, so semantic consumers must not recover
+-- evidence by a fixed argument offset. Exactly one checked prelude instance
+-- must match; absence and ambiguity both fail closed.
+uniqueStandardPreludeDictionaryArgument
+  :: GName
+  -> ([Term] -> Bool)
+  -> [Term]
+  -> CheckM (Maybe Term)
+uniqueStandardPreludeDictionaryArgument trait validHead candidates = do
+  instances <- gets csInstances
+  pure $ case
+    [ candidate
+    | candidate <- candidates
+    , standardPreludeDictionaryIn instances trait validHead candidate
+    ] of
+      [dictionary] -> Just dictionary
+      _ -> Nothing
 
 standardPreludeDictionaryIn
   :: [InstanceEntry]
@@ -27623,6 +27667,514 @@ symbolicCardinalityForState state depth ty =
     (mkInhabEnv emptyCtx >>= \environment -> symbolicCardinality environment depth ty)
     state
 
+-- | Derive and independently replay a compiler-owned ordinal-representation
+-- certificate. Source 'OrdinalRepresentation' evidence is deliberately not a
+-- prerequisite for the required structural fragment and cannot create a
+-- certificate by itself.
+ordinalRepresentationForState
+  :: CheckState
+  -> RepresentationContext
+  -> Int
+  -> Value
+  -> Maybe OrdinalRepresentationCertificate
+ordinalRepresentationForState state context depth ty =
+  evalState deriveAndReplay state
+  where
+    deriveAndReplay = do
+      initial <- get
+      candidate <- deriveOrdinalRepresentationCertificate context depth ty
+      put initial
+      replay <- deriveOrdinalEncoding depth Set.empty ty
+      put initial
+      pure $ do
+        certificate <- candidate
+        (encoding, erasedFields) <- replay
+        guard (encoding == orcEncoding certificate)
+        guard (sort erasedFields == sort (orcErasedFields certificate))
+        guard (verifyOrdinalRepresentationCertificate certificate == Right ())
+        pure certificate
+
+exactNaturalRepresentationForState
+  :: CheckState
+  -> RepresentationContext
+  -> Int
+  -> Value
+  -> Maybe ExactNaturalRepresentationCertificate
+exactNaturalRepresentationForState state context depth ty =
+  evalState deriveAndReplay state
+  where
+    deriveAndReplay = do
+      initial <- get
+      candidate <-
+        deriveExactNaturalRepresentationCertificate context depth ty
+      put initial
+      replay <- deriveExactNaturalRepresentationCertificate context depth ty
+      put initial
+      pure $ do
+        certificate <- candidate
+        replayed <- replay
+        guard (replayed == certificate)
+        guard (verifyExactNaturalRepresentationCertificate certificate == Right ())
+        pure certificate
+
+refinementRepresentationForState
+  :: CheckState
+  -> RepresentationContext
+  -> Int
+  -> Value
+  -> Maybe RefinementRepresentationCertificate
+refinementRepresentationForState state context depth ty =
+  evalState deriveAndReplay state
+  where
+    deriveAndReplay = do
+      initial <- get
+      candidate <-
+        deriveRefinementRepresentationCertificate context depth ty
+      put initial
+      replay <- deriveRefinementRepresentationCertificate context depth ty
+      put initial
+      pure $ do
+        certificate <- candidate
+        replayed <- replay
+        guard (replayed == certificate)
+        guard (verifyRefinementRepresentationCertificate certificate == Right ())
+        pure certificate
+
+deriveOrdinalRepresentationCertificate
+  :: RepresentationContext
+  -> Int
+  -> Value
+  -> CheckM (Maybe OrdinalRepresentationCertificate)
+deriveOrdinalRepresentationCertificate context depth ty = do
+  evaluation <- ec_
+  normalized <- forceM ty
+  representedType <- pure (quote evaluation depth normalized)
+  cardinality <- symbolicCardinalityForCurrentState depth normalized
+  derived <- deriveOrdinalEncoding depth Set.empty normalized
+  pure $ do
+    exactCardinality <- cardinality
+    (encoding, erasedFields) <- derived
+    guard
+      ( ordinalEncodingCardinality encoding
+          == Just (normalizeCardExpr exactCardinality)
+      )
+    pure
+      OrdinalRepresentationCertificate
+        { orcContext = context
+        , orcRepresentedType = representedType
+        , orcTypeIdentity =
+            representationTypeIdentity context representedType
+        , orcSourceEvidenceIdentity = Nothing
+        , orcCardinalityExpression = normalizeCardExpr exactCardinality
+        , orcEncoding = encoding
+        , orcErasedFields = sort (nub erasedFields)
+        , orcProfileRestrictions = commonRepresentationRestrictions
+        , orcCertificateVersion = 1
+        , orcCheckerVersion = 1
+        }
+
+symbolicCardinalityForCurrentState :: Int -> Value -> CheckM (Maybe CardExpr)
+symbolicCardinalityForCurrentState depth ty = do
+  environment <- mkInhabEnv emptyCtx
+  symbolicCardinality environment depth ty
+
+deriveOrdinalEncoding
+  :: Int
+  -> Set GName
+  -> Value
+  -> CheckM (Maybe (OrdinalEncoding, [ConstructorFieldPath]))
+deriveOrdinalEncoding depth seen ty = do
+  normalized <- forceM ty
+  case normalized of
+    VGlobal family _ [(_, index)]
+      | family == prelFin -> do
+          evaluation <- ec_
+          let cardinality = case force evaluation index of
+                VLit (LitInt value)
+                  | value >= 0 -> cardLiteral (fromInteger value)
+                value -> cardIndex (quote evaluation depth value)
+          erased <- directErasedFields depth normalized
+          pure (Just (OrdinalFin cardinality, erased))
+    VGlobal family _ [(_, base), (_, predicate)]
+      | family == prelRefined ->
+          deriveRefinedOrdinalEncoding depth seen normalized base predicate
+    VRecordT fields -> do
+      children <- mapM (deriveOrdinalEncoding depth seen . snd) fields
+      pure $ do
+        derived <- sequence children
+        pure
+          ( OrdinalRecord (map fst derived)
+          , concatMap snd derived
+          )
+    VVariantT members -> do
+      children <- mapM (deriveOrdinalEncoding depth seen) members
+      pure $ do
+        derived <- sequence children
+        pure
+          ( OrdinalVariant (map fst derived)
+          , concatMap snd derived
+          )
+    VGlobal family _ _
+      | family `Set.member` seen -> pure Nothing
+      | otherwise -> deriveNominalOrdinalEncoding depth seen family normalized
+    _ -> do
+      environment <- mkInhabEnv emptyCtx
+      summary <-
+        inhabitanceSummary environment SourceReachability normalized
+      pure $
+        if summary == Contractible
+          then Just (OrdinalContractible, [])
+          else Nothing
+
+deriveRefinedOrdinalEncoding
+  :: Int
+  -> Set GName
+  -> Value
+  -> Value
+  -> Value
+  -> CheckM (Maybe (OrdinalEncoding, [ConstructorFieldPath]))
+deriveRefinedOrdinalEncoding depth seen represented base predicate = do
+  range <- canonicalNatRangeBounds depth base predicate
+  case range of
+    Just (lower, upper) -> do
+      erased <- directErasedFields depth represented
+      pure (Just (OrdinalInclusiveRange lower upper, erased))
+    Nothing -> do
+      accepted <- finiteRefinementOrdinals base predicate
+      baseEncoding <- deriveOrdinalEncoding depth seen base
+      erased <- directErasedFields depth represented
+      pure $ do
+        ordinals <- accepted
+        (encoding, baseErased) <- baseEncoding
+        pure
+          ( OrdinalFiltered encoding ordinals
+          , erased ++ baseErased
+          )
+
+deriveNominalOrdinalEncoding
+  :: Int
+  -> Set GName
+  -> GName
+  -> Value
+  -> CheckM (Maybe (OrdinalEncoding, [ConstructorFieldPath]))
+deriveNominalOrdinalEncoding depth seen family represented = do
+  state <- get
+  case Map.lookup family (csDatas state) of
+    Nothing -> pure Nothing
+    Just info -> do
+      let seen' = Set.insert family seen
+      arms <- mapM (deriveArm seen') (diCtors info)
+      pure $ do
+        derivedArms <- sequence arms
+        let reachable = catMaybes derivedArms
+        (constructors, erased, _) <-
+          foldM appendArm ([], [], cardLiteral 0) reachable
+        pure (OrdinalData constructors, erased)
+  where
+    deriveArm seen' constructor =
+      inhabCtorFiber emptyCtx represented constructor >>= \case
+        CtorContradiction -> pure (Just Nothing)
+        CtorIndexUnknown -> pure Nothing
+        CtorRefined fieldTypes -> do
+          fields <- mapM (deriveOrdinalEncoding depth seen') fieldTypes
+          directErased <- erasedFieldsForConstructor depth constructor fieldTypes
+          pure $ do
+            derived <- sequence fields
+            pure
+              ( Just
+                  ( constructor
+                  , map fst derived
+                  , directErased ++ concatMap snd derived
+                  )
+              )
+
+    appendArm (constructors, erased, offset) (constructor, fields, armErased) = do
+      armCardinality <-
+        foldM
+          (\productSoFar field ->
+            cardMul productSoFar
+              <$> ordinalEncodingCardinality field)
+          (cardLiteral 1)
+          fields
+      pure
+        ( constructors
+            ++ [ConstructorOrdinalEncoding constructor offset fields]
+        , erased ++ armErased
+        , cardAdd offset armCardinality
+        )
+
+directErasedFields
+  :: Int
+  -> Value
+  -> CheckM [ConstructorFieldPath]
+directErasedFields depth represented = do
+  normalized <- forceM represented
+  state <- get
+  case normalized of
+    VGlobal family _ _
+      | Just info <- Map.lookup family (csDatas state) ->
+          concat
+            <$> mapM
+              (\constructor ->
+                inhabCtorFiber emptyCtx normalized constructor >>= \case
+                  CtorRefined fields ->
+                    erasedFieldsForConstructor depth constructor fields
+                  _ -> pure [])
+              (diCtors info)
+    _ -> pure []
+
+erasedFieldsForConstructor
+  :: Int
+  -> GName
+  -> [Value]
+  -> CheckM [ConstructorFieldPath]
+erasedFieldsForConstructor depth constructor fieldTypes = do
+  evaluation <- ec_
+  constructorInfo <- gets (Map.lookup constructor . csCtors)
+  pure $ case constructorInfo of
+    Nothing -> []
+    Just info ->
+      [ ConstructorFieldPath constructor sourceIndex
+      | (sourceIndex, ((icit, quantity), fieldType)) <-
+          zip [0 :: Int ..]
+            (zip (constructorSourceContracts info) fieldTypes)
+      , not
+          (Repr.runtimeConstructorField
+            evaluation
+            depth
+            icit
+            quantity
+            fieldType)
+      ]
+
+constructorSourceContracts :: CtorInfo -> [(Icit, Q)]
+constructorSourceContracts info =
+  drop (length binders - length (ciSourceFields info)) binders
+  where
+    binders = collect (ciType info)
+    collect = \case
+      CPiBoundM _ icit quantity _ _ _ _ body ->
+        (icit, quantity) : collect body
+      _ -> []
+
+deriveExactNaturalRepresentationCertificate
+  :: RepresentationContext
+  -> Int
+  -> Value
+  -> CheckM (Maybe ExactNaturalRepresentationCertificate)
+deriveExactNaturalRepresentationCertificate context depth ty = do
+  evaluation <- ec_
+  normalized <- forceM ty
+  state <- get
+  case normalized of
+    VGlobal family _ _
+      | Just info <- Map.lookup family (csDatas state) -> do
+          shapes <- mapM (constructorRuntimeShape depth normalized) (diCtors info)
+          evidence <-
+            selectedRepresentationEvidenceIdentity
+              context
+              depth
+              (gPrel "ExactNaturalRepresentation")
+              normalized
+          let zeros =
+                [ (constructor, erased)
+                | (constructor, [], erased) <- catMaybes shapes
+                ]
+              successors =
+                [ (constructor, fieldIndex, erased)
+                | (constructor, [(fieldIndex, fieldType)], erased) <- catMaybes shapes
+                , convertible evaluation depth fieldType normalized
+                ]
+          pure $ do
+            (zeroConstructor, zeroErased) <- single zeros
+            (successorConstructor, recursiveIndex, successorErased) <-
+              single successors
+            evidenceIdentity <- evidence
+            let representedType = quote evaluation depth normalized
+                recursiveField =
+                  ConstructorFieldPath successorConstructor recursiveIndex
+                certificate =
+                  ExactNaturalRepresentationCertificate
+                    { enrcContext = context
+                    , enrcRepresentedType = representedType
+                    , enrcTypeIdentity =
+                        representationTypeIdentity context representedType
+                    , enrcEvidenceIdentity = evidenceIdentity
+                    , enrcZeroConstructor = zeroConstructor
+                    , enrcSuccessorConstructor = successorConstructor
+                    , enrcRecursiveField = recursiveField
+                    , enrcErasedFields =
+                        sort (nub (zeroErased ++ successorErased))
+                    , enrcProfileRestrictions =
+                        commonRepresentationRestrictions
+                    , enrcCertificateVersion = 1
+                    , enrcCheckerVersion = 1
+                    }
+            guard
+              (verifyExactNaturalRepresentationCertificate certificate
+                == Right ())
+            pure certificate
+    _ -> pure Nothing
+
+constructorRuntimeShape
+  :: Int
+  -> Value
+  -> GName
+  -> CheckM
+      (Maybe
+        ( GName
+        , [(Int, Value)]
+        , [ConstructorFieldPath]
+        ))
+constructorRuntimeShape depth represented constructor =
+  inhabCtorFiber emptyCtx represented constructor >>= \case
+    CtorRefined fieldTypes -> do
+      evaluation <- ec_
+      constructorInfo <- gets (Map.lookup constructor . csCtors)
+      pure $ do
+        info <- constructorInfo
+        let contracts = constructorSourceContracts info
+        guard (length contracts == length fieldTypes)
+        let runtime =
+              [ (sourceIndex, fieldType)
+              | (sourceIndex, ((icit, quantity), fieldType)) <-
+                  zip [0 :: Int ..] (zip contracts fieldTypes)
+              , Repr.runtimeConstructorField
+                  evaluation
+                  depth
+                  icit
+                  quantity
+                  fieldType
+              ]
+            erased =
+              [ ConstructorFieldPath constructor sourceIndex
+              | (sourceIndex, ((icit, quantity), fieldType)) <-
+                  zip [0 :: Int ..] (zip contracts fieldTypes)
+              , not
+                  (Repr.runtimeConstructorField
+                    evaluation
+                    depth
+                    icit
+                    quantity
+                    fieldType)
+              ]
+        pure (constructor, runtime, erased)
+    _ -> pure Nothing
+
+deriveRefinementRepresentationCertificate
+  :: RepresentationContext
+  -> Int
+  -> Value
+  -> CheckM (Maybe RefinementRepresentationCertificate)
+deriveRefinementRepresentationCertificate context depth ty = do
+  evaluation <- ec_
+  normalized <- forceM ty
+  case normalized of
+    VGlobal family _ [(_, base), (_, _predicate)]
+      | family == prelRefined -> do
+          state <- get
+          saved <- get
+          goal <-
+            globalValueM
+              (gPrel "RefinementView")
+              [(Expl, normalized)]
+          selectedDictionary <- traitEvidence emptyCtx noSpan goal
+          selectedEvidence <- case selectedDictionary of
+            Just dictionary -> do
+              baseMode <-
+                traitMemberObservationMode
+                  (gPrel "RefinementView")
+                  "Base"
+              selectedBase <-
+                evalIn emptyCtx (CProjM baseMode dictionary "Base")
+                  >>= forceM
+              baseMatches <- unify emptyCtx selectedBase base
+              if baseMatches
+                then do
+                  zonkedDictionary <- zonkTermM depth dictionary
+                  pure
+                    (Just
+                      (Kappa.Representation.representationEvidenceIdentity
+                        context
+                        zonkedDictionary))
+                else pure Nothing
+            _ -> pure Nothing
+          put saved
+          case Map.lookup family (csDatas state) >>= single . diCtors of
+            Nothing -> pure Nothing
+            Just constructor -> do
+              shape <- constructorRuntimeShape depth normalized constructor
+              case shape of
+                Just (_, [(baseIndex, baseFieldType)], erased) -> do
+                  baseFieldMatches <-
+                    unify emptyCtx baseFieldType base
+                  pure $ do
+                    guard baseFieldMatches
+                    evidenceIdentity <- selectedEvidence
+                    let representedType = quote evaluation depth normalized
+                        baseType = quote evaluation depth (force evaluation base)
+                        certificate =
+                          RefinementRepresentationCertificate
+                            { rrcContext = context
+                            , rrcRepresentedType = representedType
+                            , rrcTypeIdentity =
+                                representationTypeIdentity context representedType
+                            , rrcRefinementEvidenceIdentity = evidenceIdentity
+                            , rrcBaseType = baseType
+                            , rrcBaseTypeIdentity =
+                                representationTypeIdentity context baseType
+                            , rrcConstructor = constructor
+                            , rrcRetainedBaseField =
+                                ConstructorFieldPath constructor baseIndex
+                            , rrcErasedEvidenceFields = sort (nub erased)
+                            , rrcProfileRestrictions =
+                                sort
+                                  (RequireUnboxedRefinement
+                                    : commonRepresentationRestrictions)
+                            , rrcCertificateVersion = 1
+                            , rrcCheckerVersion = 1
+                            }
+                    guard
+                      (verifyRefinementRepresentationCertificate certificate
+                        == Right ())
+                    pure certificate
+                _ -> pure Nothing
+    _ -> pure Nothing
+
+selectedRepresentationEvidenceIdentity
+  :: RepresentationContext
+  -> Int
+  -> GName
+  -> Value
+  -> CheckM (Maybe Text)
+selectedRepresentationEvidenceIdentity context depth trait represented = do
+  saved <- get
+  goal <- globalValueM trait [(Expl, represented)]
+  selected <- traitEvidence emptyCtx noSpan goal
+  identity <- case selected of
+    Nothing -> pure Nothing
+    Just evidence -> do
+      zonkedEvidence <- zonkTermM depth evidence
+      pure
+        (Just
+          (Kappa.Representation.representationEvidenceIdentity
+            context
+            zonkedEvidence))
+  put saved
+  pure identity
+
+commonRepresentationRestrictions :: [BackendProfileRestriction]
+commonRepresentationRestrictions =
+  [ InternalValuesOnly
+  , ExcludeDynamicBoundary
+  , ExcludeForeignBoundary
+  , ExcludeExportedAbi
+  ]
+
+single :: [a] -> Maybe a
+single [value] = Just value
+single _ = Nothing
+
 -- | Build the §30.2.7 query interface over the current 'CheckState' and
 -- elaboration context. Each callback is side-effect free /from the caller's
 -- point of view/: the speculative GADT unification and the evidence probe save
@@ -27651,28 +28203,157 @@ mkInhabEnv ctx =
 inhabExactFiniteFamilyCardinality :: Value -> CheckM (Maybe Natural)
 inhabExactFiniteFamilyCardinality value = do
   normalized <- forceM value
-  pure $ case normalized of
+  direct <- pure $ case normalized of
     VGlobal family _ [(_, VLit (LitInt cardinality))]
       | family == prelFin
       , cardinality >= 0 ->
           Just (fromInteger cardinality)
     _ -> Nothing
+  case direct of
+    Just cardinality -> pure (Just cardinality)
+    Nothing -> do
+      symbolic <- inhabExactSymbolicFamilyCardinality 0 normalized
+      pure $ case symbolic of
+        Just (CardLiteral cardinality) -> Just cardinality
+        _ -> Nothing
 
 inhabExactSymbolicFamilyCardinality :: Int -> Value -> CheckM (Maybe CardExpr)
 inhabExactSymbolicFamilyCardinality depth value = do
   normalized <- forceM value
   evaluation <- ec_
-  pure $ case normalized of
+  case normalized of
     VGlobal family _ [(_, index)]
       | family == prelFin ->
-          Just (natCardinalityExpression evaluation depth index)
-    _ -> Nothing
+          pure (Just (natCardinalityExpression evaluation depth index))
+    VGlobal family _ [(_, base), (_, predicate)]
+      | family == prelRefined ->
+          refinementCardinality evaluation depth base predicate
+    _ -> pure Nothing
   where
     natCardinalityExpression evaluation depth' index =
       case force evaluation index of
         VLit (LitInt cardinality)
           | cardinality >= 0 -> cardLiteral (fromInteger cardinality)
         normalizedIndex -> cardIndex (quote evaluation depth' normalizedIndex)
+
+    refinementCardinality evaluation depth' base predicate = do
+      base' <- forceM base
+      range <- canonicalNatRangeCardinality depth' base' predicate
+      case range of
+        Just cardinality -> pure (Just cardinality)
+        Nothing -> finiteRefinementCardinality base' predicate
+
+    canonicalNatRangeCardinality depth' base predicate = do
+      bounds <- canonicalNatRangeBounds depth' base predicate
+      pure $ do
+        (lower, upper) <- bounds
+        let lowerCardinality = natTermCardinality lower
+            upperCardinality = natTermCardinality upper
+        pure
+          ( cardIf
+              (CardLe lowerCardinality upperCardinality)
+              (cardAdd (cardGuardedSub upperCardinality lowerCardinality) (cardLiteral 1))
+              (cardLiteral 0)
+          )
+
+    natTermCardinality = \case
+      CLit (LitInt cardinality)
+        | cardinality >= 0 -> cardLiteral (fromInteger cardinality)
+      term -> cardIndex term
+
+    finiteRefinementCardinality base predicate =
+      fmap (cardLiteral . fromIntegral . length) <$> finiteRefinementOrdinals base predicate
+
+-- | Recognize the exact standard inclusive-Nat-range refinement shape. The
+-- operation/member dictionaries are authenticated by selected instance
+-- identity in 'selectedNatRangeMembershipOperands' and
+-- 'decodeSelectedNatRange'; source spellings have no authority here.
+canonicalNatRangeBounds
+  :: Int
+  -> Value
+  -> Value
+  -> CheckM (Maybe (Term, Term))
+canonicalNatRangeBounds depth base predicate = do
+  evaluation <- ec_
+  base' <- forceM base
+  case base' of
+    VGlobN natural [] | natural == prelNat ->
+      case stripIdentityWrappers (quote evaluation depth predicate) of
+        CLam _ _ _ body
+          | Just (True, membership) <- booleanLiteralEqualityPayload body -> do
+              operands <- selectedNatRangeMembershipOperands membership
+              decoded <- case operands of
+                Just (rangeValue, member)
+                  | stripIdentityWrappers member == CVar 0 ->
+                      decodeSelectedNatRange (depth + 1) rangeValue
+                _ -> pure Nothing
+              pure $ do
+                (lowerWithBinder, upperWithBinder, exclusive) <- decoded
+                guard (not exclusive)
+                let lower = shiftTerm (-1) 0 lowerWithBinder
+                    upper = shiftTerm (-1) 0 upperWithBinder
+                guard (termScopedAt depth lower)
+                guard (termScopedAt depth upper)
+                pure (lower, upper)
+        _ -> pure Nothing
+    _ -> pure Nothing
+
+-- | Completely enumerate the required bounded @Refined (Fin n)@ fragment.
+-- Candidate values are built by ordinary constructor elaboration against the
+-- checked @Fin n@ expectation, so family arguments and erased proof evidence
+-- are never fabricated by the analysis.
+finiteRefinementOrdinals
+  :: Value
+  -> Value
+  -> CheckM (Maybe [Natural])
+finiteRefinementOrdinals base predicate = do
+  evaluation <- ec_
+  base' <- forceM base
+  case base' of
+    VGlobal family _ [(_, VLit (LitInt bound))]
+      | family == prelFin
+      , bound >= 0
+      , bound <= 256 -> do
+          state <- get
+          case Map.lookup prelFin (csDatas state) >>= listToMaybe . diCtors of
+            Nothing -> pure Nothing
+            Just constructor -> do
+              environment <- mkInhabEnv emptyCtx
+              verdicts <-
+                forM [0 .. bound - 1] $ \ordinal -> do
+                  saved <- get
+                  let errorsBefore = length (filter isError (csDiags saved))
+                  candidate <-
+                    generatedCtorValueAtM
+                      emptyCtx
+                      base'
+                      constructor
+                      [VLit (LitInt ordinal)]
+                  errorsAfter <- gets (length . filter isError . csDiags)
+                  put saved
+                  if errorsAfter /= errorsBefore
+                    then pure (fromInteger ordinal, Unknown)
+                    else do
+                      let fiber =
+                            vapp evaluation
+                              (force evaluation predicate)
+                              Expl
+                              candidate
+                      verdict <-
+                        inhabitanceSummary
+                          environment
+                          SourceReachability
+                          fiber
+                      pure (fromInteger ordinal, verdict)
+              pure $
+                if all (refinementVerdictKnown . snd) verdicts
+                  then Just [ordinal | (ordinal, Contractible) <- verdicts]
+                  else Nothing
+    _ -> pure Nothing
+  where
+    refinementVerdictKnown Empty = True
+    refinementVerdictKnown Contractible = True
+    refinementVerdictKnown _ = False
 
 -- | Classify a forced head: a closed data type registered in 'csDatas' is the
 -- only structural case the analysis reasons about. Everything else (type

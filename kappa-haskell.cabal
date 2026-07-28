@@ -81,6 +81,7 @@ library
         Kappa.Prelude
         Kappa.Pretty
         Kappa.Regex
+        Kappa.Representation
         Kappa.Resolve
         Kappa.SemanticHash
         Kappa.Source

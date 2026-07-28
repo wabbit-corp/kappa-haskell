@@ -45,6 +45,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Numeric.Natural (Natural)
 import Text.Read (readMaybe)
+import Kappa.Builtins (prelNat)
 import Kappa.Check
   ( AuditRecord (..)
   , CheckState (..)
@@ -54,8 +55,11 @@ import Kappa.Check
   , checkModule
   , declarationTypesConvertibleAtUse
   , defaultUnsafeConfig
+  , exactNaturalRepresentationForState
   , inhabitanceSummaryForState
+  , ordinalRepresentationForState
   , recursiveSchemaEdgeRecorded
+  , refinementRepresentationForState
   , scriptUnsafeConfig
   , selectedUniverseEvidenceRecorded
   , symbolicCardinalityForState
@@ -67,8 +71,7 @@ import Kappa.Core
 import Kappa.CoreText
 import Kappa.CoreOps (foldTerm)
 import Kappa.Cardinality
-  ( CardExpr
-  , normalizeCardExpr
+  ( normalizeCardExpr
   , parseCardExpr
   , renderCardExpr
   )
@@ -104,6 +107,12 @@ import Kappa.NominalVariance
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeForWithConfig, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
+import Kappa.Representation
+  ( OrdinalRepresentationCertificate (..)
+  , RefinementRepresentationCertificate (..)
+  , RepresentationContext (..)
+  , representationTypeIdentity
+  )
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
@@ -237,6 +246,9 @@ data Assertion
   | AArithmeticCertificatesValid
   | AInhabitance !InhabitancePurpose !InhabitanceSummary !Text
   | ASymbolicCardinality !Text !Text
+  | AOrdinalRepresentation !Text !Text
+  | AExactNaturalRepresentation !Text
+  | ARefinementRepresentation !Text !Text
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -594,15 +606,25 @@ parseDirective allLines lno body =
                 ok (SAssert (ASymbolicCardinality (T.strip expected) (T.strip ty)))
           _ -> bad "malformed 'assertSymbolicCardinality' directive"
       "assertOrdinalRepresentation" ->
-        unavailableTypeQuery "assertOrdinalRepresentation" "representationCertificates"
+        case splitDirectiveInfix " for " rest of
+          Just (expected, ty)
+            | not (T.null (T.strip expected))
+            , not (T.null (T.strip ty)) ->
+                ok (SAssert (AOrdinalRepresentation (T.strip expected) (T.strip ty)))
+          _ -> bad "malformed 'assertOrdinalRepresentation' directive"
       "assertExactNaturalRepresentation" ->
         case args of
           "for" : ty
             | not (null ty) ->
-                unsup "assertExactNaturalRepresentation requires capability representationCertificates: not provided"
+                ok (SAssert (AExactNaturalRepresentation (T.unwords ty)))
           _ -> bad "malformed 'assertExactNaturalRepresentation' directive"
       "assertRefinementRepresentation" ->
-        unavailableTypeQuery "assertRefinementRepresentation" "representationCertificates"
+        case splitDirectiveInfix " for " rest of
+          Just (baseTy, refinedTy)
+            | not (T.null (T.strip baseTy))
+            , not (T.null (T.strip refinedTy)) ->
+                ok (SAssert (ARefinementRepresentation (T.strip baseTy) (T.strip refinedTy)))
+          _ -> bad "malformed 'assertRefinementRepresentation' directive"
       "assertRepresentationClass" -> case args of
         _declaration : representation
           | not (null representation) ->
@@ -831,13 +853,6 @@ parseDirective allLines lno body =
           | length args == n && all (\a -> parseNat a /= Nothing) args =
               unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
           | otherwise = bad ("malformed '" <> name <> "' directive")
-        unavailableTypeQuery directive capability =
-          case splitDirectiveInfix " for " rest of
-            Just (expected, ty)
-              | not (T.null (T.strip expected))
-              , not (T.null (T.strip ty)) ->
-                  unsup (directive <> " requires capability " <> capability <> ": not provided")
-            _ -> bad ("malformed '" <> directive <> "' directive")
 
 parseKindList :: Text -> Maybe [Text]
 parseKindList t =
@@ -2150,7 +2165,17 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                   case symbolicCardinalityForState queryState queryDepth queryType of
                     Nothing ->
                       AssertFail
-                        ("assertSymbolicCardinality: no exact symbolic cardinality for " <> tyExpr)
+                        ( "assertSymbolicCardinality: no exact symbolic cardinality for "
+                            <> tyExpr
+                            <> " (normalized as "
+                            <> renderTerm
+                              ( quote
+                                  (EvalCtx (Globals (csGlobals queryState)) (csMetas queryState) False mempty)
+                                  queryDepth
+                                  queryType
+                              )
+                            <> ")"
+                        )
                     Just actual ->
                       requirePure
                         (normalizeCardExpr actual == normalizeCardExpr expected)
@@ -2158,6 +2183,100 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                             <> renderCardExpr actual <> ", expected "
                             <> renderCardExpr expected
                         )
+  AOrdinalRepresentation expectedText tyExpr ->
+    pure $
+      let indexes = queryIndexNames expectedText tyExpr
+          depth = length indexes
+          context = representationQueryContext indexes
+          indexTerms =
+            Map.fromList
+              [ (name, CVar (depth - ordinal - 1))
+              | (ordinal, name) <- zip [0 :: Int ..] indexes
+              ]
+       in case parseCardExpr indexTerms expectedText of
+            Left detail ->
+              AssertFail
+                ("assertOrdinalRepresentation: invalid expected expression: " <> detail)
+            Right expected ->
+              case elaborateQueryType indexes tyExpr of
+                Left detail -> AssertFail ("assertOrdinalRepresentation: " <> detail)
+                Right (queryState, queryDepth, queryType) ->
+                  case
+                    ordinalRepresentationForState
+                      queryState
+                      context
+                      queryDepth
+                      queryType
+                  of
+                    Nothing ->
+                      AssertFail
+                        ("assertOrdinalRepresentation: no verified certificate for " <> tyExpr)
+                    Just certificate ->
+                      requirePure
+                        ( normalizeCardExpr (orcCardinalityExpression certificate)
+                            == normalizeCardExpr expected
+                        )
+                        ( "assertOrdinalRepresentation: " <> tyExpr <> " has "
+                            <> renderCardExpr (orcCardinalityExpression certificate)
+                            <> ", expected " <> renderCardExpr expected
+                        )
+  AExactNaturalRepresentation tyExpr ->
+    pure $
+      case elaborateQueryType [] tyExpr of
+        Left detail -> AssertFail ("assertExactNaturalRepresentation: " <> detail)
+        Right (queryState, queryDepth, queryType) ->
+          case
+            exactNaturalRepresentationForState
+              queryState
+              (representationQueryContext [])
+              queryDepth
+              queryType
+          of
+            Nothing ->
+              AssertFail
+                ("assertExactNaturalRepresentation: no verified certificate for " <> tyExpr)
+            Just _ -> AssertOk
+  ARefinementRepresentation baseTyExpr tyExpr ->
+    pure $
+      let indexes = queryIndexNames baseTyExpr tyExpr
+          context = representationQueryContext indexes
+       in case elaborateQueryType indexes baseTyExpr of
+            Left detail ->
+              AssertFail
+                ("assertRefinementRepresentation: base type " <> detail)
+            Right (baseState, baseDepth, baseType) ->
+              case elaborateQueryType indexes tyExpr of
+                Left detail -> AssertFail ("assertRefinementRepresentation: " <> detail)
+                Right (queryState, queryDepth, queryType) ->
+                  case
+                    refinementRepresentationForState
+                      queryState
+                      context
+                      queryDepth
+                      queryType
+                  of
+                    Nothing ->
+                      AssertFail
+                        ("assertRefinementRepresentation: no verified certificate for " <> tyExpr)
+                    Just certificate ->
+                      let expectedBase =
+                            quote
+                              ( EvalCtx
+                                  (Globals (csGlobals baseState))
+                                  (csMetas baseState)
+                                  False
+                                  mempty
+                              )
+                              baseDepth
+                              baseType
+                          expectedIdentity =
+                            representationTypeIdentity context expectedBase
+                       in requirePure
+                            (rrcBaseTypeIdentity certificate == expectedIdentity)
+                            ( "assertRefinementRepresentation: " <> tyExpr
+                                <> " records base " <> renderTerm (rrcBaseType certificate)
+                                <> ", expected " <> baseTyExpr
+                            )
   where
     checkpointState = cuState cu
     -- The verifier's external environment is an import environment. The
@@ -2281,6 +2400,11 @@ checkAssertion compileWith root path src files cu diags mRun = \case
         , isLower (T.head identifier)
         , identifier `elem` textIdentifiers expectedText
         ]
+    representationQueryContext indexes =
+      RepresentationContext
+        { rcBinderTypes = replicate (length indexes) (CGlob prelNat)
+        , rcUniverseConstraints = []
+        }
     textIdentifiers =
       map T.pack . wordsBy (not . identifierCharacter) . T.unpack
       where

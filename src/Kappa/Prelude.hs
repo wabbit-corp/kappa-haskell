@@ -1901,6 +1901,15 @@ preludeSource =
       -- name the goal, but only the checked derive path introduces evidence.
       "trait ExactNaturalRepresentation (0 t : Type)"
     , ""
+    , -- §28.2 source-level dense ordinal equivalence. This law bundle remains
+      -- separate from the compiler-owned representation certificate of
+      -- §30.2.7B; a handwritten instance never authorizes a backend layout.
+      "trait OrdinalRepresentation (n : Nat) (0 t : Type) ="
+    , "    rank : t -> Fin n"
+    , "    unrank : Fin n -> t"
+    , "    unrankRank : forall (x : t). unrank (rank x) = x"
+    , "    rankUnrank : forall (i : Fin n). rank (unrank i) = i"
+    , ""
     , -- §14.4 set-truncation witnesses. Primitive carriers have canonical
       -- equality, while recursive containers below require IsSet evidence for
       -- every element carrier; no unconditional container instance is sound.
@@ -2270,6 +2279,12 @@ preludeSource =
     , "    let refine value @predicateIsProp @proof = Fin value @proof"
     , "    let valueAfterRefine = __eqProof"
     , "    let refineAfterValue = __eqProof"
+    , ""
+    , "instance OrdinalRepresentation n (Fin n) ="
+    , "    let rank i = i"
+    , "    let unrank i = i"
+    , "    let unrankRank = __eqProof"
+    , "    let rankUnrank = __eqProof"
     , ""
     , "instance FromInteger Nat ="
     , "    let fromInteger n = n"
@@ -2813,6 +2828,7 @@ preludeSource =
     , "    let divDefinedForNonZero = unsafeAssertProof \"Double division is defined for every nonzero divisor\""
     , ""
     , "instance IsSet Nat"
+    , "derive ExactNaturalRepresentation Nat"
     , "instance IsSet Integer"
     , -- §28.2.3 mandated algebraic instances. Nat has no
       -- Negatable/AdditiveGroup/Ring/FieldLike instance.
