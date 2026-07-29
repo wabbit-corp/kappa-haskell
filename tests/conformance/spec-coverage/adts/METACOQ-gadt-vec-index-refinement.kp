@@ -98,3 +98,4 @@ let squareHead v =
 --! assertDiagnosticFamily error kappa.pattern.non-exhaustive
 --! assertErrorCount 1
 --! assertType vhead forall (a : Type) (n : Nat). Vec a (n + 1) -> a
+-- STATUS(e25d64e1): FAIL — expected 1 error, got 9; first error: E_IMPLICIT_AMBIGUOUS at line 62

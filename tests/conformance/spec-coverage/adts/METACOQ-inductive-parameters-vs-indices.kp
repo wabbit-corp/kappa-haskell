@@ -46,4 +46,4 @@ let ok = EqSuc EqBase
 --! assertType boolVec Vec Bool 2
 --! assertType natVec Vec Nat 1
 
--- STATUS(a0497523): FAIL (GADT constructor-result equalities do not normalize)
+-- STATUS(e25d64e1): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 43

@@ -46,9 +46,11 @@ let projV s =
     match s
       case MkSigmaN _ v -> v
 
--- POSITIVE: a record with three nested dependent binders.
-data Sig3 : Type =
-    MkSig3 : (a : Type) -> (b : a) -> (c : a) -> Sig3
+-- POSITIVE: a record with three nested dependent binders. The type-code
+-- witness is ordinary because projA reifies it as an ordinary Type value;
+-- consequently the family itself lives in Type1.
+data Sig3 : Type1 =
+    MkSig3 : (ordinary 0 a : Type) -> (b : a) -> (c : a) -> Sig3
 
 projA : Sig3 -> Type
 let projA s =
@@ -75,4 +77,4 @@ let useTrivial = MkTrivial
 
 --! assertNoErrors
 
--- STATUS(a0497523): FAIL (dependent projections leave Core universe metavariables)
+-- STATUS(e25d64e1): PASS
