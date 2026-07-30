@@ -12,6 +12,9 @@ module Kappa.Representation
   , OrdinalRepresentationCertificate (..)
   , ExactNaturalRepresentationCertificate (..)
   , RefinementRepresentationCertificate (..)
+  , VerifiedRepresentationCertificate (..)
+  , verifiedRepresentationCertificateIdentity
+  , verifyRepresentationCertificate
   , representationTypeIdentity
   , representationEvidenceIdentity
   , ordinalRepresentationCertificateIdentity
@@ -26,6 +29,7 @@ module Kappa.Representation
   , verifyRefinementRepresentationCertificate
   ) where
 
+import Control.Monad (forM_)
 import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -138,6 +142,37 @@ data RefinementRepresentationCertificate = RefinementRepresentationCertificate
   , rrcCheckerVersion :: !Natural
   }
   deriving stock (Eq, Show)
+
+-- | The closed sum crossing the analysis/artifact boundary. Consumers must
+-- replay the variant-specific verifier before trusting either its identity or
+-- any representation decision derived from it.
+data VerifiedRepresentationCertificate
+  = VerifiedOrdinalRepresentation !OrdinalRepresentationCertificate
+  | VerifiedExactNaturalRepresentation !ExactNaturalRepresentationCertificate
+  | VerifiedRefinementRepresentation !RefinementRepresentationCertificate
+  deriving stock (Eq, Show)
+
+verifiedRepresentationCertificateIdentity
+  :: VerifiedRepresentationCertificate
+  -> Text
+verifiedRepresentationCertificateIdentity = \case
+  VerifiedOrdinalRepresentation certificate ->
+    ordinalRepresentationCertificateIdentity certificate
+  VerifiedExactNaturalRepresentation certificate ->
+    exactNaturalRepresentationCertificateIdentity certificate
+  VerifiedRefinementRepresentation certificate ->
+    refinementRepresentationCertificateIdentity certificate
+
+verifyRepresentationCertificate
+  :: VerifiedRepresentationCertificate
+  -> Either Text ()
+verifyRepresentationCertificate = \case
+  VerifiedOrdinalRepresentation certificate ->
+    verifyOrdinalRepresentationCertificate certificate
+  VerifiedExactNaturalRepresentation certificate ->
+    verifyExactNaturalRepresentationCertificate certificate
+  VerifiedRefinementRepresentation certificate ->
+    verifyRefinementRepresentationCertificate certificate
 
 representationTypeIdentity :: RepresentationContext -> Term -> Text
 representationTypeIdentity context representedType =
@@ -411,6 +446,9 @@ verifyOrdinalRepresentationCertificate certificate = do
     (normalizeCardExpr cardinality
       == normalizeCardExpr (orcCardinalityExpression certificate))
     "ordinal encoding cardinality does not match the recorded cardinality"
+  forM_ (orcSourceEvidenceIdentity certificate) $ \identity ->
+    require (not (T.null identity))
+      "ordinal source-evidence identity is empty"
   requireUniqueFields (orcErasedFields certificate)
 
 verifyExactNaturalRepresentationCertificate
@@ -489,7 +527,10 @@ requireCanonicalRestrictions restrictions =
     "profile restrictions are not canonical"
 
 requireUniqueFields :: [ConstructorFieldPath] -> Either Text ()
-requireUniqueFields fields =
+requireUniqueFields fields = do
+  require
+    (all ((>= 0) . cfpSourceIndex) fields)
+    "constructor field paths must use nonnegative source indices"
   require
     (length fields == length (nub fields))
     "constructor field paths are not unique"

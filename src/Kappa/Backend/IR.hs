@@ -35,6 +35,7 @@ module Kappa.Backend.IR
   , BackendIRViolation (..)
   , lowerKBackendIR
   , lowerKBackendIRForCapabilities
+  , kbackendRepresentationCertificates
   , validateCoreCapabilities
   , validateKBackendIR
   ) where
@@ -182,6 +183,7 @@ import Kappa.Representation
   , OrdinalRepresentationCertificate (..)
   , RefinementRepresentationCertificate (..)
   , RepresentationContext (..)
+  , VerifiedRepresentationCertificate (..)
   , exactNaturalRepresentationCertificateIdentity
   , ordinalRepresentationCertificateIdentity
   , representationTypeIdentity
@@ -518,6 +520,36 @@ lowerKBackendIRForCapabilities capabilities st =
   where
     globals = csGlobals st
     ctx = EvalCtx (Globals globals) (csMetas st) False (csFacts st)
+
+-- | Canonical, identity-deduplicated certificate material selected for this
+-- backend artifact. KCoreText emission consumes this exact set; it must not
+-- rescan source declarations and independently guess representation evidence.
+kbackendRepresentationCertificates
+  :: KBackendIR
+  -> [VerifiedRepresentationCertificate]
+kbackendRepresentationCertificates =
+  Map.elems
+    . Map.fromList
+    . concatMap certificatesForDecision
+    . Map.elems
+    . kbirRepresentations
+  where
+    certificatesForDecision decision =
+      [ ( ordinalRepresentationCertificateIdentity certificate
+        , VerifiedOrdinalRepresentation certificate
+        )
+      | certificate <- maybeToList (brdOrdinalCertificate decision)
+      ]
+        ++ [ ( exactNaturalRepresentationCertificateIdentity certificate
+             , VerifiedExactNaturalRepresentation certificate
+             )
+           | certificate <- maybeToList (brdExactNaturalCertificate decision)
+           ]
+        ++ [ ( refinementRepresentationCertificateIdentity certificate
+             , VerifiedRefinementRepresentation certificate
+             )
+           | certificate <- maybeToList (brdRefinementCertificate decision)
+           ]
 
 emptyRepresentationContext :: RepresentationContext
 emptyRepresentationContext =

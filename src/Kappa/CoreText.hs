@@ -26,6 +26,7 @@ module Kappa.CoreText
   , printCanonicalKCoreText
   , semanticHashKCoreText
   , kcoreArithmeticCertificateCount
+  , kcoreRepresentationCertificateCount
   , kcoreHasValidSchemaCertificate
   , kcoreLevelCertificateDependencies
   , kcoreNominalRoles
@@ -85,6 +86,7 @@ import Kappa.Builtins
   , prelEffRowNil
   , prelEqType
   , prelFalse
+  , prelFin
   , prelGrapheme
   , prelInt
   , prelInteger
@@ -611,6 +613,25 @@ data KAssociatedNormalization = KAssociatedNormalization
 
 type KAssociatedNormalizationKey = (StableRef, StableRef)
 
+data KRepresentationCertificateKind
+  = KRepresentationOrdinal
+  | KRepresentationExactNatural
+  | KRepresentationRefinement
+  deriving stock (Eq, Ord, Show)
+
+data KRepresentationCertificate = KRepresentationCertificate
+  { krcRef :: !StableRef
+  , krcUniverses :: ![UniverseRef]
+  , krcBinders :: ![KBinder]
+  , krcCheckerVersion :: !Integer
+  , krcCertificateVersion :: !Integer
+  , krcKind :: !KRepresentationCertificateKind
+  , krcTarget :: !KTerm
+  , krcConstraints :: ![KConstraint]
+  , krcPayload :: ![(Text, KValueNode)]
+  }
+  deriving stock (Eq, Ord, Show)
+
 data KDecl
   = KDDef !StableRef !ObservationMode ![UniverseRef] !KTerm !KTerm
   | KDAxiom !StableRef !ObservationMode ![UniverseRef] !KTerm
@@ -620,6 +641,7 @@ data KDecl
   | KDSchemaCertificate !KSchemaCertificate
   | KDTermProbe !KTerm
   | KDLevelCertificate !StableRef ![UniverseRef] ![KConstraint] !KConstraint !KLevelProof
+  | KDRepresentationCertificate !KRepresentationCertificate
   | KDExtension !Text !Integer
   | KDGeneric !Text ![(Text, KValueNode)]
   deriving stock (Eq, Ord, Show)
@@ -676,6 +698,7 @@ data KCoreInterface = KCoreInterface
   , kciAssociatedNormalizations :: !(Map KAssociatedNormalizationKey KAssociatedNormalization)
   , kciConstructors :: !(Map StableRef ([UniverseRef], [KBinder], KTerm))
   , kciLevelCertificates :: !(Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof))
+  , kciRepresentationCertificates :: !(Map StableRef KRepresentationCertificate)
   , kciSchemaCertificates :: !(Map StableRef KSchemaCertificate)
   , kciNominalFamilies :: !(Map StableRef KNominalFamily)
   }
@@ -771,6 +794,10 @@ invalid = KCoreTextError "E_KCORE_TEXT_INVALID"
 arithmeticCertificateInvalid :: Text -> KCoreTextError
 arithmeticCertificateInvalid =
   KCoreTextError "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID"
+
+representationCertificateInvalid :: Text -> KCoreTextError
+representationCertificateInvalid =
+  KCoreTextError "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
 
 data KArithmeticProvider = KArithmeticProvider
   { kapIdentity :: !(Maybe StableRef)
@@ -1280,6 +1307,8 @@ pDecl = peek >>= \case
   Just (TWord "data") -> pData
   Just (TWord "schema-certificate") -> KDSchemaCertificate <$> pSchemaCertificate
   Just (TWord "level-certificate") -> pLevelCertificate
+  Just (TWord "representation-certificate") ->
+    KDRepresentationCertificate <$> pRepresentationCertificate
   Just (TWord "extension") -> do
     keyword "extension"
     owner <- word
@@ -1293,6 +1322,55 @@ pDecl = peek >>= \case
   Just (TWord "term-node") -> KDTermProbe <$> pTerm
   Just token -> failP ("expected declaration, found " <> renderToken token)
   Nothing -> failP "unexpected end of module"
+
+pRepresentationCertificate :: P KRepresentationCertificate
+pRepresentationCertificate = do
+  keyword "representation-certificate"
+  ref <- pCertificateRef
+  universes <- pUniverseTelescope
+  binders <- manyWhile (Just (TSym "(") ==) pBinder
+  symbol "["
+  keyword "checkerVersion"
+  symbol "="
+  checkerVersion <- integer
+  symbol ","
+  keyword "certificateVersion"
+  symbol "="
+  certificateVersion <- integer
+  symbol ","
+  keyword "kind"
+  symbol "="
+  kind <- pRepresentationCertificateKind
+  symbol "]"
+  keyword "for"
+  target <- pTerm
+  constraints <- pConstraintBlock
+  payload <- pNamedValues
+  pure
+    KRepresentationCertificate
+      { krcRef = ref
+      , krcUniverses = universes
+      , krcBinders = binders
+      , krcCheckerVersion = checkerVersion
+      , krcCertificateVersion = certificateVersion
+      , krcKind = kind
+      , krcTarget = target
+      , krcConstraints = constraints
+      , krcPayload = payload
+      }
+
+pRepresentationCertificateKind :: P KRepresentationCertificateKind
+pRepresentationCertificateKind =
+  word >>= \case
+    "ordinal" -> pure KRepresentationOrdinal
+    "exact-natural" -> pure KRepresentationExactNatural
+    "refinement" -> pure KRepresentationRefinement
+    actual ->
+      failP
+        ( "unknown representation-certificate kind '"
+            <> actual
+            <> "'"
+        )
 
 pDef :: P KDecl
 pDef = do
@@ -1635,7 +1713,7 @@ pCertificateRef :: P StableRef
 pCertificateRef = do
   ref <- pGlobalRef
   unless ("certificate." `T.isPrefixOf` srName ref) $
-    failP "a level-certificate identity must use the @certificate. namespace"
+    failP "a certificate identity must use the @certificate. namespace"
   pure ref
 
 pSchemaCertificateRef :: P StableRef
@@ -3504,6 +3582,7 @@ declarationSubject = \case
   KDSchemaCertificate certificate -> renderStable (kscRef certificate)
   KDTermProbe _ -> "term probe"
   KDLevelCertificate ref _ _ _ _ -> renderStable ref
+  KDRepresentationCertificate certificate -> renderStable (krcRef certificate)
   KDExtension owner _ -> "extension " <> owner
   KDGeneric tag _ -> "generic declaration " <> tag
 
@@ -3551,6 +3630,8 @@ verifyDecl context = \case
         _ -> Left (invalid "a KCore constructor signature must itself have a universe classifier")
   KDLevelCertificate ref universes constraints constraint proof ->
     verifyLevelCertificate context ref universes constraints constraint proof
+  KDRepresentationCertificate certificate ->
+    verifyRepresentationCertificate context certificate
   KDSchemaCertificate _ -> pure ()
   KDTermProbe term -> case term of
     KTGeneric tag _
@@ -3568,6 +3649,467 @@ verifyDecl context = \case
     if tag == "mutual-nominal-signature"
       then verifyMutualNominalSignature fields
       else mapM_ (verifyValue context Set.empty emptyAssumptions Map.empty . snd) fields
+
+verifyRepresentationCertificate
+  :: VerifyContext
+  -> KRepresentationCertificate
+  -> Either KCoreTextError ()
+verifyRepresentationCertificate context certificate@KRepresentationCertificate {..} =
+  mapLeft representationCertificateInvalid $ do
+    unless (krcCheckerVersion == 1) $
+      Left "unsupported representation-certificate checker version"
+    unless (krcCertificateVersion == 1) $
+      Left "unsupported representation-certificate schema version"
+    liftKCore (verifyUniverseTelescope krcUniverses)
+    let universes = universeScope krcUniverses
+    liftKCore (verifyConstraints context universes krcConstraints)
+    let assumptions = constraintAssumptions krcConstraints
+    environment <-
+      foldM
+        (\environment binder ->
+          liftKCore
+            (verifyFormerAndBind context universes assumptions environment binder))
+        Map.empty
+        krcBinders
+    liftKCore
+      (verifyTerm context universes assumptions environment krcTarget)
+    inferredTarget <-
+      liftKCore
+        (inferSimple context universes assumptions environment krcTarget)
+    targetClassifier <-
+      maybe
+        (Left "representation-certificate target has no universe classifier")
+        pure
+        inferredTarget
+    case targetClassifier of
+      KTType {} -> pure ()
+      _ -> Left "representation-certificate target is not a type"
+    let fieldNames = map fst krcPayload
+        expected = representationCertificateFields krcKind
+    unless (length fieldNames == Set.size (Set.fromList fieldNames)) $
+      Left "representation-certificate payload contains duplicate fields"
+    unless (Set.fromList fieldNames == expected) $
+      Left
+        ( "representation-certificate payload fields do not match the closed "
+            <> printRepresentationCertificateKind krcKind
+            <> " schema"
+        )
+    mapM_
+      (mapLeft kcteMessage . verifyValue context universes assumptions environment . snd)
+      krcPayload
+    recordedTypeIdentity <- requiredCertificateText "typeIdentity" krcPayload
+    unless (recordedTypeIdentity == representationCertificateTypeIdentity certificate) $
+      Left "representation-certificate target type identity does not match its context"
+    verifyOptionalCertificateIdentity "sourceEvidenceIdentity" krcPayload
+    verifyOptionalCertificateIdentity "evidenceIdentity" krcPayload
+    verifyOptionalCertificateIdentity "refinementViewEvidenceIdentity" krcPayload
+    mapM_ (verifyCertificateTerm krcPayload)
+      (representationCertificateTermFields krcKind)
+    mapM_ (verifyCertificateSummary krcPayload)
+      (representationCertificateSummaryFields krcKind)
+    mapM_ (verifyCertificateFieldPaths context krcPayload)
+      (representationCertificateFieldPathFields krcKind)
+    verifyCertificateProfileRestrictions krcPayload
+    verifyRepresentationLawTerms
+      context
+      universes
+      assumptions
+      environment
+      certificate
+  where
+    verifyCertificateTerm fields name =
+      case lookup name fields of
+        Just KVTerm {} -> pure ()
+        _ -> Left ("representation-certificate field '" <> name <> "' must be a term")
+    verifyCertificateSummary fields name =
+      case lookup name fields of
+        Just (KVText summary) | not (T.null summary) -> pure ()
+        _ -> Left ("representation-certificate field '" <> name <> "' must be a nonempty summary")
+    liftKCore = mapLeft kcteMessage
+
+verifyRepresentationLawTerms
+  :: VerifyContext
+  -> Set Int
+  -> Assumptions
+  -> LocalEnv
+  -> KRepresentationCertificate
+  -> Either Text ()
+verifyRepresentationLawTerms
+    context
+    universes
+    assumptions
+    environment
+    KRepresentationCertificate {..} =
+  case krcKind of
+    KRepresentationOrdinal -> do
+      cardinality <- requiredTerm "cardinalityExpression"
+      liftKCore
+        (checkTerm
+          context
+          universes
+          assumptions
+          environment
+          cardinality
+          naturalType)
+      let ordinalType =
+            KTApply
+              (KTGlobal (stableRefForGlobal prelFin) [])
+              [KArgument KExplicit cardinality]
+      rank <- requiredTerm "rankTerm"
+      unrank <- requiredTerm "unrankTerm"
+      verifyMap "rankTerm" rank krcTarget ordinalType
+      verifyMap "unrankTerm" unrank ordinalType krcTarget
+      unrankRank <- requiredTerm "unrankRankProof"
+      verifyRoundTrip
+        "unrankRankProof"
+        unrankRank
+        krcTarget
+        rank
+        unrank
+      rankUnrank <- requiredTerm "rankUnrankProof"
+      verifyRoundTrip
+        "rankUnrankProof"
+        rankUnrank
+        ordinalType
+        unrank
+        rank
+    KRepresentationExactNatural -> do
+      toNatural <- requiredTerm "toNatTerm"
+      fromNatural <- requiredTerm "fromNatTerm"
+      verifyMap "toNatTerm" toNatural krcTarget naturalType
+      verifyMap "fromNatTerm" fromNatural naturalType krcTarget
+      toNatFromNat <- requiredTerm "toNatFromNatProof"
+      verifyRoundTrip
+        "toNatFromNatProof"
+        toNatFromNat
+        naturalType
+        fromNatural
+        toNatural
+      fromNatToNat <- requiredTerm "fromNatToNatProof"
+      verifyRoundTrip
+        "fromNatToNatProof"
+        fromNatToNat
+        krcTarget
+        toNatural
+        fromNatural
+    KRepresentationRefinement -> do
+      baseType <- requiredTerm "baseType"
+      liftKCore (verifyType baseType)
+      baseProjection <- requiredTerm "baseProjection"
+      verifyMap "baseProjection" baseProjection krcTarget baseType
+      refine <- requiredTerm "refineConstructor"
+      verifyRefinementConstructor refine baseType
+      verifyEqualityFamily "valueAfterRefineProof" baseType
+        =<< requiredTerm "valueAfterRefineProof"
+      verifyEqualityFamily "refineAfterValueProof" krcTarget
+        =<< requiredTerm "refineAfterValueProof"
+  where
+    naturalType = KTGlobal (stableRefForGlobal prelNat) []
+    requiredTerm name =
+      case lookup name krcPayload of
+        Just (KVTerm term) -> pure term
+        _ ->
+          Left
+            ( "representation-certificate field '"
+                <> name
+                <> "' must be a term"
+            )
+    liftKCore = mapLeft kcteMessage
+    same env = sameKCoreTypeIn env context
+    verifyType term = do
+      classifier <-
+        inferSimple context universes assumptions environment term
+      case classifier of
+        Just KTType {} -> pure ()
+        _ -> Left (invalid "representation-certificate baseType is not a type")
+    infer name term =
+      liftKCore
+        (inferSimple context universes assumptions environment term)
+        >>= maybe
+          (Left ("representation-certificate " <> name <> " has no inferred type"))
+          pure
+    verifyMap name term domain codomain = do
+      ty <- infer name term
+      case ty of
+        KTPi binder result
+          | same environment (kbType binder) domain
+          , let environment' =
+                  Map.insert (lrId (kbRef binder)) (LocalBinder binder) environment
+          , same environment' result codomain ->
+              pure ()
+        _ ->
+          Left
+            ( "representation-certificate "
+                <> name
+                <> " does not have the certified map type"
+            )
+    verifyRoundTrip name proof input forward backward = do
+      ty <- infer name proof
+      case ty of
+        KTPi binder proposition
+          | same environment (kbType binder) input
+          , let environment' =
+                  Map.insert (lrId (kbRef binder)) (LocalBinder binder) environment
+                variable = KTLocal (kbRef binder) []
+                expectedLeft =
+                  applyUnary backward (applyUnary forward variable)
+          , Just (carrier, left, right) <- equalityOperands proposition
+          , same environment' carrier input
+          , same environment' left expectedLeft
+          , same environment' right variable ->
+              pure ()
+        _ ->
+          Left
+            ( "representation-certificate "
+                <> name
+                <> " does not prove the certified round trip"
+            )
+    verifyRefinementConstructor term baseType = do
+      ty <- infer "refineConstructor" term
+      case ty of
+        KTPi binder rest
+          | same environment (kbType binder) baseType ->
+              goRefine
+                (Map.insert (lrId (kbRef binder)) (LocalBinder binder) environment)
+                rest
+        _ ->
+          Left
+            "representation-certificate refineConstructor does not accept the certified base type"
+      where
+        goRefine env = \case
+          KTPi binder rest
+            | kbQuantity binder == KQ0 ->
+                goRefine
+                  (Map.insert (lrId (kbRef binder)) (LocalBinder binder) env)
+                  rest
+          result
+            | same env result krcTarget -> pure ()
+          _ ->
+            Left
+              "representation-certificate refineConstructor has a retained non-base argument or a wrong result"
+    verifyEqualityFamily name carrier proof = do
+      ty <- infer name proof
+      let (binders, result) = splitPiTelescope ty
+          environment' =
+            foldl
+              (\env binder ->
+                Map.insert (lrId (kbRef binder)) (LocalBinder binder) env)
+              environment
+              binders
+      case equalityOperands result of
+        Just (actualCarrier, _, _)
+          | same environment' actualCarrier carrier -> pure ()
+        _ ->
+          Left
+            ( "representation-certificate "
+                <> name
+                <> " is not an equality over the certified carrier"
+            )
+    applyUnary function argument =
+      KTApply function [KArgument KExplicit argument]
+
+mapLeft :: (a -> b) -> Either a c -> Either b c
+mapLeft f = \case
+  Left err -> Left (f err)
+  Right value -> Right value
+
+representationCertificateFields
+  :: KRepresentationCertificateKind
+  -> Set Text
+representationCertificateFields kind =
+  Set.fromList $
+    case kind of
+      KRepresentationOrdinal ->
+        [ "typeIdentity"
+        , "sourceEvidenceIdentity"
+        , "cardinalityExpression"
+        , "rankTerm"
+        , "unrankTerm"
+        , "unrankRankProof"
+        , "rankUnrankProof"
+        , "constructorEncoding"
+        , "eliminatorSimulation"
+        , "erasureView"
+        , "profileRestrictions"
+        ]
+      KRepresentationExactNatural ->
+        [ "typeIdentity"
+        , "evidenceIdentity"
+        , "zeroConstructor"
+        , "successorConstructor"
+        , "recursiveField"
+        , "toNatTerm"
+        , "fromNatTerm"
+        , "toNatFromNatProof"
+        , "fromNatToNatProof"
+        , "constructorSimulation"
+        , "eliminatorSimulation"
+        , "erasureView"
+        , "profileRestrictions"
+        ]
+      KRepresentationRefinement ->
+        [ "typeIdentity"
+        , "refinementViewEvidenceIdentity"
+        , "baseType"
+        , "baseTypeIdentity"
+        , "baseProjection"
+        , "refineConstructor"
+        , "retainedBaseField"
+        , "erasedEvidenceFields"
+        , "valueAfterRefineProof"
+        , "refineAfterValueProof"
+        , "eliminatorSimulation"
+        , "erasureView"
+        , "profileRestrictions"
+        ]
+
+representationCertificateTermFields
+  :: KRepresentationCertificateKind
+  -> [Text]
+representationCertificateTermFields = \case
+  KRepresentationOrdinal ->
+    [ "cardinalityExpression"
+    , "rankTerm"
+    , "unrankTerm"
+    , "unrankRankProof"
+    , "rankUnrankProof"
+    ]
+  KRepresentationExactNatural ->
+    [ "toNatTerm"
+    , "fromNatTerm"
+    , "toNatFromNatProof"
+    , "fromNatToNatProof"
+    ]
+  KRepresentationRefinement ->
+    [ "baseType"
+    , "baseProjection"
+    , "refineConstructor"
+    , "valueAfterRefineProof"
+    , "refineAfterValueProof"
+    ]
+
+representationCertificateSummaryFields
+  :: KRepresentationCertificateKind
+  -> [Text]
+representationCertificateSummaryFields = \case
+  KRepresentationOrdinal ->
+    ["eliminatorSimulation"]
+  KRepresentationExactNatural ->
+    ["constructorSimulation", "eliminatorSimulation"]
+  KRepresentationRefinement ->
+    ["eliminatorSimulation"]
+
+representationCertificateFieldPathFields
+  :: KRepresentationCertificateKind
+  -> [Text]
+representationCertificateFieldPathFields = \case
+  KRepresentationOrdinal -> ["erasureView"]
+  KRepresentationExactNatural -> ["recursiveField", "erasureView"]
+  KRepresentationRefinement ->
+    ["retainedBaseField", "erasedEvidenceFields", "erasureView"]
+
+requiredCertificateText
+  :: Text
+  -> [(Text, KValueNode)]
+  -> Either Text Text
+requiredCertificateText name fields =
+  case lookup name fields of
+    Just (KVText value) | not (T.null value) -> pure value
+    _ -> Left ("representation-certificate field '" <> name <> "' must be nonempty text")
+
+verifyOptionalCertificateIdentity
+  :: Text
+  -> [(Text, KValueNode)]
+  -> Either Text ()
+verifyOptionalCertificateIdentity name fields =
+  case lookup name fields of
+    Nothing -> pure ()
+    Just (KVList []) -> pure ()
+    Just (KVText value) | not (T.null value) -> pure ()
+    Just _ ->
+      Left
+        ( "representation-certificate field '"
+            <> name
+            <> "' must be a nonempty identity or []"
+        )
+
+verifyCertificateFieldPaths
+  :: VerifyContext
+  -> [(Text, KValueNode)]
+  -> Text
+  -> Either Text ()
+verifyCertificateFieldPaths context fields name =
+  case lookup name fields of
+    Just node -> mapM_ verifyPath =<< decodePaths node
+    Nothing -> Left ("representation-certificate is missing field '" <> name <> "'")
+  where
+    decodePaths = \case
+      KVList [KVGlobal constructor [], KVInteger index] ->
+        pure [(constructor, index)]
+      KVList nodes -> concat <$> mapM decodePaths nodes
+      _ ->
+        Left
+          ( "representation-certificate field '"
+              <> name
+              <> "' has an invalid constructor-field path"
+          )
+    verifyPath (constructor, index) = do
+      unless (index >= 0) $
+        Left "representation-certificate constructor-field index is negative"
+      fieldsForConstructor <-
+        maybe
+          (Left "representation-certificate field path names an unavailable constructor")
+          pure
+          (Map.lookup constructor (vcConstructorFields context))
+      let directPayloadIndices = Set.fromList (Map.elems fieldsForConstructor)
+      unless (fromInteger index `Set.member` directPayloadIndices) $
+        Left "representation-certificate field path is absent from the authenticated constructor interface"
+
+verifyCertificateProfileRestrictions
+  :: [(Text, KValueNode)]
+  -> Either Text ()
+verifyCertificateProfileRestrictions fields =
+  case lookup "profileRestrictions" fields of
+    Just (KVList restrictions) -> do
+      names <- mapM decode restrictions
+      unless (names == sort (nub names)) $
+        Left "representation-certificate profile restrictions are not canonical"
+    _ -> Left "representation-certificate profileRestrictions must be a list"
+  where
+    decode = \case
+      KVText name
+        | name `Set.member` allowed -> pure name
+      _ -> Left "representation-certificate profile restriction is unknown"
+    allowed =
+      Set.fromList
+        [ "internal-values-only"
+        , "exclude-dynamic-boundary"
+        , "exclude-foreign-boundary"
+        , "exclude-exported-abi"
+        , "require-compact-finite-ordinal"
+        , "require-unboxed-refinement"
+        ]
+
+representationCertificateTypeIdentity
+  :: KRepresentationCertificate
+  -> Text
+representationCertificateTypeIdentity certificate =
+  case canonicalizeDecl (KDRepresentationCertificate certificate) of
+    KDRepresentationCertificate KRepresentationCertificate {..} ->
+      canonicalIdentityHex
+        "KCoreTypeNF"
+        ( T.intercalate
+            "\n"
+            [ T.intercalate "," (map renderUniverse krcUniverses)
+            , T.intercalate "\n" (map printBinder krcBinders)
+            , T.intercalate "\n" (map printConstraint krcConstraints)
+            , printTerm krcTarget
+            ]
+        )
+    _ ->
+      canonicalIdentityHex
+        "KCoreTypeNF"
+        (printTerm (krcTarget certificate))
 
 malformedSchemaLiftProbeTags :: Set Text
 malformedSchemaLiftProbeTags =
@@ -8284,6 +8826,7 @@ declRefs = \case
   KDAssociatedNormalization {} -> []
   KDData ref _ _ _ _ constructors -> ref : [ctor | KCtorDecl ctor _ _ _ <- constructors]
   KDLevelCertificate ref _ _ _ _ -> [ref]
+  KDRepresentationCertificate certificate -> [krcRef certificate]
   KDSchemaCertificate certificate -> [kscRef certificate]
   KDTermProbe _ -> []
   KDExtension _ _ -> []
@@ -8300,6 +8843,7 @@ moduleDeclarationArities KModule {..} = concatMap declArities kmDecls
       KDData ref universes _ _ _ constructors ->
         (ref, length universes) : [(ctor, length ctorUniverses) | KCtorDecl ctor ctorUniverses _ _ <- constructors]
       KDLevelCertificate {} -> []
+      KDRepresentationCertificate {} -> []
       KDSchemaCertificate {} -> []
       KDTermProbe {} -> []
       KDExtension {} -> []
@@ -8317,6 +8861,7 @@ moduleDeclarationTypes KModule {..} = concatMap declTypes kmDecls
         (ref, (map fst universes, foldr KTPi result binders))
           : [(ctor, (ctorUniverses, ty)) | KCtorDecl ctor ctorUniverses _ ty <- constructors]
       KDLevelCertificate {} -> []
+      KDRepresentationCertificate {} -> []
       KDSchemaCertificate {} -> []
       KDTermProbe {} -> []
       KDExtension {} -> []
@@ -8333,6 +8878,7 @@ moduleDeclarationModes KModule {..} = concatMap declModes kmDecls
       KDData ref _ _ _ _ constructors ->
         (ref, Ordinary) : [(constructor, Ordinary) | KCtorDecl constructor _ _ _ <- constructors]
       KDLevelCertificate {} -> []
+      KDRepresentationCertificate {} -> []
       KDSchemaCertificate {} -> []
       KDTermProbe {} -> []
       KDExtension {} -> []
@@ -8386,6 +8932,12 @@ interfaceFromVerifiedKCore (KCoreFile _ modules) =
           | KModule {kmDecls = declarations} <- modules
           , KDLevelCertificate ref universes constraints theorem proof <- declarations
           ]
+    , kciRepresentationCertificates =
+        Map.fromList
+          [ (krcRef certificate, certificate)
+          | KModule {kmDecls = declarations} <- modules
+          , KDRepresentationCertificate certificate <- declarations
+          ]
     , kciSchemaCertificates =
         Map.fromList
           [ (kscRef certificate, certificate)
@@ -8414,6 +8966,10 @@ mergeKCoreInterfaces = foldM merge emptyKCoreInterface
           (kciAssociatedNormalizations right)
         <*> mergeMap "constructor interface" (kciConstructors left) (kciConstructors right)
         <*> mergeMap "level certificate" (kciLevelCertificates left) (kciLevelCertificates right)
+        <*> mergeMap
+          "representation certificate"
+          (kciRepresentationCertificates left)
+          (kciRepresentationCertificates right)
         <*> mergeMap "schema certificate" (kciSchemaCertificates left) (kciSchemaCertificates right)
         <*> mergeMap "nominal family" (kciNominalFamilies left) (kciNominalFamilies right)
     mergeMap label left right
@@ -8448,6 +9004,7 @@ mergeKCoreInterfaces = foldM merge emptyKCoreInterface
 emptyKCoreInterface :: KCoreInterface
 emptyKCoreInterface =
   KCoreInterface
+    Map.empty
     Map.empty
     Map.empty
     Map.empty
@@ -10896,6 +11453,12 @@ allStableRefs (KCoreFile _ modules) = concatMap moduleRefs modules
           ++ concat [[ctor] ++ termRefs ty | KCtorDecl ctor _ _ ty <- constructors]
       KDLevelCertificate ref _ constraints constraint proof ->
         ref : concatMap constraintRefs constraints ++ constraintRefs constraint ++ proofRefs proof
+      KDRepresentationCertificate certificate ->
+        krcRef certificate
+          : concatMap (termRefs . kbType) (krcBinders certificate)
+          ++ concatMap constraintRefs (krcConstraints certificate)
+          ++ termRefs (krcTarget certificate)
+          ++ concatMap (valueRefs . snd) (krcPayload certificate)
       KDExtension {} -> []
       KDGeneric _ fields -> concatMap (valueRefs . snd) fields
       KDSchemaCertificate certificate -> [kscRef certificate, kscFamily certificate]
@@ -11078,6 +11641,11 @@ declReferenceUses = \case
       ++ concatMap (\(KCtorDecl _ _ fields ty) -> map fst fields ++ termStableRefs ty) constructors
   KDLevelCertificate _ _ constraints constraint proof ->
     concatMap constraintStableRefs constraints ++ constraintStableRefs constraint ++ levelProofStableRefs proof
+  KDRepresentationCertificate certificate ->
+    concatMap (termStableRefs . kbType) (krcBinders certificate)
+      ++ concatMap constraintStableRefs (krcConstraints certificate)
+      ++ termStableRefs (krcTarget certificate)
+      ++ concatMap (valueStableRefs . snd) (krcPayload certificate)
   KDSchemaCertificate certificate ->
     kscFamily certificate
       : concatMap
@@ -11354,6 +11922,30 @@ canonicalizeDeclWithFamilyScopes familyScopes declaration =
               constraint'
               (canonicalLevelProof indexMap constraints' constraint' proof)
           )
+      KDRepresentationCertificate certificate -> do
+        let (universes', universeMap) =
+              canonicalUniverses (krcUniverses certificate)
+            (constraints', _) =
+              canonicalConstraintBlock universeMap (krcConstraints certificate)
+        withLocalScope $ do
+          binders' <-
+            mapM (canonicalBinder universeMap) (krcBinders certificate)
+          target' <- canonicalTerm universeMap (krcTarget certificate)
+          payload' <-
+            mapM
+              (\(name, value) ->
+                (name,) <$> canonicalValue universeMap value)
+              (krcPayload certificate)
+          pure
+            ( KDRepresentationCertificate
+                certificate
+                  { krcUniverses = universes'
+                  , krcBinders = binders'
+                  , krcConstraints = constraints'
+                  , krcTarget = target'
+                  , krcPayload = sortOn fst payload'
+                  }
+            )
       KDSchemaCertificate certificate ->
         KDSchemaCertificate <$> case Map.lookup (kscFamily certificate) familyScopes of
           Nothing -> pure (canonicalizeSchemaCertificate certificate)
@@ -11759,6 +12351,16 @@ printDecl = \case
     "level-certificate " <> renderStable ref <> printUniverses universes <> " : " <> printConstraint constraint
       <> printConstraints constraints <> " {\n"
       <> indent 2 (printLevelProof proof) <> "\n}"
+  KDRepresentationCertificate KRepresentationCertificate {..} ->
+    "representation-certificate " <> renderStable krcRef
+      <> printUniverses krcUniverses
+      <> (if null krcBinders then "" else " " <> T.intercalate " " (map printBinder krcBinders))
+      <> " [checkerVersion = " <> tshow krcCheckerVersion
+      <> ", certificateVersion = " <> tshow krcCertificateVersion
+      <> ", kind = " <> printRepresentationCertificateKind krcKind
+      <> "] for " <> printTerm krcTarget
+      <> printConstraints krcConstraints
+      <> "\n" <> printNamedValues krcPayload
   KDExtension owner version -> "extension " <> owner <> " " <> tshow version <> ";"
   KDGeneric tag fields -> "decl-node " <> quoteText tag <> " " <> printNamedValues fields
 
@@ -11801,6 +12403,12 @@ printNominalClauseKind = \case
   ClauseComputationRule -> "computation_rule"
   ClauseTruncationRule -> "truncation_rule"
   ClauseExtension -> "extension_clause"
+
+printRepresentationCertificateKind :: KRepresentationCertificateKind -> Text
+printRepresentationCertificateKind = \case
+  KRepresentationOrdinal -> "ordinal"
+  KRepresentationExactNatural -> "exact-natural"
+  KRepresentationRefinement -> "refinement"
 
 printConstraints :: [KConstraint] -> Text
 printConstraints [] = ""
@@ -12158,6 +12766,17 @@ semanticNormalizeLiftEvidence (KCoreFile version modules) =
       KDTermProbe value -> KDTermProbe (term value)
       KDLevelCertificate ref universes constraints theorem proof ->
         KDLevelCertificate ref universes (map constraint constraints) (constraint theorem) (levelProof proof)
+      KDRepresentationCertificate certificate ->
+        KDRepresentationCertificate
+          certificate
+            { krcBinders = map binder (krcBinders certificate)
+            , krcTarget = term (krcTarget certificate)
+            , krcConstraints = map constraint (krcConstraints certificate)
+            , krcPayload =
+                [ (name, value node)
+                | (name, node) <- krcPayload certificate
+                ]
+            }
       KDGeneric tag fields -> KDGeneric tag [(name, value node) | (name, node) <- fields]
       declaration -> declaration
     proofIrrelevantTerm = KTGlobal (StableRef "evidence.semantic" "proof-irrelevant") []
@@ -12297,6 +12916,11 @@ kcoreArithmeticCertificateCount (KCoreFile _ modules) =
       KDTermProbe term -> termCount term
       KDLevelCertificate _ _ constraints theorem _ ->
         sum (map constraintCount constraints) + constraintCount theorem
+      KDRepresentationCertificate certificate ->
+        sum (map (binderCount) (krcBinders certificate))
+          + termCount (krcTarget certificate)
+          + sum (map constraintCount (krcConstraints certificate))
+          + sum (map (valueCount . snd) (krcPayload certificate))
       KDGeneric _ fields -> sum (map (valueCount . snd) fields)
       KDExtension {} -> 0
 
@@ -12394,6 +13018,14 @@ kcoreArithmeticCertificateCount (KCoreFile _ modules) =
       KVPattern pattern' -> patternCount pattern'
       KVList values -> sum (map valueCount values)
       _ -> 0
+
+kcoreRepresentationCertificateCount :: KCoreFile -> Int
+kcoreRepresentationCertificateCount (KCoreFile _ modules) =
+  length
+    [ ()
+    | KModule {kmDecls = declarations} <- modules
+    , KDRepresentationCertificate {} <- declarations
+    ]
 
 kcoreHasValidSchemaCertificate :: KCoreFile -> Text -> Bool
 kcoreHasValidSchemaCertificate (KCoreFile _ modules) requestedFamily =

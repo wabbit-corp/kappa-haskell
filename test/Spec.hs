@@ -8,6 +8,7 @@ module Main (main) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Control.Applicative ((<|>))
+import Data.Either (isLeft)
 import Data.List (isInfixOf, isSuffixOf, nub, permutations, sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
@@ -52,6 +53,7 @@ import Kappa.Backend.IR
   , BackendUse (..)
   , KBackendIR (..)
   , BackendUseId (..)
+  , kbackendRepresentationCertificates
   , lowerKBackendIR
   , validateCoreCapabilities
   , validateKBackendIR
@@ -149,6 +151,7 @@ import Kappa.CoreText
   , parseAndVerifyKCoreInterfaceWithInterfaces
   , parseKCoreText
   , printCanonicalKCoreText
+  , kcoreRepresentationCertificateCount
   , renderKCoreModule
   , semanticHashKCoreText
   , verifyKCoreTextWithInterfaces
@@ -252,10 +255,13 @@ import Kappa.Representation
   , OrdinalRepresentationCertificate (..)
   , RefinementRepresentationCertificate (..)
   , RepresentationContext (..)
+  , VerifiedRepresentationCertificate (..)
   , exactNaturalRepresentationCertificateIdentity
   , ordinalRepresentationCertificateIdentity
   , refinementRepresentationCertificateIdentity
   , representationTypeIdentity
+  , verifiedRepresentationCertificateIdentity
+  , verifyRepresentationCertificate
   , verifyExactNaturalRepresentationCertificate
   , verifyOrdinalRepresentationCertificate
   , verifyRefinementRepresentationCertificate
@@ -1734,6 +1740,38 @@ kcoreTextCanonicalDomain = do
           <> semanticVersionMetadata
           <> extensions <> "] {\n"
       footer = "}\n"
+      kcoreTypeIdentity =
+        canonicalIdentityHex
+          "KCoreTypeNF"
+          (T.intercalate "\n" ["", "", "", "Type 0"])
+      malformedOrdinalRepresentationCertificate =
+        header "test.representation-certificate" ""
+          <> "representation-certificate @certificate.test.representation#100 "
+          <> "[checkerVersion = 1, certificateVersion = 1, kind = ordinal] "
+          <> "for Type 0 { "
+          <> "typeIdentity = string-value(\"" <> kcoreTypeIdentity <> "\"); "
+          <> "sourceEvidenceIdentity = []; "
+          <> "cardinalityExpression = term-value(Type 0); "
+          <> "rankTerm = term-value(Type 0); "
+          <> "unrankTerm = term-value(Type 0); "
+          <> "unrankRankProof = term-value(Type 0); "
+          <> "rankUnrankProof = term-value(Type 0); "
+          <> "constructorEncoding = string-value(\"invalid\"); "
+          <> "eliminatorSimulation = string-value(\"invalid\"); "
+          <> "erasureView = []; "
+          <> "profileRestrictions = []; "
+          <> "}\n"
+          <> footer
+      representationCertificateParses =
+        case parseKCoreText malformedOrdinalRepresentationCertificate of
+          Right parsed ->
+            kcoreRepresentationCertificateCount parsed == 1
+              && case parseKCoreText (printCanonicalKCoreText parsed) of
+                   Right reparsed ->
+                     printCanonicalKCoreText reparsed
+                       == printCanonicalKCoreText parsed
+                   Left _ -> False
+          Left _ -> False
       nominalCertificate identity familyId certificateId =
         "schema-certificate @schema:" <> identity <> ".T#" <> certificateId
           <> " for @" <> identity <> ".T#" <> familyId
@@ -2190,6 +2228,8 @@ kcoreTextCanonicalDomain = do
         , ("composed lift certificates replay scoped assumptions", either (const False) (const True) (parseVerified composedCertificate))
         , ("certificate assumptions are checked against their own normalized block", rejectedWith "E_KCORE_LEVEL_CERTIFICATE_INVALID" badCertificateAssumption)
         , ("semantically neutral certificate proof nodes canonicalize away", either (const False) id certificateProofCanonical)
+        , ("representation-certificate declarations parse and round trip", representationCertificateParses)
+        , ("representation-certificate law terms are independently checked", rejectedWith "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID" malformedOrdinalRepresentationCertificate)
         , ("parametric global facets cannot enter ordinary positions", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" parametricGlobalPromotion)
         , ("dependent parametric application preserves its argument dependency", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" dependentParametricApplication)
         , ("constant parametric application remains ordinary", either (const False) (const True) (parseVerified constantParametricApplication))
@@ -2210,6 +2250,11 @@ kcoreTextCanonicalDomain = do
     case parseVerified composedCertificate of
       Left err -> putStrLn ("  composed certificate error=" ++ show err)
       Right _ -> pure ()
+    case parseKCoreText malformedOrdinalRepresentationCertificate of
+      Left err -> putStrLn ("  representation certificate parse error=" ++ show err)
+      Right parsed -> case parseKCoreText (printCanonicalKCoreText parsed) of
+        Left err -> putStrLn ("  representation certificate canonical parse error=" ++ show err)
+        Right _ -> pure ()
     case (parseVerified sourceProofBinder, parseVerified generatedProofBinder) of
       (Left err, _) -> putStrLn ("  source proof binder error=" ++ show err)
       (_, Left err) -> putStrLn ("  generated proof binder error=" ++ show err)
@@ -3160,6 +3205,8 @@ representationCertificateIdentityDomain = do
           }
       mutationsChange identity original mutations =
         all ((/= identity original) . identity) mutations
+      mutationsReject verify mutations =
+        all (isLeft . verify) mutations
       checks =
         [ ("exact-natural certificate verifies", verifyExactNaturalRepresentationCertificate exactCertificate == Right ())
         , ("ordinal certificate verifies", verifyOrdinalRepresentationCertificate ordinalCertificate == Right ())
@@ -3173,6 +3220,17 @@ representationCertificateIdentityDomain = do
               , exactCertificate {enrcProfileRestrictions = [ExcludeDynamicBoundary]}
               ]
           )
+        , ( "exact-natural decisive mutations reject"
+          , mutationsReject
+              verifyExactNaturalRepresentationCertificate
+              [ exactCertificate {enrcEvidenceIdentity = ""}
+              , exactCertificate {enrcRecursiveField = ConstructorFieldPath prelNatSucc (-1)}
+              , exactCertificate
+                  { enrcProfileRestrictions =
+                      [ExcludeDynamicBoundary, ExcludeDynamicBoundary]
+                  }
+              ]
+          )
         , ( "ordinal decisive fields affect identity"
           , mutationsChange
               ordinalRepresentationCertificateIdentity
@@ -3182,6 +3240,14 @@ representationCertificateIdentityDomain = do
               , ordinalCertificate {orcSourceEvidenceIdentity = Just "other-evidence"}
               ]
           )
+        , ( "ordinal decisive mutations reject"
+          , mutationsReject
+              verifyOrdinalRepresentationCertificate
+              [ ordinalCertificate {orcCardinalityExpression = cardLiteral 6}
+              , ordinalCertificate {orcEncoding = OrdinalFin (cardLiteral 6)}
+              , ordinalCertificate {orcSourceEvidenceIdentity = Just ""}
+              ]
+          )
         , ( "refinement decisive fields affect identity"
           , mutationsChange
               refinementRepresentationCertificateIdentity
@@ -3189,6 +3255,19 @@ representationCertificateIdentityDomain = do
               [ refinementCertificate {rrcBaseTypeIdentity = "wrong-base"}
               , refinementCertificate {rrcRetainedBaseField = ConstructorFieldPath wrapperCtor 1}
               , refinementCertificate {rrcProfileRestrictions = [ExcludeDynamicBoundary]}
+              ]
+          )
+        , ( "refinement decisive mutations reject"
+          , mutationsReject
+              verifyRefinementRepresentationCertificate
+              [ refinementCertificate {rrcBaseTypeIdentity = "wrong-base"}
+              , refinementCertificate
+                  { rrcRetainedBaseField = ConstructorFieldPath wrapperCtor (-1)
+                  }
+              , refinementCertificate
+                  { rrcProfileRestrictions =
+                      [ExcludeDynamicBoundary, ExcludeDynamicBoundary]
+                  }
               ]
           )
         ]
@@ -4528,6 +4607,7 @@ backendIRPhaseAS5 = do
           , "type ErasedProofRec = (prop : IsProp ((=) \"x\" \"x\"), value : Int)"
           , "data GhostBox : Type = MkGhostBox (0 ghost : Int) (value : Int)"
           , "data ErasedTail : Type = MkErasedTail (a : Int) (b : Int) (c : Type)"
+          , "data RepresentedFields : Type = MkRepresentedFields (n : Nat) (i : Fin 5)"
           , "foo : R"
           , "let foo = (a = Int, b = 5)"
           , "let useRecord = foo.b"
@@ -4608,6 +4688,22 @@ backendIRPhaseAS5 = do
       tuplePatternAlts = maybe [] (backendAlts . bbRoot) tuplePatternBody
       polyArgTerms = maybe [] (backendTerms . bbRoot) polyArgBody
       localPolyTerms = maybe [] (backendTerms . bbRoot) localPolyBody
+      representationCertificates = kbackendRepresentationCertificates ir
+      representationCertificateIds =
+        map verifiedRepresentationCertificateIdentity representationCertificates
+      representationCertificatesAreUnique =
+        length representationCertificateIds
+          == Set.size (Set.fromList representationCertificateIds)
+      hasExactNaturalCertificate =
+        any
+          (\case VerifiedExactNaturalRepresentation {} -> True; _ -> False)
+          representationCertificates
+      hasFiniteOrdinalCertificate =
+        any
+          (\case VerifiedOrdinalRepresentation {} -> True; _ -> False)
+          representationCertificates
+      representationCertificatesReplay =
+        all ((== Right ()) . verifyRepresentationCertificate) representationCertificates
       params = maybe [] bbParams body
       hasOnlyRuntimeParam =
         case params of
@@ -4769,6 +4865,10 @@ backendIRPhaseAS5 = do
         , ("polymorphic lambda argument erases type binder from expected type", polyArgErasesTypeLambda)
         , ("local kind-domain lambda binder is erased", localPolyErasesTypeLambda)
         , ("local polymorphic call erases type argument", localPolyCallErasesTypeArg)
+        , ("selected representation certificates are identity-unique", representationCertificatesAreUnique)
+        , ("selected exact-natural certificate crosses the backend boundary", hasExactNaturalCertificate)
+        , ("selected finite-ordinal certificate crosses the backend boundary", hasFiniteOrdinalCertificate)
+        , ("selected representation certificates replay before emission", representationCertificatesReplay)
         , ("lowered tree is not the old wrapper scaffold", noWrapperScaffold)
         ]
       failed = [name | (name, ok) <- checks, not ok]
