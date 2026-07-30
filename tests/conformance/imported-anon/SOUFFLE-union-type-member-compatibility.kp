@@ -23,7 +23,7 @@ let c : MaybeInt    = (| () : Unit |)
 let d : MaybeInt    = (| 7 : Int |)
 
 -- POSITIVE: matching over union members.
-let showIS : IntOrString -> String
+showIS : IntOrString -> String
 let showIS v =
     match v
         case (| n : Int    |) -> "int"

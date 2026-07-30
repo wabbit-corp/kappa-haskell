@@ -1617,7 +1617,7 @@ coreUsageTypeExpr binders = \case
     fExpr <- coreUsageTypeExpr binders f
     aExpr <- coreUsageTypeExpr binders a
     pure (EApp fExpr [ArgExplicit aExpr])
-  CForceE t -> coreUsageTypeExpr binders t
+  CForceE t _ -> coreUsageTypeExpr binders t
   _ -> Nothing
 
 exprForGName :: GName -> Expr
@@ -2116,7 +2116,7 @@ coreTypeHeadGName :: Term -> Maybe GName
 coreTypeHeadGName = \case
   CGlobal g _ -> Just g
   CApp _ f _ -> coreTypeHeadGName f
-  CForceE t -> coreTypeHeadGName t
+  CForceE t _ -> coreTypeHeadGName t
   _ -> Nothing
 
 localTypeHeads :: Module -> Set.Set Text

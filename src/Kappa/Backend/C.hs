@@ -5127,9 +5127,9 @@ termGlobals = goT
       CDo _ items -> goItems items
       CSealE _ e -> goT e
       CSigT _ e -> goT e
-      CThunkE e -> goT e
-      CLazyE e -> goT e
-      CForceE e -> goT e
+      CThunkE e _ -> goT e
+      CLazyE e _ -> goT e
+      CForceE e _ -> goT e
       CIf c th el -> goT c <> goT th <> goT el
       CQuote _ ts -> goAll ts
     goAll = mconcat . map goT

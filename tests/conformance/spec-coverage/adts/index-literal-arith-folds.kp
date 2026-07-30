@@ -83,7 +83,8 @@ let bad = a12    --!! kappa.type.mismatch
 
 -- NEGATIVE: two MatRow layers fold to 2 rows, never 3.
 badRows : Matrix 3 3
-let badRows = MatRow (MatRow MatZero)    --!! kappa.type.mismatch
+let badRows = MatRow (MatRow MatZero)    --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertErrorCount 2

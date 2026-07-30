@@ -15,7 +15,7 @@ data E : Type =
   | C : E
 
 -- NEGATIVE: missing constructors `B` and `C` -> non-exhaustive.
-let onlyA : E -> Int
+onlyA : E -> Int
 let onlyA e =
     match e                          --!! kappa.pattern.non-exhaustive
     case A -> 0
@@ -25,7 +25,7 @@ let onlyA e =
 -- constructor space.
 data S : Type = S E
 
-let onlyAUnderS : S -> Int
+onlyAUnderS : S -> Int
 let onlyAUnderS s =
     match s
     case S e ->

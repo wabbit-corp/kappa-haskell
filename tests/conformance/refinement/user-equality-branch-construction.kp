@@ -1,0 +1,21 @@
+module main
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+branchRefl :
+    (b : Bool) ->
+    Option (Equal b True)
+
+let branchRefl b =
+    if b then
+        Some Refl
+    else
+        None
+
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

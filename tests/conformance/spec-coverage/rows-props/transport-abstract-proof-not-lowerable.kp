@@ -6,11 +6,13 @@
 
 -- §11.4.1: the proof and result are runtime-relevant, but the abstract proof
 -- is not definitionally refl and no computational path extension is active.
+-- Keep the carrier abstract: Nat has checked IsSet evidence, which makes its
+-- equality proofs RuntimeErased under §11.1.6.
 module main
 
-data VecB (parametric 0 n : Nat) : Type =
+data VecB (parametric 0 a : Type) (parametric 0 x : a) : Type =
     MkVecB
 
-castAbs : forall (@0 n : Nat) (@0 m : Nat). (p : n = m) -> VecB n -> VecB m
-let castAbs (@0 n : Nat) (@0 m : Nat) (p : n = m) (v : VecB n) : VecB m =
-    subst @Nat @VecB @n @m p v
+castAbs : forall (@0 a : Type) (@0 x : a) (@0 y : a). (p : x = y) -> VecB a x -> VecB a y
+let castAbs (@0 a : Type) (@0 x : a) (@0 y : a) (p : x = y) (v : VecB a x) : VecB a y =
+    subst @a @(VecB a) @x @y p v

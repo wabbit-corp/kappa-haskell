@@ -36,7 +36,7 @@ let checkVal = depVal ex1
 -- POSITIVE: two Dep values with the same tp and val are propositionally equal.
 -- Pair extensionality: equality of records reduces to equality of fields.
 depExt :
-    forall (d0 d1 : Dep) ->
+    (d0 d1 : Dep) ->
     (p : depTp d0 = depTp d1) ->
     d0 = d1
 let depExt (MkDep t0 _) (MkDep t1 _) p = ?depExtHole    --!! kappa.hole.unsolved
@@ -65,9 +65,9 @@ let apply3 = endoFn natEndo (endoFn natEndo (endoFn natEndo zero))
 -- POSITIVE: equality of endomorphisms is pointwise equality of their function
 -- component. Here we state it as an expectation (hole shows the proof obligation).
 endoExt :
-    forall (e0 e1 : Endo) ->
+    (e0 e1 : Endo) ->
     endoT e0 = endoT e1 ->
-    (forall (x : endoT e0) -> endoFn e0 x = ?_) ->
+    ((x : endoT e0) -> endoFn e0 x = ?_) ->
     e0 = e1
 let endoExt e0 e1 _ _ = ?endoHole    --!! kappa.hole.unsolved
 

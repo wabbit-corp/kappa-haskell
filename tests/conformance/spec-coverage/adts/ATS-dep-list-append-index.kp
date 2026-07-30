@@ -1,0 +1,106 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> append(xs:list(a),ys:list(a)): list(a)`,
+--          list_make_elt loop with {i:nat|i<=n} .<i>. metric),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (typedef List0, List1, listLt, listLte, listGt, listGte, listBtw)
+-- Spec: §10.1.3 (uniform data-family arguments), §10.2 (GADT-style
+--       constructors), §3.2.3 (family kappa.type.mismatch), §28.2
+--       (inductive prelude Nat; `natAdd Zero n -> n` is definitional),
+--       §15.8 (required arithmetic/index solver), §16.1.8 (automatic
+--       transport insertion), §30.2.7 (transport-aware constructor
+--       compatibility).
+-- ATS3's `list(a, m) ++ list(a, n) : list(a, m+n)` obligation. Literal
+-- indices: consing onto carriers of known length must yield the correct
+-- combined length, and any other stated length is kappa.type.mismatch.
+-- The fully symbolic append signature `SL m a -> SL n a -> SL (m + n) a`
+-- is now REQUIRED to check: its SLNil branch needs `0 + n = n`, which is
+-- definitional under §28.2 (`natAdd` recurses on its first argument),
+-- and its SLCons branch needs `(k + 1) + n = (k + n) + 1`, which is
+-- stuck definitionally but sits inside §15.8.4's required
+-- commutative-monoid/Presburger fragment and is consumed automatically
+-- at the expected-type boundary by §16.1.8. (See the companion
+-- ATS-dep-list-append-index-branch-refinement.kp for the
+-- branch-equality/§30.2.7 half of this story.)
+
+--! mode check
+
+module main
+
+-- Length-indexed list.
+data SL (n : Nat) (0 a : Type) : Type =
+    SLNil  : SL 0 a
+    SLCons : (head : a) -> (tail : SL n a) -> SL (n + 1) a
+
+-- POSITIVE: literal-length constructions. The index obligations
+-- `?k + 1 = 2` etc. are decided by §15.8.6 unique-principal-solution
+-- inversion (the metavariable sits in `natAdd`'s recursion position, so
+-- no iota fires).
+sl2 : SL 2 Integer
+let sl2 = SLCons 1 (SLCons 2 SLNil)
+
+sl3 : SL 3 Integer
+let sl3 = SLCons 3 (SLCons 4 (SLCons 5 SLNil))
+
+-- POSITIVE: prepending 2 elements onto a 3-element carrier gives 5.
+sl5 : SL 5 Integer
+let sl5 = SLCons 1 (SLCons 2 sl3)
+
+-- POSITIVE: an index-erasing observer.
+headOption : forall (n : Nat) (a : Type). SL n a -> Option a
+let headOption xs =
+    match xs
+    case SLNil -> None
+    case SLCons x tl -> Some x
+
+-- POSITIVE (spec-required, symbolic): the ATS append signature itself.
+-- SLNil branch: `ys : SL n a` demanded at `SL (0 + n) a` — DEFINITIONAL
+-- via §28.2 `natAdd Zero n -> n`, no solver involved.
+-- SLCons branch: `SLCons x (appendSL tl ys) : SL ((k + n) + 1) a`
+-- demanded at `SL ((k + 1) + n) a` — a §15.8 solver proof, inserted as
+-- an erased transport per §16.1.8 (erased-safe because §28.2
+-- `derive IsSet Nat` makes the index equality IsProp).
+appendSL : forall (m : Nat) (n : Nat) (a : Type). SL m a -> SL n a -> SL (m + n) a
+let appendSL xs ys =
+    match xs
+    case SLNil -> ys
+    case SLCons x tl -> SLCons x (appendSL tl ys)
+
+-- POSITIVE (spelling bridge): `SL (Nat.Succ n) a` and `SL (n + 1) a`
+-- are NOT definitionally equal (`natAdd n 1` is stuck on the rigid
+-- `n`); acceptance is §30.2.7 rule 2 `PropositionallyCompatible` with
+-- erased bridge evidence consumed per §16.1.8 — not definitional
+-- compatibility.
+succSpelling : forall (n : Nat) (a : Type). SL (n + 1) a -> SL (Nat.Succ n) a
+let succSpelling xs = xs
+
+-- NEGATIVE (symbolic): the wrong symbolic index is still rejected for both
+-- append branches. Keep the two obligations in independent declarations so
+-- diagnostic recovery after one invalid match arm cannot suppress the other.
+-- The nil equation is `n = n + 1`; the cons equation is
+-- `(k + n) + 1 = ((k + 1) + n) + 1`. §15.8.4 Presburger refutes both.
+appendBadNil : forall (n : Nat) (a : Type). SL n a -> SL (n + 1) a
+let appendBadNil ys = ys                  --!! kappa.type.mismatch
+
+appendBadCons :
+    forall (k : Nat) (n : Nat) (a : Type).
+    a -> SL (k + n) a -> SL (((k + 1) + n) + 1) a
+let appendBadCons x tl =
+    let actual : SL ((k + n) + 1) a = SLCons x tl
+    actual                                 --!! kappa.type.mismatch
+
+-- NEGATIVE: 2 + 3 = 5, not 6.
+badSix : SL 6 Integer
+let badSix = SLCons 1 (SLCons 2 sl3)     --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: 2 + 3 = 5, not 4.
+badFour : SL 4 Integer
+let badFour = SLCons 1 (SLCons 2 sl3)    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: three cons cells annotated as four.
+badConstruct : SL 4 Integer
+let badConstruct = SLCons 1 (SLCons 2 (SLCons 3 SLNil))  --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 5
+-- STATUS(f1b025a3): FAIL — the 5 intentional mismatches are diagnosed, but 6 extra errors reject the valid appendSL and succSpelling definitions; first extra error is E_IMPLICIT_AMBIGUOUS at line 66

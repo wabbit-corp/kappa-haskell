@@ -104,9 +104,9 @@ lintTermHeads ctx who = go
       CDo _ items -> concatMap goItem items
       CSealE _ e -> go e
       CSigT _ e -> go e
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
+      CThunkE e suspensionType -> go e ++ maybe [] go suspensionType
+      CLazyE e suspensionType -> go e ++ maybe [] go suspensionType
+      CForceE e resultType -> go e ++ maybe [] go resultType
       CIf a b c -> go a ++ go b ++ go c
       CQuote _ slots -> concatMap go slots
     goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b

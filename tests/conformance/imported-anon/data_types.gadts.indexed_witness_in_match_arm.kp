@@ -15,7 +15,7 @@ data Expr (a : Type) : Type =
     ITE     : Expr Bool -> Expr a -> Expr a -> Expr a
 
 -- Evaluator: structurally recursive, type-correct by GADT index.
-eval : forall {a : Type}. Expr a -> a
+eval : forall (a : Type). Expr a -> a
 let eval e decreases structural e =
     match e
     case BoolLit b       -> b                         -- a = Bool here
@@ -44,14 +44,14 @@ let complex = eval complexExpr
 -- NEGATIVE: attempting to treat the result of eval Bool as Int directly.
 -- The index enforces that `eval (BoolLit x)` returns Bool, not Int.
 badCoerce : Bool -> Int
-let badCoerce b = eval (BoolLit b)   --!! kappa.type.mismatch
+let badCoerce b = eval (BoolLit b)   --!! kappa.application.argument-mismatch
 
 -- POSITIVE: a function that inspects the Expr type to decide the fallback.
-defaultValue : forall {a : Type}. Expr a -> a -> a
+defaultValue : forall (a : Type). Expr a -> a -> a
 let defaultValue e fallback =
     match e
     case BoolLit b   -> b
     case IntLit  n   -> n
     case ITE _ t _   -> eval t
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

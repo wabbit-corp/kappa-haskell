@@ -10,6 +10,7 @@ module Kappa.CoreOps
   , foldTermWithDepth
   , mapTermWithDepth
   , mapPatternConstructorUniverses
+  , eraseObserveOnlyAnnotations
   , patBindersC
   , CorePatternDecision (..)
   , matchCorePattern
@@ -343,9 +344,9 @@ foldTerm termF itemF = go
       CDo _ items -> foldMap goK items
       CSealE _ e -> go e
       CSigT _ e -> go e
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
+      CThunkE e suspensionType -> go e <> foldMap go suspensionType
+      CLazyE e suspensionType -> go e <> foldMap go suspensionType
+      CForceE e resultType -> go e <> foldMap go resultType
       CIf a b c -> go a <> go b <> go c
       CQuote _ slots -> foldMap go slots
 
@@ -407,7 +408,10 @@ foldTermWithDepth termF = go
         , d
         )
       KDefer _ action -> (go d action, d)
-      KUsing _ acquire release -> (go d acquire <> go d release, d)
+      KUsing pattern' acquire release ->
+        ( go d acquire <> go d release
+        , d + patBindersC pattern'
+        )
       KSubDo _ body -> (goItems d body, d)
 
     goCondition d = \case
@@ -449,9 +453,9 @@ foldTermWithDepth termF = go
       CDo _ items -> goItems d items
       CSealE _ e -> go d e
       CSigT _ e -> go d e
-      CThunkE e -> go d e
-      CLazyE e -> go d e
-      CForceE e -> go d e
+      CThunkE e suspensionType -> go d e <> foldMap (go d) suspensionType
+      CLazyE e suspensionType -> go d e <> foldMap (go d) suspensionType
+      CForceE e resultType -> go d e <> foldMap (go d) resultType
       CIf a b c -> go d a <> go d b <> go d c
       CQuote _ slots -> foldMap (go d) slots
 
@@ -463,7 +467,7 @@ foldTermWithDepth termF = go
 -- node and suppresses descent, which is the useful behavior for de Bruijn var
 -- rewrites such as shift and substitution.
 mapTermWithDepth :: (Int -> Term -> Maybe Term) -> Int -> Term -> Term
-mapTermWithDepth f = mapTermAndPatternsWithDepth f id
+mapTermWithDepth f = mapTermAndPatternsWithDepth f id id
 
 -- | Rewrite the declaration-universe spine of every constructor pattern in a
 -- term, including patterns nested in do-kernel items. Constructor patterns
@@ -475,7 +479,7 @@ mapPatternConstructorUniverses
   -> Term
   -> Term
 mapPatternConstructorUniverses rewrite =
-  mapTermAndPatternsWithDepth (\_ _ -> Nothing) (goPattern rewrite) 0
+  mapTermAndPatternsWithDepth (\_ _ -> Nothing) (goPattern rewrite) id 0
   where
     goPattern transform = \case
       CPWild -> CPWild
@@ -500,16 +504,29 @@ mapPatternConstructorUniverses rewrite =
       CPAsM mode name pattern' ->
         CPAsM mode name (goPattern transform pattern')
 
+-- | Remove the occurrence-local constructor and match annotations that
+-- 'Term' equality and conversion already define as observe-only metadata.
+-- Checkpoint validators may still inspect those annotations; semantic clients
+-- opt into this quotient explicitly.
+eraseObserveOnlyAnnotations :: Term -> Term
+eraseObserveOnlyAnnotations =
+  mapTermAndPatternsWithDepth
+    (\_ _ -> Nothing)
+    id
+    (const Nothing)
+    0
+
 -- The pattern callback must preserve binder count. This is deliberately
 -- internal; the exported pattern operation above changes only universe
 -- instantiations and therefore satisfies that invariant.
 mapTermAndPatternsWithDepth
   :: (Int -> Term -> Maybe Term)
   -> (CorePat -> CorePat)
+  -> (Maybe Term -> Maybe Term)
   -> Int
   -> Term
   -> Term
-mapTermAndPatternsWithDepth f rewritePattern = go
+mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
   where
     goItems _ [] = []
     goItems d (item : rest) =
@@ -553,7 +570,11 @@ mapTermAndPatternsWithDepth f rewritePattern = go
         (KIf [(go d condition, goItems d body) | (condition, body) <- alternatives] (fmap (goItems d) mElse), d)
       KDefer label action -> (KDefer label (go d action), d)
       KUsing p acquire release ->
-        (KUsing (rewritePatternAt d p) (go d acquire) (go d release), d)
+        let p' = rewritePatternAt d p
+         in
+          ( KUsing p' (go d acquire) (go d release)
+          , d + patBindersC p'
+          )
       KSubDo label body -> (KSubDo label (goItems d body), d)
 
     goCondition d = \case
@@ -581,8 +602,14 @@ mapTermAndPatternsWithDepth f rewritePattern = go
           CArithmeticProof (mapArithmeticCertificate (go d) certificate)
         CLit l -> CLit l
         CCtorI g universes ann arguments ->
-          CCtorI g universes (fmap (go d) ann) (map (\argument -> argument {caTerm = go d (caTerm argument)}) arguments)
-        CMatch s ann alts -> CMatch (go d s) (fmap (go d) ann) (map (goAlt d) alts)
+          CCtorI g universes
+            (fmap (go d) (rewriteAnnotation ann))
+            (map (\argument -> argument {caTerm = go d (caTerm argument)}) arguments)
+        CMatch s ann alts ->
+          CMatch
+            (go d s)
+            (fmap (go d) (rewriteAnnotation ann))
+            (map (goAlt d) alts)
         CRecordTQ fs -> CRecordTQ (map (fmap (go d)) fs)
         CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
         CProjM mode e n -> CProjM mode (go d e) n
@@ -609,9 +636,9 @@ mapTermAndPatternsWithDepth f rewritePattern = go
         CDo lbl items -> CDo lbl (goItems d items)
         CSealE ls e -> CSealE ls (go d e)
         CSigT ls e -> CSigT ls (go d e)
-        CThunkE e -> CThunkE (go d e)
-        CLazyE e -> CLazyE (go d e)
-        CForceE e -> CForceE (go d e)
+        CThunkE e suspensionType -> CThunkE (go d e) (go d <$> suspensionType)
+        CLazyE e suspensionType -> CLazyE (go d e) (go d <$> suspensionType)
+        CForceE e resultType -> CForceE (go d e) (go d <$> resultType)
         CIf a b c -> CIf (go d a) (go d b) (go d c)
         CQuote qs slots -> CQuote qs (map (go d) slots)
 
@@ -722,13 +749,20 @@ matchCorePattern pattern' value =
     (CPCtorM existentialModes bridges expected _ fields, CCtorI actual _ _ arguments)
       | expected /= actual -> CorePatternMismatch
       | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
-      | length fields <= length arguments ->
+      | length fields == length explicitArguments ->
           combinePatternDecisions
             [ matchCorePattern field (caTerm argument)
-            | (field, argument) <-
-                zip fields (drop (length arguments - length fields) arguments)
+            | (field, argument) <- zip fields explicitArguments
             ]
       | otherwise -> CorePatternMismatch
+      where
+        -- Checked constructor patterns enumerate the explicit source fields,
+        -- not an arbitrary suffix of the complete constructor telescope.
+        -- Hidden family/evidence arguments may occur both before and after an
+        -- explicit field, so positional suffix alignment can bind a field to
+        -- erased evidence and silently prove the wrong dependent equality.
+        explicitArguments =
+          [argument | argument <- arguments, caIcit argument == Expl]
     (CPCtorM existentialModes bridges expected _ fields, CCtor actual _ arguments)
       | expected /= actual -> CorePatternMismatch
       | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
@@ -1062,7 +1096,12 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       KFor l p s b e -> (KFor l (goPat seen resolve d p) (go seen resolve d s) (goItems seen resolve (d + patBindersC p) b) (fmap (goItems seen resolve d) e), d)
       KIf alts e -> (KIf [(go seen resolve d c, goItems seen resolve d b) | (c, b) <- alts] (fmap (goItems seen resolve d) e), d)
       KDefer ml t -> (KDefer ml (go seen resolve d t), d)
-      KUsing p a r -> (KUsing (goPat seen resolve d p) (go seen resolve d a) (go seen resolve d r), d)
+      KUsing p a r ->
+        let p' = goPat seen resolve d p
+         in
+          ( KUsing p' (go seen resolve d a) (go seen resolve d r)
+          , d + patBindersC p'
+          )
       KSubDo l b -> (KSubDo l (goItems seen resolve d b), d)
 
     goCond seen resolve d = \case
@@ -1144,9 +1183,14 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CDo lbl items -> CDo lbl (goItems seen resolve d items)
       CSealE ls e -> CSealE ls (go seen resolve d e)
       CSigT ls e -> CSigT ls (go seen resolve d e)
-      CThunkE e -> CThunkE (go seen resolve d e)
-      CLazyE e -> CLazyE (go seen resolve d e)
-      CForceE e -> CForceE (go seen resolve d e)
+      CThunkE e suspensionType ->
+        CThunkE (go seen resolve d e) (go seen resolve d <$> suspensionType)
+      CLazyE e suspensionType ->
+        CLazyE (go seen resolve d e) (go seen resolve d <$> suspensionType)
+      CForceE e resultType ->
+        CForceE
+          (go seen resolve d e)
+          (go seen resolve d <$> resultType)
       CIf a b c -> CIf (go seen resolve d a) (go seen resolve d b) (go seen resolve d c)
       CQuote qs slots -> CQuote qs (map (go seen resolve d) slots)
 
@@ -1431,9 +1475,12 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
             any (\definition -> go (next n) (clrdType definition) || go (next n) (clrdRhs definition)) definitions
               || go (next n) body
           CIf a b c -> go (next n) a || go (next n) b || go (next n) c
-          CThunkE e -> go (next n) e
-          CLazyE e -> go (next n) e
-          CForceE e -> go (next n) e
+          CThunkE e suspensionType ->
+            go (next n) e || maybe False (go (next n)) suspensionType
+          CLazyE e suspensionType ->
+            go (next n) e || maybe False (go (next n)) suspensionType
+          CForceE e resultType ->
+            go (next n) e || maybe False (go (next n)) resultType
           CSealE _ e -> go (next n) e
           CSigT _ e -> go (next n) e
           CQuote _ slots -> any (go (next n)) slots

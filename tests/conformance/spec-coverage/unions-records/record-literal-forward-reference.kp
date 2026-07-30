@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+-- §13.2.1.1: closed record values are elaborated in dependency order while
+-- their initializer expressions are evaluated exactly once in source order.
+-- A runtime sibling may therefore be written later in the source literal: the
+-- compiler evaluates both source expressions into temporaries, then assembles
+-- the record in canonical dependency order.
+module main
+
+type P = (x : Integer, y : Integer)
+
+-- backward runtime sibling reference: OK
+okBack : P
+let okBack = (x = 5, y = this.x)
+
+-- forward reference to a compile-time field
+type Pkg = (T : Type, value : this.T)
+
+okCompileTime : Pkg
+let okCompileTime = (value = (1 : this.T), T = Integer)
+
+-- forward runtime sibling reference: also valid by dependency-order assembly
+okFwd : P
+let okFwd = (y = this.x, x = 5)

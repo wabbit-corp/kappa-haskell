@@ -47,6 +47,8 @@
 module Kappa.Backend.Repr
   ( -- * Runtime representation classes
     Rep (..)
+  , VerifiedRepresentationClass (..)
+  , renderVerifiedRepresentationClass
   , scalarRep
   , runtimeErasedParam
   , runtimeRelevantParam
@@ -98,6 +100,8 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
+import Kappa.Cardinality (CardExpr, renderCardExpr)
 import Kappa.Builtins
   ( builtinCtorTagId
   , gPrel
@@ -163,6 +167,23 @@ data Rep
   | RepDouble
   | RepImmCtor
   deriving stock (Eq, Show)
+
+-- | A source-type representation selected only after replaying compiler-owned
+-- §30.2.7B-C evidence.  The identity is deliberately part of the class:
+-- downstream code may not turn a source trait dictionary or a cardinality
+-- estimate into a layout decision.
+data VerifiedRepresentationClass
+  = ConservativeBoxed
+  | ExactNatural !Text
+  | FiniteOrdinal !CardExpr !Text
+  deriving stock (Eq, Show)
+
+renderVerifiedRepresentationClass :: VerifiedRepresentationClass -> Text
+renderVerifiedRepresentationClass = \case
+  ConservativeBoxed -> "ConservativeBoxed"
+  ExactNatural _ -> "ExactNatural"
+  FiniteOrdinal cardinality _ ->
+    "FiniteOrdinal " <> renderCardExpr cardinality
 
 -- | The runtime representation of a value of the given (whnf) head type, or
 -- 'RepBoxed' for anything not specially unboxed.  This is the pure core the C
@@ -733,9 +754,9 @@ maxVar = \case
   CDo _ _ -> -1
   CSealE _ e -> maxVar e
   CSigT _ e -> maxVar e
-  CThunkE e -> maxVar e
-  CLazyE e -> maxVar e
-  CForceE e -> maxVar e
+  CThunkE e suspensionType -> max (maxVar e) (maybe (-1) maxVar suspensionType)
+  CLazyE e suspensionType -> max (maxVar e) (maybe (-1) maxVar suspensionType)
+  CForceE e resultType -> maximum [maxVar e, maybe (-1) maxVar resultType]
   CIf a b c -> maximum [maxVar a, maxVar b, maxVar c]
   CQuote _ slots -> maximum (-1 : map maxVar slots)
 

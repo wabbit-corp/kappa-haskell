@@ -14,6 +14,12 @@ module Kappa.Representation
   , RefinementRepresentationCertificate (..)
   , representationTypeIdentity
   , representationEvidenceIdentity
+  , ordinalRepresentationCertificateIdentity
+  , exactNaturalRepresentationCertificateIdentity
+  , refinementRepresentationCertificateIdentity
+  , canonicalOrdinalRepresentationCertificate
+  , canonicalExactNaturalRepresentationCertificate
+  , canonicalRefinementRepresentationCertificate
   , ordinalEncodingCardinality
   , verifyOrdinalRepresentationCertificate
   , verifyExactNaturalRepresentationCertificate
@@ -32,8 +38,9 @@ import Kappa.Cardinality
   , cardLiteral
   , cardMul
   , normalizeCardExpr
+  , renderCardExpr
   )
-import Kappa.Core (GName, Literal (..), Term (..))
+import Kappa.Core (GName, Literal (..), Term (..), gKey)
 import Kappa.Pretty (renderTerm)
 import Kappa.SemanticHash (canonicalIdentityHex)
 import Numeric.Natural (Natural)
@@ -144,14 +151,189 @@ representationEvidenceIdentity context evidence =
     "TraitEvidence"
     (contextualIdentityPayload context "evidence" evidence)
 
+ordinalRepresentationCertificateIdentity
+  :: OrdinalRepresentationCertificate
+  -> Text
+ordinalRepresentationCertificateIdentity =
+  canonicalIdentityHex "OrdinalRepresentationCertificate"
+    . canonicalOrdinalRepresentationCertificate
+
+exactNaturalRepresentationCertificateIdentity
+  :: ExactNaturalRepresentationCertificate
+  -> Text
+exactNaturalRepresentationCertificateIdentity =
+  canonicalIdentityHex "ExactNaturalRepresentationCertificate"
+    . canonicalExactNaturalRepresentationCertificate
+
+refinementRepresentationCertificateIdentity
+  :: RefinementRepresentationCertificate
+  -> Text
+refinementRepresentationCertificateIdentity =
+  canonicalIdentityHex "RefinementRepresentationCertificate"
+    . canonicalRefinementRepresentationCertificate
+
+-- | Canonical artifact payloads are explicit and versioned. They do not
+-- depend on derived Haskell constructor rendering, record field order, or
+-- delimiter conventions. Every nested value is length-framed, so arbitrary
+-- readable names and rendered terms remain unambiguous.
+canonicalOrdinalRepresentationCertificate
+  :: OrdinalRepresentationCertificate
+  -> Text
+canonicalOrdinalRepresentationCertificate certificate =
+  record
+    "ordinal-v1"
+    [ contextPayload (orcContext certificate)
+    , termPayload (orcRepresentedType certificate)
+    , textPayload (orcTypeIdentity certificate)
+    , maybePayload textPayload (orcSourceEvidenceIdentity certificate)
+    , cardinalityPayload (orcCardinalityExpression certificate)
+    , ordinalEncodingPayload (orcEncoding certificate)
+    , listPayload fieldPathPayload (orcErasedFields certificate)
+    , listPayload restrictionPayload (orcProfileRestrictions certificate)
+    , naturalPayload (orcCertificateVersion certificate)
+    , naturalPayload (orcCheckerVersion certificate)
+    ]
+
+canonicalExactNaturalRepresentationCertificate
+  :: ExactNaturalRepresentationCertificate
+  -> Text
+canonicalExactNaturalRepresentationCertificate certificate =
+  record
+    "exact-natural-v1"
+    [ contextPayload (enrcContext certificate)
+    , termPayload (enrcRepresentedType certificate)
+    , textPayload (enrcTypeIdentity certificate)
+    , textPayload (enrcEvidenceIdentity certificate)
+    , globalPayload (enrcZeroConstructor certificate)
+    , globalPayload (enrcSuccessorConstructor certificate)
+    , fieldPathPayload (enrcRecursiveField certificate)
+    , listPayload fieldPathPayload (enrcErasedFields certificate)
+    , listPayload restrictionPayload (enrcProfileRestrictions certificate)
+    , naturalPayload (enrcCertificateVersion certificate)
+    , naturalPayload (enrcCheckerVersion certificate)
+    ]
+
+canonicalRefinementRepresentationCertificate
+  :: RefinementRepresentationCertificate
+  -> Text
+canonicalRefinementRepresentationCertificate certificate =
+  record
+    "refinement-v1"
+    [ contextPayload (rrcContext certificate)
+    , termPayload (rrcRepresentedType certificate)
+    , textPayload (rrcTypeIdentity certificate)
+    , textPayload (rrcRefinementEvidenceIdentity certificate)
+    , termPayload (rrcBaseType certificate)
+    , textPayload (rrcBaseTypeIdentity certificate)
+    , globalPayload (rrcConstructor certificate)
+    , fieldPathPayload (rrcRetainedBaseField certificate)
+    , listPayload fieldPathPayload (rrcErasedEvidenceFields certificate)
+    , listPayload restrictionPayload (rrcProfileRestrictions certificate)
+    , naturalPayload (rrcCertificateVersion certificate)
+    , naturalPayload (rrcCheckerVersion certificate)
+    ]
+
 contextualIdentityPayload :: RepresentationContext -> Text -> Term -> Text
 contextualIdentityPayload context label term =
-  T.intercalate
-    "\n"
-    [ "binders=" <> T.intercalate ";" (map renderTerm (rcBinderTypes context))
-    , "constraints=" <> T.intercalate ";" (sort (rcUniverseConstraints context))
-    , label <> "=" <> renderTerm term
+  record
+    "contextual-identity-v1"
+    [ contextPayload context
+    , textPayload label
+    , termPayload term
     ]
+
+contextPayload :: RepresentationContext -> Text
+contextPayload context =
+  record
+    "context-v1"
+    [ listPayload termPayload (rcBinderTypes context)
+    , listPayload textPayload (sort (rcUniverseConstraints context))
+    ]
+
+ordinalEncodingPayload :: OrdinalEncoding -> Text
+ordinalEncodingPayload = \case
+  OrdinalFin cardinality ->
+    record "fin" [cardinalityPayload cardinality]
+  OrdinalContractible ->
+    record "contractible" []
+  OrdinalRecord fields ->
+    record "record" [listPayload ordinalEncodingPayload fields]
+  OrdinalVariant members ->
+    record "variant" [listPayload ordinalEncodingPayload members]
+  OrdinalData constructors ->
+    record "data" [listPayload constructorEncodingPayload constructors]
+  OrdinalInclusiveRange lower upper ->
+    record "inclusive-range" [termPayload lower, termPayload upper]
+  OrdinalFiltered base ordinals ->
+    record
+      "filtered"
+      [ ordinalEncodingPayload base
+      , listPayload naturalPayload ordinals
+      ]
+
+constructorEncodingPayload :: ConstructorOrdinalEncoding -> Text
+constructorEncodingPayload constructor =
+  record
+    "constructor"
+    [ globalPayload (coeConstructor constructor)
+    , cardinalityPayload (coeOffset constructor)
+    , listPayload ordinalEncodingPayload (coeFields constructor)
+    ]
+
+fieldPathPayload :: ConstructorFieldPath -> Text
+fieldPathPayload field =
+  record
+    "field-path"
+    [ globalPayload (cfpConstructor field)
+    , integerPayload (toInteger (cfpSourceIndex field))
+    ]
+
+restrictionPayload :: BackendProfileRestriction -> Text
+restrictionPayload =
+  textPayload . \case
+    InternalValuesOnly -> "internal-values-only"
+    ExcludeDynamicBoundary -> "exclude-dynamic-boundary"
+    ExcludeForeignBoundary -> "exclude-foreign-boundary"
+    ExcludeExportedAbi -> "exclude-exported-abi"
+    RequireCompactFiniteOrdinal -> "require-compact-finite-ordinal"
+    RequireUnboxedRefinement -> "require-unboxed-refinement"
+
+cardinalityPayload :: CardExpr -> Text
+cardinalityPayload =
+  record "cardinality" . pure . textPayload . renderCardExpr . normalizeCardExpr
+
+termPayload :: Term -> Text
+termPayload = record "term" . pure . textPayload . renderTerm
+
+globalPayload :: GName -> Text
+globalPayload = record "global" . pure . textPayload . gKey
+
+textPayload :: Text -> Text
+textPayload = frame
+
+naturalPayload :: Natural -> Text
+naturalPayload = integerPayload . toInteger
+
+integerPayload :: Integer -> Text
+integerPayload = frame . T.pack . show
+
+maybePayload :: (a -> Text) -> Maybe a -> Text
+maybePayload _ Nothing = record "none" []
+maybePayload encode (Just value) = record "some" [encode value]
+
+listPayload :: (a -> Text) -> [a] -> Text
+listPayload encode values =
+  record
+    ("list-" <> T.pack (show (length values)))
+    (map encode values)
+
+record :: Text -> [Text] -> Text
+record tag fields =
+  frame tag <> T.concat (map frame fields)
+
+frame :: Text -> Text
+frame value =
+  T.pack (show (T.length value)) <> ":" <> value
 
 ordinalEncodingCardinality :: OrdinalEncoding -> Maybe CardExpr
 ordinalEncodingCardinality = \case

@@ -10,14 +10,14 @@
 
 module call_graph
 
-let edge : Int -> Int -> Bool
+edge : Int -> Int -> Bool
 let edge caller callee = False
 
 module cha_graph
 
 import call_graph
 
-let edge : Int -> Int -> Bool
+edge : Int -> Int -> Bool
 let edge c k = True
 
 module use_cha

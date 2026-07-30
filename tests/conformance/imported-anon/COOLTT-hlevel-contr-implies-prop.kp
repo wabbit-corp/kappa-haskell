@@ -19,16 +19,16 @@
 -- POSITIVE: contractibility: a type is contractible if it has a center
 -- and a path from every element to the center.
 data IsContr (A : Type) : Type =
-    MkContr : (center : A) -> (paths : forall (x : A) -> center = x) -> IsContr A
+    MkContr : (center : A) -> (paths : forall (x : A). center = x) -> IsContr A
 
 -- POSITIVE: propositionality: a type is propositional if any two elements
 -- are equal.
 data IsProp (A : Type) : Type =
-    MkProp : (eq : forall (a b : A) -> a = b) -> IsProp A
+    MkProp : (eq : forall (a b : A). a = b) -> IsProp A
 
 -- POSITIVE: sethood: a type is a set if any two equality proofs are equal.
 data IsSet (A : Type) : Type =
-    MkSet : (setEq : forall (a b : A) (p q : a = b) -> p = q) -> IsSet A
+    MkSet : (setEq : forall (a b : A) (p q : a = b). p = q) -> IsSet A
 
 -- POSITIVE: Unit is contractible.
 isContrUnit : IsContr ()
@@ -37,15 +37,15 @@ let isContrUnit = MkContr () (\_ -> refl)
 -- POSITIVE: contractible implies propositional.
 -- If A is contractible with center c, then for any a b : A,
 -- `sym (paths a) ∘ paths b : a = b`.
-contrImpliesProp : forall {A : Type} -> IsContr A -> IsProp A
+contrImpliesProp : forall (A : Type). IsContr A -> IsProp A
 let contrImpliesProp (MkContr c paths) =
     MkProp (\a b -> trans (symm (paths a)) (paths b))
 
 -- POSITIVE: propositional implies set (squash/truncation argument).
 -- Any prop has unique equality proofs because equality in a prop is also a prop.
-propImpliesSet : forall {A : Type} -> IsProp A -> IsSet A
+propImpliesSet : forall (A : Type). IsProp A -> IsSet A
 let propImpliesSet p =
-    let prop : forall (a b : A) -> a = b = IsProp.eq p in
+    let prop : forall (a b : A). a = b = IsProp.eq p in
     MkSet (\a b pq1 pq2 -> ?setProof)    --!! kappa.hole.unsolved
 
 -- POSITIVE: Bool is NOT contractible; there are two distinct elements.

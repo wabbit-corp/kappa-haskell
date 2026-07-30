@@ -1,0 +1,40 @@
+module main
+
+type TwoPoint : Type =
+    Refined Nat (\value -> ((value == 3) || (value == 7)) = True)
+
+twoPointForcesSeven :
+    (n : Nat) ->
+    (@0 admitted : ((n == 3) || (n == 7)) = True) ->
+    (@0 notThree : (n == 3) = False) ->
+    7 = n
+
+let twoPointForcesSeven n @admitted @notThree =
+    witness
+
+rank :
+    TwoPoint ->
+    Fin 2
+
+let rank point =
+    if point.value == 3 then 0 else 1
+
+unrank :
+    Fin 2 ->
+    TwoPoint
+
+let unrank index =
+    if index.value == 0 then 3 else 7
+
+roundTrip :
+    (point : TwoPoint) ->
+    Option (unrank (rank point) = point)
+
+let roundTrip point =
+    if point.value == 3 then
+        Some (refinedExt (sym witness))
+    else
+        None
+
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

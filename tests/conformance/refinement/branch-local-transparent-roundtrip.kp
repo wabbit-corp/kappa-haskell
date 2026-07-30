@@ -1,0 +1,22 @@
+module main
+
+rank : Nat -> Nat
+let rank value =
+    if value == 3 then 0 else 1
+
+unrank : Nat -> Nat
+let unrank index =
+    if index == 0 then 3 else 7
+
+roundTripAtThree :
+    (value : Nat) ->
+    Option (unrank (rank value) = value)
+
+let roundTripAtThree value =
+    if value == 3 then
+        Some witness
+    else
+        None
+
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

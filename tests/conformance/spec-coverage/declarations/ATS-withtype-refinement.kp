@@ -37,7 +37,7 @@ let ilThree = ILCons 1 (ILCons 2 (ILCons 3 ILNil))
 
 -- NEGATIVE: declared as a 5-element list, defined with 3 cons cells.
 fixed5 : IList 5 Integer
-let fixed5 = ILCons 1 (ILCons 2 (ILCons 3 ILNil))   --!! kappa.type.mismatch
+let fixed5 = ILCons 1 (ILCons 2 (ILCons 3 ILNil))   --!! kappa.application.argument-mismatch
 
 -- NEGATIVE: declared empty, defined non-empty.
 notEmpty : IList 0 Integer
@@ -48,4 +48,5 @@ notNil : IList 1 Integer
 let notNil = ILNil                                   --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertErrorCount 3

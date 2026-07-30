@@ -70,6 +70,7 @@ module Kappa.Builtins
   , prelReusable
   , prelFin
   , prelRefined
+  , associatedStaticCarrierGlobals
 
     -- * Prelude constructors
   , prelTrue
@@ -158,6 +159,7 @@ module Kappa.Builtins
   , prelNatAddRightIdentity
   , prelNatMultiply
   , prelNatCompare
+  , prelNatToInt
   , prelMaxOp
   , prelReadRef
   , prelWriteRef
@@ -325,6 +327,32 @@ prelReusable = gPrel "Reusable"
 prelFin = gPrel "Fin"
 prelRefined = gPrel "Refined"
 
+-- | Exact semantic identities whose inhabitants are admitted as associated
+-- static members by §11.1.6.1/§14.2.1. Function spaces are classified by
+-- their eventual result and therefore reuse this base-carrier inventory.
+associatedStaticCarrierGlobals :: [GName]
+associatedStaticCarrierGlobals =
+  [ gPrel "Quantity"
+  , prelRegion
+  , prelRecRow
+  , gPrel "VarRow"
+  , prelEffRow
+  , gPrel "Label"
+  , prelEffLabel
+  , prelTypeLevel
+  , prelSyntax
+  , gPrel "SyntaxOrigin"
+  , gPrel "SyntaxFragment"
+  , gPrel "CoreCtx"
+  , gPrel "Symbol"
+  , gPrel "Core"
+  , gPrel "CoreEq"
+  , gPrel "RawComprehension"
+  , gPrel "ComprehensionPlan"
+  , prelElab
+  , gPrel "ElabGoal"
+  ]
+
 -- ── Prelude constructors ─────────────────────────────────────────────
 
 prelTrue, prelFalse, prelNatZero, prelNatSucc, prelSome, prelNone, prelNil, prelCons :: GName
@@ -462,7 +490,7 @@ prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 
-prelNot, prelAnd, prelOr, prelCompare, prelSucc, prelAddOp, prelAddMethod, prelNatAdd, prelNatAddRightIdentity, prelNatMultiply, prelNatCompare, prelMaxOp, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
+prelNot, prelAnd, prelOr, prelCompare, prelSucc, prelAddOp, prelAddMethod, prelNatAdd, prelNatAddRightIdentity, prelNatMultiply, prelNatCompare, prelNatToInt, prelMaxOp, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
 prelNot = gPrel "not"
 prelAnd = gPrel "&&"
 prelOr = gPrel "||"
@@ -474,6 +502,7 @@ prelNatAdd = gPrel "natAdd"
 prelNatAddRightIdentity = gPrel "natAddRightIdentity"
 prelNatMultiply = gPrel "natMultiply"
 prelNatCompare = gPrel "natCompare"
+prelNatToInt = gPrel "natToInt"
 prelMaxOp = gPrel "max"
 prelReadRef = gPrel "readRef"
 prelWriteRef = gPrel "writeRef"
@@ -778,6 +807,7 @@ wiredInPreludeNames =
     , (prelNatAdd, BKValue)
     , (prelNatMultiply, BKValue)
     , (prelNatCompare, BKValue)
+    , (prelNatToInt, BKValue)
     , (prelMaxOp, BKValue)
     , (prelReadRef, BKValue)
     , (prelWriteRef, BKValue)

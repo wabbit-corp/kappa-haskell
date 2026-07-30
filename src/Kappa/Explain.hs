@@ -427,6 +427,8 @@ registry =
       "A KCoreText level certificate is malformed, out of scope, or does not prove its claimed universe relation."
   , ent "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID" (Just "kappa.kcore.arithmetic-certificate-invalid")
       "A KCoreText arithmetic certificate is malformed, out of scope, or does not prove its claimed arithmetic relation."
+  , ent "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID" (Just "kappa.kcore.representation-certificate-invalid")
+      "A representation certificate is malformed, stale, out of scope, or fails independent replay against its authenticated type and source-field identities."
   , ent "E_KCORE_SCHEMA_CERTIFICATE_INVALID" (Just "kappa.kcore.schema-certificate-invalid")
       "A KCoreText nominal action certificate is missing, stale, forged, unsupported, or fails independent replay (§30.2.1B)."
   , ent "E_UNSOLVED_METAVARIABLE" (Just "kappa.type.unsolved-metavariable")
@@ -742,6 +744,8 @@ registry =
       "A well-formed derive declaration requests a trait or checked target shape outside the portable derivation fragment (§14.5.1-§14.5.2)."
   , ent "E_BACKENDIR_RETURN_CONTRACT" (Just "kappa-hs.backendir.return-contract")
       "KCore-to-KBackendIR lowering found a return value that does not satisfy the finalized function return contract. Native emission rejects the body rather than changing the declared result representation."
+  , ent "E_BACKEND_REQUIRED_REPRESENTATION_MISSING" (Just "kappa.backend.required-representation")
+      "A selected backend profile cannot provide a representation required by verified type evidence, or an optimized representation was selected without its required capability and replayable certificate."
   , ent "E_BACKENDIR_OBSERVATION_ANALYSIS" (Just "kappa.internal.compiler")
       "The finalized KCore return path violates its declared observation contract: a value depending on a parametric origin would escape through an ordinary result. KBackendIR rejects the body before erasure rather than dropping the dependency (§30.2.0, §31.2)."
   , ent "E_BACKENDIR_BINDER_METADATA" (Just "kappa-hs.backendir.binder-metadata")

@@ -1,0 +1,86 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> append(xs:list(a),ys:list(a)): list(a)`)
+-- Spec: §10.1.3 / §10.2 (constructor-forced family-argument
+--       equalities), §17.1 (constructor branches), §30.2.7 (the 4-way
+--       transport-aware ConstructorCompatibility judgment), §30.2.2.11
+--       (bridge evidence is not CtorIndexEq), §15.8 (required
+--       arithmetic/index solver), §17.1.4 (`impossible`).
+-- Pins the branch-compatibility half of dependent list traversal, one
+-- case per outcome of §30.2.7's judgment:
+--
+--     ConstructorCompatibility ::=
+--         DefinitionallyCompatible forcedEqualities
+--       | PropositionallyCompatible bridgeProofs
+--       | Refuted incompatibilityProof
+--       | UnknownCompatibility
+
+--! mode check
+
+module main
+
+data SL (n : Nat) (0 a : Type) : Type =
+    SLNil  : SL 0 a
+    SLCons : (head : a) -> (tail : SL n a) -> SL (n + 1) a
+
+-- POSITIVE (DefinitionallyCompatible): each branch's forced index
+-- equality makes the branch body check at the refined index. The SLNil
+-- branch learns n = 0 and the SLCons branch learns n = k + 1 by
+-- ordinary family-argument unification — §30.2.7 rule 1, yielding the
+-- constructor-forced equalities of §§10.1.3/17.1.2.
+idSL : forall (n : Nat) (a : Type). SL n a -> SL n a
+let idSL xs =
+    match xs
+    case SLNil -> SLNil
+    case SLCons x tl -> SLCons x (idSL tl)
+
+-- POSITIVE (PropositionallyCompatible): the signature spells the index
+-- `Nat.Succ n` while `SLCons` declares `SL (n + 1) a`. `natAdd n 1` is
+-- stuck on the rigid `n`, so rule 1 fails; the §15.8 solver produces
+-- the bridge `n + 1 = Succ n`, and the arm is reachable only through
+-- that checked erased bridge (rule 2). Per §30.2.2.11 the bridge
+-- arrives as explicit erased lexical equality evidence usable by
+-- `subst`, §16.1.8 transport, and implicit proof search — it is NOT
+-- represented as a `CtorIndexEq` active-conversion fact and does not
+-- enlarge definitional equality.
+idSLSucc : forall (n : Nat) (a : Type). SL (Nat.Succ n) a -> SL (Nat.Succ n) a
+let idSLSucc xs =
+    match xs
+    case SLCons x tl -> SLCons x tl
+    case SLNil -> impossible
+
+-- POSITIVE (Refuted): at `SL 0 a` the `SLCons` result index needs
+-- `?k + 1 = 0`, refuted by §15.8.4 Presburger (non-negativity). The
+-- refined case type is `Empty`, so §17.1.4 accepts `-> impossible`.
+headEmpty : forall (a : Type). SL 0 a -> Unit
+let headEmpty xs =
+    match xs
+    case SLNil -> ()
+    case SLCons _ _ -> impossible
+
+-- POSITIVE + NEGATIVE (UnknownCompatibility): a nonlinear index
+-- (`n * n`) is outside the required §15.8.4 fragment, so `SLNil : SL 0 a`
+-- demanded at `SL (n * n) a` is neither bridged nor refuted. §17.1.1 /
+-- §30.2.7: UnknownCompatibility "never justifies omitting the
+-- constructor branch merely because the index bridge was not solved" —
+-- exhaustiveness must retain the arm (or a catch-all), and §15.8.8
+-- forbids claiming it `impossible`.
+firstOr : forall (n : Nat) (a : Type). SL (n * n) a -> a -> a
+let firstOr xs dflt =
+    match xs
+    case SLCons x _ -> x
+    case SLNil -> dflt
+
+-- NEGATIVE: same shape, but incorrectly claiming the undecided SLNil
+-- arm impossible. UnknownCompatibility contributes `Empty` only when
+-- the retained constructor fields are independently proved empty;
+-- SLNil retains no fields, so its fiber summary is not `Empty` and the
+-- claim is rejected.
+firstBad : forall (n : Nat) (a : Type). SL (n * n) a -> a -> a
+let firstBad xs dflt =
+    match xs
+    case SLCons x _ -> x
+    case SLNil -> impossible             --!! E_IMPOSSIBLE_REACHABLE
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+--! assertErrorCount 1
+-- STATUS(f1b025a3): FAIL — expected only firstBad's E_IMPOSSIBLE_REACHABLE, but idSL and idSLSucc are also rejected because constructor-forced equality and the required arithmetic bridge are not consumed

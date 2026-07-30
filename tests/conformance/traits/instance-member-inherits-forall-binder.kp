@@ -1,0 +1,12 @@
+module main
+
+-- A named instance-member binder claims the same-named implicit slot from
+-- the member's forall telescope. The surface binder need not repeat @.
+trait Lawful (a : Type) =
+    law : forall (x : a). x = x
+
+instance Lawful Bool =
+    let law x = refl
+
+--! mode check
+--! assertNoErrors

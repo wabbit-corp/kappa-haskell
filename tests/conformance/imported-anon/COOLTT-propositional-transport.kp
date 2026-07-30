@@ -8,7 +8,7 @@
 -- Transport along a proof of equality moves an element of type `P a` to `P b`
 -- when given a proof `p : a = b`. This is the fundamental elimination form for
 -- the equality type. In Martin-Löf style (J eliminator), it is:
---   J : forall (P : forall b -> a = b -> Type) -> P a refl -> forall {b} (p : a = b) -> P b p
+--   J : forall (P : forall b -> a = b -> Type) -> P a refl -> forall (b) (p : a = b) -> P b p
 -- In Kappa, the key obligations are:
 -- - `transport p x : P b` whenever `p : a = b` and `x : P a`
 -- - transport along `refl` is the identity (computation rule)
@@ -37,7 +37,7 @@ let congTransport P p x = transport P p x
 -- POSITIVE: the J eliminator (path induction).
 -- If the motive holds at reflexivity, it holds for any path.
 J : forall (A : Type) (a : A).
-    (P : forall (b : A) -> a = b -> Type)
+    (P : forall (b : A). a = b -> Type)
     -> P a refl
     -> forall (b : A). (p : a = b) -> P b p
 let J _ d refl = d

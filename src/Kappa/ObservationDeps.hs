@@ -990,9 +990,9 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CDo _ items -> doDependencies path env items
       CSealE _ value -> go (child path 0) env wanted value
       CSigT _ value -> go (child path 0) env Nothing value
-      CThunkE value -> go (child path 0) env Nothing value
-      CLazyE value -> go (child path 0) env Nothing value
-      CForceE value -> go (child path 0) env wanted value
+      CThunkE value _ -> go (child path 0) env Nothing value
+      CLazyE value _ -> go (child path 0) env Nothing value
+      CForceE value _ -> go (child path 0) env wanted value
       CIf condition yes no ->
         let conditionDeps = go (child path 0) env Nothing condition
          in conditionDeps `Set.union` case closedBoolean env condition of

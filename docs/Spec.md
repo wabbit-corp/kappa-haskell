@@ -35186,7 +35186,7 @@ trait RefinementView (0 t : Type) =
             @(refinementPredicateIsProp x)
             @(refinementProof x) = x
 
-trait OrdinalRepresentation (n : Nat) (0 t : Type) =
+trait IsSet t => OrdinalRepresentation (n : Nat) (0 t : Type) =
     rank   : t -> Fin n
     unrank : Fin n -> t
     unrankRank : forall (x : t). unrank (rank x) = x

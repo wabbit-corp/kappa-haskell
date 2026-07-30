@@ -11,7 +11,7 @@ data List (a : Type) : Type =
     Cons : a -> List a -> List a
 
 -- POSITIVE: each arm has its own binding; no interference.
-safeHead : forall {a : Type}. List a -> Option a
+safeHead : forall (a : Type). List a -> Option a
 let safeHead xs =
     match xs
     case Nil      -> Nothing

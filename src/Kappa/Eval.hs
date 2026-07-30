@@ -34,6 +34,7 @@ module Kappa.Eval
   , force
   , quote
   , convertible
+  , canonicalEqualityPayload
   , globalSpineRelevantPairs
   , matchPat
   , vapp
@@ -73,6 +74,36 @@ import Kappa.Unicode
   , wordChunks
   )
 import Numeric (showFFloat, showHex)
+
+-- | Recover the carrier and endpoints of the canonical equality family from
+-- its checked semantic application. Declaration-universe instantiation and
+-- explicit cumulative lifts are representation details; the term telescope
+-- remains @(0 A : Type u) -> A -> A -> Type u@.
+--
+-- This is not a proof rule. User-defined equality families are handled by the
+-- ordinary h-level and constructor machinery; consumers use this query only
+-- for standard-library facts whose semantic identity is exactly 'prelEqType'.
+canonicalEqualityPayload :: EvalCtx -> Value -> Maybe (Value, Value, Value)
+canonicalEqualityPayload ctx = go
+  where
+    go = \case
+      VUniverseLift _ _ _ proposition -> go proposition
+      VGlobI equality _ spine
+        | equality == prelEqType ->
+            case reverse spine of
+              (Expl, rhs) : (Expl, lhs) : (Impl, carrier) : _ ->
+                Just (carrier, lhs, rhs)
+              _ -> Nothing
+      value ->
+        case force ctx value of
+          VUniverseLift _ _ _ proposition -> go proposition
+          VGlobI equality _ spine
+            | equality == prelEqType ->
+                case reverse spine of
+                  (Expl, rhs) : (Expl, lhs) : (Impl, carrier) : _ ->
+                    Just (carrier, lhs, rhs)
+                  _ -> Nothing
+          _ -> Nothing
 
 -- §6.1.7: the C libm 'atan2', imported so the interpreter produces the EXACT
 -- same binary64 as the C/LLVM backends (which call kp_atan2 over the same
@@ -333,9 +364,9 @@ eval ctx env = \case
   CDo lbl items -> VDoV lbl items env
   CSealE ls e -> VSealV ls (eval ctx env e)
   CSigT ls e -> VSigT ls (eval ctx env e)
-  CThunkE e -> VThunkV (Closure env e)
-  CLazyE e -> VLazyV (Closure env e)
-  CForceE e -> vforce ctx (eval ctx env e)
+  CThunkE e _ -> VThunkV (Closure env e)
+  CLazyE e _ -> VLazyV (Closure env e)
+  CForceE e _ -> vforce ctx (eval ctx env e)
   CIf c t f ->
     case force ctx (eval ctx env c) of
       VCtor g [] | g == prelTrue -> eval ctx env t
@@ -810,8 +841,8 @@ quote ctx lvl v = case forceQ ctx v of
   VSealV ls x -> CSealE ls (quote ctx lvl x)
   VSigT ls x -> CSigT ls (quote ctx lvl x)
   VDoV lbl items _ -> CDo lbl items
-  VThunkV (Closure env body) -> CThunkE (quoteUnder env body)
-  VLazyV (Closure env body) -> CLazyE (quoteUnder env body)
+  VThunkV closure -> CThunkE (quote ctx lvl (closRun closure)) Nothing
+  VLazyV closure -> CLazyE (quote ctx lvl (closRun closure)) Nothing
   VIfN c t f ->
     -- branch closures bind nothing: run them in their own env
     CIf
@@ -833,9 +864,6 @@ quote ctx lvl v = case forceQ ctx v of
     quoteSpine = foldl (\f (ic, a) -> CApp ic f (quote ctx lvl a))
     quoteAlt _ alt = alt
     closRun (Closure env body) = eval ctx env body
-    quoteUnder env body
-      | null env = body
-      | otherwise = body -- conservative; suspensions compare by closure body
 
 -- ── Conversion ───────────────────────────────────────────────────────
 

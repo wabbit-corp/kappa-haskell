@@ -19,11 +19,11 @@
 
 -- POSITIVE: eta-expansion for functions.
 -- `f` and `\x -> f x` are definitionally equal.
-etaExpand : forall {A B : Type} -> (f : A -> B) -> f = (\x -> f x)
+etaExpand : forall (A B : Type). (f : A -> B) -> f = (\x -> f x)
 let etaExpand _ = refl
 
 -- POSITIVE: the identity function is equal to its eta-expansion.
-idEta : forall {A : Type} -> (\x -> x) = ((\f -> \x -> f x) (\x -> x))
+idEta : forall (A : Type). (\x -> x) = ((\f -> \x -> f x) (\x -> x))
 let idEta = refl
 
 -- POSITIVE: two functions that compute the same result are equal
@@ -32,33 +32,33 @@ addZeroLeft : (\n -> n + 0) = (\n -> n)
 let addZeroLeft = refl    -- true if + reduces correctly
 
 -- POSITIVE: function that takes a function argument and applies it.
-applyTwice : forall {A : Type} -> (A -> A) -> A -> A
+applyTwice : forall (A : Type). (A -> A) -> A -> A
 let applyTwice f x = f (f x)
 
 -- POSITIVE: eta for a constant function.
-const : forall {A B : Type} -> A -> B -> A
+const : forall (A B : Type). A -> B -> A
 let const x _ = x
 
-etaConst : forall {A B : Type} (x : A) -> const x = (\_ -> x)
+etaConst : forall (A B : Type). (x : A) -> const x = (\_ -> x)
 let etaConst _ = refl
 
 -- POSITIVE: applying a pi-typed definition results in the applied function.
-applyPi : forall {A B : Type} -> (A -> B) -> A -> B
+applyPi : forall (A B : Type). (A -> B) -> A -> B
 let applyPi f x = f x
 
 -- POSITIVE: function composition.
-compose : forall {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+compose : forall (A B C : Type). (B -> C) -> (A -> B) -> A -> C
 let compose g f x = g (f x)
 
 -- POSITIVE: identity composition with function eta.
-composeId : forall {A B : Type} (f : A -> B) -> compose (\x -> x) f = f
+composeId : forall (A B : Type). (f : A -> B) -> compose (\x -> x) f = f
 let composeId _ = refl
 
 -- POSITIVE: a function returning a function; eta applies at each level.
-curry : forall {A B C : Type} -> ((A, B) -> C) -> A -> B -> C
+curry : forall (A B C : Type). ((A, B) -> C) -> A -> B -> C
 let curry f x y = f (x, y)
 
-uncurry : forall {A B C : Type} -> (A -> B -> C) -> (A, B) -> C
+uncurry : forall (A B C : Type). (A -> B -> C) -> (A, B) -> C
 let uncurry f p = f p.1 p.2
 
 -- NEGATIVE: passing a term of the wrong type to a function.

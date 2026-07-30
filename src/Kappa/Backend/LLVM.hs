@@ -311,9 +311,9 @@ userCtorKeys = goT
       CDo _ items -> foldMap goItem items -- §M-E+: ctors ARE built/matched in the do-kernel
       CSealE _ e -> goT e
       CSigT _ e -> goT e
-      CThunkE e -> goT e
-      CLazyE e -> goT e
-      CForceE e -> goT e
+      CThunkE e _ -> goT e
+      CLazyE e _ -> goT e
+      CForceE e _ -> goT e
       CIf c th el -> goT c <> goT th <> goT el
       CQuote _ ts -> foldMap goT ts
     goAlt (CaseAlt pat mg body) =

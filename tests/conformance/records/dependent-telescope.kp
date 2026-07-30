@@ -18,7 +18,7 @@ type Sized : Type = (len : Nat, buf : Vec this.len Byte)
 
 makeSized : Nat -> Sized
 let makeSized (n : Nat) : Sized =
-    (buf = makeVec this.len, len = n)
+    (len = n, buf = makeVec this.len)
 
 getBuf : (s : Sized) -> Vec s.len Byte
 let getBuf (s : Sized) : Vec s.len Byte = s.buf

@@ -22,12 +22,16 @@ reflBool : (True : Bool) = True
 let reflBool = refl
 
 -- POSITIVE: refl for a variable.
-varRefl : forall {a : Type} (x : a) -> x = x
+varRefl : forall (a : Type). (x : a) -> x = x
 let varRefl _ = refl
 
 -- POSITIVE: subst / path induction (portable analogue of idJ).
 -- If p : x = y then a proof of C x gives a proof of C y.
-transport : forall {a : Type} (C : a -> Type) {x y : a} -> x = y -> C x -> C y
+transport :
+    forall (a : Type).
+    (C : a -> Type) ->
+    forall (x y : a).
+    x = y -> C x -> C y
 let transport _ refl cx = cx
 
 -- POSITIVE: using transport for a concrete family.
@@ -38,34 +42,40 @@ transportBool : Bool
 let transportBool = transport natFamily (refl : (0 : Nat) = 0) True
 
 -- POSITIVE: cong / congruence.
-cong : forall {a b : Type} (f : a -> b) {x y : a} -> x = y -> f x = f y
+cong :
+    forall (a b : Type).
+    (f : a -> b) ->
+    forall (x y : a).
+    x = y -> f x = f y
 let cong f refl = refl
 
 congNat : 3 + 1 = 4
 let congNat = cong (\n -> n + 1) (refl : (3 : Nat) = 3)
 
 -- POSITIVE: sym from refl.
-sym : forall {a : Type} {x y : a} -> x = y -> y = x
+sym : forall (a : Type) (x y : a). x = y -> y = x
 let sym refl = refl
 
 -- POSITIVE: trans from refl.
-trans : forall {a : Type} {x y z : a} -> x = y -> y = z -> x = z
+trans : forall (a : Type) (x y z : a). x = y -> y = z -> x = z
 let trans refl q = q
 
 -- POSITIVE: J-eliminator analogue (path induction).
 pathInd :
-    forall {a : Type} {x : a}
+    forall (a : Type) (x : a).
     (P : forall (y : a). x = y -> Type) ->
     P x refl ->
-    forall {y : a} (p : x = y) -> P y p
+    forall (y : a). (p : x = y) -> P y p
 let pathInd d refl = d
 
 -- POSITIVE: a simple consequence of path induction — reflexivity.
-reflFromJ : forall {a : Type} (x : a) -> x = x
+reflFromJ : forall (a : Type). (x : a) -> x = x
 let reflFromJ _ = refl
 
 -- POSITIVE: applying the eliminator to deduce a transported value.
-elimExample : forall {a : Type} {x y : a} (p : x = y) (C : a -> Type) (cx : C x) -> C y
+elimExample :
+    forall (a : Type) (x y : a).
+    (p : x = y) -> (C : a -> Type) -> (cx : C x) -> C y
 let elimExample p C cx = transport C p cx
 
 -- NEGATIVE: `refl` cannot prove a false equality between distinct constructors.

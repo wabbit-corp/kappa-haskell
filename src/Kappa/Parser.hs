@@ -1847,7 +1847,14 @@ pRecordPatFields = restOnly <|> withFields
 -- Top-level expression: open forms first, then operator chains with
 -- arrow/trait-arrow connectives.
 pExpr :: P Expr
-pExpr = pOpenExpr <|> pArrowExpr
+pExpr = do
+  -- A quantifier keyword at expression head commits to quantifier syntax.
+  -- Falling back after a malformed telescope lets declaration-level implicit
+  -- universalization reinterpret @forall@ itself as a type variable.
+  peekToken >>= \case
+    TokIdent "forall" -> pForall
+    TokIdent "exists" -> pExists
+    _ -> pOpenExpr <|> pArrowExpr
 
 -- Open expressions extend to the end of the construct.
 pOpenExpr :: P Expr

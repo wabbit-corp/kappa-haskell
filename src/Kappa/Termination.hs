@@ -35,6 +35,7 @@ module Kappa.Termination
   , negateFact
   , intArithPrim
   , intCmpPrim
+  , canonicalTrustedIntPrimitive
   , trustedIntPrimModule
   , boolRel
   , boolNotArg
@@ -52,7 +53,7 @@ module Kappa.Termination
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -60,7 +61,8 @@ import Text.Read (readMaybe)
 
 import Kappa.Arithmetic
 import Kappa.Builtins
-  ( prelFalse
+  ( gPrel
+  , prelFalse
   , prelNatAdd
   , prelNatMultiply
   , prelNatSucc
@@ -207,9 +209,12 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
       CDo {} -> Nothing
       CSealE ls e -> CSealE ls <$> go curDepth e
       CSigT ls e -> CSigT ls <$> go curDepth e
-      CThunkE e -> CThunkE <$> go curDepth e
-      CLazyE e -> CLazyE <$> go curDepth e
-      CForceE e -> CForceE <$> go curDepth e
+      CThunkE e suspensionType ->
+        CThunkE <$> go curDepth e <*> traverse (go curDepth) suspensionType
+      CLazyE e suspensionType ->
+        CLazyE <$> go curDepth e <*> traverse (go curDepth) suspensionType
+      CForceE e resultType ->
+        CForceE <$> go curDepth e <*> traverse (go curDepth) resultType
       CIf a b c -> CIf <$> go curDepth a <*> go curDepth b <*> go curDepth c
       CQuote qs slots -> CQuote qs <$> traverse (go curDepth) slots
 
@@ -296,9 +301,12 @@ simplifyDecisionTermAt = go
               | definition <- definitions
               ]
               (go groupDepth body)
-      CThunkE e -> CThunkE (go depth e)
-      CLazyE e -> CLazyE (go depth e)
-      CForceE e -> CForceE (go depth e)
+      CThunkE e suspensionType -> CThunkE (go depth e) (go depth <$> suspensionType)
+      CLazyE e suspensionType -> CLazyE (go depth e) (go depth <$> suspensionType)
+      CForceE e resultType ->
+        case go depth e of
+          CThunkE body _ -> go depth body
+          delayed -> CForceE delayed (go depth <$> resultType)
       CSealE ls e -> CSealE ls (go depth e)
       CSigT ls e -> CSigT ls (go depth e)
       CQuote qs slots -> CQuote qs (map (go depth) slots)
@@ -389,6 +397,16 @@ intCmpPrim (GName m p)
       "leInt" -> Just PrimLeInt
       "eqInt" -> Just PrimEqInt
       _ -> Nothing
+
+-- | Map either trusted spelling of an integer primitive to the checked public
+-- prelude identity used in finalized Core and interchange artifacts. The
+-- finite primitive classifiers above are the authority; an arbitrary name in
+-- either trusted module is not rewritten.
+canonicalTrustedIntPrimitive :: GName -> Maybe GName
+canonicalTrustedIntPrimitive global@(GName _ operation)
+  | isJust (intArithPrim global) || isJust (intCmpPrim global) =
+      Just (gPrel operation)
+  | otherwise = Nothing
 
 trustedIntPrimModule :: ModuleName -> Bool
 trustedIntPrimModule m = m == primModule || m == preludeModule

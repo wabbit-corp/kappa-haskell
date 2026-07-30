@@ -561,11 +561,13 @@ mergeLevelAssignments old new =
       | meta <- Set.toAscList (Set.intersection (Map.keysSet old) (Map.keysSet new))
       , let oldLevel' = zonk (old Map.! meta)
             newLevel' = zonk (new Map.! meta)
-      , not (semanticallyEqual oldLevel' newLevel')
+      , not (levelsSemanticallyEqual oldLevel' newLevel')
       ]
-    semanticallyEqual left right =
-      proveLevelLeq emptyAssumptions left right == Proved
-        && proveLevelLeq emptyAssumptions right left == Proved
+
+levelsSemanticallyEqual :: Level -> Level -> Bool
+levelsSemanticallyEqual left right =
+  proveLevelLeq emptyAssumptions left right == Proved
+    && proveLevelLeq emptyAssumptions right left == Proved
 
 -- | Extend an installed substitution graph without eagerly rewriting every
 -- older right-hand side. The dependency index is oriented from a referenced
@@ -610,30 +612,52 @@ extendLevelAssignmentGraphWithBudget
 extendLevelAssignmentGraphWithBudget old oldDependents oldBudget new
   | exactReplay =
       Right (old, oldDependents, oldBudget, Set.empty)
-  | otherwise = do
-      budget <- recomputeAffectedBudget
-      case conflicts of
-        (meta, installed, requested) : _ ->
-          Left (LevelAssignmentGraphConflict meta installed requested)
-        [] -> Right (combined, dependents, budget, affected)
+  | otherwise =
+      case reconcileLevelAssignmentUpdates old new of
+        Left conflict -> Left conflict
+        Right updates
+          | Map.null updates ->
+              Right (old, oldDependents, oldBudget, Set.empty)
+          | otherwise -> do
+              let combined = Map.union updates old
+                  dependents =
+                    foldl' addNewDependencies
+                      (foldl' removeOldDependencies oldDependents (Map.toAscList updates))
+                      (Map.toAscList updates)
+                  roots = Map.keysSet updates
+                  affected = close dependents roots roots
+                  oldAffectedTotal =
+                    Set.foldl'
+                      (\total meta ->
+                        total + Map.findWithDefault 0 meta (lagbRootCosts oldBudget))
+                      0
+                      affected
+                  unaffectedTotal =
+                    lagbTotalCost oldBudget - oldAffectedTotal
+                  affectedRoots = Set.toAscList affected
+              (affectedCosts, affectedTotal) <-
+                assignmentRootCosts
+                  combined
+                  affected
+                  (lagbRootCosts oldBudget)
+                  (solverNodeBudget - unaffectedTotal)
+                  affectedRoots
+              let costs = Map.union affectedCosts (lagbRootCosts oldBudget)
+                  total = unaffectedTotal + affectedTotal
+              if total > solverNodeBudget
+                then Left (LevelAssignmentGraphResourceLimit solverNodeBudget)
+                else
+                  Right
+                    ( combined
+                    , dependents
+                    , LevelAssignmentGraphBudget costs total
+                    , affected
+                    )
   where
     exactReplay =
       all
         (\(meta, requested) -> Map.lookup meta old == Just requested)
         (Map.toAscList new)
-    combined = Map.union new old
-    zonk = normalizeLevel . substituteLevelMetas combined
-    conflicts =
-      [ (meta, installed', requested')
-      | (meta, requested) <- Map.toAscList new
-      , Just installed <- [Map.lookup meta old]
-      , let installed' = zonk installed
-            requested' = zonk requested
-      , not (semanticallyEqual installed' requested')
-      ]
-    semanticallyEqual left right =
-      proveLevelLeq emptyAssumptions left right == Proved
-        && proveLevelLeq emptyAssumptions right left == Proved
 
     removeDependent owner dependencies dependency =
       Map.update
@@ -656,14 +680,7 @@ extendLevelAssignmentGraphWithBudget old oldDependents oldBudget new
            Map.insertWith Set.union dependency (Set.singleton owner) current)
         dependencies
         (Set.toList (Set.fromList (levelMetas replacement)))
-    dependents =
-      foldl' addNewDependencies
-        (foldl' removeOldDependencies oldDependents (Map.toAscList new))
-        (Map.toAscList new)
-
-    roots = Map.keysSet new
-    affected = close roots roots
-    close seen frontier
+    close dependents seen frontier
       | Set.null frontier = seen
       | otherwise =
           let next =
@@ -673,30 +690,88 @@ extendLevelAssignmentGraphWithBudget old oldDependents oldBudget new
                     | meta <- Set.toList frontier
                     ])
                   seen
-           in close (Set.union seen next) next
+           in close dependents (Set.union seen next) next
 
-    oldAffectedTotal =
-      Set.foldl'
-        (\total meta ->
-          total + Map.findWithDefault 0 meta (lagbRootCosts oldBudget))
-        0
-        affected
-    unaffectedTotal =
-      lagbTotalCost oldBudget - oldAffectedTotal
-    affectedRoots = Set.toAscList affected
-    recomputeAffectedBudget = do
-      (affectedCosts, affectedTotal) <-
-        assignmentRootCosts
-          combined
-          affected
-          (lagbRootCosts oldBudget)
-          (solverNodeBudget - unaffectedTotal)
-          affectedRoots
-      let costs = Map.union affectedCosts (lagbRootCosts oldBudget)
-          total = unaffectedTotal + affectedTotal
-      if total > solverNodeBudget
-        then Left (LevelAssignmentGraphResourceLimit solverNodeBudget)
-        else Right (LevelAssignmentGraphBudget costs total)
+-- | Turn an overlapping update into additions that preserve every installed
+-- edge. If an old assignment is an alias (or otherwise contains unresolved
+-- metas), a compatible later request refines those still-flexible dependencies
+-- instead of revising the installed node. The ordinary principal solver checks
+-- the complete equality problem; ambiguous or unsupported refinements fail
+-- closed as assignment conflicts.
+reconcileLevelAssignmentUpdates
+  :: Map LevelMeta Level
+  -> Map LevelMeta Level
+  -> Either LevelAssignmentGraphError (Map LevelMeta Level)
+reconcileLevelAssignmentUpdates old requested =
+  case incompatible of
+    [] -> Right additions
+    firstConflict@(_, installed, wanted) : _
+      | Set.null refinementTargets ->
+          conflict firstConflict installed wanted
+      | otherwise ->
+          case inferPrincipalLevelsFor refinementTargets equalityConstraints of
+            SolvedPrincipal refinements ->
+              let combined = Map.unions [refinements, additions, old]
+               in case conflictsUnder combined of
+                    [] -> Right (Map.union refinements additions)
+                    conflictEntry : _ -> conflictEntryResult conflictEntry
+            _ -> conflict firstConflict installed wanted
+  where
+    additions = Map.withoutKeys requested (Map.keysSet old)
+    base = Map.union additions old
+    zonkWith assignments =
+      normalizeLevel . substituteLevelMetas assignments
+    overlaps =
+      [ (meta, installed, wanted)
+      | (meta, wanted) <- Map.toAscList requested
+      , Just installed <- [Map.lookup meta old]
+      ]
+    incompatible =
+      [ (meta, installed', wanted')
+      | (meta, installed, wanted) <- overlaps
+      , let installed' = zonkWith base installed
+            wanted' = zonkWith base wanted
+      , not (levelsSemanticallyEqual installed' wanted')
+      ]
+    refinementTargets =
+      Set.difference
+        ( Set.fromList
+            [ meta
+            | (_, installed, wanted) <- incompatible
+            , level <- [installed, wanted]
+            , meta <- levelMetas level
+            ]
+        )
+        (Map.keysSet base)
+    equalityConstraints =
+      concat
+        [ [ refinementConstraint (2 * identity) installed wanted
+          , refinementConstraint (2 * identity + 1) wanted installed
+          ]
+        | (identity, (_, installed, wanted)) <- zip [0 ..] incompatible
+        ]
+    refinementConstraint identity lower upper =
+      LevelConstraint
+        { lcIdentity = identity
+        , lcLhs = lower
+        , lcRhs = upper
+        , lcOrigin =
+            ConstraintOrigin
+              "incremental assignment compatibility"
+              "level assignment graph"
+        , lcAssumptions = emptyAssumptions
+        }
+    conflictsUnder assignments =
+      [ (meta, installed', wanted')
+      | (meta, installed, wanted) <- overlaps
+      , let installed' = zonkWith assignments installed
+            wanted' = zonkWith assignments wanted
+      , not (levelsSemanticallyEqual installed' wanted')
+      ]
+    conflictEntryResult entry@(_, installed, wanted) =
+      conflict entry installed wanted
+    conflict (meta, _, _) installed wanted =
+      Left (LevelAssignmentGraphConflict meta installed wanted)
 
 emptyAssumptions :: Assumptions
 emptyAssumptions = Assumptions []

@@ -1181,9 +1181,12 @@ floatBuiltinUniverses source = evalState (go [] source) nextParam
       CVariantT members -> CVariantT <$> traverse (go env) members
       CSealE fields inner -> CSealE fields <$> go env inner
       CSigT fields inner -> CSigT fields <$> go env inner
-      CThunkE inner -> CThunkE <$> go env inner
-      CLazyE inner -> CLazyE <$> go env inner
-      CForceE inner -> CForceE <$> go env inner
+      CThunkE inner suspensionType ->
+        CThunkE <$> go env inner <*> traverse (go env) suspensionType
+      CLazyE inner suspensionType ->
+        CLazyE <$> go env inner <*> traverse (go env) suspensionType
+      CForceE inner resultType ->
+        CForceE <$> go env inner <*> traverse (go env) resultType
       other -> pure other
 
     collectApplications = collect []
@@ -1904,7 +1907,7 @@ preludeSource =
     , -- §28.2 source-level dense ordinal equivalence. This law bundle remains
       -- separate from the compiler-owned representation certificate of
       -- §30.2.7B; a handwritten instance never authorizes a backend layout.
-      "trait OrdinalRepresentation (n : Nat) (0 t : Type) ="
+      "trait IsSet t => OrdinalRepresentation (n : Nat) (0 t : Type) ="
     , "    rank : t -> Fin n"
     , "    unrank : Fin n -> t"
     , "    unrankRank : forall (x : t). unrank (rank x) = x"

@@ -19,10 +19,15 @@ import Kappa.Arithmetic
   ( ACmp (..)
   , AExpr (..)
   , AFact (..)
+  , AFormula (..)
+  , ArithmeticAssumptionCaseReplay (..)
+  , ArithmeticFormulaReplay (..)
   , ArithmeticNormalForm (..)
   , ArithmeticReplay (..)
   , ArithmeticSemantics (..)
   , derivePrincipalAffineAssignment
+  , derivePrincipalAffineSubstitution
+  , deriveArithmeticFormulaReplayWithAssumptions
   , deriveArithmeticReplay
   , negateFact
   , verifyArithmeticReplay
@@ -65,7 +70,20 @@ import Kappa.Backend.Repr
   , scalarRep
   )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyInputs, verifyUnit)
-import Kappa.Builtins (gPrel, prelDouble, prelEqType, prelInt, prelLevelLe, prelUnit, primModule)
+import Kappa.Builtins
+  ( gPrel
+  , prelDouble
+  , prelEqType
+  , prelFin
+  , prelInt
+  , prelLevelLe
+  , prelNat
+  , prelNatSucc
+  , prelNatZero
+  , prelUnit
+  , primModule
+  )
+import Kappa.Cardinality (cardLiteral)
 import Kappa.Check
   ( CheckState (..)
   , CtorInfo (..)
@@ -78,12 +96,14 @@ import Kappa.Core
   ( Closure (..)
   , BinderOrigin (..)
   , CaseAlt (..)
+  , ConstructorArg (..)
   , CorePat (..)
   , FormationMode (..)
   , GName (..)
   , gnameText
   , Icit (..)
   , KItem (..)
+  , Literal (..)
   , ObservationMode (..)
   , Q (..)
   , RecordField (..)
@@ -106,13 +126,19 @@ import Kappa.Core
   , pattern VPi
   )
 import Kappa.CoreOps
-  ( foldTerm
+  ( CorePatternDecision (..)
+  , foldTerm
   , globalsOfTerm
   , levelMetasOfTerm
   , levelParamsOfTerm
   , mapTermWithDepth
+  , matchCorePattern
+  , shiftTerm
+  , substTerm
   , substTopTermAt
+  , termScopedAt
   , weakenTermUnderBinderAt
+  , zonkTermWith
   )
 import Kappa.CoreText
   ( KCoreTextError (..)
@@ -218,9 +244,25 @@ import Kappa.Ownership
 import Kappa.Parser (parseExprText)
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
 import Kappa.Pretty (renderJudgment, renderTerm)
+import Kappa.Representation
+  ( BackendProfileRestriction (..)
+  , ConstructorFieldPath (..)
+  , ExactNaturalRepresentationCertificate (..)
+  , OrdinalEncoding (..)
+  , OrdinalRepresentationCertificate (..)
+  , RefinementRepresentationCertificate (..)
+  , RepresentationContext (..)
+  , exactNaturalRepresentationCertificateIdentity
+  , ordinalRepresentationCertificateIdentity
+  , refinementRepresentationCertificateIdentity
+  , representationTypeIdentity
+  , verifyExactNaturalRepresentationCertificate
+  , verifyOrdinalRepresentationCertificate
+  , verifyRefinementRepresentationCertificate
+  )
 import Kappa.SemanticHash (canonicalIdentityHex, sha256Hex)
 import Kappa.Source (ModuleName (..))
-import Kappa.Syntax (Expr (EArrow, ERecordType))
+import Kappa.Syntax (Expr (EArrow, EForall, ERecordType))
 import Kappa.TestHarness
   ( Outcome (..)
   , Summary (..)
@@ -251,7 +293,11 @@ main = do
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
   semanticHashOk <- semanticHashDomain
+  closureReadbackOk <- closureReadbackDomain
+  usingBinderScopeOk <- usingBinderScopeDomain
   arithmeticReplayOk <- arithmeticReplayDomain
+  constructorPatternAlignmentOk <- constructorPatternAlignmentDomain
+  representationCertificateOk <- representationCertificateIdentityDomain
   inhabitanceOk <- inhabitanceIntervalDomain
   universeLevelOk <- universeLevelDomain
   universeLiftOk <- universeLiftEvidenceDomain
@@ -263,6 +309,7 @@ main = do
   schemaLiftBoundaryOk <- schemaLiftBackendCertificateBoundary
   nominalVarianceOk <- nominalVarianceCertificateDomain
   singletonRecordSyntaxOk <- parserSingletonRecordCommaDomain
+  quantifierSyntaxOk <- parserQuantifierSyntaxDomain
   expectFragmentOk <- expectFragmentDomain
   kcoreTextOk <- kcoreTextCanonicalDomain
   kcoreInterfaceOk <- kcoreSourceFreeInterfaceDomain
@@ -292,7 +339,11 @@ main = do
         , ("harnessFaithful", harnessOk)
         , ("jsonEncoderSound", jsonOk)
         , ("semanticHashDomain", semanticHashOk)
+        , ("closureReadbackDomain", closureReadbackOk)
+        , ("usingBinderScopeDomain", usingBinderScopeOk)
         , ("arithmeticReplayDomain", arithmeticReplayOk)
+        , ("constructorPatternAlignmentDomain", constructorPatternAlignmentOk)
+        , ("representationCertificateIdentityDomain", representationCertificateOk)
         , ("inhabitanceIntervalDomain", inhabitanceOk)
         , ("universeLevelDomain", universeLevelOk)
         , ("universeLiftEvidenceDomain", universeLiftOk)
@@ -304,6 +355,7 @@ main = do
         , ("schemaLiftBackendCertificateBoundary", schemaLiftBoundaryOk)
         , ("nominalVarianceCertificateDomain", nominalVarianceOk)
         , ("parserSingletonRecordCommaDomain", singletonRecordSyntaxOk)
+        , ("parserQuantifierSyntaxDomain", quantifierSyntaxOk)
         , ("expectFragmentDomain", expectFragmentOk)
         , ("kcoreTextCanonicalDomain", kcoreTextOk)
         , ("kcoreSourceFreeInterfaceDomain", kcoreInterfaceOk)
@@ -408,6 +460,29 @@ parserSingletonRecordCommaDomain = do
     putStrLn ("  arrow results: " ++ show (zip arrows parsedArrows))
   pure ok
 
+-- | §11.3 has two implicit quantity-0 spellings: a bare binder and a
+-- parenthesized typed binder. Braces are application syntax, not a third
+-- quantifier-binder form, and a malformed quantifier must not backtrack into
+-- an ordinary identifier application.
+parserQuantifierSyntaxDomain :: IO Bool
+parserQuantifierSyntaxDomain = do
+  let parse source = parseExprText "quantifier-syntax.kp" source
+      isForall = \case
+        Right EForall {} -> True
+        _ -> False
+      bare = isForall (parse "forall a. a -> a")
+      typed = isForall (parse "forall (a : Type). a -> a")
+      bracesReject = case parse "forall {a : Type}. a -> a" of
+        Left _ -> True
+        Right _ -> False
+      ok = bare && typed && bracesReject
+  unless ok $
+    putStrLn
+      ( "parserQuantifierSyntaxDomain FAILED: "
+          <> show (bare, typed, bracesReject)
+      )
+  pure ok
+
 -- | Spec §9.4: an @expect@ contract is implemented only by a selected
 -- companion fragment, never by a declaration in the expectation source file
 -- itself. This source-file distinction is independent of module merging.
@@ -509,7 +584,7 @@ universeSchemaInterfaceDomain = do
         , not (null (levelMetasOfTerm term))
         ]
       retainedLevelAssignments = Map.size (csLevelAssignments st)
-      retainedConstraintIndex = Set.size (csLevelConstraintIndex st)
+      retainedConstraintIndex = Map.size (csLevelConstraintIndex st)
       errors = filter isError (cuDiags cu)
       ok =
         null errors
@@ -917,6 +992,28 @@ universeLevelDomain = do
                     && Map.findWithDefault Set.empty 41 dependents == Set.singleton 40
                 Left _ -> False
           Left _ -> False
+      incrementalAssignmentGraphRefinesFlexibleAlias =
+        case
+          extendLevelAssignmentGraph
+            Map.empty
+            Map.empty
+            (Map.singleton 40 (LMeta 41))
+        of
+          Right (initial, initialDependents, _) ->
+            case
+              extendLevelAssignmentGraph
+                initial
+                initialDependents
+                (Map.singleton 40 LZero)
+            of
+              Right (combined, dependents, affected) ->
+                Map.lookup 40 combined == Just (LMeta 41)
+                  && Map.lookup 41 combined == Just LZero
+                  && substituteLevelMetas combined (LMeta 40) == LZero
+                  && affected == Set.fromList [40, 41]
+                  && Map.findWithDefault Set.empty 41 dependents == Set.singleton 40
+              Left _ -> False
+          Left _ -> False
       incrementalAssignmentBudgetMatchesFullRebuild =
         case
           extendLevelAssignmentGraphWithBudget
@@ -1234,6 +1331,7 @@ universeLevelDomain = do
         , ("principal assignments compose through later substitutions", principalAssignmentsComposeWithoutRevision)
         , ("principal assignments cannot be revised by a later join", principalAssignmentsRejectRevision)
         , ("incremental assignment graph tracks transitive dependents", incrementalAssignmentGraphTracksTransitiveDependents)
+        , ("incremental assignment graph refines a flexible alias without revision", incrementalAssignmentGraphRefinesFlexibleAlias)
         , ("incremental assignment budget matches a full rebuild", incrementalAssignmentBudgetMatchesFullRebuild)
         , ("exact assignment graph updates are constant-state no-ops", exactAssignmentGraphUpdateIsANoOp)
         , ("principal inference detects incomparable max minima", noPointwiseLeastClass)
@@ -1998,6 +2096,13 @@ kcoreTextCanonicalDomain = do
         let canonicalText = printCanonicalKCoreText first
         second <- parseVerified canonicalText
         pure (printCanonicalKCoreText second == canonicalText)
+      negativeIntegerStable = do
+        first <-
+          parseVerified
+            (T.replace "integer-value(7)" "integer-value(-7)" structured)
+        let canonicalText = printCanonicalKCoreText first
+        second <- parseVerified canonicalText
+        pure (printCanonicalKCoreText second == canonicalText)
       canonicalLocals = case canonical of
         Right text ->
           "%v#0" `T.isInfixOf` text
@@ -2074,6 +2179,7 @@ kcoreTextCanonicalDomain = do
         , ("declaration constraint blocks are rejected outside certificates", not (parses inconsistentConstraints))
         , ("constraint-index lift evidence is rejected", not (parses obsoleteConstraintEvidence))
         , ("standard block/case/generic nodes and typed level-term round trip", either (const False) id structuredStable)
+        , ("signed integer payloads round trip canonically", either (const False) id negativeIntegerStable)
         , ("level-term rejects a producer not typed by the TypeLevel semantic identity", rejectedWith "E_KCORE_TEXT_INVALID" invalidLevelTerm)
         , ("level-term independently rejects an unproved recursive producer", rejectedWith "E_KCORE_TEXT_INVALID" nonTotalLevelTerm)
         , ("unavailable external semantic identities reject", rejectedWith "E_KCORE_TEXT_INVALID" unavailableIdentity)
@@ -2149,7 +2255,7 @@ universeCapabilityBoundary = do
         st
           { csCoreBodies =
               Map.singleton owner
-                (CLamM Parametric Expl Q0 "A" (CMeta 987))
+                (CLamM Parametric Expl Q0 "A" (CMeta (csNextMeta st + 1)))
           }
       unresolvedObservationCodes = map bivCode (validateCoreCapabilities unresolvedObservation)
       escapedLevel =
@@ -2579,6 +2685,95 @@ reprScalarIdentity = do
 -- | §15.8.2/§15.8.4: value arithmetic produces deterministic replay data,
 -- not a checker-owned Boolean assertion. Mutation and underconstraint must
 -- fail when the same pure kernel replays the artifact.
+-- | Zero-binder suspension closures retain the lexical levels captured in
+-- their environment when read back under a deeper context. Treating the
+-- closure body as already rebased retargets its de Bruijn indices.
+closureReadbackDomain :: IO Bool
+closureReadbackDomain = do
+  let ctx = EvalCtx (Globals Map.empty) emptyMetas False Map.empty
+      captured = eval ctx [VRigid 0 []] (CThunkE (CVar 0) Nothing)
+      actual = quote ctx 3 captured
+      expected = CThunkE (CVar 2) Nothing
+      ok = actual == expected
+  unless ok $ do
+    putStrLn "closureReadbackDomain FAILED:"
+    putStrLn ("  expected " ++ show expected)
+    putStrLn ("  actual   " ++ show actual)
+  pure ok
+
+-- | §18.8.5: @using pat <- acquire@ binds @pat@ for every following
+-- do-kernel item. All depth-aware Core operations must agree on that
+-- sequential scope; otherwise valid resource uses become free variables or
+-- are captured by shifting, substitution, or metavariable zonking.
+usingBinderScopeDomain :: IO Bool
+usingBinderScopeDomain = do
+  let unit = CCtor prelUnit Nothing []
+      pattern' = CPVarM Ordinary (T.pack "resource")
+      closed =
+        CDo Nothing
+          [ KUsing pattern' unit unit
+          , KReturn (CVar 0)
+          ]
+      unresolved =
+        CDo Nothing
+          [ KUsing pattern' unit unit
+          , KReturn (CMeta 7)
+          ]
+      zonked =
+        zonkTermWith
+          (\depth meta ->
+            if meta == 7
+              then Just (CVar (depth - 1))
+              else Nothing)
+          id
+          0
+          unresolved
+      checks =
+        [ ("scope", termScopedAt 0 closed)
+        , ("shift", shiftTerm 1 0 closed == closed)
+        , ("substitution", substTerm 0 (CLit (LitInt 99)) closed == closed)
+        , ("zonk", zonked == closed && termScopedAt 0 zonked)
+        ]
+      ok = all snd checks
+  unless ok $ do
+    putStrLn "usingBinderScopeDomain FAILED:"
+    mapM_ (putStrLn . ("  " <>) . fst) (filter (not . snd) checks)
+    putStrLn ("  zonked=" ++ show zonked)
+  pure ok
+
+-- | A checked constructor pattern enumerates explicit source fields. Hidden
+-- telescope arguments can follow an explicit field, so matching by a suffix
+-- would bind the field to evidence rather than to its source value.
+constructorPatternAlignmentDomain :: IO Bool
+constructorPatternAlignmentDomain = do
+  let constructor = GName (ModuleName [T.pack "test"]) (T.pack "Mk")
+      value = CLit (LitInt 5)
+      evidence = CCtor prelUnit Nothing []
+      scrutinee =
+        CCtorI
+          constructor
+          []
+          Nothing
+          [ ConstructorArg Impl False (Just (T.pack "a")) (CGlobal prelNat [])
+          , ConstructorArg Expl True (Just (T.pack "value")) value
+          , ConstructorArg Impl False (Just (T.pack "proof")) evidence
+          ]
+      pattern' =
+        CPCtorM
+          []
+          []
+          constructor
+          []
+          [CPVarM Ordinary (T.pack "value")]
+      actual = matchCorePattern pattern' scrutinee
+      expected = CorePatternMatched [value]
+      ok = actual == expected
+  unless ok $ do
+    putStrLn "constructorPatternAlignmentDomain FAILED:"
+    putStrLn ("  expected " ++ show expected)
+    putStrLn ("  actual   " ++ show actual)
+  pure ok
+
 arithmeticReplayDomain :: IO Bool
 arithmeticReplayDomain = do
   let n = AVar 0
@@ -2600,6 +2795,15 @@ arithmeticReplayDomain = do
         AFact ACmpLt n (AConst 10)
       affinePremise =
         AFact ACmpLt n (AConst 5)
+      naturalAffineUpperBound =
+        AFact
+          ACmpLe
+          n
+          (AAdd (AMul (AConst 3) n) (AConst 4))
+      successorBoundPremise =
+        AFact ACmpLe (AAdd n (AConst 1)) m
+      successorBoundConsequence =
+        AFact ACmpLt n m
       exactDivisionGoal =
         AFact ACmpEq
           (ADiv (AAdd (AMul (AConst 4) n) (AConst 6)) (AConst 2))
@@ -2632,10 +2836,71 @@ arithmeticReplayDomain = do
         AFact ACmpEq (AAdd principalMeta (AConst 1)) (AConst 4)
       principalScaleGoal =
         AFact ACmpEq (AMul (AConst 2) principalMeta) (AConst 6)
+      principalRigidExpressionGoal =
+        AFact
+          ACmpEq
+          (AAdd principalMeta (AConst 1))
+          (AAdd (AAdd n (AConst 1)) (AVar 1))
+      branchRefinedIndex =
+        AFact ACmpEq m (AAdd n (AConst 1))
+      principalBranchRefinedGoal =
+        AFact
+          ACmpEq
+          (AAdd principalMeta (AConst 1))
+          (AAdd m (AVar 2))
       underconstrainedPrincipalGoal =
         AFact ACmpEq (AAdd principalMeta n) (AConst 4)
       nonPrincipalZeroGoal =
         AFact ACmpEq (AMul principalMeta (AConst 0)) (AConst 0)
+      pointThree = AFact ACmpEq n (AConst 3)
+      pointSeven = AFact ACmpEq n (AConst 7)
+      conditionalPoint =
+        AFact
+          ACmpEq
+          (AIf (AAtom pointThree) (AConst 3) (AConst 7))
+          n
+      nestedConditionalPoint =
+        AFact
+          ACmpEq
+          ( AIf
+              ( AAtom
+                  ( AFact
+                      ACmpEq
+                      (AIf (AAtom pointThree) (AConst 0) (AConst 1))
+                      (AConst 0)
+                  )
+              )
+              (AConst 3)
+              (AConst 7)
+          )
+          n
+      scatteredPoints =
+        AOr (AAtom pointThree) (AAtom pointSeven)
+      notThree =
+        ANot (AAtom pointThree)
+      forcesSeven =
+        AAtom (AFact ACmpEq (AConst 7) n)
+      scatteredPointReplay =
+        deriveArithmeticFormulaReplayWithAssumptions
+          ArithmeticNaturalSemantics
+          naturalVariables
+          [(True, scatteredPoints), (True, notThree)]
+          True
+          forcesSeven
+      underconstrainedScatteredPoint =
+        deriveArithmeticFormulaReplayWithAssumptions
+          ArithmeticNaturalSemantics
+          naturalVariables
+          [(True, scatteredPoints)]
+          True
+          forcesSeven
+      impossibleAssumptionReplay =
+        deriveArithmeticFormulaReplayWithAssumptions
+          ArithmeticNaturalSemantics
+          naturalVariables
+          [(True, ATruth False)]
+          True
+          forcesSeven
       polynomialReplay =
         deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] polynomialGoal
       strictReplay =
@@ -2672,6 +2937,26 @@ arithmeticReplayDomain = do
           , maybe False
               (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [affinePremise])
               (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [affinePremise] affineConsequence)
+          )
+        , ( "admitted branch facts specialize conditional arithmetic"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [pointThree])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [pointThree] conditionalPoint)
+          )
+        , ( "admitted branch facts specialize nested conditional arithmetic"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [pointThree])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [pointThree] nestedConditionalPoint)
+          )
+        , ( "Nat non-negativity proves affine upper bounds"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] naturalAffineUpperBound)
+          )
+        , ( "successor upper bounds entail strict Nat bounds"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [successorBoundPremise])
+              (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [successorBoundPremise] successorBoundConsequence)
           )
         , ( "exact affine division normalizes"
           , maybe False
@@ -2757,6 +3042,24 @@ arithmeticReplayDomain = do
               principalScaleGoal
               == Just (7, 3)
           )
+        , ( "affine Nat meta has a principal expression over rigid variables"
+          , derivePrincipalAffineSubstitution
+              ArithmeticNaturalSemantics
+              (Set.fromList [0, 1, 7])
+              principalAssignable
+              []
+              principalRigidExpressionGoal
+              == Just (7, AAdd (AVar 0) (AVar 1))
+          )
+        , ( "branch-refined Nat indices determine a principal expression"
+          , derivePrincipalAffineSubstitution
+              ArithmeticNaturalSemantics
+              (Set.fromList [0, 1, 2, 7])
+              principalAssignable
+              [branchRefinedIndex]
+              principalBranchRefinedGoal
+              == Just (7, AAdd (AVar 0) (AVar 2))
+          )
         , ( "an equation retaining a rigid variable is not principal"
           , derivePrincipalAffineAssignment
               ArithmeticNaturalSemantics
@@ -2775,10 +3078,123 @@ arithmeticReplayDomain = do
               nonPrincipalZeroGoal
               == Nothing
           )
+        , ( "disjunctive assumptions prove a consequence by checked cases"
+          , case scatteredPointReplay of
+              Just (ReplayAssumptionCases cases) ->
+                any isContradiction cases
+                  && any isGoal cases
+              _ -> False
+          )
+        , ( "a disjunction alone does not select one branch"
+          , underconstrainedScatteredPoint == Nothing
+          )
+        , ( "a constant contradictory assumption retains explicit replay"
+          , impossibleAssumptionReplay
+              == Just
+                ( ReplayAssumptionCases
+                    [ReplayAssumptionImpossible 0]
+                )
+          )
         ]
       failures = [label | (label, False) <- checks]
   unless (null failures) $ do
     putStrLn "arithmeticReplayDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+  pure (null failures)
+  where
+    isContradiction (ReplayAssumptionContradiction _ _) = True
+    isContradiction _ = False
+    isGoal (ReplayAssumptionGoal _) = True
+    isGoal _ = False
+
+representationCertificateIdentityDomain :: IO Bool
+representationCertificateIdentityDomain = do
+  let context = RepresentationContext [] []
+      naturalType = CGlob prelNat
+      exactCertificate =
+        ExactNaturalRepresentationCertificate
+          { enrcContext = context
+          , enrcRepresentedType = naturalType
+          , enrcTypeIdentity = representationTypeIdentity context naturalType
+          , enrcEvidenceIdentity = "checked-exact-natural-evidence"
+          , enrcZeroConstructor = prelNatZero
+          , enrcSuccessorConstructor = prelNatSucc
+          , enrcRecursiveField = ConstructorFieldPath prelNatSucc 0
+          , enrcErasedFields = []
+          , enrcProfileRestrictions =
+              [ExcludeDynamicBoundary, ExcludeForeignBoundary]
+          , enrcCertificateVersion = 1
+          , enrcCheckerVersion = 1
+          }
+      finiteType = CApp Expl (CGlob prelFin) (CLit (LitInt 5))
+      ordinalCertificate =
+        OrdinalRepresentationCertificate
+          { orcContext = context
+          , orcRepresentedType = finiteType
+          , orcTypeIdentity = representationTypeIdentity context finiteType
+          , orcSourceEvidenceIdentity = Nothing
+          , orcCardinalityExpression = cardLiteral 5
+          , orcEncoding = OrdinalFin (cardLiteral 5)
+          , orcErasedFields = []
+          , orcProfileRestrictions = [ExcludeExportedAbi]
+          , orcCertificateVersion = 1
+          , orcCheckerVersion = 1
+          }
+      wrapper = GName (ModuleName ["test", "representation"]) "Wrapper"
+      wrapperCtor = GName (ModuleName ["test", "representation"]) "MkWrapper"
+      wrapperType = CGlob wrapper
+      refinementCertificate =
+        RefinementRepresentationCertificate
+          { rrcContext = context
+          , rrcRepresentedType = wrapperType
+          , rrcTypeIdentity = representationTypeIdentity context wrapperType
+          , rrcRefinementEvidenceIdentity = "checked-refinement-evidence"
+          , rrcBaseType = naturalType
+          , rrcBaseTypeIdentity = representationTypeIdentity context naturalType
+          , rrcConstructor = wrapperCtor
+          , rrcRetainedBaseField = ConstructorFieldPath wrapperCtor 0
+          , rrcErasedEvidenceFields = [ConstructorFieldPath wrapperCtor 1]
+          , rrcProfileRestrictions = [InternalValuesOnly]
+          , rrcCertificateVersion = 1
+          , rrcCheckerVersion = 1
+          }
+      mutationsChange identity original mutations =
+        all ((/= identity original) . identity) mutations
+      checks =
+        [ ("exact-natural certificate verifies", verifyExactNaturalRepresentationCertificate exactCertificate == Right ())
+        , ("ordinal certificate verifies", verifyOrdinalRepresentationCertificate ordinalCertificate == Right ())
+        , ("refinement certificate verifies", verifyRefinementRepresentationCertificate refinementCertificate == Right ())
+        , ( "exact-natural decisive fields affect identity"
+          , mutationsChange
+              exactNaturalRepresentationCertificateIdentity
+              exactCertificate
+              [ exactCertificate {enrcEvidenceIdentity = "other-evidence"}
+              , exactCertificate {enrcRecursiveField = ConstructorFieldPath prelNatSucc 1}
+              , exactCertificate {enrcProfileRestrictions = [ExcludeDynamicBoundary]}
+              ]
+          )
+        , ( "ordinal decisive fields affect identity"
+          , mutationsChange
+              ordinalRepresentationCertificateIdentity
+              ordinalCertificate
+              [ ordinalCertificate {orcCardinalityExpression = cardLiteral 6}
+              , ordinalCertificate {orcEncoding = OrdinalFin (cardLiteral 6)}
+              , ordinalCertificate {orcSourceEvidenceIdentity = Just "other-evidence"}
+              ]
+          )
+        , ( "refinement decisive fields affect identity"
+          , mutationsChange
+              refinementRepresentationCertificateIdentity
+              refinementCertificate
+              [ refinementCertificate {rrcBaseTypeIdentity = "wrong-base"}
+              , refinementCertificate {rrcRetainedBaseField = ConstructorFieldPath wrapperCtor 1}
+              , refinementCertificate {rrcProfileRestrictions = [ExcludeDynamicBoundary]}
+              ]
+          )
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "representationCertificateIdentityDomain FAILED:"
     mapM_ (putStrLn . ("  " ++)) failures
   pure (null failures)
 
@@ -3590,7 +4006,8 @@ perceusS23dDeadBinderDrops = do
               && "} else {" `T.isInfixOf` letWorker
               && dropLetBeforeReturn (snd (T.breakOn "} else {" letWorker))
           guardOk =
-            "if (kas_bool(ktrampoline(kw_main_2e_peekBox(let_" `T.isInfixOf` guardWorker
+            "if (kas_bool(" `T.isInfixOf` guardWorker
+              && "kw_main_2e_peekBox(let_" `T.isInfixOf` guardWorker
               && dropLetBeforeReturn guardSuccess
           aliasOk =
             "consumeBox" `T.isInfixOf` aliasWorker
@@ -4399,8 +4816,16 @@ backendIRValidatorS5 = do
       meta1 = BackendMeta (BackendNodeId 1) []
       meta2 = BackendMeta (BackendNodeId 2) []
       meta3 = BackendMeta (BackendNodeId 3) []
-      badCtor =
+      malformed bodies violations =
         KBackendIR
+          { kbirBodies = bodies
+          , kbirCapabilities = Set.empty
+          , kbirSourceFields = Map.empty
+          , kbirRepresentations = Map.empty
+          , kbirLoweringViolations = violations
+          }
+      badCtor =
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4417,7 +4842,7 @@ backendIRValidatorS5 = do
           , clFieldReps = [RepBoxed, RepBoxed]
           }
       badCtorInfo =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4427,12 +4852,12 @@ backendIRValidatorS5 = do
           )
           []
       badUse =
-        KBackendIR
+        malformed
           (Map.singleton owner $ BackendBody owner [] [] (BVar meta0 Nothing 0))
           []
       dupUse = BackendUse (BackendUseId 0) NonLast False
       badDuplicateUse =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4442,11 +4867,11 @@ backendIRValidatorS5 = do
           )
           []
       badBinder =
-        KBackendIR
+        malformed
           (Map.singleton owner $ BackendBody owner [BackendParam Expl (T.pack "x") Nothing] [] (BUnit meta0))
           []
       badNodeId =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4456,7 +4881,7 @@ backendIRValidatorS5 = do
           )
           []
       badBranchDrop =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4468,7 +4893,7 @@ backendIRValidatorS5 = do
       realDropBinder = BackendBinder (BackendBinderId 0) (T.pack "real") (BinderOwn QW Nothing False True) False
       forgedDropBinder = BackendBinder (BackendBinderId 0) (T.pack "forged") (BinderOwn QW Nothing False True) False
       badForgedBranchDrop =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4478,7 +4903,7 @@ backendIRValidatorS5 = do
           )
           []
       badDuplicateBranchDrop =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4488,7 +4913,7 @@ backendIRValidatorS5 = do
           )
           []
       badItemBranchDrop =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4500,7 +4925,7 @@ backendIRValidatorS5 = do
       duplicateBinderA = BackendBinder (BackendBinderId 0) (T.pack "a") (BinderOwn QW Nothing False True) False
       duplicateBinderB = BackendBinder (BackendBinderId 0) (T.pack "b") (BinderOwn QW Nothing False True) False
       badDuplicateBinder =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4512,7 +4937,7 @@ backendIRValidatorS5 = do
           )
           []
       badPattern =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4522,7 +4947,7 @@ backendIRValidatorS5 = do
           )
           []
       badPatternInfo =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner
@@ -4532,7 +4957,7 @@ backendIRValidatorS5 = do
           )
           []
       badPatternMissingLayout =
-        KBackendIR
+        malformed
           ( Map.singleton owner $
               BackendBody
                 owner

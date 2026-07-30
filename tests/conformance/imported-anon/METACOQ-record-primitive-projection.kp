@@ -1,0 +1,43 @@
+-- Source issues: METACOQ-326, METACOQ-369, METACOQ-340
+-- Spec: types.records.field_projection,
+--       declarations.terms.projection_definitions,
+--       core_semantics.definitional_equality
+--
+-- MetaCoq's PR #340 fixed quotation of primitive projections (which were
+-- being repeated as inductive decls). Issue #369 reported that primitive
+-- projections were not registered when defining a record. Kappa's
+-- `declarations.terms.projection_definitions` requires record-field access
+-- to compute by ι-reduction without losing identity of the projector.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a record-like data with named binders. Projection on a literal
+-- constructor application yields the field by ι-reduction.
+data Pair (a : Type) (b : Type) : Type =
+    MkPair (fst : a) (snd : b)
+
+p12 : Pair Nat Nat
+let p12 = MkPair { fst = 1, snd = 2 }
+
+-- POSITIVE: field projection by pattern.
+takeFst : forall (a : Type) (b : Type). Pair a b -> a
+let takeFst p =
+    match p
+    case MkPair { fst = x } -> x
+
+takeSnd : forall (a : Type) (b : Type). Pair a b -> b
+let takeSnd p =
+    match p
+    case MkPair { snd = y } -> y
+
+projFst : Nat
+let projFst = takeFst @Nat @Nat p12
+
+projSnd : Nat
+let projSnd = takeSnd @Nat @Nat p12
+
+--! assertNoErrors
+--! assertType takeFst forall (a : Type) (b : Type). Pair a b -> a
+--! assertType takeSnd forall (a : Type) (b : Type). Pair a b -> b

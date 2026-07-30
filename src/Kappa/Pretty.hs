@@ -105,9 +105,9 @@ renderTerm = go 0
               [(if n `elem` ls then "opaque " else "") <> n <> " : " <> go 0 t | (n, t) <- fs]
               <> ")"
           _ -> go p e
-      CThunkE e -> paren (p > 1) ("thunk " <> go 2 e)
-      CLazyE e -> paren (p > 1) ("lazy " <> go 2 e)
-      CForceE e -> paren (p > 1) ("force " <> go 2 e)
+      CThunkE e _ -> paren (p > 1) ("thunk " <> go 2 e)
+      CLazyE e _ -> paren (p > 1) ("lazy " <> go 2 e)
+      CForceE e _ -> paren (p > 1) ("force " <> go 2 e)
       CIf c t f -> paren (p > 0) ("if " <> go 0 c <> " then " <> go 0 t <> " else " <> go 0 f)
       CQuote _ slots -> "'{ ... }" <> (if null slots then "" else " [" <> tshow (length slots) <> " slots]")
     modeText Ordinary = "ordinary "

@@ -28,17 +28,17 @@ let absurd a z = indVoid (\_ -> a) z
 -- POSITIVE: function extensionality, postulated as an axiom (no proof body).
 -- Two pointwise-equal functions are propositionally equal.
 funext :
-    forall {a : Type} {b : a -> Type}
-    {f : (x : a) -> b x} {g : (x : a) -> b x}.
+    forall (a : Type) (b : a -> Type)
+    (f : (x : a) -> b x) (g : (x : a) -> b x).
     ((x : a) -> f x = g x) -> f = g
 
 -- POSITIVE: using funext to prove eta-equality of functions.
-etaEq : forall {a b : Type} (f : a -> b) -> (\x -> f x) = f
+etaEq : forall (a b : Type). (f : a -> b) -> (\x -> f x) = f
 let etaEq f = funext (\_ -> refl)
 
 -- POSITIVE: a theorem that packages funext in a named form.
 extensional :
-    forall {a : Type} {b : a -> Type} ->
+    forall (a : Type) (b : a -> Type).
     (f : (x : a) -> b x) ->
     (g : (x : a) -> b x) ->
     ((x : a) -> f x = g x) ->
@@ -56,7 +56,7 @@ let badAxiom = _    --!! kappa.hole.unsolved
 
 -- NEGATIVE: a definition that claims to construct any type from another
 -- without a valid proof term — the hole must be reported.
-missingProof : forall {a b : Type} -> a -> b
+missingProof : forall (a b : Type). a -> b
 let missingProof x = _    --!! kappa.hole.unsolved
 
 --! assertDiagnosticFamily error kappa.hole.unsolved

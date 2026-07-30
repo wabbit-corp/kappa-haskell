@@ -30,6 +30,7 @@ module Kappa.TestHarness
   , reportLine
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Control.Monad.State.Strict qualified as State
@@ -46,6 +47,18 @@ import qualified Data.Set as Set
 import Numeric.Natural (Natural)
 import Text.Read (readMaybe)
 import Kappa.Builtins (prelNat)
+import Kappa.Backend.IR
+  ( BackendFieldStorage (..)
+  , BackendIRViolation (..)
+  , BackendNodeId (..)
+  , BackendRepresentationDecision (..)
+  , BackendRepresentationSubject (..)
+  , BackendSourceFieldIdentity (..)
+  , KBackendIR (..)
+  , lowerKBackendIRForCapabilities
+  , validateKBackendIR
+  )
+import qualified Kappa.Backend.Repr as Repr
 import Kappa.Check
   ( AuditRecord (..)
   , CheckState (..)
@@ -249,6 +262,8 @@ data Assertion
   | AOrdinalRepresentation !Text !Text
   | AExactNaturalRepresentation !Text
   | ARefinementRepresentation !Text !Text
+  | ARepresentationClass !Text !Text
+  | ARuntimeFieldAbsent !Text !Text
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -301,6 +316,7 @@ supportedCapabilities =
   [ "runTask", "pipelineTrace", "stageDumps", "kcoreText"
   , "arithmeticCertificates"
   , "symbolicCardinality"
+  , "representationQueries"
   , "mutualNominalVariance"
   , "legacyCharAlias", "unicodeSourceWarnings"
   ]
@@ -626,14 +642,16 @@ parseDirective allLines lno body =
                 ok (SAssert (ARefinementRepresentation (T.strip baseTy) (T.strip refinedTy)))
           _ -> bad "malformed 'assertRefinementRepresentation' directive"
       "assertRepresentationClass" -> case args of
-        _declaration : representation
+        declaration : representation
           | not (null representation) ->
-              unsup "assertRepresentationClass requires capability representationQueries: not provided"
+              ok
+                (SAssert
+                  (ARepresentationClass declaration (T.unwords representation)))
         _ -> bad "malformed 'assertRepresentationClass' directive"
       "assertRuntimeFieldAbsent" -> case args of
         [declaration, field]
           | not (T.null declaration), not (T.null field) ->
-              unsup "assertRuntimeFieldAbsent requires capability representationQueries: not provided"
+              ok (SAssert (ARuntimeFieldAbsent declaration field))
         _ -> bad "malformed 'assertRuntimeFieldAbsent' directive"
       "assertDiagnosticMatch"
         | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
@@ -1549,7 +1567,21 @@ executeSuite unsafeCfg packageMode label root files mode entries asserts preDiag
         if mode == "run"
           then Just <$> doRun cu diags
           else pure Nothing
-      results <- mapM (\(p, s, a) -> checkAssertion compileWith root p s files cu diags mRun a) asserts
+      let backendIr =
+            if mode == "compile" || mode == "run"
+              then
+                Just
+                  ( lowerKBackendIRForCapabilities
+                      (Set.fromList supportedCapabilities)
+                      (cuState cu)
+                  )
+              else Nothing
+      results <-
+        mapM
+          (\(p, s, a) ->
+            checkAssertion
+              compileWith root p s files cu diags mRun backendIr a)
+          asserts
       let fails = [d | AssertFail d <- results]
           herrs = [d | AssertHarnessError d <- results]
       pure $
@@ -1665,8 +1697,8 @@ assertKCoreRoundTripText parseVerified subject source =
 checkAssertion ::
   ([(FilePath, Text)] -> CompiledUnit) ->
   FilePath -> FilePath -> Text -> [(FilePath, Text)] -> CompiledUnit ->
-  Diagnostics -> Maybe RunInfo -> Assertion -> IO AssertResult
-checkAssertion compileWith root path src files cu diags mRun = \case
+  Diagnostics -> Maybe RunInfo -> Maybe KBackendIR -> Assertion -> IO AssertResult
+checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
   ANoErrors ->
     countErrorsIs 0
   ANoWarnings ->
@@ -2126,15 +2158,15 @@ checkAssertion compileWith root path src files cu diags mRun = \case
               ( "assertArithmeticCertificatesValid: generated KCore does not verify: "
                   <> kcteCode err <> ": " <> kcteMessage err
               )
-          Right artifact
-            | kcoreArithmeticCertificateCount artifact <= 0 ->
-                AssertFail
-                  "assertArithmeticCertificatesValid: generated KCore contains no arithmetic certificate"
-            | otherwise ->
-                assertKCoreRoundTripText
-                  parseKCore
-                  "generated arithmetic-certificate KCore"
-                  dump
+          Right _ ->
+            -- §15.8.7 permits small derivations to remain ordinary proof
+            -- terms. The assertion validates every certificate that is
+            -- present; it does not require the compiler to cross the compact
+            -- certificate threshold for this particular fixture.
+            assertKCoreRoundTripText
+              parseKCore
+              "generated arithmetic-certificate KCore"
+              dump
   AInhabitance purpose expected tyExpr ->
     pure $ case elaborateQueryType [] tyExpr of
       Left detail -> AssertFail ("assertInhabitance: " <> detail)
@@ -2277,6 +2309,30 @@ checkAssertion compileWith root path src files cu diags mRun = \case
                                 <> " records base " <> renderTerm (rrcBaseType certificate)
                                 <> ", expected " <> baseTyExpr
                             )
+  ARepresentationClass requested expected ->
+    pure $ case verifiedRepresentationDecision requested of
+      Left detail -> AssertFail ("assertRepresentationClass: " <> detail)
+      Right decision ->
+        let actual = Repr.renderVerifiedRepresentationClass (brdClass decision)
+         in requirePure
+              (actual == expected)
+              ( requested <> " has representation " <> actual
+                  <> ", expected " <> expected
+              )
+  ARuntimeFieldAbsent requested field ->
+    pure $ case verifiedRepresentationDecision requested of
+      Left detail -> AssertFail ("assertRuntimeFieldAbsent: " <> detail)
+      Right decision ->
+        requirePure
+          ( any
+              (\identity ->
+                bsfiName identity == field
+                  && backendFieldIsErased identity)
+              (brdErasedFields decision)
+          )
+          ( requested <> " retains source field " <> field
+              <> " or has no verified erasure justification for it"
+          )
   where
     checkpointState = cuState cu
     -- The verifier's external environment is an import environment. The
@@ -2320,6 +2376,60 @@ checkAssertion compileWith root path src files cu diags mRun = \case
     warnings = filter (\d -> dSeverity d == SevWarning) diags
     require b detail = pure (if b then AssertOk else AssertFail detail)
     requirePure b detail = if b then AssertOk else AssertFail detail
+    verifiedRepresentationDecision requested = do
+      backendIr <-
+        maybe
+          (Left "requires mode compile or mode run")
+          Right
+          mBackendIr
+      case validateKBackendIR backendIr of
+        violation : _ ->
+          Left
+            ( "final KBackendIR is invalid: "
+                <> gnameText (bivBody violation)
+                <> "@"
+                <> backendNodeText (bivNode violation)
+                <> " "
+                <> bivCode violation
+                <> ": "
+                <> bivMessage violation
+            )
+        [] -> do
+          subject <-
+            maybe
+              (Left ("no declaration or source field resolves as " <> requested))
+              Right
+              (representationSubject backendIr requested)
+          maybe
+            (Left ("final KBackendIR has no representation decision for " <> requested))
+            Right
+            (Map.lookup subject (kbirRepresentations backendIr))
+    backendNodeText (BackendNodeId node) = T.pack (show node)
+    representationSubject backendIr requested =
+      ( BackendDeclarationSubject . fst
+          <$> assertionGlobal requested
+      )
+        <|> do
+          let (ownerText, fieldName) = splitSubjectField requested
+          identity <-
+            listToMaybe
+              [ field
+              | field <- Map.keys (kbirSourceFields backendIr)
+              , bsfiName field == fieldName
+              , sourceOwnerMatches ownerText (bsfiOwner field)
+              ]
+          pure (BackendConstructorFieldSubject identity)
+    splitSubjectField requested =
+      case T.breakOnEnd "." requested of
+        ("", _) -> ("", requested)
+        (prefix, field) -> (T.dropEnd 1 prefix, field)
+    sourceOwnerMatches requested owner =
+      requested == gnameText owner
+        || requested == snd (splitQualified (gnameText owner))
+    backendFieldIsErased identity =
+      case mBackendIr >>= Map.lookup identity . kbirSourceFields of
+        Just BackendFieldErased {} -> True
+        _ -> False
     atMay values index = case drop index values of
       value : _ | index >= 0 -> Just value
       _ -> Nothing

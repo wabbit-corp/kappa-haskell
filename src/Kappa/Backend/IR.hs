@@ -28,8 +28,13 @@ module Kappa.Backend.IR
   , BackendBinder (..)
   , BackendUse (..)
   , BackendCtorLayout (..)
+  , BackendSourceFieldIdentity (..)
+  , BackendFieldStorage (..)
+  , BackendRepresentationSubject (..)
+  , BackendRepresentationDecision (..)
   , BackendIRViolation (..)
   , lowerKBackendIR
+  , lowerKBackendIRForCapabilities
   , validateCoreCapabilities
   , validateKBackendIR
   ) where
@@ -52,13 +57,17 @@ import Kappa.Backend.Repr (ArgConv, CtorLayoutInfo (..))
 import Kappa.Builtins
   ( gPrel
   , preludeModule
+  , prelFin
   , prelIO
   , prelInteger
+  , prelIsSet
+  , prelNat
   , prelNatAddRightIdentity
   , prelNatSucc
   , prelNatZero
   , prelPathInd
   , prelRefl
+  , prelRefined
   , prelSTM
   , prelSubst
   , prelTypeLevel
@@ -78,8 +87,11 @@ import Kappa.Check
   , InstanceEntry (..)
   , LevelOperatorIdentity (..)
   , TraitInfo (..)
+  , exactNaturalRepresentationForState
   , metaObservationMode
   , nominalHiddenProjectionInfo
+  , ordinalRepresentationForState
+  , refinementRepresentationForState
   )
 import Kappa.Core
 import Kappa.CoreOps
@@ -102,6 +114,7 @@ import Kappa.Eval
   ( EvalCtx (..)
   , GlobalDef (..)
   , Globals (..)
+  , canonicalEqualityPayload
   , convertible
   , eval
   , force
@@ -162,6 +175,21 @@ import Kappa.ObservationDeps
   , observationCallableType
   )
 import Kappa.Pretty (renderTerm)
+import Kappa.Representation
+  ( BackendProfileRestriction
+  , ConstructorFieldPath (..)
+  , ExactNaturalRepresentationCertificate (..)
+  , OrdinalRepresentationCertificate (..)
+  , RefinementRepresentationCertificate (..)
+  , RepresentationContext (..)
+  , exactNaturalRepresentationCertificateIdentity
+  , ordinalRepresentationCertificateIdentity
+  , representationTypeIdentity
+  , refinementRepresentationCertificateIdentity
+  , verifyExactNaturalRepresentationCertificate
+  , verifyOrdinalRepresentationCertificate
+  , verifyRefinementRepresentationCertificate
+  )
 
 data ParamLowerSite = ParamLowerSite
   { plsIcit :: !Icit
@@ -184,6 +212,9 @@ newtype BackendUseId = BackendUseId Int
 
 data KBackendIR = KBackendIR
   { kbirBodies :: !(Map GName BackendBody)
+  , kbirCapabilities :: !(Set Text)
+  , kbirSourceFields :: !(Map BackendSourceFieldIdentity BackendFieldStorage)
+  , kbirRepresentations :: !(Map BackendRepresentationSubject BackendRepresentationDecision)
   , kbirLoweringViolations :: ![BackendIRViolation]
   }
   deriving stock (Eq, Show)
@@ -259,6 +290,43 @@ data BackendCtorLayout = BackendCtorLayout
   { bclCtor :: !GName
   , bclInfo :: !(Maybe CtorLayoutInfo)
   , bclRuntimeFields :: !Int
+  }
+  deriving stock (Eq, Show)
+
+-- | Stable source identity for one constructor field.  Layout verification
+-- uses the nominal family and constructor identities plus the source index;
+-- the readable name is presentation metadata only.
+data BackendSourceFieldIdentity = BackendSourceFieldIdentity
+  { bsfiOwner :: !GName
+  , bsfiConstructor :: !GName
+  , bsfiSourceIndex :: !Int
+  , bsfiName :: !Text
+  }
+  deriving stock (Eq, Ord, Show)
+
+data BackendFieldStorage
+  = BackendFieldStored
+  | BackendFieldErased !ErasureProvenance
+  deriving stock (Eq, Show)
+
+data BackendRepresentationSubject
+  = BackendDeclarationSubject !GName
+  | BackendConstructorFieldSubject !BackendSourceFieldIdentity
+  deriving stock (Eq, Ord, Show)
+
+-- | One final target-profile representation choice.  Certificates are kept on
+-- the decision so the KBackendIR verifier replays the same evidence that
+-- selected the class; identities alone are cache keys, not proof.
+data BackendRepresentationDecision = BackendRepresentationDecision
+  { brdTypeIdentity :: !Text
+  , brdClass :: !Repr.VerifiedRepresentationClass
+  , brdRequiredExactNatural :: !Bool
+  , brdOrdinalCertificate :: !(Maybe OrdinalRepresentationCertificate)
+  , brdExactNaturalCertificate :: !(Maybe ExactNaturalRepresentationCertificate)
+  , brdRefinementCertificate :: !(Maybe RefinementRepresentationCertificate)
+  , brdProfileRestrictions :: ![BackendProfileRestriction]
+  , brdWrapperEliminated :: !Bool
+  , brdErasedFields :: ![BackendSourceFieldIdentity]
   }
   deriving stock (Eq, Show)
 
@@ -343,6 +411,7 @@ data LowerStatic = LowerStatic
   , lsGlobals :: !(Map GName GlobalDef)
   , lsCtors :: !(Map GName CtorInfo)
   , lsTraits :: !(Map GName TraitInfo)
+  , lsInstances :: ![InstanceEntry]
   , lsRuntimeErasedProofHeads :: !(Set GName)
   , lsBuiltinIntegerLiteralDicts :: !(Set GName)
   , lsCtx :: !EvalCtx
@@ -385,7 +454,13 @@ finalizedGlobalType ctx definition =
   fromMaybe (quote ctx 0 (gdType definition)) (gdCoreType definition)
 
 lowerKBackendIR :: CheckState -> KBackendIR
-lowerKBackendIR st =
+lowerKBackendIR = lowerKBackendIRForCapabilities Set.empty
+
+-- | Lower for one declared backend profile. Optional representation classes
+-- are selected only from this explicit capability set; target-neutral callers
+-- get the conservative profile through 'lowerKBackendIR'.
+lowerKBackendIRForCapabilities :: Set Text -> CheckState -> KBackendIR
+lowerKBackendIRForCapabilities capabilities st =
   let builtinIntegerLiteralDicts =
         Set.fromList
           [ ieDict entry
@@ -399,15 +474,185 @@ lowerKBackendIR st =
           ]
       lowered =
         Map.mapWithKey
-          (lowerBody ctx globals (csCtors st) (csTraits st) builtinIntegerLiteralDicts)
+          (lowerBody ctx globals (csCtors st) (csTraits st) (csInstances st) builtinIntegerLiteralDicts)
           (csCoreBodies st)
+      fieldFacts = backendSourceFieldFacts st ctx
+      sourceFields =
+        Map.fromList
+          [ (identity, storage)
+          | (identity, storage, _) <- fieldFacts
+          ]
+      declarationRepresentations =
+        mapMaybe
+          (\(global, _) -> do
+            definition <- Map.lookup global globals
+            let ty = eval ctx [] (finalizedGlobalType ctx definition)
+            guard (representationValueType ctx ty)
+            pure
+              ( BackendDeclarationSubject global
+              , selectBackendRepresentation
+                  st capabilities emptyRepresentationContext 0 ty sourceFields
+              ))
+          (Map.toAscList (csCoreBodies st))
+      fieldRepresentations =
+        mapMaybe
+          (\(identity, storage, mFieldType) -> do
+            guard (storage == BackendFieldStored)
+            fieldType <- mFieldType
+            closedType <- closeRepresentationValue ctx fieldType
+            guard (representationValueType ctx closedType)
+            pure
+              ( BackendConstructorFieldSubject identity
+              , selectBackendRepresentation
+                  st capabilities emptyRepresentationContext 0 closedType sourceFields
+              ))
+          fieldFacts
    in KBackendIR
         { kbirBodies = Map.map fst lowered
+        , kbirCapabilities = capabilities
+        , kbirSourceFields = sourceFields
+        , kbirRepresentations =
+            Map.fromList (declarationRepresentations ++ fieldRepresentations)
         , kbirLoweringViolations = concatMap snd (Map.elems lowered)
         }
   where
     globals = csGlobals st
     ctx = EvalCtx (Globals globals) (csMetas st) False (csFacts st)
+
+emptyRepresentationContext :: RepresentationContext
+emptyRepresentationContext =
+  RepresentationContext
+    { rcBinderTypes = []
+    , rcUniverseConstraints = []
+    }
+
+representationValueType :: EvalCtx -> Value -> Bool
+representationValueType ctx value =
+  case force ctx value of
+    VPi {} -> False
+    VSort {} -> False
+    _ -> True
+
+-- | A field containing local constructor parameters needs a contextual
+-- certificate. Until that context is recorded in the field subject, retain the
+-- conservative class rather than accidentally hashing an open term as closed.
+closeRepresentationValue :: EvalCtx -> Value -> Maybe Value
+closeRepresentationValue ctx value =
+  let term = quote ctx 0 (force ctx value)
+   in if termScopedAt 0 term
+        then Just (eval ctx [] term)
+        else Nothing
+
+backendSourceFieldFacts
+  :: CheckState
+  -> EvalCtx
+  -> [(BackendSourceFieldIdentity, BackendFieldStorage, Maybe Value)]
+backendSourceFieldFacts state ctx =
+  concatMap fieldsForConstructor (Map.toAscList (csCtors state))
+  where
+    fieldsForConstructor (constructor, info) =
+      let sourceFields = ciSourceFields info
+          placements =
+            sourceCtorFieldRuntimePlacements
+              ctx
+              (length sourceFields)
+              (eval ctx [] (ciType info))
+       in [ ( identity sourceIndex sourceName
+            , if runtime
+                then BackendFieldStored
+                else BackendFieldErased
+                  (fromMaybe ErasedByQuantity provenance)
+            , fieldType
+            )
+          | ( sourceIndex
+            , ((_, sourceName), (runtime, _, fieldType, provenance))
+            ) <- zip [0 :: Int ..] (zip sourceFields placements)
+          ]
+      where
+        identity sourceIndex sourceName =
+          BackendSourceFieldIdentity
+            { bsfiOwner = ciData info
+            , bsfiConstructor = constructor
+            , bsfiSourceIndex = sourceIndex
+            , bsfiName =
+                fromMaybe
+                  ("field" <> T.pack (show sourceIndex))
+                  sourceName
+            }
+
+selectBackendRepresentation
+  :: CheckState
+  -> Set Text
+  -> RepresentationContext
+  -> Int
+  -> Value
+  -> Map BackendSourceFieldIdentity BackendFieldStorage
+  -> BackendRepresentationDecision
+selectBackendRepresentation
+  state capabilities context depth represented sourceFields =
+  BackendRepresentationDecision
+    { brdTypeIdentity = selectedTypeIdentity
+    , brdClass = selectedClass
+    , brdRequiredExactNatural = isJust exactNatural
+    , brdOrdinalCertificate = ordinal
+    , brdExactNaturalCertificate = exactNatural
+    , brdRefinementCertificate = refinement
+    , brdProfileRestrictions =
+        sort . nub $
+          maybe [] orcProfileRestrictions ordinal
+            ++ maybe [] enrcProfileRestrictions exactNatural
+            ++ maybe [] rrcProfileRestrictions refinement
+    , brdWrapperEliminated = False
+    , brdErasedFields =
+        sort . nub . mapMaybe resolveField $
+          maybe [] orcErasedFields ordinal
+            ++ maybe [] enrcErasedFields exactNatural
+            ++ maybe [] rrcErasedEvidenceFields refinement
+    }
+  where
+    evaluation =
+      EvalCtx
+        (Globals (csGlobals state))
+        (csMetas state)
+        False
+        (csFacts state)
+    representedTerm = quote evaluation depth (force evaluation represented)
+    selectedTypeIdentity =
+      representationTypeIdentity context representedTerm
+    ordinal =
+      ordinalRepresentationForState state context depth represented
+    exactNatural =
+      exactNaturalRepresentationForState state context depth represented
+    refinement =
+      refinementRepresentationForState state context depth represented
+    selectedClass
+      | "rt-compact-finite-ordinal" `Set.member` capabilities
+      , Just certificate <- ordinal =
+          Repr.FiniteOrdinal
+            (orcCardinalityExpression certificate)
+            (ordinalRepresentationCertificateIdentity certificate)
+      | Just certificate <- exactNatural =
+          Repr.ExactNatural
+            (exactNaturalRepresentationCertificateIdentity certificate)
+      | "rt-unboxed-refinement" `Set.member` capabilities
+      , Just certificate <- refinement =
+          brdClass
+            ( selectBackendRepresentation
+                state
+                capabilities
+                context
+                depth
+                (eval evaluation (rigidEnv depth) (rrcBaseType certificate))
+                sourceFields
+            )
+      | otherwise = Repr.ConservativeBoxed
+    resolveField path =
+      listToMaybe
+        [ identity
+        | identity <- Map.keys sourceFields
+        , bsfiConstructor identity == cfpConstructor path
+        , bsfiSourceIndex identity == cfpSourceIndex path
+        ]
 
 coreHeadGlobal :: Term -> Maybe GName
 coreHeadGlobal = \case
@@ -665,9 +910,15 @@ validateObservationModeFlows st =
            in recoveryFailure ++ checkItems owner depth scopes modes returnSite items
         CSealE _ value -> checkTerm owner depth scopes modes expected value
         CSigT _ value -> checkTerm owner depth scopes modes Nothing value
-        CThunkE value -> checkTerm owner depth scopes modes Nothing value
-        CLazyE value -> checkTerm owner depth scopes modes Nothing value
-        CForceE value -> checkTerm owner depth scopes modes Nothing value
+        CThunkE value suspensionType ->
+          checkTerm owner depth scopes modes Nothing value
+            <> maybe [] (checkTerm owner depth scopes modes Nothing) suspensionType
+        CLazyE value suspensionType ->
+          checkTerm owner depth scopes modes Nothing value
+            <> maybe [] (checkTerm owner depth scopes modes Nothing) suspensionType
+        CForceE value resultType ->
+          checkTerm owner depth scopes modes Nothing value
+            ++ maybe [] (checkTerm owner depth scopes modes Nothing) resultType
         CIf cond yes no ->
           checkTerm owner depth scopes modes Nothing cond
             ++ checkTerm owner depth scopes modes expected yes
@@ -1093,12 +1344,12 @@ validateObservationModeFlows st =
       CPCtorM existentialModes bridges constructor universes patterns ->
         case Map.lookup constructor (csCtors st) of
           Nothing -> [(mode, Nothing) | mode <- existentialModes]
-            ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
+            ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
             ++ concatMap (patternSites depth Nothing) patterns
           Just info ->
             case specializeConstructorType ctx (Just universes) info of
               Nothing -> [(mode, Nothing) | mode <- existentialModes]
-                ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
+                ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
                 ++ concatMap (patternSites depth Nothing) patterns
               Just constructorType ->
                 let sites = do
@@ -1106,7 +1357,7 @@ validateObservationModeFlows st =
                       constructorPatternObservationSites
                         ctx False depth (length (ciFields info)) constructorType scrutineeType
                  in [(mode, Nothing) | mode <- existentialModes]
-                      ++ replicate (constructorBridgeBinderCount bridges) (Parametric, Nothing)
+                      ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
                       ++ case sites of
                            Just aligned -> concat
                              [ patternSites depth (Just fieldType) pattern'
@@ -1349,9 +1600,9 @@ validateFinalizedLevelScopes st =
         CDo _ items -> checkItems interfaceArtifact depth owner universeArity assumptions localSchemas items
         CSealE _ value -> recur value
         CSigT _ value -> recur value
-        CThunkE value -> recur value
-        CLazyE value -> recur value
-        CForceE value -> recur value
+        CThunkE value suspensionType -> recur value <> maybe [] recur suspensionType
+        CLazyE value suspensionType -> recur value <> maybe [] recur suspensionType
+        CForceE value resultType -> recur value ++ maybe [] recur resultType
         CIf cond yes no -> recur cond ++ recur yes ++ recur no
         CQuote _ slots -> concatMap recur slots
         _ -> []
@@ -1792,8 +2043,172 @@ validateFinalizedLevelScopes st =
         }
 
 validateKBackendIR :: KBackendIR -> [BackendIRViolation]
-validateKBackendIR (KBackendIR bodies loweringViolations) =
-  loweringViolations ++ concatMap (uncurry validateBody) (Map.toList bodies)
+validateKBackendIR backendIr =
+  kbirLoweringViolations backendIr
+    ++ validateRepresentationDecisions backendIr
+    ++ concatMap
+      (uncurry validateBody)
+      (Map.toList (kbirBodies backendIr))
+
+validateRepresentationDecisions :: KBackendIR -> [BackendIRViolation]
+validateRepresentationDecisions backendIr =
+  concatMap validateDecision (Map.toAscList (kbirRepresentations backendIr))
+  where
+    capabilities = kbirCapabilities backendIr
+    sourceFields = kbirSourceFields backendIr
+
+    validateDecision (subject, decision) =
+      subjectFinding subject
+        ++ certificateFindings subject decision
+        ++ classFindings subject decision
+        ++ erasedFieldFindings subject decision
+
+    subjectFinding = \case
+      BackendDeclarationSubject _ -> []
+      BackendConstructorFieldSubject identity
+        | Map.member identity sourceFields -> []
+        | otherwise ->
+            [representationViolation identity
+              "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+              "representation decision names a source field absent from KBackendIR"]
+
+    certificateFindings subject decision =
+      concat
+        [ replay
+            subject
+            "ordinal"
+            verifyOrdinalRepresentationCertificate
+            (brdOrdinalCertificate decision)
+        , replay
+            subject
+            "exact-natural"
+            verifyExactNaturalRepresentationCertificate
+            (brdExactNaturalCertificate decision)
+        , replay
+            subject
+            "refinement"
+            verifyRefinementRepresentationCertificate
+            (brdRefinementCertificate decision)
+        ]
+        ++ [ subjectViolation subject
+              "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+              "representation certificate type identity disagrees with its KBackendIR decision"
+           | certificateTypeIdentityMismatch decision
+           ]
+
+    replay subject label verifyCertificate certificate =
+      case certificate of
+        Nothing -> []
+        Just value ->
+          case verifyCertificate value of
+            Right () -> []
+            Left detail ->
+              [ subjectViolation subject
+                  "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+                  (label <> " representation certificate replay failed: " <> detail)
+              ]
+
+    classFindings subject decision =
+      requiredExactFinding ++ case brdClass decision of
+        Repr.ConservativeBoxed -> []
+        Repr.ExactNatural identity ->
+          case brdExactNaturalCertificate decision of
+            Just certificate
+              | identity
+                  == exactNaturalRepresentationCertificateIdentity certificate ->
+                  []
+            _ ->
+              [ subjectViolation subject
+                  "E_BACKEND_REQUIRED_REPRESENTATION_MISSING"
+                  "ExactNatural was selected without its matching verified certificate"
+              ]
+        Repr.FiniteOrdinal cardinality identity ->
+          capabilityFinding
+            ++ case brdOrdinalCertificate decision of
+              Just certificate
+                | identity
+                    == ordinalRepresentationCertificateIdentity certificate
+                , orcCardinalityExpression certificate == cardinality ->
+                    []
+              _ ->
+                [ subjectViolation subject
+                    "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+                    "FiniteOrdinal was selected without its matching ordinal certificate"
+                ]
+      where
+        requiredExactFinding
+          | brdRequiredExactNatural decision
+          , case brdClass decision of
+              Repr.ExactNatural {} -> False
+              _ -> True =
+              [ subjectViolation subject
+                  "E_BACKEND_REQUIRED_REPRESENTATION_MISSING"
+                  "a certified exact-natural type has no ExactNatural backend representation"
+              ]
+          | otherwise = []
+        capabilityFinding
+          | "rt-compact-finite-ordinal" `Set.member` capabilities = []
+          | otherwise =
+              [ subjectViolation subject
+                  "E_BACKEND_REQUIRED_REPRESENTATION_MISSING"
+                  "FiniteOrdinal requires the rt-compact-finite-ordinal capability"
+              ]
+
+    erasedFieldFindings subject decision =
+      [ subjectViolation subject
+          "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+          ( "certificate claims erased source field "
+              <> gKey (bsfiConstructor field)
+              <> "."
+              <> bsfiName field
+              <> " but KBackendIR retains it"
+          )
+      | field <- brdErasedFields decision
+      , case Map.lookup field sourceFields of
+          Just BackendFieldErased {} -> False
+          _ -> True
+      ]
+        ++ [ subjectViolation subject
+              "E_BACKEND_REQUIRED_REPRESENTATION_MISSING"
+              "refinement wrapper elimination requires rt-unboxed-refinement"
+           | brdWrapperEliminated decision
+           , "rt-unboxed-refinement" `Set.notMember` capabilities
+           ]
+
+    certificateTypeIdentityMismatch decision =
+      any
+        (/= brdTypeIdentity decision)
+        ( maybeToList (orcTypeIdentity <$> brdOrdinalCertificate decision)
+            ++ maybeToList
+              (enrcTypeIdentity <$> brdExactNaturalCertificate decision)
+            ++ maybeToList
+              (rrcTypeIdentity <$> brdRefinementCertificate decision)
+        )
+
+    subjectViolation subject code message =
+      BackendIRViolation
+        { bivBody = subjectOwner subject
+        , bivNode = BackendNodeId (-1)
+        , bivCode = code
+        , bivMessage = message
+        , bivPayloadFields =
+            [("subject", renderRepresentationSubject subject)]
+        }
+
+    representationViolation identity code message =
+      subjectViolation
+        (BackendConstructorFieldSubject identity)
+        code
+        message
+
+    subjectOwner = \case
+      BackendDeclarationSubject global -> global
+      BackendConstructorFieldSubject identity -> bsfiOwner identity
+
+    renderRepresentationSubject = \case
+      BackendDeclarationSubject global -> gKey global
+      BackendConstructorFieldSubject identity ->
+        gKey (bsfiOwner identity) <> "." <> bsfiName identity
 
 validateBody :: GName -> BackendBody -> [BackendIRViolation]
 validateBody owner body =
@@ -3029,8 +3444,8 @@ backendMeta = \case
   BForce meta _ -> meta
   BIf meta _ _ _ -> meta
 
-lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName CtorInfo -> Map GName TraitInfo -> Set GName -> GName -> Term -> (BackendBody, [BackendIRViolation])
-lowerBody ctx globals ctors traits builtinIntegerLiteralDicts g body =
+lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName CtorInfo -> Map GName TraitInfo -> [InstanceEntry] -> Set GName -> GName -> Term -> (BackendBody, [BackendIRViolation])
+lowerBody ctx globals ctors traits instances builtinIntegerLiteralDicts g body =
   let (body0, st') = runState (runReaderT go static) (LowerState 0 0 [] [])
       bodyWithErasures = body0 {bbErasures = bbErasures body0 ++ reverse (lstErasures st')}
       body' = annotateBackendBodyOwnership bodyWithErasures
@@ -3042,6 +3457,7 @@ lowerBody ctx globals ctors traits builtinIntegerLiteralDicts g body =
         , lsGlobals = globals
         , lsCtors = ctors
         , lsTraits = traits
+        , lsInstances = instances
         , lsRuntimeErasedProofHeads =
             Set.fromList
               ( prelNatAddRightIdentity
@@ -3416,9 +3832,9 @@ lowerTermExpected expected term depth scopes = case term of
     lowerLocalRecursiveGroup telescope definitions body depth scopes
   CDo lbl items -> BDo <$> metaAt <*> pure lbl <*> lowerItems items depth scopes
   CSealE labs e -> BSeal <$> metaAt <*> pure labs <*> lowerTerm e depth scopes
-  CThunkE e -> BThunk <$> metaAt <*> lowerTerm e depth scopes
-  CLazyE e -> BLazy <$> metaAt <*> lowerTerm e depth scopes
-  CForceE e -> BForce <$> metaAt <*> lowerTerm e depth scopes
+  CThunkE e _ -> BThunk <$> metaAt <*> lowerTerm e depth scopes
+  CLazyE e _ -> BLazy <$> metaAt <*> lowerTerm e depth scopes
+  CForceE e _ -> BForce <$> metaAt <*> lowerTerm e depth scopes
   CIf c t e ->
     BIf <$> metaAt
       <*> lowerTerm c depth scopes
@@ -3507,6 +3923,7 @@ lowerApp expected term depth scopes = do
   meta <- metaAt
   globals <- asks lsGlobals
   traits <- asks lsTraits
+  instances <- asks lsInstances
   runtimeErasedProofHeads <- asks lsRuntimeErasedProofHeads
   builtinIntegerLiteralDicts <- asks lsBuiltinIntegerLiteralDicts
   ctx <- asks lsCtx
@@ -3567,6 +3984,7 @@ lowerApp expected term depth scopes = do
                   proofTermIsRuntimeErased
                     globals
                     traits
+                    instances
                     ctx
                     depth
                     scopes
@@ -3664,18 +4082,20 @@ proofIsDefinitionallyRefl ctx depth proof =
 proofTermIsRuntimeErased
   :: Map GName GlobalDef
   -> Map GName TraitInfo
+  -> [InstanceEntry]
   -> EvalCtx
   -> Int
   -> ScopeStack
   -> Set GName
   -> Term
   -> Bool
-proofTermIsRuntimeErased globals traits ctx depth scopes runtimeErasedHeads proof =
+proofTermIsRuntimeErased globals traits instances ctx depth scopes runtimeErasedHeads proof =
   go proof
   where
     go candidate =
       proofHeadIsRuntimeErased runtimeErasedHeads candidate
         || projectedTraitMemberIsRuntimeErased candidate
+        || proofTypeIsRuntimeErased candidate
         || proofCombinatorHasOnlyErasedEvidence candidate
         -- Erasure demand propagates through the exact checked equality
         -- eliminators. If their payload is already runtime-erased, using the
@@ -3716,6 +4136,77 @@ proofTermIsRuntimeErased globals traits ctx depth scopes runtimeErasedHeads proo
                 (Map.lookup trait traits)
             _ -> False
         Nothing -> False
+
+    -- Runtime erasure is a judgment on the proof's checked type, not on the
+    -- spelling of its producer. For equality, §11.1.6/§11.4.1 derives that
+    -- judgment from semantic IsSet evidence for the homogeneous carrier.
+    -- Current-scope evidence is followed through declared supertraits; an
+    -- exact closed instance is also sufficient. Anything requiring fresh
+    -- instance variables or unresolved premises remains runtime-relevant and
+    -- therefore fails closed at the transport lowerability gate.
+    proofTypeIsRuntimeErased candidate =
+      case force ctx <$> termTypeAt globals traits ctx depth scopes candidate of
+        Just proofType ->
+          maybe
+            False
+            (\(carrier, _, _) -> carrierHasIsSetEvidence carrier)
+            (canonicalEqualityPayload ctx proofType)
+        Nothing -> False
+
+    carrierHasIsSetEvidence carrier =
+      any
+        (maybe False (evidenceEntailsIsSet Set.empty carrier) . scopeSlotType)
+        scopes
+        || any (closedIsSetInstance carrier) instances
+
+    evidenceEntailsIsSet seen carrier evidenceType =
+      case force ctx evidenceType of
+        VGlobI trait _ spine ->
+          traitApplicationEntailsIsSet seen carrier trait (map snd spine)
+        VGlobN trait spine ->
+          traitApplicationEntailsIsSet seen carrier trait (map snd spine)
+        _ -> False
+
+    traitApplicationEntailsIsSet seen carrier trait arguments
+      | trait `Set.member` seen = False
+      | otherwise =
+          case Map.lookup trait traits of
+            Nothing -> False
+            Just info ->
+              let semanticCount = tiParamCount info
+                  semanticArguments =
+                    drop (max 0 (length arguments - semanticCount)) arguments
+                  direct =
+                    trait == prelIsSet
+                      && case semanticArguments of
+                        [candidate] ->
+                          convertible ctx depth (force ctx candidate) (force ctx carrier)
+                        _ -> False
+                  inherited =
+                    any
+                      ( maybe False
+                          (evidenceEntailsIsSet (Set.insert trait seen) carrier)
+                          . traitSuperType ctx semanticArguments
+                          . snd
+                      )
+                      (tiSupers info)
+               in length semanticArguments == semanticCount
+                    && (direct || inherited)
+
+    closedIsSetInstance carrier entry
+      | ieTrait entry /= prelIsSet
+          || ieTeleLen entry /= 0
+          || not (null (iePremises entry)) =
+          False
+      | otherwise =
+          case ieHead entry of
+            [headTerm] ->
+              convertible
+                ctx
+                depth
+                (force ctx (eval ctx [] headTerm))
+                (force ctx carrier)
+            _ -> False
 
     projectionHead candidate =
       case fst (spineOfTerm (stripWrappers candidate)) of
@@ -4161,6 +4652,7 @@ traitRuntimeFieldOrder globals ctx traitG ti =
     map fst (tiSupers ti)
       ++ [ member
          | member <- tiMembers ti
+         , member `Set.notMember` tiAssociatedStaticMembers ti
          , Map.lookup member (tiMemberQs ti) /= Just Q0
          , not (globalRuntimeErased globals ctx (traitMemberGlobal traitG member))
          ]
@@ -4540,8 +5032,41 @@ explicitCtorFieldRuntimePlacements
   -> Value
   -> [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)]
 explicitCtorFieldRuntimePlacements ctx fieldCount ty =
-  let explicitMask = collect 0 0 ty
+  let explicitMask =
+        [ placement
+        | (icit, placement) <- allCtorBinderRuntimePlacements ctx ty
+        , icit == Expl
+        ]
    in drop (max 0 (length explicitMask - fieldCount)) explicitMask
+
+sourceCtorFieldRuntimePlacements
+  :: EvalCtx
+  -> Int
+  -> Value
+  -> [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)]
+sourceCtorFieldRuntimePlacements ctx fieldCount ty =
+  reindex 0
+    (drop
+      (max 0 (length allFields - fieldCount))
+      allFields)
+  where
+    allFields = map snd (allCtorBinderRuntimePlacements ctx ty)
+    reindex _ [] = []
+    reindex runtimeIndex ((runtime, _, fieldType, provenance) : rest) =
+      ( runtime
+      , if runtime then Just runtimeIndex else Nothing
+      , fieldType
+      , provenance
+      )
+        : reindex
+            (if runtime then runtimeIndex + 1 else runtimeIndex)
+            rest
+
+allCtorBinderRuntimePlacements
+  :: EvalCtx
+  -> Value
+  -> [(Icit, (Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance))]
+allCtorBinderRuntimePlacements ctx = collect 0 0
   where
     collect lvl runtimeIndex v =
       case force ctx v of
@@ -4551,10 +5076,16 @@ explicitCtorFieldRuntimePlacements ctx fieldCount ty =
               physicalIndex = if runtime then Just runtimeIndex else Nothing
               nextRuntimeIndex = if runtime then runtimeIndex + 1 else runtimeIndex
               rest = collect (lvl + 1) nextRuntimeIndex (eval ctx (x : env) cod)
-           in if ic == Expl
-                then
-                  (runtime, physicalIndex, Just dom, if runtime then Nothing else erasureProvenanceForDomain ctx lvl mode q dom) : rest
-                else rest
+           in ( ic
+              , ( runtime
+                , physicalIndex
+                , Just dom
+                , if runtime
+                    then Nothing
+                    else erasureProvenanceForDomain ctx lvl mode q dom
+                )
+              )
+                : rest
         _ -> []
 
 coreCtorPayloadRuntimeFacts :: EvalCtx -> Value -> [(Bool, Maybe Value, Maybe ErasureProvenance)]

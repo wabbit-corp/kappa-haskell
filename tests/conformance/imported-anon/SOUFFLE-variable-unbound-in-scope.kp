@@ -13,14 +13,14 @@
 --! mode check
 
 -- POSITIVE: all variables bound before use.
-let square : Int -> Int
+square : Int -> Int
 let square x = x * x
 
-let addBoth : Int -> Int -> Int
+addBoth : Int -> Int -> Int
 let addBoth a b = a + b
 
 -- NEGATIVE: body uses `z` which is not bound anywhere.
-let badExpr : Int -> Int
+badExpr : Int -> Int
 let badExpr x =
     let y = x + 1
     y + z    --!! kappa.name.unresolved
@@ -36,7 +36,7 @@ data Result : Type =
     Ok  Int
     Err String
 
-let extractOk : Result -> Int
+extractOk : Result -> Int
 let extractOk r =
     match r
         case Ok  n  -> n
@@ -46,7 +46,7 @@ let extractOk r =
 --! assertDiagnosticFamily error kappa.name.unresolved
 
 -- POSITIVE: all paths use correctly bound variables.
-let safe : Result -> Int
+safe : Result -> Int
 let safe r =
     match r
         case Ok  n   -> n

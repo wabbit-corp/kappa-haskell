@@ -4598,7 +4598,7 @@ coreUsageTypeExpr binders = \case
             , bSpan = noSpan
             }
     pure (EArrow binder bodyExpr)
-  Core.CForceE t -> coreUsageTypeExpr binders t
+  Core.CForceE t _ -> coreUsageTypeExpr binders t
   _ -> Nothing
 
 coreQuantity :: Core.Q -> Maybe Quantity

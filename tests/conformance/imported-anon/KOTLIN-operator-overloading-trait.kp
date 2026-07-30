@@ -1,0 +1,40 @@
+-- Source issues: KT-620, KT-1060, KT-3303 (operator overloading conventions)
+-- Spec: traits.members, traits.members.overloaded_member_names,
+--   lexical.operator_identifiers_fixity
+--
+-- Kappa's `(+)` is a prelude operator that dispatches through the `Add` trait
+-- (see ANON_SPEC.md §std.prelude). An `Add` instance for a user data type makes
+-- the `(+)` operator usable on that type.
+
+--! mode check
+
+data Vec2 : Type =
+    Vec2 (x : Int) (y : Int)
+
+-- POSITIVE: provide an `Add` instance for Vec2 to give it `(+)` overloading.
+instance Add Vec2 =
+    let add v1 v2 =
+        match (v1, v2)
+        case (Vec2 ax ay, Vec2 bx by) -> Vec2 (add ax bx) (add ay by)
+
+--! assertNoErrors
+
+-- POSITIVE: with the instance in scope, `(+)` works on Vec2.
+addVecs : Vec2 -> Vec2 -> Vec2
+let addVecs a b = a + b
+
+--! assertNoErrors
+--! assertType addVecs (Vec2 -> Vec2 -> Vec2)
+
+-- POSITIVE: the operator is generic over any type with `Add`.
+sumPair : forall (a : Type). (@_ : Add a) -> a -> a -> a
+let sumPair x y = x + y
+
+--! assertNoErrors
+
+-- POSITIVE: using `(+)` with Int, which has the prelude `Add` instance.
+three : Int
+let three = 1 + 2
+
+--! assertNoErrors
+--! assertType three Int

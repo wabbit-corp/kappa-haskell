@@ -3050,6 +3050,14 @@ identify the reporting campaign lane; many entries cite a pinning test under
 
 - **§3.1.9, §3.2.11, §T.5.1** (L1374-1419, L3274-3284, L46599-46602) `[writer1:diag-families-2]`
   §3.1.9 and the §3.2 family sections state payloads MUST contain specific information (e.g. §3.2.11: SCC members, call sites, strategies, size-change matrices) but — except §3.2.13's explicit field-name table — give no normative JSON field names. T.5.1 assertDiagnosticPayload takes an RFC-6901 pointer, so the payload MUSTs are untestable portably: no conforming pointer spelling exists for most families.
+  The current staged corpus contains nineteen tests that consequently pin
+  implementation-chosen paths such as `/payload/expected`,
+  `/payload/actual`, `/payload/binder`, and `/payload/suggestion`. The Spec
+  should either publish a canonical versioned payload schema for every
+  standardized family or add semantic harness assertions that select required
+  information by meaning rather than by raw JSON pointer. Until one of those
+  mechanisms is normative, exact payload-pointer assertions are diagnostic-API
+  compatibility tests, not portable language-conformance tests.
 
 - **§3.2.14** (L3409-L3499, L27675-L27814) `[analysis:diag-families-2]`
   §3.2.14 defines kappa.bridge.contract family but §26.1.12-26.1.15 (Bridge-bound package semantics) defines error-translation rules for bridge-bound members. The relationship between these two diagnostic families and how bridge-specific errors map to bridge-contract diagnostics is not fully specified.
@@ -3682,3 +3690,96 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   negative/refined-linear-construction). If linear refinement is wanted, the
   signatures need quantity polymorphism — a deliberate future design item,
   not an oversight to patch casually.
+
+## III.10 Spec-coverage promotion review additions (2026-07-28)
+
+- **§5.1: should ASCII identifiers admit trailing prime marks?**
+  The ASCII grammar `[A-Za-z_][A-Za-z0-9_]*` rejects conventional functional
+  spellings such as `idSL'`. Decide whether one or more trailing ASCII apostrophes
+  should be admitted as identifier suffixes, while preserving the unambiguous
+  starts of character and prefixed quoted literals. The original
+  `ATS-dep-list-append-index-branch-refinement.kp` fixture exposed this with
+  `idSL'`; the fixture now uses the portable spelling `idSLSucc`, so its indexed
+  branch-refinement requirements can be tested independently while the language
+  design question remains open.
+
+- **§14.1/§14.3: should `Eq` refine `Equiv`, or should `Equiv` require `Eq`?**
+  The current hierarchy makes `Eq` and `Equiv` separate traits and supplies a
+  blanket `Eq a => Equiv a` instance. This permits a lawful `Equiv A` with no
+  decidable `Eq A`, but also creates overlap questions when a type has both a
+  custom `Equiv` and an `Eq`. Decide whether this separation is intentional,
+  whether `Eq` should be a supertrait of `Equiv`, or whether the blanket bridge
+  should be replaced by an explicit opt-in mechanism. The answer also determines
+  how equality-reflection tests should isolate `Eq` from `Equiv`.
+
+- **§14.1/§14.5.1: handwritten `Eq` instance ergonomics are underspecified.**
+  A literal reading requires a separately available `IsSet A` supertrait and
+  explicit `eqSound`/`eqComplete` members for every handwritten `instance Eq A`.
+  Consider allowing the instance checker to derive or synthesize `IsSet A` and
+  attempt checked proofs of the two laws when the user supplies only `(==)`,
+  failing with proof obligations only when synthesis cannot succeed.
+
+- **§3.1.11: duplicate-field cascades need an explicit suppression policy.**
+  `adts/SOUFFLE-record-field-name-duplicate.kp` produces the three intended
+  duplicate-label diagnostics plus a downstream domain/type diagnostic. Both
+  retaining that fourth independently useful diagnostic and suppressing it as a
+  consequence of the duplicate record literal are defensible under the current
+  `SHOULD` wording. Specify whether this cascade is suppressed, or explicitly
+  permit both diagnostic sets so conformance tests do not pin one count.
+
+- **§5.5.1A vs §5.5.2: duplicate fixity rejection must take precedence over
+  “last top-level declaration”.**
+  Same-scope fixity declarations are required to collide by §5.5.1A, while
+  §5.5.2 currently describes the exported fixity as the last top-level
+  declaration. The latter wording should be conditional on there being one
+  valid declaration after collision checking; it must not imply last-wins.
+  `lexical/fixity-last-declaration-exported` should therefore test duplicate
+  rejection, not exported last-wins behavior.
+
+- **§23.3/§28.2: portable base `Lift` construction is not closed.**
+  Cross-stage persistence requires `Lift`, but the minimum prelude does not
+  require `Lift` instances for any base carrier and exposes no portable
+  constructor for `Code`. A user cannot bootstrap `Lift Integer` without either
+  relying on an implementation intrinsic or recursively invoking the very
+  `Lift` instance being defined. Specify required base instances or a checked
+  source-level code-construction primitive.
+
+- **§20.10.2/§28.2: custom `IntoQuery` implementations need a portable source
+  constructor path.**
+  The standard surface requires built-in `IntoQuery (List a)` evidence, so a
+  custom source can in principle delegate through that dictionary. The Spec
+  should make this projection/delegation pattern explicit and testable; no
+  compiler-private `__queryFromList` name may be required by portable source.
+
+- **§28.2 TypeLevel theorem surface is missing exact signatures.**
+  `typeLevelFiniteBelowOmega` is named by the required prelude surface, but its
+  full telescope and intended explicit/implicit application syntax are not
+  normatively declared. Consequently
+  `universes-intrinsics/nat-typelevel-literal-fromnat-positive.kp` cannot
+  portably know whether `typeLevelFiniteBelowOmega n` is a well-formed proof
+  term. Add the canonical signature before promoting tests that apply it.
+
+- **§3.1, §14.3, §16.3.2, and Appendix T: optional diagnostic quality should
+  become conformance-required where the result is deterministic.**
+  Fix-its for unique local repairs, typo suggestions, orphan-instance
+  warnings, unique or finite hole candidates, related origins, and long-form
+  explanations are currently described with a mixture of `SHOULD` and `MAY`.
+  Staged tests that assert them therefore turn recommended behavior into a
+  mandatory conformance condition. These facilities are important enough for
+  portable tooling and predictable user experience that the deterministic
+  subset should probably be promoted to `MUST`: warnings for every orphan
+  instance, suggestions/fixes when the Spec identifies one unique
+  source-preserving repair, contractible-hole inhabitants and finite candidates
+  below the declared threshold, required related-origin roles for standardized
+  families, and explanation entries for stable standard codes/families.
+  Non-unique, expensive, or heuristic global searches may remain
+  implementation-defined, but the boundary and deterministic ordering must be
+  stated. Until then, those assertions belong in diagnostic-quality suites
+  rather than mandatory language conformance.
+
+- **Consolidated effect/borrow/bridge analysis.**
+  [SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md](SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md)
+  records the full clause-by-clause analysis, affected test inventory,
+  resolution alternatives, and recommended normative edits for top-level
+  effect self labels, the three borrow/flow conflicts, and bridge-surface
+  universe polymorphism.

@@ -604,8 +604,8 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
-      CThunkE e -> termFreeDeps d scs e
-      CLazyE e -> termFreeDeps d scs e
+      CThunkE e _ -> termFreeDeps d scs e
+      CLazyE e _ -> termFreeDeps d scs e
       CDo _ items -> freeDoItems d scs items
       term -> termReadDeps d scs UseConsumes term
 
@@ -655,9 +655,9 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CInject _ e -> freeDeps d scs e
       CSealE _ e -> freeDeps d scs e
       CSigT _ e -> freeDeps d scs e
-      CThunkE e -> freeDeps d scs e
-      CLazyE e -> freeDeps d scs e
-      CForceE e -> freeDeps d scs e
+      CThunkE e _ -> freeDeps d scs e
+      CLazyE e _ -> freeDeps d scs e
+      CForceE e _ -> freeDeps d scs e
       CQuote _ slots -> Set.unions (map (freeDeps d scs) slots)
       CDo _ items -> freeDoItems d scs items
       _ -> Set.empty
@@ -677,9 +677,9 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CProjAtM _ e _ _ -> termFreeDeps d scs e
       CSealE _ e -> termReadDeps d scs uc e
       CSigT _ e -> termReadDeps d scs uc e
-      CThunkE e -> termReadDeps d scs UseConsumes e
-      CLazyE e -> termReadDeps d scs UseConsumes e
-      CForceE e -> termReadDeps d scs UseConsumes e
+      CThunkE e _ -> termReadDeps d scs UseConsumes e
+      CLazyE e _ -> termReadDeps d scs UseConsumes e
+      CForceE e _ -> termReadDeps d scs UseConsumes e
       CInject _ e -> termReadDeps d scs UseConsumes e
       CCtorI _ _ ann arguments ->
         maybe Set.empty (termReadDeps d scs UseErased) ann
@@ -1048,9 +1048,9 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
   CInject _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
   CSealE _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
   CSigT _ e -> descend1 ctx ctorTypes owner depth scopes UseErased e liveOut acc
-  CThunkE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
-  CLazyE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
-  CForceE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CThunkE e _ -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CLazyE e _ -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CForceE e _ -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
 
   -- Leaves and do-kernel ---------------------------------------------------
   CGlobal _ _ -> (acc, liveOut)
@@ -2004,9 +2004,9 @@ usageIntervals ctx ctorTypes owner body =
       CInject _ e -> count [] depth scopes UseConsumes e next
       CSealE _ e -> count [] depth scopes UseConsumes e next
       CSigT _ e -> count [] depth scopes UseErased e next
-      CThunkE e -> count [] depth scopes UseConsumes e next
-      CLazyE e -> count [] depth scopes UseConsumes e next
-      CForceE e -> count [] depth scopes UseConsumes e next
+      CThunkE e _ -> count [] depth scopes UseConsumes e next
+      CLazyE e _ -> count [] depth scopes UseConsumes e next
+      CForceE e _ -> count [] depth scopes UseConsumes e next
 
       CGlobal _ _ -> (Map.empty, Map.empty, next)
       CSort _ -> (Map.empty, Map.empty, next)
@@ -2495,9 +2495,9 @@ argConvFindings ctx owner = goTerm
         concatMap (\definition -> goTerm (clrdType definition) ++ goTerm (clrdRhs definition)) definitions ++ goTerm b
       CSealE _ e -> goTerm e
       CSigT _ e -> goTerm e
-      CThunkE e -> goTerm e
-      CLazyE e -> goTerm e
-      CForceE e -> goTerm e
+      CThunkE e _ -> goTerm e
+      CLazyE e _ -> goTerm e
+      CForceE e _ -> goTerm e
       CIf c th el -> goTerm c ++ goTerm th ++ goTerm el
       CQuote _ slots -> concatMap goTerm slots
       -- leaves

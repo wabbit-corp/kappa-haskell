@@ -34,7 +34,7 @@ let two = PSucc (PSucc PZero)
 
 -- NEGATIVE: declared index 3, actual construction 2.
 badTwo : PeanoNat 3
-let badTwo = PSucc (PSucc PZero)         --!! kappa.type.mismatch
+let badTwo = PSucc (PSucc PZero)         --!! kappa.application.argument-mismatch
 
 -- A witness family for factorial: FactWitness n r  ~  fact(n) = r.
 data FactWitness (n : Nat) (r : Nat) : Type =
@@ -63,4 +63,5 @@ badFact4 : FactWitness 4 25
 let badFact4 = FactSucc fact3            --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertErrorCount 3

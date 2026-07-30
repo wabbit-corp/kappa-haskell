@@ -1,0 +1,21 @@
+-- Eq reflection is selected through the checked dictionary's eqSound member.
+-- The same branch fact must support both dependent transport and an erased
+-- equality implicit; neither result is a built-in property of the `refl`
+-- spelling.
+--! mode check
+--! assertNoErrors
+module main
+
+data At (n : Int) : Type =
+    AtZero : At 0
+
+transportAtZero : (n : Int) -> Option (At n)
+let transportAtZero n =
+    if n == 0 then Some AtZero else None
+
+requiresZero : (n : Int) -> (@0 proof : n = 0) -> Int
+let requiresZero n = 7
+
+reflectAtZero : Int -> Int
+let reflectAtZero n =
+    if n == 0 then requiresZero n else 0

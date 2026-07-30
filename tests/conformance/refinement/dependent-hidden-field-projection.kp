@@ -1,0 +1,15 @@
+module main
+
+data Witnessed (predicate : Nat -> Type) : Type =
+    Witnessed (value : Nat) (@0 proof : predicate value)
+
+projectProof :
+    forall (predicate : Nat -> Type).
+    (x : Witnessed predicate) ->
+    predicate x.value
+
+let projectProof x =
+    x.proof
+
+--! mode check
+--! assertNoErrors

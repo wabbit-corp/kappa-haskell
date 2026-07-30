@@ -12,7 +12,7 @@
 
 trait Collection (c : Type) =
     Element : Type
-    toList  : c -> List c.Element
+    toList  : c -> List Element
     size    : c -> Nat
 
 data IntList : Type = IntList (List Nat)
@@ -20,25 +20,25 @@ data IntList : Type = IntList (List Nat)
 instance Collection IntList =
     let Element = Nat
     let toList (IntList xs) = xs
-    let size   (IntList xs) = length xs
+    let size   (IntList xs) = natOfInt (listLength xs)
 
 data StrList : Type = StrList (List String)
 
 instance Collection StrList =
     let Element = String
     let toList (StrList xs) = xs
-    let size   (StrList xs) = length xs
+    let size   (StrList xs) = natOfInt (listLength xs)
 
 -- POSITIVE: function requiring Collection c where Element c = Nat.
-sumElements : forall {c : Type} -> (@i : Collection c) -> (c.Element = Nat) -> c -> Nat
+sumElements : forall (c : Type). (@i : Collection c) -> (i.Element = Nat) -> c -> Nat
 let sumElements _ coll = foldl (+) 0 (toList coll)
 
 intListSum : Nat
 let intListSum = sumElements refl (IntList [1, 2, 3])
 
 -- POSITIVE: function requiring Element c = String.
-joinElements : forall {c : Type} -> (@i : Collection c) -> (c.Element = String) -> c -> String
-let joinElements _ coll = foldl (++) "" (toList coll)
+joinElements : forall (c : Type). (@i : Collection c) -> (i.Element = String) -> c -> String
+let joinElements _ coll = foldl stringAppend "" (toList coll)
 
 strListJoin : String
 let strListJoin = joinElements refl (StrList ["a", "b"])

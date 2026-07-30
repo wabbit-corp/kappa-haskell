@@ -506,6 +506,9 @@ data ArithmeticAssumptionSource a
       { aasProposition :: !a
       , aasEvidence :: !a
       }
+  | ArithmeticAssumptionConversion
+      { aasProposition :: !a
+      }
   | ArithmeticAssumptionBranch
       { aasBranchTruth :: !Bool
       , aasBranchCondition :: !a
@@ -615,6 +618,8 @@ mapArithmeticAssumptionSource
 mapArithmeticAssumptionSource transform = \case
   ArithmeticAssumptionProof proposition evidence ->
     ArithmeticAssumptionProof (transform proposition) (transform evidence)
+  ArithmeticAssumptionConversion proposition ->
+    ArithmeticAssumptionConversion (transform proposition)
   ArithmeticAssumptionBranch truth condition ->
     ArithmeticAssumptionBranch truth (transform condition)
 
@@ -628,6 +633,8 @@ traverseArithmeticAssumptionSource transform = \case
     ArithmeticAssumptionProof
       <$> transform proposition
       <*> transform evidence
+  ArithmeticAssumptionConversion proposition ->
+    ArithmeticAssumptionConversion <$> transform proposition
   ArithmeticAssumptionBranch truth condition ->
     ArithmeticAssumptionBranch truth <$> transform condition
 
@@ -639,6 +646,8 @@ foldMapArithmeticAssumptionSource
 foldMapArithmeticAssumptionSource transform = \case
   ArithmeticAssumptionProof proposition evidence ->
     transform proposition <> transform evidence
+  ArithmeticAssumptionConversion proposition ->
+    transform proposition
   ArithmeticAssumptionBranch _ condition ->
     transform condition
 
@@ -740,9 +749,9 @@ data Term
   | CSealE ![Text] !Term -- ^ §13.2.10 sealed package: opaque labels + record
   | CSigT ![Text] !Term -- ^ §13.2.10 signature type: opaque labels + record type
   -- Suspensions (laziness) -----------------------------------------------
-  | CThunkE !Term -- ^ Delay
-  | CLazyE !Term -- ^ Memo
-  | CForceE !Term
+  | CThunkE !Term !(Maybe Term) -- ^ Delay + observe-only checked suspension type
+  | CLazyE !Term !(Maybe Term) -- ^ Memo + observe-only checked suspension type
+  | CForceE !Term !(Maybe Term) -- ^ suspension value + observe-only checked result type
   -- Conditional and metaprogramming --------------------------------------
   | CIf !Term !Term !Term
   | CQuote !QuotedSyntax ![Term] -- ^ §21.1 syntax quote: payload + in-quote splice slots
@@ -751,7 +760,8 @@ data Term
 -- | Structural equality on 'Term'.
 --
 -- Hand-written rather than derived for ONE reason: the KBackendIR Stage 0
--- head-type annotations on 'CCtor' and 'CMatch' are observe-only metadata
+-- checked-type annotations on 'CCtor', 'CMatch', 'CThunkE', 'CLazyE', and
+-- 'CForceE' are observe-only metadata
 -- and MUST NOT participate in term identity. Two terms that differ only in
 -- their annotation are the same term for every existing client (conversion
 -- caches, quote-payload comparison, dedup), so we compare the structural
@@ -801,9 +811,9 @@ instance Eq Term where
   CDo a b == CDo a' b' = a == a' && b == b'
   CSealE a b == CSealE a' b' = a == a' && b == b'
   CSigT a b == CSigT a' b' = a == a' && b == b'
-  CThunkE a == CThunkE a' = a == a'
-  CLazyE a == CLazyE a' = a == a'
-  CForceE a == CForceE a' = a == a'
+  CThunkE a _ == CThunkE a' _ = a == a'
+  CLazyE a _ == CLazyE a' _ = a == a'
+  CForceE a _ == CForceE a' _ = a == a'
   CIf a b c == CIf a' b' c' = a == a' && b == b' && c == c'
   CQuote a b == CQuote a' b' = a == a' && b == b'
   _ == _ = False
@@ -851,7 +861,7 @@ data CaseAlt = CaseAlt
 --
 -- Entries are dependency ordered.  Each entry is checked in the context of
 -- the constructor existentials and the preceding entries, then introduces one
--- erased parametric binder before the source-field binders.  Runtime matching
+-- erased ordinary binder before the source-field binders.  Runtime matching
 -- therefore needs only a placeholder slot, while KCore retains and
 -- independently checks the proof that licenses the branch.
 data ConstructorBridge

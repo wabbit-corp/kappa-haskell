@@ -15,13 +15,19 @@ module Kappa.Arithmetic
   , ArithmeticProofRule (..)
   , ArithmeticReplay (..)
   , ArithmeticFormulaReplay (..)
+  , ArithmeticAssumptionCaseReplay (..)
   , ArithmeticSemantics (..)
+  , PrimitiveComparisonDomain (..)
+  , decodePrimitiveComparisonOperand
+  , decodePrimitiveComparisonOperandM
   , negateFact
   , formulaAssumptionFacts
   , proveFactByBounds
   , deriveArithmeticReplay
   , deriveArithmeticFormulaReplay
+  , deriveArithmeticFormulaReplayWithAssumptions
   , derivePrincipalAffineAssignment
+  , derivePrincipalAffineSubstitution
   , verifyArithmeticReplay
   , reindexArithmeticFact
   , reindexArithmeticFormula
@@ -37,6 +43,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Functor.Identity (Identity (..))
 
 -- | A symbolic arithmetic expression. Variables are identities chosen by the
 -- reifying client: Core uses de Bruijn levels and KCoreText uses stable local
@@ -72,6 +79,67 @@ data AFormula
   | AOr !AFormula !AFormula
   | ANot !AFormula
   deriving stock (Eq, Ord, Show)
+
+-- | Logical domain of an integer-primitive comparison operand.  Both logical
+-- Nat and Integer lower through the same runtime primitives, so every client
+-- must preserve this distinction while decoding the operand representation.
+data PrimitiveComparisonDomain
+  = PrimitiveComparisonNatural
+  | PrimitiveComparisonInteger
+  deriving stock (Eq, Ord, Show)
+
+-- | Pure specialization of 'decodePrimitiveComparisonOperandM'.
+decodePrimitiveComparisonOperand
+  :: (term -> Maybe term)
+  -> (PrimitiveComparisonDomain -> term -> Maybe AExpr)
+  -> PrimitiveComparisonDomain
+  -> term
+  -> Maybe AExpr
+decodePrimitiveComparisonOperand bridge expression domain operand =
+  runIdentity
+    ( decodePrimitiveComparisonOperandM
+        bridge
+        (\selected term -> Identity (expression selected term))
+        domain
+        operand
+    )
+
+-- | Decode an operand of a shared integer comparison primitive without
+-- conflating its logical Nat and Integer sources.
+--
+-- A logical Nat operand must carry the authenticated @natToInt@ bridge unless
+-- constant folding has reduced it to a closed non-negative literal.  A
+-- logical Integer operand may contain that bridge only when its payload is a
+-- closed non-negative constant.  The caller supplies the exact bridge
+-- recognizer and an identity-backed expression decoder; this module owns the
+-- domain rule shared by elaboration and independent artifact verification.
+decodePrimitiveComparisonOperandM
+  :: Functor effect
+  => (term -> Maybe term)
+  -> (PrimitiveComparisonDomain -> term -> effect (Maybe AExpr))
+  -> PrimitiveComparisonDomain
+  -> term
+  -> effect (Maybe AExpr)
+decodePrimitiveComparisonOperandM bridge expression domain operand =
+  case domain of
+    PrimitiveComparisonNatural ->
+      case bridge operand of
+        Just payload ->
+          expression PrimitiveComparisonNatural payload
+        Nothing ->
+          keepClosedNonNegative
+            <$> expression PrimitiveComparisonInteger operand
+    PrimitiveComparisonInteger ->
+      case bridge operand of
+        Nothing ->
+          expression PrimitiveComparisonInteger operand
+        Just payload ->
+          keepClosedNonNegative
+            <$> expression PrimitiveComparisonInteger payload
+  where
+    keepClosedNonNegative = \case
+      Just result@(AConst value) | value >= 0 -> Just result
+      _ -> Nothing
 
 data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
   deriving stock (Eq, Show)
@@ -128,6 +196,18 @@ data ArithmeticFormulaReplay
   | ReplayOrTrueRight !ArithmeticFormulaReplay
   | ReplayOrFalse !ArithmeticFormulaReplay !ArithmeticFormulaReplay
   | ReplayNot !ArithmeticFormulaReplay
+  | ReplayAssumptionCases ![ArithmeticAssumptionCaseReplay]
+  deriving stock (Eq, Ord, Show)
+
+-- | One canonical case induced by non-atomic assumptions. A contradictory
+-- case records the first assumption fact whose negation follows from the
+-- remaining facts; a live case records the ordinary goal replay under that
+-- case's atomic facts. The case facts themselves are reconstructed from the
+-- authenticated assumptions by the independent verifier.
+data ArithmeticAssumptionCaseReplay
+  = ReplayAssumptionContradiction !Int !ArithmeticReplay
+  | ReplayAssumptionImpossible !Int
+  | ReplayAssumptionGoal !ArithmeticFormulaReplay
   deriving stock (Eq, Ord, Show)
 
 -- | The exact partial-operation contract used while replaying one arithmetic
@@ -232,13 +312,14 @@ deriveArithmeticReplay
   -> Maybe ArithmeticReplay
 deriveArithmeticReplay semantics naturalVariables assumptions goal = do
   admitted <- admitArithmeticAssumptions semantics naturalVariables assumptions
-  guardArithmeticDomain semantics naturalVariables admitted goal
-  deriveWithCaseSplits admitted goal
+  let specializedGoal = simplifyArithmeticFact naturalVariables admitted goal
+  guardArithmeticDomain semantics naturalVariables admitted specializedGoal
+  deriveWithCaseSplits admitted goal specializedGoal
   where
-    deriveWithCaseSplits admitted goal' =
-      case splitFirstConditionalFact goal' of
+    deriveWithCaseSplits admitted originalGoal specializedGoal =
+      case splitFirstConditionalFact specializedGoal of
         Nothing ->
-          deriveArithmeticReplayUnchecked naturalVariables admitted goal'
+          deriveArithmeticReplayUnchecked naturalVariables admitted originalGoal
         Just (condition, thenGoal, elseGoal) -> do
           thenFacts <- formulaAssumptionFacts True condition
           elseFacts <- formulaAssumptionFacts False condition
@@ -262,7 +343,7 @@ deriveArithmeticReplay semantics naturalVariables assumptions goal = do
               elseGoal
           pure
             ArithmeticReplay
-              { arGoal = goal'
+              { arGoal = originalGoal
               , arRule = ProveCaseSplit
               , arNormalForm =
                   NormalCaseSplit condition thenReplay elseReplay
@@ -285,29 +366,174 @@ derivePrincipalAffineAssignment
   -> AFact
   -> Maybe (Int, Integer)
 derivePrincipalAffineAssignment semantics naturalVariables assignableVariables assumptions goal = do
+  (variable, solution) <-
+    derivePrincipalAffineSubstitution
+      semantics
+      naturalVariables
+      assignableVariables
+      assumptions
+      goal
+  case solution of
+    AConst value -> Just (variable, value)
+    _ -> Nothing
+
+-- | Solve exactly one assignable variable from an affine equality, retaining a
+-- principal expression over rigid variables when one exists.
+--
+-- This is the reusable assignment kernel used by both closed literal
+-- inference and indexed-family elaboration.  The result is accepted only when
+-- there is one assignable variable, its coefficient divides every remaining
+-- affine coefficient exactly, and the reconstructed natural expression uses
+-- no subtraction or negative coefficient.  Thus the returned expression is a
+-- total term in the selected arithmetic domain rather than a guessed
+-- rearrangement that would require an unrecorded proof obligation.
+derivePrincipalAffineSubstitution
+  :: ArithmeticSemantics
+  -> Set Int
+  -> Set Int
+  -> [AFact]
+  -> AFact
+  -> Maybe (Int, AExpr)
+derivePrincipalAffineSubstitution semantics naturalVariables assignableVariables assumptions goal = do
   admitted <- admitArithmeticAssumptions semantics naturalVariables assumptions
   guardArithmeticDomain semantics naturalVariables admitted goal
   (lhs, rhs) <- case goal of
     AFact ACmpEq lhs' rhs' -> Just (lhs', rhs')
     _ -> Nothing
-  ALin constant coefficients <-
+  goalLinear <-
     linOf (simplifyA naturalVariables admitted (ASub lhs rhs))
-  (variable, coefficient) <- case Map.toAscList coefficients of
+  let ALin constant coefficients =
+        applyPrincipalAffineSubstitutions
+          assignableVariables
+          admitted
+          goalLinear
+  (variable, coefficient) <- case
+      [ entry
+      | entry@(candidate, candidateCoefficient) <- Map.toAscList coefficients
+      , candidate `Set.member` assignableVariables
+      , candidateCoefficient /= 0
+      ] of
     [entry] -> Just entry
     _ -> Nothing
-  if variable `Set.member` assignableVariables && coefficient /= 0
-    then pure ()
-    else Nothing
-  let numerator = negate constant
-  if numerator `rem` coefficient == 0
-    then pure ()
-    else Nothing
-  let solution = numerator `quot` coefficient
-  case semantics of
-    ArithmeticNaturalSemantics
-      | solution < 0 -> Nothing
-    _ -> pure ()
+  let remaining = Map.delete variable coefficients
+      divideExactly value =
+        let numerator = negate value
+         in if numerator `rem` coefficient == 0
+              then Just (numerator `quot` coefficient)
+              else Nothing
+  solutionConstant <- divideExactly constant
+  solutionCoefficients <- traverse divideExactly remaining
+  solution <-
+    affineExpression
+      semantics
+      solutionConstant
+      (Map.filter (/= 0) solutionCoefficients)
   pure (variable, solution)
+  where
+    affineExpression selectedSemantics constant coefficients =
+      case selectedSemantics of
+        ArithmeticNaturalSemantics -> do
+          if constant >= 0 && all (>= 0) coefficients
+            then pure ()
+            else Nothing
+          pure (sumTerms (constantTerm constant ++ coefficientTerms coefficients))
+        ArithmeticIntegerSemantics ->
+          pure (sumTerms (integerConstant constant ++ integerCoefficientTerms coefficients))
+
+    constantTerm 0 = []
+    constantTerm value = [AConst value]
+
+    coefficientTerms =
+      concatMap
+        (\(variable, coefficient) ->
+           case coefficient of
+             0 -> []
+             1 -> [AVar variable]
+             _ -> [AScale coefficient (AVar variable)])
+        . Map.toAscList
+
+    integerConstant 0 = []
+    integerConstant value = [AConst value]
+
+    integerCoefficientTerms =
+      concatMap
+        (\(variable, coefficient) ->
+           case coefficient of
+             0 -> []
+             1 -> [AVar variable]
+             (-1) -> [ANeg (AVar variable)]
+             _ -> [AScale coefficient (AVar variable)])
+        . Map.toAscList
+
+    sumTerms [] = AConst 0
+    sumTerms (term : terms) = foldl AAdd term terms
+
+-- | Eliminate rigid variables through admitted, oriented affine equalities
+-- before isolating an assignable variable.  This is the pure counterpart of a
+-- dependent-match refinement such as @m = k + 1@: it changes the coordinate
+-- system of the goal, but never invents a subtraction or assigns a flexible
+-- variable itself.
+--
+-- Only a bare rigid variable may be the substitution subject.  Its
+-- replacement must be affine, acyclic, and independent of every assignable
+-- variable.  Multiple facts for one subject retain the first admitted
+-- orientation; all are already checked assumptions, so either is sound.
+-- Recursive expansion tracks the active path, making mutually recursive
+-- equalities inert instead of risking nontermination.
+applyPrincipalAffineSubstitutions
+  :: Set Int
+  -> [AFact]
+  -> ALin
+  -> ALin
+applyPrincipalAffineSubstitutions assignableVariables assumptions =
+  expandLinear Set.empty
+  where
+    substitutions =
+      foldl
+        (\acc fact ->
+           case oriented fact of
+             Just (variable, replacement) ->
+               Map.insertWith (\_ prior -> prior) variable replacement acc
+             Nothing -> acc)
+        Map.empty
+        assumptions
+
+    oriented = \case
+      AFact ACmpEq (AVar variable) expression ->
+        candidate variable expression
+      AFact ACmpEq expression (AVar variable) ->
+        candidate variable expression
+      _ -> Nothing
+
+    candidate variable expression
+      | variable `Set.member` assignableVariables = Nothing
+      | otherwise = do
+          replacement <- linOf expression
+          let replacementVariables =
+                Map.keysSet (linearCoefficients replacement)
+          if variable `Set.member` replacementVariables
+              || not
+                ( Set.null
+                    (replacementVariables `Set.intersection` assignableVariables)
+                )
+            then Nothing
+            else Just (variable, replacement)
+
+    expandLinear active (ALin constant coefficients) =
+      foldl
+        addLin
+        (ALin constant Map.empty)
+        [ scaleLin coefficient (expandVariable active variable)
+        | (variable, coefficient) <- Map.toAscList coefficients
+        ]
+
+    expandVariable active variable
+      | variable `Set.member` active =
+          ALin 0 (Map.singleton variable 1)
+      | Just replacement <- Map.lookup variable substitutions =
+          expandLinear (Set.insert variable active) replacement
+      | otherwise =
+          ALin 0 (Map.singleton variable 1)
 
 -- | Prove a Boolean formula from atomic assumptions. The recursive shape is
 -- pure and deterministic; all arithmetic authority remains in
@@ -355,6 +581,159 @@ deriveArithmeticFormulaReplay semantics naturalVariables assumptions =
               <*> prove False rhs
       ANot formula ->
         ReplayNot <$> prove (not wanted) formula
+
+-- | Prove a formula from authenticated Boolean arithmetic assumptions.
+--
+-- Polarity-safe assumptions retain the compact atomic path above. When an
+-- assumption is disjunctive (or a negated conjunction), enumerate its
+-- deterministic short-circuit cases, prove the goal in every live case, and
+-- retain an explicit contradiction replay for every infeasible case. The
+-- bounded expansion is part of the portable solver fragment: exceeding it is
+-- 'Unknown', never permission to guess.
+deriveArithmeticFormulaReplayWithAssumptions
+  :: ArithmeticSemantics
+  -> Set Int
+  -> [(Bool, AFormula)]
+  -> Bool
+  -> AFormula
+  -> Maybe ArithmeticFormulaReplay
+deriveArithmeticFormulaReplayWithAssumptions semantics naturalVariables assumptions wanted goal =
+  case traverse (uncurry formulaAssumptionFacts) assumptions of
+    Just factGroups ->
+      deriveArithmeticFormulaReplay
+        semantics
+        naturalVariables
+        (canonicalFacts (concat factGroups))
+        wanted
+        goal
+    Nothing -> do
+      branches <- assumptionFactBranches 64 assumptions
+      case branches of
+        [] -> do
+          contradiction <-
+            List.findIndex assumptionIsConstantContradiction assumptions
+          pure
+            ( ReplayAssumptionCases
+                [ReplayAssumptionImpossible contradiction]
+            )
+        _ ->
+          ReplayAssumptionCases <$> traverse replayBranch branches
+  where
+    replayBranch facts =
+      case contradictionReplay facts of
+        Just replay -> pure replay
+        Nothing ->
+          ReplayAssumptionGoal
+            <$> deriveArithmeticFormulaReplay
+              semantics
+              naturalVariables
+              facts
+              wanted
+              goal
+
+    contradictionReplay facts =
+      firstJust
+        [ do
+            negated <- negateFact fact
+            replay <-
+              deriveArithmeticReplay
+                semantics
+                naturalVariables
+                (removeAt index facts)
+                negated
+            pure (ReplayAssumptionContradiction index replay)
+        | (index, fact) <- zip [0 ..] facts
+        ]
+
+    assumptionIsConstantContradiction (truth, formula) =
+      formulaConstantTruth formula == Just (not truth)
+
+formulaConstantTruth :: AFormula -> Maybe Bool
+formulaConstantTruth = \case
+  ATruth truth -> Just truth
+  AAtom {} -> Nothing
+  AAnd lhs rhs ->
+    case (formulaConstantTruth lhs, formulaConstantTruth rhs) of
+      (Just False, _) -> Just False
+      (_, Just False) -> Just False
+      (Just True, Just True) -> Just True
+      _ -> Nothing
+  AOr lhs rhs ->
+    case (formulaConstantTruth lhs, formulaConstantTruth rhs) of
+      (Just True, _) -> Just True
+      (_, Just True) -> Just True
+      (Just False, Just False) -> Just False
+      _ -> Nothing
+  ANot formula -> not <$> formulaConstantTruth formula
+
+-- | Canonical DNF-style expansion of assumption polarities. True
+-- disjunctions and false conjunctions use left-biased short-circuit cases so
+-- branches are disjoint and deterministic.
+assumptionFactBranches :: Int -> [(Bool, AFormula)] -> Maybe [[AFact]]
+assumptionFactBranches limit assumptions =
+  foldM addAssumption [[]] assumptions >>= boundedCanonicalBranches limit
+  where
+    addAssumption accumulated (truth, formula) = do
+      next <- formulaFactBranches limit truth formula
+      boundedProduct limit accumulated next
+
+formulaFactBranches :: Int -> Bool -> AFormula -> Maybe [[AFact]]
+formulaFactBranches limit wanted = \case
+  ATruth actual ->
+    pure (if actual == wanted then [[]] else [])
+  AAtom fact -> do
+    selected <- if wanted then Just fact else negateFact fact
+    pure [[selected]]
+  ANot formula ->
+    formulaFactBranches limit (not wanted) formula
+  AAnd lhs rhs
+    | wanted -> do
+        left <- formulaFactBranches limit True lhs
+        right <- formulaFactBranches limit True rhs
+        boundedProduct limit left right
+    | otherwise -> do
+        leftFalse <- formulaFactBranches limit False lhs
+        leftTrue <- formulaFactBranches limit True lhs
+        rightFalse <- formulaFactBranches limit False rhs
+        boundedUnion limit leftFalse =<< boundedProduct limit leftTrue rightFalse
+  AOr lhs rhs
+    | wanted -> do
+        leftTrue <- formulaFactBranches limit True lhs
+        leftFalse <- formulaFactBranches limit False lhs
+        rightTrue <- formulaFactBranches limit True rhs
+        boundedUnion limit leftTrue =<< boundedProduct limit leftFalse rightTrue
+    | otherwise -> do
+        left <- formulaFactBranches limit False lhs
+        right <- formulaFactBranches limit False rhs
+        boundedProduct limit left right
+
+boundedProduct :: Int -> [[AFact]] -> [[AFact]] -> Maybe [[AFact]]
+boundedProduct limit lhs rhs =
+  boundedCanonicalBranches
+    limit
+    [ canonicalFacts (left ++ right)
+    | left <- lhs
+    , right <- rhs
+    ]
+
+boundedUnion :: Int -> [[AFact]] -> [[AFact]] -> Maybe [[AFact]]
+boundedUnion limit lhs rhs =
+  boundedCanonicalBranches limit (lhs ++ rhs)
+
+boundedCanonicalBranches :: Int -> [[AFact]] -> Maybe [[AFact]]
+boundedCanonicalBranches limit branches =
+  let canonical = List.nub (List.sort (map canonicalFacts branches))
+   in if length canonical <= limit then Just canonical else Nothing
+
+canonicalFacts :: [AFact] -> [AFact]
+canonicalFacts = List.nub . List.sort
+
+removeAt :: Int -> [a] -> [a]
+removeAt selected =
+  map snd . filter ((/= selected) . fst) . zip [0 :: Int ..]
+
+firstJust :: [Maybe a] -> Maybe a
+firstJust = foldr (<|>) Nothing
 
 deriveArithmeticReplayUnchecked :: Set Int -> [AFact] -> AFact -> Maybe ArithmeticReplay
 deriveArithmeticReplayUnchecked naturalVariables assumptions goal =
@@ -590,11 +969,20 @@ simplifyA naturalVariables assumptions = go
       AMax a b -> simplifyMax (go a) (go b)
       AMin a b -> simplifyMin (go a) (go b)
       AIf condition thenExpression elseExpression ->
-        let thenExpression' = go thenExpression
-            elseExpression' = go elseExpression
-         in if thenExpression' == elseExpression'
-              then thenExpression'
-              else AIf condition thenExpression' elseExpression'
+        let condition' =
+              simplifyArithmeticFormula
+                naturalVariables
+                assumptions
+                condition
+         in case formulaTruthFromAssumptions assumptions condition' of
+          Just True -> go thenExpression
+          Just False -> go elseExpression
+          Nothing ->
+            let thenExpression' = go thenExpression
+                elseExpression' = go elseExpression
+             in if thenExpression' == elseExpression'
+                  then thenExpression'
+                  else AIf condition' thenExpression' elseExpression'
       other -> other
 
     simplifyMul a b = case (a, b) of
@@ -657,6 +1045,93 @@ simplifyA naturalVariables assumptions = go
     foldConst constructor operation a b = case (a, b) of
       (AConst x, AConst y) -> AConst (operation x y)
       _ -> constructor a b
+
+simplifyArithmeticFact :: Set Int -> [AFact] -> AFact -> AFact
+simplifyArithmeticFact naturalVariables assumptions (AFact comparison lhs rhs) =
+  AFact
+    comparison
+    (simplifyA naturalVariables assumptions lhs)
+    (simplifyA naturalVariables assumptions rhs)
+
+simplifyArithmeticFormula
+  :: Set Int
+  -> [AFact]
+  -> AFormula
+  -> AFormula
+simplifyArithmeticFormula naturalVariables assumptions = \case
+  ATruth truth -> ATruth truth
+  AAtom fact ->
+    AAtom (simplifyArithmeticFact naturalVariables assumptions fact)
+  AAnd lhs rhs ->
+    AAnd
+      (simplifyArithmeticFormula naturalVariables assumptions lhs)
+      (simplifyArithmeticFormula naturalVariables assumptions rhs)
+  AOr lhs rhs ->
+    AOr
+      (simplifyArithmeticFormula naturalVariables assumptions lhs)
+      (simplifyArithmeticFormula naturalVariables assumptions rhs)
+  ANot formula ->
+    ANot (simplifyArithmeticFormula naturalVariables assumptions formula)
+
+-- | Decide a Boolean condition only from exact admitted arithmetic facts.
+-- This is intentionally narrower than theorem proving: it specializes an
+-- @AIf@ when its branch discriminator is already present (possibly with the
+-- opposite polarity) and otherwise leaves the condition for ordinary
+-- replayable case splitting.
+formulaTruthFromAssumptions :: [AFact] -> AFormula -> Maybe Bool
+formulaTruthFromAssumptions assumptions = \case
+  ATruth truth -> Just truth
+  AAtom fact
+    | Just truth <- literalArithmeticFactTruth fact -> Just truth
+    | any (equivalentArithmeticFact fact) assumptions -> Just True
+    | Just negated <- negateFact fact
+    , any (equivalentArithmeticFact negated) assumptions ->
+        Just False
+    | otherwise -> Nothing
+  AAnd lhs rhs ->
+    case
+        ( formulaTruthFromAssumptions assumptions lhs
+        , formulaTruthFromAssumptions assumptions rhs
+        ) of
+      (Just False, _) -> Just False
+      (_, Just False) -> Just False
+      (Just True, Just True) -> Just True
+      _ -> Nothing
+  AOr lhs rhs ->
+    case
+        ( formulaTruthFromAssumptions assumptions lhs
+        , formulaTruthFromAssumptions assumptions rhs
+        ) of
+      (Just True, _) -> Just True
+      (_, Just True) -> Just True
+      (Just False, Just False) -> Just False
+      _ -> Nothing
+  ANot formula ->
+    not <$> formulaTruthFromAssumptions assumptions formula
+
+literalArithmeticFactTruth :: AFact -> Maybe Bool
+literalArithmeticFactTruth = \case
+  AFact ACmpEq lhs rhs
+    | lhs == rhs -> Just True
+  AFact ACmpNe lhs rhs
+    | lhs == rhs -> Just False
+  AFact comparison (AConst lhs) (AConst rhs) ->
+    Just $ case comparison of
+      ACmpLt -> lhs < rhs
+      ACmpLe -> lhs <= rhs
+      ACmpEq -> lhs == rhs
+      ACmpNe -> lhs /= rhs
+  _ -> Nothing
+
+equivalentArithmeticFact :: AFact -> AFact -> Bool
+equivalentArithmeticFact left right =
+  left == right
+    || case (left, right) of
+      (AFact ACmpEq lhs rhs, AFact ACmpEq lhs' rhs') ->
+        lhs == rhs' && rhs == lhs'
+      (AFact ACmpNe lhs rhs, AFact ACmpNe lhs' rhs') ->
+        lhs == rhs' && rhs == lhs'
+      _ -> False
 
 linearConstant :: ALin -> Integer
 linearConstant (ALin constant _) = constant

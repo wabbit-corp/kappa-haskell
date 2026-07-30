@@ -22,7 +22,7 @@ data List (A : Type) : Type =
 -- are in scope in each constructor argument type.
 data Vec (A : Type) : Nat -> Type =
     vnil  : Vec A zero
-    vcons : forall {n : Nat} -> A -> Vec A n -> Vec A (suc n)
+    vcons : forall (n : Nat). A -> Vec A n -> Vec A (suc n)
 
 -- POSITIVE: a parameterized indexed type defined via pattern-based
 -- constructor selection (conditional form). The parameter `X` must be
@@ -48,7 +48,7 @@ let exRight = right True
 
 -- POSITIVE: pattern matching on parameterized data uses the parameter
 -- from the scrutinee's type.
-mapEither : forall {A B C : Type} -> (A -> C) -> Either A B -> Either C B
+mapEither : forall (A B C : Type). (A -> C) -> Either A B -> Either C B
 let mapEither f (left a)  = left (f a)
 let mapEither _ (right b) = right b
 

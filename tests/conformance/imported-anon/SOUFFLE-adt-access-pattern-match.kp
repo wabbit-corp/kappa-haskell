@@ -17,7 +17,7 @@ data Expr : Type =
     Neg  (e : Expr)
 
 -- POSITIVE: exhaustive pattern match.
-let evalExpr : Expr -> Int
+evalExpr : Expr -> Int
 let evalExpr e =
     match e
         case Num n        -> n
@@ -25,7 +25,7 @@ let evalExpr e =
         case Neg e        -> -(evalExpr e)
 
 -- NEGATIVE: non-exhaustive match (missing Neg case).
-let partialEval : Expr -> Int
+partialEval : Expr -> Int
 let partialEval e =
     match e    --!! kappa.pattern.non-exhaustive
         case Num n   -> n
@@ -36,7 +36,7 @@ let partialEval e =
 -- POSITIVE: type alias of an ADT supports the same patterns.
 type ExprAlias = Expr
 
-let evalAlias : ExprAlias -> Int
+evalAlias : ExprAlias -> Int
 let evalAlias e =
     match e
         case Num n        -> n
@@ -48,7 +48,7 @@ data Tree (a : Type) : Type =
     Leaf
     Node a (Tree a) (Tree a)
 
-let depth : Tree Int -> Int
+depth : Tree Int -> Int
 let depth t =
     match t
         case Leaf        -> 0

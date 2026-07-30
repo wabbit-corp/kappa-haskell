@@ -14,15 +14,15 @@
 
 -- POSITIVE: let binding with explicit type annotation; body uses the binding.
 -- The identity function via an annotated let.
-identity : forall (A : Type) -> A -> A
-let identity A a =
+identity : forall (A : Type). A -> A
+let identity a =
     let b : A = a
     b
 
 -- POSITIVE: let annotation is a more general type; value is in a subtype
 -- (or the same type). No implicit coercion needed here.
 useIdentity : Nat
-let useIdentity = identity Nat 42
+let useIdentity = identity 42
 
 -- POSITIVE: nested let bindings with annotations, each checked separately.
 nestedLet : Nat
@@ -33,8 +33,8 @@ let nestedLet =
 
 -- POSITIVE: let binding in a dependent type context.
 -- The annotation type may itself mention bound variables.
-letDependent : forall (A : Type) -> (f : A -> A) -> A -> A
-let letDependent A f a =
+letDependent : forall (A : Type). (f : A -> A) -> A -> A
+let letDependent f a =
     let result : A = f a
     result
 
