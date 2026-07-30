@@ -3,25 +3,31 @@
 
 --! mode check
 
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
   VNil  : Vec a 0
   VCons : a -> Vec a n -> Vec a (n+1)
 
 -- head: on Vec a n, VNil branch is impossible (index 0 clashes with n+1 when n>0).
 -- The compiler must refine the index in each arm.
-head : {a : Type} -> {n : Nat} -> Vec a (n+1) -> a
-let head (VCons x _) = x
-let head VNil        = impossible
+head : forall (a : Type) (n : Nat). Vec a (n+1) -> a
+let head v =
+  match v
+  case VCons x _ -> x
+  case VNil      -> impossible
 
 -- safeHead: Vec a (n+1) means only VCons is reachable; VNil has index 0.
-safeHead : {a : Type} -> {n : Nat} -> Vec a (n+1) -> a
+safeHead : forall (a : Type) (n : Nat). Vec a (n+1) -> a
 let safeHead v = match v
   case VCons x _ -> x
   case VNil      -> impossible
 
 -- tail: return the tail of a non-empty Vec, index refines to n.
-tail : {a : Type} -> {n : Nat} -> Vec a (n+1) -> Vec a n
-let tail (VCons _ xs) = xs
-let tail VNil         = impossible
+tail : forall (a : Type) (n : Nat). Vec a (n+1) -> Vec a n
+let tail v =
+  match v
+  case VCons _ xs -> xs
+  case VNil       -> impossible
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

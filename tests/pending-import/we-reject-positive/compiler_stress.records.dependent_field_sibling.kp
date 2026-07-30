@@ -3,15 +3,15 @@
 
 --! mode check
 
-data Vec : (n : Nat) -> Type -> Type =
-    VNil  : {a : Type} -> Vec 0 a
-    VCons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (n + 1) a
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec 0 a
+    VCons : a -> Vec n a -> Vec (n + 1) a
 
 -- Dependent record: data's type references the sibling field len via this.len
-type SizedBuf : Type = (len : Nat, data : Vec Int this.len)
+type SizedBuf : Type = (len : Nat, data : Vec this.len Int)
 
 -- POSITIVE: construct a SizedBuf; the data field must have length matching len
-mkBuf : (n : Nat) -> Vec Int n -> SizedBuf
+mkBuf : (n : Nat) -> Vec n Int -> SizedBuf
 let mkBuf n v = (len = n, data = v)
 
 -- POSITIVE: extract the length from a SizedBuf
@@ -23,3 +23,5 @@ emptyBuf : SizedBuf
 let emptyBuf = mkBuf 0 VNil
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

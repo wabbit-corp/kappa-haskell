@@ -3,7 +3,7 @@
 
 --! mode check
 
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
   VNil  : Vec a 0
   VCons : a -> Vec a n -> Vec a (n+1)
 
@@ -19,13 +19,18 @@ mkSized1 : Sized Int
 let mkSized1 = (len = 1, elems = VCons 7 VNil)
 
 -- Read the length from a Sized record.
-sizedLen : {a : Type} -> Sized a -> Nat
+sizedLen : forall (a : Type). Sized a -> Nat
 let sizedLen s = s.len
 
 -- Check that the Vec in a Sized record is non-empty when len > 0.
-sizedHead : {a : Type} -> {n : Nat} -> (s : Sized a) -> s.len = (n+1) -> a
-let sizedHead s _ = match s.elems
-  case VCons x _ -> x
-  case VNil      -> impossible
+sizedHead : forall (a : Type) (n : Nat). (s : Sized a) -> s.len = (n+1) -> a
+let sizedHead s eq =
+  match eq
+  case refl ->
+    match s.elems
+    case VCons x _ -> x
+    case VNil      -> impossible
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — E_IMPOSSIBLE_REACHABLE: matching the length equality does not refine the dependent Vec field enough to refute VNil.

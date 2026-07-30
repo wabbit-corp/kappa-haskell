@@ -32,7 +32,7 @@ let pairSnd p =
     match p
       case MkPair _ y -> y
 
-data Eq (a : Type) (x : a) : a -> Type =
+data Eq (a : Type) (x : a) (y : a) : Type =
     Refl : Eq a x x
 
 -- POSITIVE: η on a Pair — assembling a record from its projections is
@@ -40,7 +40,7 @@ data Eq (a : Type) (x : a) : a -> Type =
 -- MkPair (pairFst p) (pairSnd p), and the obligation is then Refl.
 etaPair :
     (p : Pair Nat Nat) ->
-    Eq (Pair Nat Nat) p (MkPair (pairFst Nat Nat p) (pairSnd Nat Nat p))
+    Eq (Pair Nat Nat) p (MkPair (pairFst @Nat @Nat p) (pairSnd @Nat @Nat p))
 let etaPair p =
     match p
       case MkPair _ _ -> Refl
@@ -63,9 +63,11 @@ let swap p =
       case MkPair x y -> MkPair y x
 
 swapSwap :
-    (p : Pair Nat Nat) -> Eq (Pair Nat Nat) (swap Nat Nat (swap Nat Nat p)) p
+    (p : Pair Nat Nat) -> Eq (Pair Nat Nat) (swap @Nat @Nat (swap @Nat @Nat p)) p
 let swapSwap p =
     match p
       case MkPair _ _ -> Refl
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — E_TYPE_EQUALITY_MISMATCH: Refl is rejected after matching Pair, although the projections should reduce on the selected constructor.

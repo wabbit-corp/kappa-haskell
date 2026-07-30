@@ -3,7 +3,7 @@
 
 --! mode check
 
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
   VNil  : Vec a 0
   VCons : a -> Vec a n -> Vec a (n+1)
 
@@ -23,10 +23,12 @@ errResult : Result Int
 let errResult = (| "error" : String |)
 
 -- Dispatch on a Result; each GADT-indexed branch is live.
-describeResult : {a : Type} -> Result a -> String
+describeResult : forall (a : Type). Result a -> String
 let describeResult r = match r
   case (| _ : String |)    -> "error"
   case (| _ : Vec a 0 |)   -> "empty"
   case (| _ : Vec a 1 |)   -> "singleton"
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

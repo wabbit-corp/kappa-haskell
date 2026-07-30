@@ -20,13 +20,14 @@ data Void : Type
 absurd : forall (a : Type). Void -> a
 let absurd v =
     match v
+    case impossible
 
 --! assertNoErrors
 --! assertType absurd (forall (a : Type). Void -> a)
 
 -- POSITIVE: indexed elimination using `-> impossible` for a constructor branch
 -- that is forced empty by definitional equality on indices.
-data Vect (a : Type) : Nat -> Type =
+data Vect (a : Type) (n : Nat) : Type =
     VNil  : Vect a 0
     VCons : forall (n : Nat). a -> Vect a n -> Vect a (n + 1)
 
@@ -49,3 +50,5 @@ let discardVoid v =
 
 --! assertNoErrors
 --! assertType discardVoid (Void -> Unit)
+
+-- STATUS(f1b025a3): PASS

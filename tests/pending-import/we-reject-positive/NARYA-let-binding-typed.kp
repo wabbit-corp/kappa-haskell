@@ -15,7 +15,7 @@ data Nat : Type =
     Zero : Nat
     Suc  : Nat -> Nat
 
-data Eq (a : Type) (x : a) : a -> Type =
+data Eq (a : Type) (x : a) (y : a) : Type =
     Refl : Eq a x x
 
 -- POSITIVE: simple let-expression with explicit annotation.
@@ -56,3 +56,5 @@ let shadow x =
         Suc x
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

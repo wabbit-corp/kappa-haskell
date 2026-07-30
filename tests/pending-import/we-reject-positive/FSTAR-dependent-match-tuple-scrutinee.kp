@@ -5,13 +5,13 @@
 --! mode check
 
 -- A length-indexed vector type.
-data Vec : Nat -> Type =
+data Vec (n : Nat) : Type =
     Nil  : Vec 0
-    Cons : {n : Nat} -> Nat -> Vec n -> Vec (n + 1)
+    Cons : forall (n : Nat). Nat -> Vec n -> Vec (n + 1)
 
 -- Matching on a pair (Vec n, Vec n) using a flat tuple pattern should work.
 -- The same semantics as nested match: first match l1 then match l2.
-map2 : {n : Nat} -> Vec n -> Vec n -> Vec n
+map2 : forall (n : Nat). Vec n -> Vec n -> Vec n
 let map2 l1 l2 =
     match (l1, l2)
       case (Nil, Nil)             -> Nil
@@ -21,3 +21,5 @@ let map2 l1 l2 =
 -- FSTAR-682: dependent pair match rejected when nested match works.
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — E_PATTERN_NON_EXHAUSTIVE: the checker does not use the shared Vec index to refute mixed Nil/Cons tuple cases.

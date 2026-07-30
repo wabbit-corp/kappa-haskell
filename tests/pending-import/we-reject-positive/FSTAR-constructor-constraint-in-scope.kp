@@ -8,7 +8,7 @@
 --! mode check
 
 -- Length-indexed vector with index type Nat.
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
     VNil  : Vec a 0
     VCons : a -> (n : Nat) -> Vec a n -> Vec a (n + 1)
 
@@ -25,3 +25,5 @@ let head a n v =
       case VCons x _ _ -> x
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

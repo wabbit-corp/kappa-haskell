@@ -3,7 +3,7 @@
 
 --! mode check
 
-data Val : Bool -> Type =
+data Val (b : Bool) : Type =
   TrueVal  : Val True
   FalseVal : Val False
 
@@ -20,7 +20,7 @@ let extractFalse v = match v
   case impossible
 
 -- Three-constructor Bool-indexed type; exhausted by two live cases + impossible.
-data ThreeTag : Nat -> Type =
+data ThreeTag (n : Nat) : Type =
   Tag0 : ThreeTag 0
   Tag1 : ThreeTag 1
   Tag2 : ThreeTag 2
@@ -31,3 +31,5 @@ let useTag01 v = match v
   case impossible
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

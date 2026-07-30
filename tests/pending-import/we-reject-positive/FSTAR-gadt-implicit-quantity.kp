@@ -9,7 +9,7 @@
 
 -- Vector type with an erased length index.
 -- The implicit `n` in Cons is erased (not available at runtime).
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
     Nil  : Vec a 0
     Cons : (@0 n : Nat) -> a -> Vec a n -> Vec a (n + 1)
 
@@ -21,3 +21,5 @@ let v1 : Vec Unit 1 = Cons () Nil
 let v2 : Vec Unit 2 = Cons () (Cons () Nil)
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

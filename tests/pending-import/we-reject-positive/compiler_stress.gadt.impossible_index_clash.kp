@@ -4,7 +4,7 @@
 
 --! mode check
 
-data Val : Bool -> Type =
+data Val (b : Bool) : Type =
   TrueVal  : Val True
   FalseVal : Val False
 
@@ -21,9 +21,11 @@ let onlyFalse v = match v
   case TrueVal  -> impossible
 
 -- Polymorphic version: match on either; both branches are live.
-valToInt : {b : Bool} -> Val b -> Int
+valToInt : forall (b : Bool). Val b -> Int
 let valToInt v = match v
   case TrueVal  -> 1
   case FalseVal -> 0
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

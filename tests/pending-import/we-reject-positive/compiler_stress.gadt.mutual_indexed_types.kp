@@ -4,25 +4,32 @@
 --! mode check
 
 -- EvenList and OddList are mutually recursive; their indices track element count.
-data EvenList (a : Type) : Nat -> Type =
+data EvenList (a : Type) (n : Nat) : Type =
   ENil  : EvenList a 0
   ECons : a -> OddList a n -> EvenList a (n+1)
 
-data OddList (a : Type) : Nat -> Type =
+data OddList (a : Type) (n : Nat) : Type =
   OCons : a -> EvenList a n -> OddList a (n+1)
 
 -- sizeE and sizeO are mutually recursive; they decrease on the Nat index.
-sizeE : {a : Type} -> {n : Nat} -> EvenList a n -> Nat
-sizeO : {a : Type} -> {n : Nat} -> OddList a n -> Nat
+sizeE : forall (a : Type) (n : Nat). EvenList a n -> Nat
+let sizeE xs =
+  match xs
+  case ENil       -> 0
+  case ECons _ ys -> 1 + sizeO ys
 
-let sizeE ENil         = 0
-let sizeE (ECons _ ys) = 1 + sizeO ys
-
-let sizeO (OCons _ xs) = 1 + sizeE xs
+sizeO : forall (a : Type) (n : Nat). OddList a n -> Nat
+let sizeO ys =
+  match ys
+  case OCons _ xs -> 1 + sizeE xs
 
 -- headE: extract the first element of a non-empty EvenList.
-headE : {a : Type} -> {n : Nat} -> EvenList a (n+1) -> a
-let headE (ECons x _) = x
-let headE ENil        = impossible
+headE : forall (a : Type) (n : Nat). EvenList a (n+1) -> a
+let headE xs =
+  match xs
+  case ECons x _ -> x
+  case ENil      -> impossible
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

@@ -11,7 +11,7 @@
 module test
 
 -- Indexed type (GADT style): `T a` is a type indexed by `a : Bool`.
-data T : Bool -> Type =
+data T (a : Bool) : Type =
     Mk1 : (a : Bool) -> T a
     Mk2 : (f : Bool -> Bool) -> (i : Bool) -> T (f i)
 
@@ -41,3 +41,5 @@ let check2 _ scrutinee =
       case Mk2 _ _   -> 2
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

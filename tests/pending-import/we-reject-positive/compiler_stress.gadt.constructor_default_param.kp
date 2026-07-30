@@ -3,7 +3,7 @@
 
 --! mode check
 
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
   VNil  : Vec a 0
   VCons : a -> Vec a n -> Vec a (n+1)
 
@@ -16,7 +16,7 @@ data Vec (a : Type) : Nat -> Type =
 -- spec — named application is one brace block per 10.1.1 — and despite the
 -- test's name no default expression existed.)
 data VecBox (a : Type) : Type =
-  MkVecBox { n : Nat = 0, xs : Vec a n }
+  MkVecBox { n : Nat = Nat.Zero, xs : Vec a n }
 
 -- Create a VecBox using named application; `n` comes from its default.
 emptyBox : VecBox Int
@@ -26,12 +26,14 @@ singleBox : VecBox Int
 let singleBox = MkVecBox { n = 1, xs = VCons 42 VNil }
 
 -- Extract the length from a VecBox.
-boxLen : {a : Type} -> VecBox a -> Nat
+boxLen : forall (a : Type). VecBox a -> Nat
 let boxLen (MkVecBox n _) = n
 
 -- Extract and re-wrap with the same length.
-identity : {a : Type} -> VecBox a -> VecBox a
+identity : forall (a : Type). VecBox a -> VecBox a
 let identity b = match b
   case MkVecBox n xs -> MkVecBox { n = n, xs = xs }
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — E_TYPE_EQUALITY_MISMATCH: named construction rejects omission of the defaulted dependent n field.

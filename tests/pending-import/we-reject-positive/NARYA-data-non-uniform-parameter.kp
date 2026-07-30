@@ -20,7 +20,8 @@ data Nat : Type =
     Zero : Nat
     Suc  : Nat -> Nat
 
-expect term A : Type
+data A : Type =
+    MkA
 
 -- POSITIVE: a "Bush" — the parameter of the recursive occurrence
 -- (Bush a) differs from the parameter at the outer constructor (a).
@@ -47,7 +48,7 @@ let leafRose t = t
 -- POSITIVE: a data type whose index shrinks in the recursive occurrence.
 -- The constructor returns Vec a (Suc n) but the recursive field is
 -- Vec a n.
-data Vec (a : Type) : Nat -> Type =
+data Vec (a : Type) (n : Nat) : Type =
     VNil  : Vec a Zero
     VCons : (n : Nat) -> a -> Vec a n -> Vec a (Suc n)
 
@@ -55,3 +56,5 @@ shortVec : Vec A Zero
 let shortVec = VNil
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS
