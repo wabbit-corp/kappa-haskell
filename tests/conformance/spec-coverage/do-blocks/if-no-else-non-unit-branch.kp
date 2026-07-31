@@ -1,0 +1,17 @@
+-- §18.4: `if` without `else` in do desugars with an implicit `else pure ()`
+-- and `if` remains an expression, so a then-suite whose nested-do result is
+-- `m Int` cannot unify with the implicit `m Unit` else branch and must be
+-- rejected. (The result must be made explicit — e.g. with Option — to
+-- survive the branch.)
+module main
+
+bad : UIO Unit
+let bad = do
+    if True then
+        pure (42 : Int) --!! kappa.type.mismatch
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: the compiler accepts the explicitly Int-valued then-suite instead of unifying it with the implicit `else pure ()` required by §18.4.

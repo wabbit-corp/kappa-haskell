@@ -1,0 +1,43 @@
+-- Source issue: MLatu docs/docs/primitives.md ("`c` or `concat`
+--   concatenates the two quotations below it"). PR#30 also adds `cat`
+--   as a word. The portable obligation is that two suspended
+--   computations can be combined into one suspended computation that
+--   yields the second's result, modeling Mlatu's concatenation of
+--   programs.
+-- Spec: expressions.lambdas.suspension_expressions_forcing,
+--       expressions.application.
+--
+-- Concat composes thunks so that forcing the composite forces both
+-- inner computations and yields the second's value.
+
+module test
+
+--! mode check
+--! assertNoErrors
+--! assertEval result 7
+--! assertEval implicitResult 7
+
+-- POSITIVE: sequential composition of two thunks.
+concatThunks : forall (a : Type) (b : Type) . Thunk a -> Thunk b -> Thunk b
+let concatThunks ta tb =
+    thunk (let _ = force ta in force tb)
+
+composed : Thunk Int
+let composed = concatThunks (thunk "side") (thunk 7)
+
+result : Int
+let result = force composed
+
+-- §16.1.7.1 expected-type-directed suspension insertion wraps the bare `5`
+-- because concatThunks demands a Thunk in its first argument position.
+implicitConcat : Thunk Int
+let implicitConcat = concatThunks 5 (thunk 7)
+
+implicitResult : Int
+let implicitResult = force implicitConcat
+
+--! assertType composed Thunk Int
+--! assertType result Int
+--! assertType implicitConcat Thunk Int
+
+-- STATUS(2a161551): PASS — promoted as a positive suspension-insertion and thunk-composition test.

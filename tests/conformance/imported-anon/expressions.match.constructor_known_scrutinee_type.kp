@@ -1,0 +1,43 @@
+-- Source issue: Koka #9
+-- Spec: expressions.match, modules.names.lexical_lookup
+-- When the scrutinee's type is known from a type annotation or prior context,
+-- constructor names in patterns must be resolved to the constructors of that
+-- known type, even if the same name appears in multiple types in scope.
+-- Ambiguity is not permitted when the type is determined.
+
+module test
+
+--! mode check
+--! assertNoErrors
+
+data Foo : Type =
+    FooA : Foo
+    FooB : Foo
+
+data Bar : Type =
+    FooA : Bar    -- same constructor name as Foo.FooA
+    BarB : Bar
+
+-- Scrutinee annotated as Foo: FooA must resolve to Foo.FooA, not Bar.FooA.
+matchKnownFoo : Foo -> Int
+let matchKnownFoo (x : Foo) =
+    match x
+        case FooA -> 1
+        case FooB -> 2
+
+--! assertType matchKnownFoo Foo -> Int
+
+-- Scrutinee annotated as Bar: FooA resolves to Bar.FooA.
+matchKnownBar : Bar -> Int
+let matchKnownBar (x : Bar) =
+    match x
+        case FooA -> 10
+        case BarB -> 20
+
+--! assertType matchKnownBar Bar -> Int
+
+-- The independent no-expected-type ambiguity case is intentionally omitted:
+-- it requires a concrete signature rather than an unsolved `_` hole.
+
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: FooA in matchKnownFoo resolves as Bar.FooA instead of using the known Foo scrutinee type.

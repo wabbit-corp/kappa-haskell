@@ -1,0 +1,28 @@
+-- Source issue: GHC#24961
+-- Spec: types.universes.quantities, expressions.patterns.forms
+-- When pattern-matching a linearly-bound record, all fields must be consumed.
+-- Using named-field puns that omit some fields must be rejected as a quantity error.
+
+module test
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+data Token : Type =
+    Token
+
+data R : Type =
+    R (1 x : Token) (1 y : Token)
+
+-- Correct: consume both fields.
+consumeBoth : (1 r : R) -> (Token, Token)
+let consumeBoth (R { x, y }) = (x, y)
+
+-- Incorrect: an owned quantity-1 y field is omitted by the named constructor
+-- pattern. Omitted fields are discard positions under §12.2.6.
+consumeOne : (1 r : R) -> Token
+let consumeOne (R { x }) = x
+
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: the named pattern silently discards the owned quantity-1 y field instead of reporting kappa.quantity.positive-lower-bound.

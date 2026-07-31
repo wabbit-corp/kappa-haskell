@@ -1,0 +1,25 @@
+-- §18.2.3/§18.8: a branch is terminal iff it cannot reach the following
+-- do-items with a Normal completion. An else-suite ending in a `match`
+-- whose arms ALL end in `return` is terminal, so the success fact
+-- `p is Box` post-dominates the conditional and licenses `p.value` in the
+-- final item. This file must check with no errors.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+viaMatch : Payload -> Payload -> UIO Int
+let viaMatch p q = do
+    if p is Box then pure () else do
+        match q
+        case Box v -> do
+            return v
+        case Empty -> do
+            return 0
+    pure (p.value)
+
+--! mode check
+--! assertNoErrors
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: E_UNRESOLVED_MEMBER on `p.value`; an else-suite whose final match has only returning arms is not recognized as terminal under §18.2.3.

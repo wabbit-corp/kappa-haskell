@@ -1,0 +1,37 @@
+-- Source issues: ponyc#4953, ponyc#3572, ponyc#3582, ponyc#1887
+-- Spec: types.universes.quantities, compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Pony's recover block converts a ref/trn object to iso/val only when the
+-- object's contents are sendable (no external references escape the block).
+-- In Kappa, elevating a borrowed (non-owned) reference to owned (unique)
+-- requires that the object carries no escaping borrows; otherwise the
+-- uniqueness guarantee is violated. A non-sendable value — one that
+-- carries a live borrow to an outer region — cannot be wrapped and returned
+-- as if uniquely owned.
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- Model: a region-bound wrapper carries a first-class borrowed view. BorrowView
+-- is the portable representation for storing a borrow in ordinary data.
+data Wrapped (0 a : Type) (0 s : Region) : Type =
+    Wrap (view : BorrowView s a)
+
+-- NEGATIVE: a view valid under rigid region s cannot be returned as a view
+-- under an independently bound rigid region t. The result type omits s, so
+-- accepting this would let the s-borrow escape.
+crossRegion :
+    forall (a : Type) (s : Region) (t : Region).
+    (&[s] x : a) -> Wrapped a t
+let crossRegion (@0 a : Type) (@0 s : Region) (@0 t : Region) (&[s] x : a) : Wrapped a t =
+    Wrap (captureBorrow x)
+
+-- POSITIVE: constructing a Wrapped at the same region as the borrow.
+sameRegion :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Wrapped a s
+let sameRegion (@0 a : Type) (@0 s : Region) (&[s] x : a) : Wrapped a s =
+    Wrap (captureBorrow x)
+
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: crossRegion is accepted, allowing BorrowView s a to escape as BorrowView t a for unrelated rigid regions.

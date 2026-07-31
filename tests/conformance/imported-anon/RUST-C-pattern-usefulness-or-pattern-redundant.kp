@@ -1,0 +1,45 @@
+-- Source artifacts: RUST-PR-66612 (Initial or-pattern usefulness checking),
+--                   RUST-PR-69891 (Matrix::push: recursively expand or-patterns),
+--                   RUST-PR-65160 (Refactor pattern-matching usefulness algorithm),
+--                   RA-4416 (Index out of bounds in `_match::is_useful`).
+-- Spec: expressions.patterns, expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable).
+-- The Spec does not require a usefulness warning for redundant alternatives
+-- within an or-pattern. `Red | Red` is legal and has the same matching
+-- behavior as `Red`.
+
+--! mode check
+--! assertNoErrors
+--! assertEval redResult 1
+--! assertEval greenResult 2
+--! assertEval blueResult 3
+
+data Color : Type =
+    Red | Green | Blue
+
+dispatch_or_pattern_redundant : Color -> Int
+let dispatch_or_pattern_redundant c =
+    match c
+    -- Repeating an alternative is semantically idempotent.
+    case Red | Red -> 1
+    case Green     -> 2
+    case Blue      -> 3
+
+-- POSITIVE: a non-overlapping or-pattern is accepted.
+dispatch_or_pattern_ok : Color -> Int
+let dispatch_or_pattern_ok c =
+    match c
+    case Red | Green -> 1
+    case Blue        -> 2
+
+redResult : Int
+let redResult = dispatch_or_pattern_redundant Red
+
+greenResult : Int
+let greenResult = dispatch_or_pattern_redundant Green
+
+blueResult : Int
+let blueResult = dispatch_or_pattern_redundant Blue
+
+-- STATUS(2a161551): PASS — promoted as a positive redundant-or-alternative semantics test.

@@ -1,0 +1,21 @@
+-- §18.7 x §18.2.5: "A do-scope is introduced by: an explicit do block" —
+-- including a labeled do block in do-ITEM (statement) position. `defer@L`
+-- resolves to the nearest enclosing labeled do-scope, so scheduling onto
+-- the statement-position L@do must work exactly like the accepted
+-- function-body form (conformance/labels/defer-label-self.kp) and the
+-- first-class do-value form (`let block = L@do ...`), both of which the
+-- compiler already accepts.
+module main
+
+main : UIO Unit
+let main = do
+    L@do
+        defer@L printlnString "defer-ran"
+        printlnString "body"
+    printlnString "after"
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\ndefer-ran\nafter\n"
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: E_LABEL_UNRESOLVED; statement-position `L@do` is not recognized as the enclosing labeled do-scope required by §§18.2.5 and 18.7.

@@ -1,0 +1,32 @@
+-- Source issue: FSTAR-1228
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- An irrefutable typed let-pattern binder must be checked
+-- against the type of `e`. If the type of `e` is not a subtype of the
+-- pattern's expected type, the compiler must reject the definition, not
+-- silently coerce the types.
+
+--! mode check
+
+-- POSITIVE TEST: irrefutable unit pattern is valid when expression has type Unit.
+test_ok : Unit -> Unit
+let test_ok u =
+    let () = u
+    ()
+
+
+-- NEGATIVE TEST: a typed irrefutable binder demanding Unit is applied to an
+-- Int expression. §9.1.2 requires the scrutinee type to be definitionally
+-- equal to the typed pattern's type.
+test_bad_unit_int : Unit
+let test_bad_unit_int =
+    let (x : Unit) = (4 : Int)
+    ()
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- The independent refutable-constructor-let case lives in
+-- spec-coverage/patterns-active/compiler_stress.patterns.refutable_let_rejected.kp.
+
+-- Promotion restored after workspace reconciliation.
+-- STATUS(2a161551): FAIL — promoted conformance regression: the typed Unit binder is accepted against an Int scrutinee; §9.1.2 requires a type mismatch.
