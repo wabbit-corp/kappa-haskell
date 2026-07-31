@@ -24,27 +24,29 @@ length : forall (a : Type). List a -> Nat
 let length xs =
     match xs
       case Nil       -> Zero
-      case Cons _ ys -> Suc (length a ys)
+      case Cons _ ys -> Suc (length ys)
 
 -- POSITIVE: concatenation.
 append : forall (a : Type). List a -> List a -> List a
 let append xs ys =
     match xs
       case Nil        -> ys
-      case Cons x xs2 -> Cons x (append a xs2 ys)
+      case Cons x xs2 -> Cons x (append xs2 ys)
 
 -- POSITIVE: map.
 mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
 let mapList f xs =
     match xs
       case Nil        -> Nil
-      case Cons x xs2 -> Cons (f x) (mapList a b f xs2)
+      case Cons x xs2 -> Cons (f x) (mapList f xs2)
 
 -- POSITIVE: a recursive identity-like function on lists.
 idList : forall (a : Type). List a -> List a
 let idList xs =
     match xs
       case Nil        -> Nil
-      case Cons x xs2 -> Cons x (idList a xs2)
+      case Cons x xs2 -> Cons x (idList xs2)
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

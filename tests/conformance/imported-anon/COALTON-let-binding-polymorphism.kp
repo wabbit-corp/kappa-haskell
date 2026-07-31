@@ -2,12 +2,12 @@
 --   gets wrong inferred type), #295 (predicates not properly reduced in
 --   abstractions), general HM let-polymorphism.
 -- Spec: declarations.terms.irrefutable_patterns_let_bindings (§9.1.2),
---   types.quantification.implicit_declaration_universalization (§11.3.3).
+--   types.generalization.declaration_boundaries (§11.1.2.3A).
 --
 -- In Hindley-Milner, let bindings are generalized: a let-bound function is
 -- given a polymorphic type that can be instantiated independently at each use
 -- site. Specifically:
---   - `let id = fn x -> x` gives `id` the type `forall a. a -> a`.
+--   - `let id = \x -> x` gives `id` the type `forall a. a -> a`.
 --   - Using `id` on two different types in the same scope is valid.
 --   - A let-bound function that returns a pair should infer the correct
 --     polymorphic type, not a monomorphic one.
@@ -18,7 +18,7 @@
 -- genuinely polymorphic — usable on multiple types in the same scope.
 polyId : Int
 let polyId =
-    let identity = fn x -> x
+    let identity = \x -> x
     in (identity 42 : Int)
 
 --! assertNoErrors
@@ -28,7 +28,7 @@ let polyId =
 -- allows the first component to be independent of the second.
 pairTest : (Int, String)
 let pairTest =
-    let mkPair = fn x -> fn y -> (x, y)
+    let mkPair = \x -> \y -> (x, y)
     in mkPair 1 "hello"
 
 --! assertNoErrors
@@ -38,7 +38,7 @@ let pairTest =
 -- expression (classic HM let-polymorphism test). This must type-check.
 twoTypeUse : (Int, String)
 let twoTypeUse =
-    let wrap = fn x -> x
+    let wrap = \x -> x
     in (wrap 42, wrap "hello")
 
 --! assertNoErrors
@@ -47,7 +47,7 @@ let twoTypeUse =
 -- The closure over `a` correctly preserves the type of `a`.
 closureCapture : forall (a : Type). a -> (a, a)
 let closureCapture outerVal =
-    let dup = fn () -> (outerVal, outerVal)
+    let dup = \() -> (outerVal, outerVal)
     in dup ()
 
 --! assertNoErrors
@@ -57,8 +57,10 @@ let closureCapture outerVal =
 -- independent of the outer one.
 nestedLet : Int
 let nestedLet =
-    let f = fn x -> x
-    in let g = fn x -> f (f x)
+    let f = \x -> x
+    in let g = \x -> f (f x)
     in g 5
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: local `wrap` is kept monomorphic, so its Int and String uses produce two E_TYPE_EQUALITY_MISMATCH diagnostics despite §11.1.2.3A requiring local-let generalization.

@@ -36,5 +36,12 @@ let callThenProject = (makePoint 5 6).x
 
 -- POSITIVE: projecting from the first element of a tuple
 --           (analogous to Futhark a[0].field).
+firstPoint : (Point, Point) -> Point
+let firstPoint pair =
+  match pair
+    case (p, _) -> p
+
 firstX : (Point, Point) -> Int
-let firstX pair = (fst pair).x
+let firstX pair = (firstPoint pair).x
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

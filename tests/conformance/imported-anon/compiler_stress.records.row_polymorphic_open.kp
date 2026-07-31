@@ -4,8 +4,8 @@
 --! mode check
 
 -- POSITIVE: extract the name field from any record that has it, ignoring remaining fields
-let getName (forall (r : RecRow)) (rec : (name : String | r)) : String =
-    rec.name
+getName : forall (r : RecRow). (name : String | r) -> String
+let getName rec = rec.name
 
 -- POSITIVE: call site 1 - record with exactly one extra field
 test1 : String
@@ -20,7 +20,9 @@ let test2 =
     getName employee
 
 -- POSITIVE: row-polymorphic passthrough - return open record unchanged
-let identity (forall (r : RecRow)) (rec : (name : String | r)) : (name : String | r) =
-    rec
+identity : forall (r : RecRow). (name : String | r) -> (name : String | r)
+let identity rec = rec
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

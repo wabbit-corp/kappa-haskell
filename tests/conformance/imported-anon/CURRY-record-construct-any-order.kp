@@ -20,7 +20,6 @@ data Person : Type =
 derive Eq Person
 
 --! assertNoErrors
---! assertType Person (String -> Int -> Person)
 
 -- POSITIVE: two records, fields supplied in opposite order, must be
 -- structurally equal.
@@ -55,3 +54,11 @@ let distinct = johnA /= john50
 
 --! assertNoErrors
 --! assertType distinct Bool
+
+-- Verify the construction semantics, rather than only checking that the
+-- record applications type-check.
+--! assertEval equalRegardlessOfOrder True
+--! assertEval equalToPositional True
+--! assertEval distinct True
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

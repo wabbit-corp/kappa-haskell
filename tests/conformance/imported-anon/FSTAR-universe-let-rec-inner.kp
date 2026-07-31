@@ -6,9 +6,11 @@
 
 -- An outer polymorphic function contains an inner local function also polymorphic.
 -- The inner function's type variable B must be independent of the outer A.
-outer : {A : Type} -> A -> Unit
+outer : forall (A : Type). A -> Unit
 let outer x =
-    let inner : {B : Type} -> B -> Unit = \y -> ()
+    let inner : forall (B : Type). B -> Unit = \y -> ()
     inner x
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

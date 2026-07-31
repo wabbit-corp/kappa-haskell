@@ -14,7 +14,9 @@ let getFirst p = p.first
 
 -- POSITIVE: extract the non-linear field after consuming the linear field via pattern
 getSecond : (1 p : LinearPair) -> String
-let getSecond (first = _, second = s) = s
+let getSecond p =
+    match p
+      case (first = _, second = s) -> s
 
 -- POSITIVE: construct the linear record and immediately consume it
 roundTrip : (1 n : Int) -> (s : String) -> Int
@@ -23,3 +25,5 @@ let roundTrip n s =
     getFirst p
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

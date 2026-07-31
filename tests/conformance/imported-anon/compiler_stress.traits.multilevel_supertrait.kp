@@ -18,7 +18,7 @@ instance Base MyNum =
     let base (MkNum n) = n
 
 instance Mid MyNum =
-    let mid (MkNum n) = "num:" ++ int_to_string n
+    let mid (MkNum n) = "num:" ++ show n
 
 instance Leaf MyNum =
     let leaf (MkNum n) = n > 0
@@ -30,9 +30,11 @@ let allThree x =
     let b : Int    = base x
     let m : String = mid x
     let l : Bool   = leaf x
-    int_to_string b ++ m ++ (if l then "true" else "false")
+    show b ++ m ++ (if l then "true" else "false")
 
 testChain : String
 let testChain = allThree (MkNum 7)
 
 --! assertNoErrors
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.

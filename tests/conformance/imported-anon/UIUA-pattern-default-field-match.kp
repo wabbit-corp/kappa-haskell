@@ -27,8 +27,8 @@ data Test : Type =
 isA : Test -> Bool
 let isA t =
     match t
-      case A _ -> True
-      case B _ -> False
+      case A { v = _ } -> True
+      case B { v = _, w = _ } -> False
 
 --! assertNoErrors
 --! assertType isA Test -> Bool
@@ -45,7 +45,9 @@ let nonDefaultB = isA (B { v = 1, w = 3 })
 extractW : Test -> Int
 let extractW t =
     match t
-      case A _ -> 0
+      case A { v = _ } -> 0
       case B { v = _, w = w } -> w
 
 --! assertType extractW Test -> Int
+
+-- STATUS(8f860308): FAIL — promoted conformance regression: this Spec-correct test now reaches two unrelated E_UNIVERSE_CONSTRAINT_UNSATISFIABLE errors while finalizing std.prelude.arrayAsSized.
