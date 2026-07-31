@@ -88,6 +88,7 @@ module Kappa.Builtins
   , prelEqType
   , prelSubst
   , prelPathInd
+  , prelRawProof
   , prelBoolV
   , prelOrdering
 
@@ -372,11 +373,12 @@ prelGT = gPrel "GT"
 
 -- | The reflexivity proof constructor (§14) and the propositional
 -- equality type head @=@ (§14).
-prelRefl, prelEqType, prelSubst, prelPathInd :: GName
+prelRefl, prelEqType, prelSubst, prelPathInd, prelRawProof :: GName
 prelRefl = gPrel "refl"
 prelEqType = gPrel "="
 prelSubst = gPrel "subst"
 prelPathInd = gPrel "pathInd"
+prelRawProof = gPrel "__eqProof"
 
 -- | The boolean constructor matching a Haskell 'Bool', for the few sites
 -- that pick @True@/@False@ at runtime.
@@ -789,6 +791,7 @@ wiredInPreludeNames =
     , (prelRORight, BKCtor)
     , (prelRefl, BKCtor)
     , (prelEqType, BKType)
+    , (prelRawProof, BKValue)
     , (prelShow, BKType)
     , (prelOrd, BKType)
     , (prelSuccessor, BKType)

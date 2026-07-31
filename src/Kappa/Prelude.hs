@@ -141,8 +141,14 @@ seededTypeUniverseArities =
 -- | Initial state: builtin types and primitives under @std.prelude@.
 builtinState :: CheckState
 builtinState =
-  initCheckState
-    { csModule = preludeModule
+  case certifyClosedBuiltinData prelNat seededState of
+    Left message ->
+      error ("invalid compiler-seeded Nat interface: " <> T.unpack message)
+    Right certified -> certified
+  where
+    seededState =
+      initCheckState
+        { csModule = preludeModule
     , -- §4.5 soundness escape: the genuine embedded prelude and the embedded
       -- standard-library modules built on top of it (std.debug etc.) admit the
       -- proof helpers (cong/sym/trans/subst/…) and wrap the debug introspection
@@ -164,10 +170,9 @@ builtinState =
     , csCtors = Map.fromList ctors
     , csDatas = Map.fromList datas
     , csPositivity = Map.fromList positivity
-    , csModuleExports =
-        Map.fromList [(testingModule, [nm | (GName _ nm, _) <- testingPrims])]
-    }
-  where
+        , csModuleExports =
+            Map.fromList [(testingModule, [nm | (GName _ nm, _) <- testingPrims])]
+        }
     opaqueTy t = inferDeclarationUniverses (GlobalDef t Nothing False)
     prim name t = (prel name, inferDeclarationUniverses (GlobalDef t (Just (VPrim name [])) False))
     internalPrim name t =

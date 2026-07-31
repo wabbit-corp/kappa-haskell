@@ -55,6 +55,7 @@ import Kappa.Backend.IR
   , BackendRepresentationSubject (..)
   , BackendSourceFieldIdentity (..)
   , KBackendIR (..)
+  , kbackendRepresentationCertificates
   , lowerKBackendIRForCapabilities
   , validateKBackendIR
   )
@@ -1934,7 +1935,7 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
     | otherwise -> withKCoreFile relative $ \expected -> do
         let st = cuState cu
             ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False mempty
-        pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces of
+        pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces checkpointRepresentationCertificates of
           Left err -> AssertFail ("generated KCore stage dump could not be emitted: " <> kcteCode err <> ": " <> kcteMessage err)
           Right actual -> case (parseKCore actual, parseKCore expected) of
             (Left err, _) -> AssertFail ("generated KCore stage dump does not verify: " <> kcteCode err <> ": " <> kcteMessage err)
@@ -1950,7 +1951,7 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
     | otherwise ->
         let st = cuState cu
             ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False mempty
-         in pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces of
+         in pure $ case renderKCoreModule (cuModule cu) ec (csGlobals st) (csCoreBodies st) checkpointDataInterfaces checkpointConstructorInterfaces checkpointRepresentationCertificates of
               Left err -> AssertFail ("generated KCore stage dump could not be emitted: " <> kcteCode err <> ": " <> kcteMessage err)
               Right dump -> assertKCoreRoundTripText parseKCore "generated KCore stage dump" dump
   AKCoreParses relative -> withKCoreFile relative $ \contents ->
@@ -2348,8 +2349,17 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
       Map.filterWithKey
         (\(GName owner _) _ -> owner /= cuModule cu)
         checkpointConstructorInterfaces
+    checkpointImportedDataInterfaces =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule cu)
+        checkpointDataInterfaces
     checkpointEval = EvalCtx (Globals checkpointGlobals) (csMetas checkpointState) False mempty
-    parseKCore = parseAndVerifyKCoreTextWithEnvironment checkpointEval checkpointGlobals checkpointImportedConstructors
+    parseKCore =
+      parseAndVerifyKCoreTextWithEnvironment
+        checkpointEval
+        checkpointGlobals
+        checkpointImportedDataInterfaces
+        checkpointImportedConstructors
     checkpointDataInterfaces =
       Map.map
         (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount)
@@ -2372,6 +2382,13 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
           (csCoreBodies checkpointState)
           checkpointDataInterfaces
           checkpointConstructorInterfaces
+          checkpointRepresentationCertificates
+    checkpointRepresentationCertificates =
+      kbackendRepresentationCertificates
+        ( lowerKBackendIRForCapabilities
+            (Set.fromList supportedCapabilities)
+            checkpointState
+        )
     errors = filter isError diags
     warnings = filter (\d -> dSeverity d == SevWarning) diags
     require b detail = pure (if b then AssertOk else AssertFail detail)
@@ -2557,6 +2574,10 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
                   ciSourceFields)
               (Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csCtors state))
           dataInterfaces = Map.map (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount) (csDatas state)
+          importedDataInterfaces =
+            Map.filterWithKey
+              (\(GName owner _) _ -> owner /= ownModule)
+              dataInterfaces
           constructorInterfaces =
             Map.map
               (\CtorInfo {..} ->
@@ -2567,8 +2588,29 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
                   ciSourceFields)
               (csCtors state)
           importedEval = EvalCtx (Globals importedGlobals) (csMetas state) False mempty
-      dump <- firstKCoreError $ renderKCoreModule ownModule fullEval (csGlobals state) (csCoreBodies state) dataInterfaces constructorInterfaces
-      artifact <- firstKCoreError $ parseAndVerifyKCoreTextWithEnvironment importedEval importedGlobals importedConstructors dump
+      dump <-
+        firstKCoreError $
+          renderKCoreModule
+            ownModule
+            fullEval
+            (csGlobals state)
+            (csCoreBodies state)
+            dataInterfaces
+            constructorInterfaces
+            ( kbackendRepresentationCertificates
+                ( lowerKBackendIRForCapabilities
+                    (Set.fromList supportedCapabilities)
+                    state
+                )
+            )
+      artifact <-
+        firstKCoreError $
+          parseAndVerifyKCoreTextWithEnvironment
+            importedEval
+            importedGlobals
+            importedDataInterfaces
+            importedConstructors
+            dump
       pure (kcoreNominalRoles artifact family)
     firstKCoreError = either (Left . (\err -> kcteCode err <> ": " <> kcteMessage err)) Right
     schemaLiftFamilies unit =

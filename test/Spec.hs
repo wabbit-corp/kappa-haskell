@@ -678,10 +678,22 @@ universeLawSchemasPrincipalDomain = do
       typeLevelArity name =
         dutParameterCount . gdUniverses
           <$> Map.lookup (GName (ModuleName ["std", "typelevel"]) name) globals
+      typeLevelInstanceArities trait =
+        [ dutParameterCount (gdUniverses definition)
+        | entry <- csInstances (cuState cu)
+        , ieTrait entry == gPrel trait
+        , let GName owner _ = ieDict entry
+        , owner == ModuleName ["std", "typelevel"]
+        , Just definition <- [Map.lookup (ieDict entry) globals]
+        ]
       checks =
         [ ("AdditiveMonoid", arity "AdditiveMonoid", Just 1)
         , ("AdditiveMonoid.addAssoc", arity "AdditiveMonoid.addAssoc", Just 1)
         , ("typeLevelAddAssoc", typeLevelArity "typeLevelAddAssoc", Just 0)
+        , ( "Eq TypeLevel instance"
+          , Just (maximum (0 : typeLevelInstanceArities "Eq"))
+          , Just 0
+          )
         ]
       errors = filter isError (cuDiags cu)
       failures =
@@ -1511,10 +1523,12 @@ universeLiftEvidenceDomain = do
             (Map.singleton syntheticOwner syntheticBody)
             (Map.empty :: Map.Map GName KCoreDataInfo)
             sourceConstructorInterfaces
+            []
         parsed <-
           parseAndVerifyKCoreTextWithEnvironment
             sourceEval
             (csGlobals sourceState)
+            (Map.map (\info -> KCoreDataInfo (diCtors info) (diParamCount info)) (csDatas sourceState))
             sourceConstructorInterfaces
             dump
         let canonical = printCanonicalKCoreText parsed
@@ -1522,6 +1536,7 @@ universeLiftEvidenceDomain = do
           parseAndVerifyKCoreTextWithEnvironment
             sourceEval
             (csGlobals sourceState)
+            (Map.map (\info -> KCoreDataInfo (diCtors info) (diParamCount info)) (csDatas sourceState))
             sourceConstructorInterfaces
             canonical
         pure
@@ -1721,10 +1736,15 @@ kcoreTextCanonicalDomain = do
                (ciType info)
                (ciSourceFields info))
           (csCtors envState)
+      envDataInterfaces =
+        Map.map
+          (\info -> KCoreDataInfo (diCtors info) (diParamCount info))
+          (csDatas envState)
       parseVerified =
         parseAndVerifyKCoreTextWithEnvironment
           envEval
           (csGlobals envState)
+          envDataInterfaces
           envConstructorInterfaces
       semanticVersionMetadata =
         ", typeLevelAlgebraVersion = \"1\""
@@ -4612,7 +4632,7 @@ backendIRPhaseAS5 = do
           , "let foo = (a = Int, b = 5)"
           , "let useRecord = foo.b"
           , "sourceType : TypeOnly"
-          , "let sourceType = (a = Int)"
+          , "let sourceType = (a = Int,)"
           , "fooComputed : R"
           , "let fooComputed = (a = sourceType.a, b = 6)"
           , "let useRecordComputed = fooComputed.b"
@@ -4644,6 +4664,46 @@ backendIRPhaseAS5 = do
       cu = compileSourceWithPrelude "s5a-backendir.kp" src
       st = cuState cu
       ir = lowerKBackendIR st
+      dataInterfaces =
+        Map.map
+          (\info -> KCoreDataInfo (diCtors info) (diParamCount info))
+          (csDatas st)
+      constructorInterfaces =
+        Map.map
+          (\info ->
+             KCoreConstructorInfo
+               (ciData info)
+               (ciUniverses info)
+               (ciType info)
+               (ciSourceFields info))
+          (csCtors st)
+      importedGlobals =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          (csGlobals st)
+      importedDataInterfaces =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          dataInterfaces
+      importedConstructorInterfaces =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          constructorInterfaces
+      importedEval =
+        EvalCtx
+          (Globals importedGlobals)
+          (csMetas st)
+          False
+          mempty
+      renderedKCore =
+        renderKCoreModule
+          (cuModule cu)
+          (EvalCtx (Globals (csGlobals st)) (csMetas st) False mempty)
+          (csGlobals st)
+          (csCoreBodies st)
+          dataInterfaces
+          constructorInterfaces
+          representationCertificates
       m = ModuleName [T.pack "main"]
       idBoxG = GName m (T.pack "idBox")
       useIdBoxG = GName m (T.pack "useIdBox")
@@ -4704,6 +4764,19 @@ backendIRPhaseAS5 = do
           representationCertificates
       representationCertificatesReplay =
         all ((== Right ()) . verifyRepresentationCertificate) representationCertificates
+      representationCertificatesSerialized =
+        case
+            renderedKCore
+              >>= parseAndVerifyKCoreTextWithEnvironment
+                importedEval
+                importedGlobals
+                importedDataInterfaces
+                importedConstructorInterfaces
+          of
+          Right kcore ->
+            kcoreRepresentationCertificateCount kcore
+              == length representationCertificates
+          Left _ -> False
       params = maybe [] bbParams body
       hasOnlyRuntimeParam =
         case params of
@@ -4869,26 +4942,38 @@ backendIRPhaseAS5 = do
         , ("selected exact-natural certificate crosses the backend boundary", hasExactNaturalCertificate)
         , ("selected finite-ordinal certificate crosses the backend boundary", hasFiniteOrdinalCertificate)
         , ("selected representation certificates replay before emission", representationCertificatesReplay)
+        , ("selected representation certificates are serialized in KCore", representationCertificatesSerialized)
         , ("lowered tree is not the old wrapper scaffold", noWrapperScaffold)
         ]
       failed = [name | (name, ok) <- checks, not ok]
   unless (null failed) $ do
     putStrLn "backendIRPhaseAS5 FAILED:"
     mapM_ (putStrLn . ("  " <>)) failed
-    putStrLn ("  bodies=" <> show (Map.keys backendBodies))
-    putStrLn ("  idBox=" <> show body)
-    putStrLn ("  useIdBox=" <> show callBody)
-    putStrLn ("  foo=" <> show recordBody)
-    putStrLn ("  useRecord=" <> show recordProjBody)
-    putStrLn ("  fooComputed=" <> show computedRecordBody)
-    putStrLn ("  useRecordComputed=" <> show computedRecordProjBody)
-    putStrLn ("  runtimeProofRec=" <> show runtimeProofRecordBody)
-    putStrLn ("  erasedProofRec=" <> show erasedProofRecordBody)
-    putStrLn ("  makeGhost=" <> show ghostBody)
-    putStrLn ("  useErasedTail=" <> show erasedTailBody)
-    putStrLn ("  useTuplePattern=" <> show tuplePatternBody)
-    putStrLn ("  usePolyArg=" <> show polyArgBody)
-    putStrLn ("  localPoly=" <> show localPolyBody)
+    case renderedKCore of
+      Left err ->
+        putStrLn
+          ( "  KCore emission="
+              <> T.unpack (kcteCode err)
+              <> ": "
+              <> T.unpack (kcteMessage err)
+          )
+      Right dump ->
+        case
+            parseAndVerifyKCoreTextWithEnvironment
+              importedEval
+              importedGlobals
+              importedDataInterfaces
+              importedConstructorInterfaces
+              dump
+          of
+          Left err ->
+            putStrLn
+              ( "  KCore parse="
+                  <> T.unpack (kcteCode err)
+                  <> ": "
+                  <> T.unpack (kcteMessage err)
+              )
+          Right _ -> pure ()
   pure (null failed)
 
 -- | S5.A regression: the backend-tree legality boundary must run on the real
