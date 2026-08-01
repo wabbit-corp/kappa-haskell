@@ -49,6 +49,11 @@ Numbered entries removed from Parts I-II:
 * **35.** §20.6.1 left `order by` direction and multi-key comparison unspecified — resolved 2026-07-27: missing directions
   now mean ascending, descending reverses each key comparison while preserving `EQ`, and multi-key ordering is stable
   lexicographic comparison in written left-to-right order. Portable Appendix-T fixtures cover all new cases.
+* **46.** §36.12 silently treated an undeclared fragment suffix as a false target-selection predicate — resolved
+  2026-08-01: source-candidate fragment validation now precedes per-target selection; unknown suffixes reject with one
+  `E_BUILD_FRAGMENT_TAG_UNKNOWN` per source-tree entry, while recognized-but-disabled suffixes remain valid exclusions.
+  The recognized/admitted vocabulary, provenance, diagnostic payload, target deduplication, and Appendix-T conformance
+  matrix are pinned.
 * **47.** Exported fixity was per operator, not per fixity kind — resolved 2026-07-24: operator identity, fixity,
   export, and import selectors are now per role (infix/prefix/postfix) (§5.5.2, §7.1.1, §8.3.1).
 * **88.** Conflicting imported fixities of the same operator and kind — resolved 2026-07-24: same-role fixity
@@ -1288,37 +1293,6 @@ structures satisfy the runtime obligations of Chapters 18, 30, and 34;"
 32" and the second bullet's to "Chapters 18, 30, and 32"; additionally add
 Chapter 32 to the preservation list in §34.4 line 38618 ("Chapters 6, 18, 19,
 20, 30, 32, 33, and 4").
-
-## 46. §36.12 vs §36.39: Undeclared fragment suffixes: §36.12's iff-selection silently drops files, but E_BUILD_FRAGMENT_TAG_UNKNOWN is a required diagnostic class with no specified trigger
-
-**ambiguity** · severity **medium** · verification: **confirmed** · Spec.md
-lines 40697-40705, 43530, 41508
-
-§36.12 defines selection as a biconditional: a file 'is selected for a target
-iff ... 4. every fragment suffix on the file is declared or admitted by the
-build configuration; and 5. every fragment suffix on the file is present in
-the target's enabled fragment-tag set.' A file bearing an undeclared suffix
-(e.g. the typo `log.natve.kp`) therefore fails condition 4 for every target
-and is silently excluded from the whole build — no rule anywhere requires
-diagnosing it (grep: the only 'undeclared fragment tag' rule, line 41508,
-governs features, not source files). Yet §36.39 lists
-`E_BUILD_FRAGMENT_TAG_UNKNOWN` among the required diagnostic classes without
-ever specifying when it is emitted. Two conforming implementations diverge
-observably: one rejects the build with E_BUILD_FRAGMENT_TAG_UNKNOWN, the other
-silently compiles without the file (a serious correctness footgun, since the
-missing module may only be detected — or not — at import time).
-
-> L40702-03: "4. every fragment suffix on the file is declared or admitted by
-the build configuration; and 5. every fragment suffix on the file is present
-in the target's enabled fragment-tag set." — L43530:
-"E_BUILD_FRAGMENT_TAG_UNKNOWN" (listed with no triggering rule)
-
-**Possible fix:** Add to §36.12: "A `.kp` file under a selected source root
-that carries a fragment suffix not declared by any fragment axis and not
-otherwise admitted by the build configuration is a build error diagnosed as
-`E_BUILD_FRAGMENT_TAG_UNKNOWN`; such a file is never silently excluded."
-(Condition 4 then becomes redundant and should be removed or restated as this
-error.)
 
 ## 48. §6.3.3: Multiline-string dedent prefix `I` is undefined when the closing delimiter is not preceded only by spaces on its line
 

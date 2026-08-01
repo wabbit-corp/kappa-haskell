@@ -1,0 +1,19 @@
+let buildConfig : BuildConfig =
+    package
+        ( name = "test.fragment_axis_conflict"
+        , version = semver "0.0.0"
+        , sourceRoots =
+            [ sourceRoot "src"
+            ]
+        , fragmentAxes =
+            [ axis "platform" [tag "native", tag "jvm"]
+            ]
+        , targets =
+            [ library
+                ( name = "lib"
+                , backend = jvm ()
+                , fragments = tags ["native"]
+                , modules = modulesUnder "demo"
+                )
+            ]
+        )

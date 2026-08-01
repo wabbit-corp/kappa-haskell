@@ -7465,6 +7465,9 @@ Normative mapping:
   implementation-defined, except where this specification explicitly relies on that mechanism.
 * In a project build governed by Chapter 36, fragment selection is specified by the target's selected fragment tags in
   the `ResolvedBuildPlan`.
+* Satisfying the fragment-segment identifier grammar makes a suffix syntactically valid; it does not make the suffix a
+  recognized fragment tag. Chapter 36 builds validate every source-candidate suffix against the owning package's
+  fragment-tag vocabulary under §36.12. An unrecognized suffix is a build error, not an unselected fragment.
 * Module name segments are case-sensitive.
 * Implementations MUST reject a compilation unit that contains two source files whose path-derived module names are
   equal after case-folding but differ in case.
@@ -47508,6 +47511,9 @@ A `ResolvedBuildPlan` records at least:
 * target dependency graph;
 * selected source roots;
 * generated source roots and their materialization identities;
+* declared fragment axes and recognized fragment-tag vocabulary per package;
+* implementation-defined admitted fragment tags, their canonical admission order, and their config-value provenance;
+* source-candidate files per selected source-root identity;
 * selected fragment tags per target;
 * selected source files per target;
 * effective modules per target;
@@ -47552,10 +47558,13 @@ Build-plan resolution includes, when requested by the build:
 * source-root validation;
 * source-file enumeration;
 * module-name derivation;
+* fragment-tag vocabulary construction;
 * feature selection;
 * feature constraint validation;
 * matrix expansion;
 * aggregate target expansion;
+* source-candidate fragment validation;
+* enabled-fragment-tag validation;
 * fragment selection;
 * target validation;
 * target-reference resolution;
@@ -48244,44 +48253,97 @@ one or defines a deterministic merge operation.
 
 Chapter 8 defines fragment suffixes in source-file paths.
 
-Under a `ResolvedBuildPlan`, fragment selection is no longer implementation-defined.
+Under a `ResolvedBuildPlan`, fragment-tag recognition, fragment validation, and per-target fragment selection are no
+longer implementation-defined.
 
-A target has an enabled fragment-tag set.
+Fragment-tag vocabulary:
 
-A source file is selected for a target iff:
+* A fragment tag is **declared** for a package when its `FragmentTag` value appears in one of that package's
+  `FragmentAxis` declarations.
+* A fragment tag is **admitted** for a package only when an implementation-defined build-schema extension explicitly
+  admits that tag. An admission MUST be represented by typed build-configuration data, MUST carry config-value
+  provenance, and MUST be recorded in the `ResolvedBuildPlan` together with a canonical admission order.
+* A fragment tag is **recognized** for a package iff it is declared or admitted for that package.
+* Portable v1 manifests declare fragment tags through `FragmentAxis` values. Portable v1 defines no ambient,
+  spelling-based, backend-implied, host-implied, or filesystem-inferred admission.
+* A `FragmentTag` used for source-path matching has a canonical spelling satisfying the fragment-segment grammar of
+  §8.1. Recognition compares that spelling to the path suffix by exact, case-sensitive ASCII equality.
+* Within one package, a canonical declared tag spelling MUST occur at most once across all `FragmentAxis` values,
+  including at most once within one axis. Repetition is a build-configuration error diagnosed with
+  `E_BUILD_FRAGMENT_AXIS_CONFLICT`; an implementation MUST NOT invent axis membership by declaration order.
+* An implementation MUST NOT recognize a fragment tag merely because a target enables it, a feature or matrix value
+  mentions it, a backend commonly uses that spelling, or a source file carrying that suffix exists.
 
-1. the file is under one of the target's selected source roots;
-2. the file has extension `.kp`;
-3. its path-derived module name is valid under §8.1;
-4. every fragment suffix on the file is declared or admitted by the build configuration; and
-5. every fragment suffix on the file is present in the target's enabled fragment-tag set.
+Source-candidate inventory:
+
+For one resolved build request, a **source candidate file** is a regular `.kp` file recorded by the `SourceTreeIdentity`
+of a source root or materialized generated source root selected by at least one resolved non-aggregate target in that
+request, after that root's include, exclude, ignored-path, and symlink policies have been applied.
+
+A resource-root entry is not a source candidate merely because its name ends in `.kp`, unless the same logical root is
+also selected as a source root under §36.11.
+
+Each source candidate is first checked by the path-to-module mapping of §8.1. Fragment-tag recognition is performed only
+after every directory, basename, and fragment segment is syntactically valid. A syntactically invalid path segment is a
+module/source-path error, not an unknown-tag error.
+
+Fragment validation precedes per-target selection:
+
+* Every fragment suffix of every source candidate MUST be recognized for the package that owns the selected source root.
+* Every fragment tag enabled directly by a target, enabled by a selected feature, or derived by matrix expansion MUST
+  likewise be recognized for that package.
+* If a source candidate contains one or more unrecognized fragment suffixes, build-plan resolution MUST reject the build
+  with `E_BUILD_FRAGMENT_TAG_UNKNOWN` as specified by §36.39. The file MUST NOT be silently classified as merely
+  unselected.
+* A recognized suffix that is disabled for every selected target is valid. It causes ordinary per-target exclusion and
+  does not by itself produce a diagnostic.
+* A recognized but disabled suffix on the same file does not suppress an unknown-suffix error. For example,
+  `log.jvm.natve.kp` is erroneous when `jvm` is recognized and `natve` is not, even for a target that does not enable
+  `jvm`.
+* Validation of one source-tree entry is shared by every target using that package and source-root identity. The same
+  unknown suffix MUST NOT produce one duplicate diagnostic per target.
+* A diagnostic-only or recovery-oriented build command MAY continue after recording the error, but the resulting
+  `ResolvedBuildPlan` is invalid and MUST NOT be used to publish interfaces, produce successful artifacts, or satisfy a
+  dependency.
+
+After successful fragment validation, a source candidate file is selected for a target iff:
+
+1. the candidate belongs to one of that target's selected source roots or generated source roots; and
+2. every fragment suffix on the candidate is present in the target's enabled fragment-tag set.
 
 A file with no fragment suffixes is selected for every target that includes its source root.
 
-Example:
+Examples:
 
 ```text
 src/acme/log.kp                    -> selected for all targets using src
 src/acme/log.jvm.kp                -> selected when tag jvm is enabled
 src/acme/log.native.linux.kp       -> selected when tags native and linux are enabled
 src/acme/log.native.linux.debug.kp -> selected when tags native, linux, and debug are enabled
+src/acme/log.natve.kp              -> E_BUILD_FRAGMENT_TAG_UNKNOWN when natve is not recognized
 ```
 
 Fragment axes declare mutually exclusive tags.
 
 A target MUST NOT enable more than one tag from the same exclusive axis.
 
-A source file MUST NOT use more than one tag from the same exclusive axis.
+A source file MUST NOT use more than one recognized tag from the same exclusive axis.
+
+Axis-conflict checking does not guess an axis for an unknown suffix. A file whose suffixes are all recognized but use
+more than one tag from one exclusive axis is diagnosed with `E_BUILD_FRAGMENT_AXIS_CONFLICT`, not
+`E_BUILD_FRAGMENT_TAG_UNKNOWN`.
 
 Selected fragments with the same path-derived module name contribute to one effective module for that target.
 
-Unselected fragments do not participate in name resolution, import/export discovery, interface identity, hashing,
-diagnostics, or backend lowering for that target.
+A recognized fragment that is unselected for a target does not participate in name resolution, import/export discovery,
+interface identity, hashing, source-content diagnostics, or backend lowering for that target. Fragment-vocabulary
+diagnostics are build-plan diagnostics over source-tree entries and occur before this exclusion rule.
 
 If two selected fragments define conflicting declarations, incompatible module headers, incompatible exported surfaces,
 or multiple definitions for one `expect`, the effective module is rejected.
 
-Fragment selection must be deterministic for fixed `ResolvedBuildPlan` and source tree identity.
+Fragment validation and selection must be deterministic for fixed authored build configuration, build request,
+source-tree identity, generated-output identity, and explicit fragment-tag admission inputs.
 
 <!-- build_system.fragments.composition -->
 #### 36.12.1 Fragment composition
@@ -48317,7 +48379,8 @@ surface, or interface identity would depend on a source-order choice between two
 For deterministic diagnostics, generated source maps, and presentation-only ordering, the canonical fragment order is:
 
 1. unsuffixed fragment files before suffixed fragment files;
-2. then files whose suffix tag sequence follows the declaration order of fragment axes and tags;
+2. then lexicographically by suffix vocabulary order, where declared tags follow fragment-axis declaration order and
+   tag order within each axis, and admitted tags follow all declared tags in their recorded admission order;
 3. then normalized relative source path by Unicode scalar-value order;
 4. then increasing source start offset within that file.
 
@@ -49059,7 +49122,8 @@ Selected features contribute to the target's enabled fragment-tag set.
 Selected features contribute to the target's dependency set, host binding set, bridge provider set, codegen input set,
 test set, benchmark set, export surface set, and deployment requirements.
 
-A feature MUST NOT silently select an undeclared fragment tag.
+A selected feature MUST NOT enable a fragment tag that is unrecognized for the package under §36.12. A violation is
+rejected with `E_BUILD_FRAGMENT_TAG_UNKNOWN`.
 
 A feature MUST NOT silently select more than one tag from the same exclusive fragment axis.
 
@@ -49200,6 +49264,9 @@ A generated target records:
 A generated target name MUST be unique within the package or workspace target namespace after qualification.
 
 A matrix target MUST NOT silently generate a target that violates the backend-profile rule of §36.13.
+
+A matrix-generated target MUST NOT enable a fragment tag that is unrecognized for the package under §36.12. A violation
+is rejected with `E_BUILD_FRAGMENT_TAG_UNKNOWN`.
 
 A matrix target MUST NOT silently enable more than one tag from the same exclusive fragment axis.
 
@@ -50917,8 +50984,10 @@ The `ResolvedBuildPlan` is part of the effective build configuration used by the
 A query result whose answer can depend on any of the following MUST include the corresponding `ResolvedBuildPlan`
 projection in its query key:
 
+* source-candidate files;
 * selected source files;
 * selected source roots;
+* recognized and admitted fragment-tag vocabulary with canonical admission order and admission provenance;
 * selected fragment tags;
 * selected dependencies;
 * dependency module interface identities;
@@ -50939,7 +51008,8 @@ projection in its query key:
 * external discovery transcripts.
 
 Changing the `BuildConfig`, build request, lockfile, resolved dependency identity, selected backend, host binding
-identity, bridge identity, or source-root membership invalidates all affected queries from the earliest affected phase.
+identity, bridge identity, source-root membership, fragment-tag vocabulary, or explicit admission record invalidates all
+affected queries from the earliest affected phase.
 
 The implementation MUST NOT maintain a separate build graph whose target selection, module providers, host bindings,
 bridge selections, or backend profiles can disagree with the `ResolvedBuildPlan`.
@@ -51146,6 +51216,85 @@ E_BUILD_PUBLISH_UNREPRODUCIBLE
 E_BUILD_PUBLISH_PATH_DEPENDENCY_REJECTED
 E_BUILD_QUERY_PLAN_NOT_FINAL
 ```
+
+Every spelling in this list is a required portable diagnostic-code alias for the corresponding Chapter 36 condition.
+An implementation MAY use a different primary implementation code, but its machine-readable diagnostic record MUST
+expose the required alias without requiring tools to parse human-readable prose.
+
+Fragment-tag diagnostics:
+
+A diagnostic for the conditions below MUST expose `E_BUILD_FRAGMENT_TAG_UNKNOWN` as its diagnostic code or portable
+diagnostic-code alias; an implementation MAY additionally expose its own stable code.
+
+`E_BUILD_FRAGMENT_TAG_UNKNOWN` is an error emitted when either:
+
+* a source candidate file contains at least one fragment suffix that is not recognized for its owning package under
+  §36.12; or
+* a target, selected feature, matrix expansion, or implementation-defined fragment policy attempts to enable a fragment
+  tag that is not recognized for the affected package.
+
+For a source candidate, the implementation MUST emit one `E_BUILD_FRAGMENT_TAG_UNKNOWN` diagnostic per
+`(package identity, source-root identity, source identity)` tuple, regardless of how many selected targets consider that
+source-tree entry. That diagnostic reports every unknown suffix occurrence on the file in written suffix order. It is
+not duplicated once per target.
+
+The primary origin is the source-tree entry origin for the offending path. When the diagnostic implementation cannot
+represent a path segment as an ordinary source range, it MUST use a synthetic origin carrying the source-root identity,
+normalized relative path, and nearest manifest or generated-output provenance. The source-root declaration, fragment-axis
+declarations, extension-admission records, and targets that caused the entry to be considered SHOULD appear as related
+origins when available.
+
+The structured payload for `E_BUILD_FRAGMENT_TAG_UNKNOWN` MUST include, when applicable:
+
+```text
+subjectKind:
+    source-fragment-suffix
+  | target-fragment-selection
+  | feature-fragment-selection
+  | matrix-fragment-selection
+  | extension-fragment-policy
+
+packageIdentity
+sourceRootIdentity
+sourceIdentity
+normalizedRelativePath
+pathDerivedModuleName
+fragmentSuffixes
+unknownTags
+declaredTags
+admittedTags
+recognizedTags
+consideringTargets
+configValueProvenance
+generatedOutputProvenance
+suggestedTags
+```
+
+For `subjectKind = source-fragment-suffix`, `normalizedRelativePath` is relative to `sourceRootIdentity`, and
+`fragmentSuffixes` is the complete suffix list in written order. `unknownTags` is a non-empty list of records with
+normative fields:
+
+```text
+spelling
+position
+```
+
+where `position` is the zero-based position in `fragmentSuffixes`. `consideringTargets` contains each selected target
+whose source-root selection caused that source-tree entry to be validated, in canonical target-identity order.
+
+Suggested tags MUST be ranked deterministically. Implementations SHOULD use the adjacent-transposition-aware edit metric
+of §3.1.7, then fragment-axis declaration order for declared tags or recorded admission order for admitted tags, then
+Unicode scalar-value order of canonical tag spelling. When exactly one recognized tag is one edit away, the
+human-readable diagnostic SHOULD suggest renaming that path suffix. Because
+the standard `DiagnosticFix` of §3.1.6 edits file contents rather than filesystem paths, a file-rename action is not
+required to be represented as a standard `DiagnosticFix`; a tooling protocol that supports path edits MAY expose it as
+an extension action.
+
+A recognized tag that is merely disabled for a target MUST NOT produce `E_BUILD_FRAGMENT_TAG_UNKNOWN`. A source file
+whose recognized suffixes select more than one member of one exclusive axis instead produces
+`E_BUILD_FRAGMENT_AXIS_CONFLICT`. The same axis-conflict code diagnoses a canonical tag spelling declared more than once
+within one package's fragment-axis declarations.
+
 
 A diagnostic for interface equivalence mismatch MUST identify the equivalence group, compared targets, equivalence
 mode, first differing fingerprint component, and relevant target/module/declaration provenance.
@@ -54138,6 +54287,9 @@ info
 In this appendix, `<code>` denotes a diagnostic code as defined by §3.1.
 Purely numeric codes are not valid standard-harness diagnostic codes.
 
+When `<code>` is a portable diagnostic-code alias required by §3.1.4 or §36.39, code-based assertions match either that
+diagnostic's primary `code` or the required alias exposed by its machine-readable record.
+
 Rules:
 
 * `assertNoErrors` succeeds iff the test produces no diagnostics of severity `error`.
@@ -54656,6 +54808,36 @@ Stable diagnostic aliases:
 * invalid universe-level expressions used as `Type` indices emit `E_UNIVERSE_LEVEL_EXPRESSION`;
 * data constructor fields whose annotation universe is too large for the data result universe emit
   `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE`;
+
+Build-plan fragment validation:
+
+* a source candidate whose path contains one unknown fragment suffix emits exactly one
+  `E_BUILD_FRAGMENT_TAG_UNKNOWN`, and its payload identifies the source root, normalized relative path, complete suffix
+  sequence, and unknown suffix position;
+* a source candidate containing several unknown suffixes still emits one file-level
+  `E_BUILD_FRAGMENT_TAG_UNKNOWN` whose `unknownTags` list preserves written suffix order;
+* one unknown source-tree entry considered by several targets emits one diagnostic rather than one duplicate per target,
+  and `consideringTargets` lists those targets in canonical order;
+* an unknown suffix remains erroneous when another recognized suffix on the same file is disabled for the selected
+  target;
+* a file carrying only recognized but disabled suffixes is valid, is not selected for that target, and contributes no
+  source-content diagnostics or declarations to that target;
+* an unknown `.kp` suffix outside every selected source root does not produce a fragment-tag diagnostic for that build
+  request;
+* a target, selected feature, and matrix-generated target that each attempt to enable an unrecognized tag produce
+  `E_BUILD_FRAGMENT_TAG_UNKNOWN` with `subjectKind` equal to `target-fragment-selection`,
+  `feature-fragment-selection`, and `matrix-fragment-selection`, respectively;
+* a syntactically invalid path fragment is rejected by the §8.1 module/source-path rule and is not mislabeled as
+  `E_BUILD_FRAGMENT_TAG_UNKNOWN`;
+* fragment-tag recognition is case-sensitive (`Native` is unknown when only `native` is recognized);
+* a file whose suffixes are all recognized but select two members of one exclusive axis emits
+  `E_BUILD_FRAGMENT_AXIS_CONFLICT`, not `E_BUILD_FRAGMENT_TAG_UNKNOWN`;
+* declaring the same canonical tag spelling twice in one axis or across two axes emits
+  `E_BUILD_FRAGMENT_AXIS_CONFLICT`;
+* a generated source candidate with an unknown suffix emits `E_BUILD_FRAGMENT_TAG_UNKNOWN` with generated-output
+  provenance; and
+* when an implementation exposes explicit extension tag admission, an admitted suffix is accepted and the admission and
+  its provenance appear in the `ResolvedBuildPlan` and relevant query-key projection.
 
 Diagnostic structure:
 

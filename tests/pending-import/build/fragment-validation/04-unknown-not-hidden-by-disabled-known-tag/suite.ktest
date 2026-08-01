@@ -1,0 +1,8 @@
+--! mode check
+--! packageMode
+--! requires backend jvm
+--! assertErrorCount 1
+--! assertDiagnostic error E_BUILD_FRAGMENT_TAG_UNKNOWN
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /fragmentSuffixes ["jvm","natve"]
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/0/spelling "natve"
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/0/position 1

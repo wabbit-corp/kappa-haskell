@@ -1,0 +1,20 @@
+let buildConfig : BuildConfig =
+    package
+        ( name = "test.fragment_duplicate_tag_declaration"
+        , version = semver "0.0.0"
+        , sourceRoots =
+            [ sourceRoot "src"
+            ]
+        , fragmentAxes =
+            [ axis "platform" [tag "native", tag "jvm"]
+            , axis "deployment" [tag "native", tag "hosted"]
+            ]
+        , targets =
+            [ library
+                ( name = "lib"
+                , backend = jvm ()
+                , fragments = tags ["native"]
+                , modules = modulesUnder "demo"
+                )
+            ]
+        )

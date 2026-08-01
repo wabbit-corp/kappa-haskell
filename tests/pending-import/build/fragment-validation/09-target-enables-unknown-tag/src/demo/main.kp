@@ -1,0 +1,4 @@
+module demo.main
+
+value : Int
+let value = 1

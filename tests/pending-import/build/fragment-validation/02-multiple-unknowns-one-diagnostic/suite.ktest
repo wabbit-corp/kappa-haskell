@@ -1,0 +1,10 @@
+--! mode check
+--! packageMode
+--! requires backend jvm
+--! assertErrorCount 1
+--! assertDiagnostic error E_BUILD_FRAGMENT_TAG_UNKNOWN
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /fragmentSuffixes ["natve","dbg"]
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/0/spelling "natve"
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/0/position 0
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/1/spelling "dbg"
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /unknownTags/1/position 1
