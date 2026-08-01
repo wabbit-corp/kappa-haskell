@@ -1,0 +1,44 @@
+-- Companion to FSTAR-constructor-constraint-in-scope.kp.
+-- Source issues: FSTAR-32, FSTAR-33
+-- Spec: §16.1.9, §28.2, and data_types.gadts
+--
+-- The original imported test indexes Vec by ordinary Nat, so it exercises
+-- indexed-constructor elaboration but not the source issue's refinement-type
+-- premise. This companion uses Kappa's portable refinement representation.
+-- Literal indices in constructor result types must synthesize their erased
+-- range evidence once; using the constructors must not expose a new proof
+-- parameter or require callers to repeat that evidence.
+
+--! mode check
+
+type SmallIndex : Type =
+    Refined Nat (\value -> (contains (0 .. 1) value) = True)
+
+data RefinedVec (a : Type) (n : SmallIndex) : Type =
+    RVNil : RefinedVec a 0
+    RVOne : a -> RefinedVec a 1
+
+nilRefined : RefinedVec Int 0
+let nilRefined = RVNil
+
+oneRefined : RefinedVec Int 1
+let oneRefined = RVOne 42
+
+acceptNil : RefinedVec Int 0 -> Bool
+let acceptNil _ = True
+
+acceptOne : RefinedVec Int 1 -> Bool
+let acceptOne _ = True
+
+-- Expected-type checking must instantiate the constructor without exposing
+-- either refinement proof as a source-level argument.
+let acceptedNil = acceptNil RVNil
+let acceptedOne = acceptOne (RVOne 42)
+
+--! assertNoErrors
+--! assertType nilRefined (RefinedVec Int 0)
+--! assertType oneRefined (RefinedVec Int 1)
+--! assertType acceptedNil Bool
+--! assertType acceptedOne Bool
+
+-- STATUS(168bc79e): PASS

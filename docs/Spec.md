@@ -870,6 +870,7 @@ I_INFERRED_SIGNATURE_AVAILABLE
 
 E_CONSTRUCTOR_ARITY_MISMATCH
 E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+E_DUPLICATE_PATTERN_BINDER
 
 E_NUMERIC_LITERAL_DOMAIN_MISMATCH
 E_UNICODE_NAME_PROFILE_VIOLATION
@@ -1084,6 +1085,10 @@ Meanings:
 * `E_CONSTRUCTOR_ARITY_MISMATCH` is emitted when a constructor application supplies too few, too many, duplicated, or
   otherwise malformed constructor arguments after constructor identity is known.
 * `E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH` is emitted for the analogous malformed constructor pattern.
+* `E_DUPLICATE_PATTERN_BINDER` is emitted when one pattern binds the same source name more than once (§17.2.2).
+  Repetition across distinct alternatives of an or-pattern is governed by §17.2.3 and is not, by itself, a duplicate:
+  corresponding alternatives are required to bind the same name set. Repeated wildcard `_` occurrences do not bind a
+  name and therefore do not trigger this diagnostic.
 * `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` is emitted when literal elaboration fails because the surrounding expected type or
   selected literal witness is not compatible with the literal domain.
 * `E_UNICODE_NAME_PROFILE_VIOLATION` is emitted when a source or generated name violates the active Unicode name
@@ -23592,7 +23597,10 @@ Patterns are used in `match`, `try match`, `for` generators, and refutable forms
   * the pattern guard (if present),
   * the branch/body expression,
   * subsequent clauses (for comprehensions).
-* Duplicate binders within the same pattern are an error (e.g. `(x, x)`).
+* Duplicate binders within the same pattern are an error (e.g. `(x, x)`) and MUST expose portable diagnostic alias
+  `E_DUPLICATE_PATTERN_BINDER`. The check covers the complete nested pattern, including constructor, tuple, record,
+  as-pattern, and rest binders. Repeated `_` wildcards are not binders. Corresponding occurrences of a name in distinct
+  or-pattern alternatives are not duplicates; they are instead checked by §17.2.3's same-binding-set rule.
 * A pattern match proceeds left-to-right; nested patterns are permitted.
 * In a prefix pattern application, the head must resolve either to a data constructor or to a function explicitly
   declared with the `pattern` keyword. An ordinary function is not permitted in pattern-head position.

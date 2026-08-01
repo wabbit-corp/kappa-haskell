@@ -30,8 +30,22 @@ data MTree : Type =
     MLeaf Nat
     MNode Forest
 
+nilOdd : ListOdd
+let nilOdd = NilO
+
+nilEven : ListEven
+let nilEven = NilE
+
+emptyForest : Forest
+let emptyForest = FNil
+
+leafTree : MTree
+let leafTree = MLeaf 0
+
 --! assertNoErrors
---! assertType NilO ListOdd
---! assertType NilE ListEven
---! assertType FNil Forest
---! assertType MLeaf Nat -> MTree
+--! assertType nilOdd ListOdd
+--! assertType nilEven ListEven
+--! assertType emptyForest Forest
+--! assertType leafTree MTree
+
+-- STATUS(168bc79e): PASS

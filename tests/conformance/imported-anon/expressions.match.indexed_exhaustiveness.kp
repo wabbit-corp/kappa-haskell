@@ -41,5 +41,7 @@ let check2 _ scrutinee =
       case Mk2 _ _   -> 2
 
 --! assertNoErrors
+--! assertType check1 ((a : Bool) -> T a -> Int)
+--! assertType check2 ((a : Bool) -> T a -> Int)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(168bc79e): PASS

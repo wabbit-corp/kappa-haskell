@@ -37,9 +37,12 @@ data MutRight : Type =
 -- A's constructor puts A itself in a negative (domain) position.
 -- This must be REJECTED regardless of whether B is in the group.
 data BadA : Type =
-  MkBadA : (BadA -> BadB) -> BadA   --!! kappa.type.mismatch  -- BadA in negative position
+  MkBadA : (BadA -> BadB) -> BadA
 
 data BadB : Type =
   MkBadB : BadA -> BadB
 
 --! assertErrorCount 1
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+
+-- STATUS(168bc79e): PASS

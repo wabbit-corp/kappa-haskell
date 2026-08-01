@@ -5,8 +5,8 @@
 -- Spec: §17.2.2 ("Duplicate binders within the same pattern are an error")
 -- Pins: Kappa has no lambda capture lists (captures are implicit), so Hylo's
 -- duplicate-capture maps to the duplicate-binder rule: one pattern binding
--- the same name twice — flat or nested — is rejected. The spec assigns no
--- kappa.* family to this; the registered code is E_DUPLICATE_PATTERN_BINDER.
+-- the same name twice — flat or nested — is rejected. §17.2.2 standardizes
+-- E_DUPLICATE_PATTERN_BINDER; no kappa.* family is assigned yet.
 -- NOTE: overlaps with tests/conformance/patterns/patterns-as-pattern-negative-duplicate-binder.kp
 -- (as-pattern name colliding with an inner binder).
 

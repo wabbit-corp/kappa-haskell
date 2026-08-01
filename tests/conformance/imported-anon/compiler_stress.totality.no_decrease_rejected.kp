@@ -4,12 +4,14 @@
 --! mode check
 
 data Nat : Type =
-    Z
-  | S Nat
+    Z | S Nat
 
 -- NEGATIVE: loop calls itself with S n (strictly larger), so it never terminates.
 loop : Nat -> Nat
 let loop n =
-    loop (S n)   --!! kappa.termination.failure
+    loop (S n)
 
+--! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.termination.failure
+
+-- STATUS(168bc79e): PASS

@@ -29,6 +29,18 @@ let describeResult r = match r
   case (| _ : Vec a 0 |)   -> "empty"
   case (| _ : Vec a 1 |)   -> "singleton"
 
---! assertNoErrors
+emptyDescription : String
+let emptyDescription = describeResult emptyResult
 
--- STATUS(f1b025a3): PASS
+singleDescription : String
+let singleDescription = describeResult singleResult
+
+errorDescription : String
+let errorDescription = describeResult errResult
+
+--! assertNoErrors
+--! assertType emptyDescription String
+--! assertType singleDescription String
+--! assertType errorDescription String
+
+-- STATUS(168bc79e): PASS

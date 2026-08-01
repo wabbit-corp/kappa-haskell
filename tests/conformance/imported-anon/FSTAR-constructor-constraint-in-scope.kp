@@ -25,5 +25,7 @@ let head a n v =
       case VCons x _ _ -> x
 
 --! assertNoErrors
+--! assertType nil_vec (Vec Int 0)
+--! assertType one_vec (Vec Int 1)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(168bc79e): PASS

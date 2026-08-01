@@ -24,5 +24,6 @@ let doubledIndex w = match w
   case Wrap n -> n + n
 
 --! assertNoErrors
+--! assertType doubleCheck ((n : Nat) -> WrapDouble (n + n))
 
--- STATUS(f1b025a3): PASS
+-- STATUS(168bc79e): PASS

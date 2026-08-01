@@ -26,7 +26,7 @@ let useRedex = ((\x -> Suc x) : (Nat -> Nat)) Zero
 -- POSITIVE: ascription that recovers a function type, then applied
 -- against the surrounding declared signature.
 ascribeFn : Nat -> Nat
-let ascribeFn = (\x -> Suc x) : (Nat -> Nat)
+let ascribeFn = ((\x -> Suc x) : (Nat -> Nat))
 
 -- POSITIVE: a domain-annotated lambda whose codomain is fixed by the
 -- enclosing signature.
@@ -41,10 +41,12 @@ let matchAsc n =
         case Zero  -> Zero
         case Suc _ -> Suc Zero) : Nat)
 
--- NEGATIVE: applying a bare lambda whose domain has no signature or
--- expected type produces an unsolved-metavariable diagnostic because the
--- argument type cannot be determined.
-badApply : Nat
-let badApply = (\x -> x) Zero    --!! kappa.type.unsolved-metavariable
+-- POSITIVE: immediate application supplies the argument type, so the bare
+-- identity lambda can infer its domain from Zero.
+bareApply : Nat
+let bareApply = (\x -> x) Zero
 
---! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+--! assertNoErrors
+--! assertType bareApply Nat
+
+-- STATUS(168bc79e): PASS
