@@ -24781,61 +24781,95 @@ This subsection defines surface semantics only. KCore realization is given by §
 
 Worked examples:
 
-Distinct labels with the same effect interface are handled independently.
+Distinct labels carrying the same effect interface are handled independently.
 
 ```kappa
-scoped effect State =
+effect State =
     1 get : Unit -> Int
     1 put : Int -> Unit
 
-let example : Eff <[outer : State, inner : State]> Int =
-    handle outer
-        handle inner
-            do
-                inner.put 1
-                outer.put 2
-                inner.get ()
-        with
-            case return x -> pure x
-            case get _ k -> k 10
-            case put _ k -> k ()
-    with
+effect label outer : State
+effect label inner : State
+
+exampleComputation : Eff <[outer : State, inner : State]> Int
+let exampleComputation =
+    do
+        inner.put 1
+        outer.put 2
+        inner.get ()
+
+exampleInnerHandled : Eff <[outer : State]> Int
+let exampleInnerHandled =
+    deep handle inner exampleComputation with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+exampleFullyHandled : Eff <[ ]> Int
+let exampleFullyHandled =
+    deep handle outer exampleInnerHandled with
         case return x -> pure x
         case get _ k -> k 20
         case put _ k -> k ()
+
+example : Int
+let example = runPure exampleFullyHandled
 ```
 
-The operation `inner.get` is intercepted by the handler for `inner`, not by the handler for `outer`, even though both
-labels carry the same effect interface.
+`example` evaluates to `10`. The two handlers are deep because the handled computation performs further operations after
+both `put` clauses resume. Each deep resumption reinstalls its own handler, so the later `inner.get ()` is intercepted by
+the handler for `inner`, not by the handler for `outer`, even though both labels carry `State`.
+
+Had either relevant handler been shallow and resumed by bare `k`, that handler would not be reinstalled around the resumed
+suffix (§18.1.21). This example therefore tests both exact-label selection and deep-handler reinstallation; it must not be
+used as an example of shallow-handler persistence.
 
 Nested handlers for the same exact label use the nearest dynamically enclosing matching handler.
 
 ```kappa
-let sameLabel : Eff <[state : State]> Int =
-    handle state
-        handle state
-            state.get ()
-        with
-            case return x -> pure x
-            case get _ k -> k 1
-            case put _ k -> k ()
-    with
+effect label state : State
+
+sameLabelInnerHandled : Eff <[state : State]> Int
+let sameLabelInnerHandled =
+    deep handle state (state.get ()) with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+
+sameLabelFullyHandled : Eff <[ ]> Int
+let sameLabelFullyHandled =
+    deep handle state sameLabelInnerHandled with
         case return x -> pure x
         case get _ k -> k 2
         case put _ k -> k ()
+
+sameLabel : Int
+let sameLabel = runPure sameLabelFullyHandled
 ```
 
-The result is `1`, because the inner handler is the nearest dynamically enclosing handler for the exact label `state`.
+`sameLabel` evaluates to `1`, because the inner handler is the nearest dynamically enclosing handler for the exact label
+`state`. This example performs only one operation at `state`; its selection result does not depend on whether a handler is
+reinstalled after resumption. `deep handle` is used here so that both nested handlers eliminate their effect and the
+example can be closed with `runPure`.
 
-Lexical label identity still matters:
+Lexical rebinding preserves label identity.
 
 ```kappa
 let rebound = state
-handle rebound (state.get ()) with ...
+
+reboundHandled : Eff <[ ]> Int
+let reboundHandled =
+    deep handle rebound (state.get ()) with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+reboundLabel : Int
+let reboundLabel = runPure reboundHandled
 ```
 
-This handles the operation only because `rebound` denotes the same effect-label value as `state`. Matching is by
-resolved effect-label identity, not by spelling.
+`reboundLabel` evaluates to `7`. The handler matches because `rebound` denotes the same effect-label value as `state`.
+Matching is by resolved effect-label identity, not by source spelling.
 
 <!-- effects.monadic_core.effect_application_linear_soundness -->
 #### 18.1.20 Effect application and linear soundness
@@ -28644,29 +28678,70 @@ order by desc expr
 order by (asc expr1, desc expr2, expr3)
 ```
 
+Each ordering key may independently carry `asc`, `desc`, or no direction marker. A key with no direction marker is
+ascending. Consequently, `order by expr` is semantically equivalent to `order by asc expr`, and the directionless
+`expr3` in the multi-key example above means `asc expr3`.
+
 Typing:
 
 * `order by expr` requires an implicit `Ord K` instance, where `expr : K`.
 * `order by asc expr` and `order by desc expr` likewise require `Ord K`.
-* `order by (dir1 expr1, ..., dirn exprn)` requires `Ord Ki` for every ordering key `expri : Ki`.
+* `order by (dir1 expr1, ..., dirn exprn)` requires `Ord Ki` for every ordering key `expri : Ki`. The key types need not
+  be equal.
 
 Semantics:
 
-* `order by` applies stable sorting to the current query pipeline.
+For two input rows `x` and `y`, let `key_i(x)` and `key_i(y)` be the cached values of the `i`th ordering-key expression,
+and let `compare_i` be `Ord.compare` from the coherent `Ord Ki` evidence selected for that key.
+
+Define the meta-level operation:
+
+```text
+reverseOrdering(LT) = GT
+reverseOrdering(EQ) = EQ
+reverseOrdering(GT) = LT
+```
+
+The directed comparison for key `i` is:
+
+```text
+directedCompare_i(x, y) =
+    compare_i(key_i(x), key_i(y))                  when direction_i = asc
+    reverseOrdering(compare_i(key_i(x), key_i(y))) when direction_i = desc
+```
+
+where an omitted `direction_i` is `asc`.
+
+Rows are compared lexicographically in written left-to-right key order:
+
+* inspect `directedCompare_1(x, y)`, then `directedCompare_2(x, y)`, and so on;
+* the first result that is not `EQ` is the comparison of the two rows;
+* a later key is consulted only when every earlier key compares `EQ`; and
+* if every key compares `EQ`, the rows compare `EQ` for this `order by` clause.
+
+A row `x` precedes a row `y` when their row comparison is `LT`; a result of `GT` places `x` after `y`. The current query
+pipeline is stably sorted by that relation. `desc` reverses the comparison of its own key; it does not reverse the
+already-sorted output sequence. In particular, `desc` preserves `EQ`, so equal-key rows remain subject to the ordinary
+stability rule rather than having their relative order reversed.
 
 Stability:
-* `order by` is a stable sort: elements that compare equal under the ordering keys preserve their relative order from
-  the input iteration order.
+
+* Rows for which every ordering key compares `EQ` preserve their relative order from the current encounter order.
+* This stability rule applies equally to ascending keys, descending keys, and mixtures of directions.
 
 Tie behavior on unordered inputs:
 
 * Stability is with respect to the **current encounter order**.
-* If the current orderedness is Unordered (§20.3.2), then the relative order of elements with equal ordering keys is
-  deterministic in package mode under §20.3.2, but not user-visible or specified.
+* If the current orderedness is Unordered (§20.3.2), then the relative order of rows whose complete lexicographic
+  comparison is `EQ` is deterministic in package mode under §20.3.2, but not user-visible or specified.
 
 Evaluation:
-* In `order by ...`, each ordering key expression is evaluated exactly once per row. Implementations may cache keys for
-  sorting.
+
+* Each ordering-key expression is evaluated exactly once per row.
+* The semantics is as if every row were decorated with its key values, the decorated rows were stably sorted by the
+  comparison above, and the temporary keys were then discarded.
+* Implementations may cache keys and may use any sorting algorithm observationally equivalent to that model. They MUST
+  NOT re-evaluate a key expression during comparator invocations.
 
 Quantity and borrowing:
 

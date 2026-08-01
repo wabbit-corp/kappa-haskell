@@ -1,0 +1,25 @@
+module main
+
+-- Pending §7.6/§18.1.19 support: effect labels are first-class compile-time
+-- values, and rebinding one preserves its identity for handler matching.
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect label state : State
+
+let rebound = state
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle rebound (state.get ()) with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+result : Int
+let result = runPure handled
+
+--! assertNoErrors
+--! assertEval result 7

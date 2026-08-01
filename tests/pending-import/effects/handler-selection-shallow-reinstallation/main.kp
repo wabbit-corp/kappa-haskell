@@ -1,0 +1,36 @@
+module main
+
+-- Pending §18.1.21 support: a shallow resumption returns the original
+-- unhandled effect row, allowing an outer handler to intercept later calls.
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect label state : State
+
+computation : Eff <[state : State]> Int
+let computation =
+    do
+        state.put 0
+        state.get ()
+
+innerHandled : Eff <[state : State]> Int
+let innerHandled =
+    handle state computation with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+
+fullyHandled : Eff <[ ]> Int
+let fullyHandled =
+    deep handle state innerHandled with
+        case return x -> pure x
+        case get _ k -> k 2
+        case put _ k -> k ()
+
+result : Int
+let result = runPure fullyHandled
+
+--! assertNoErrors
+--! assertEval result 2

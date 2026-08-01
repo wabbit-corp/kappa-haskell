@@ -43,6 +43,12 @@ Numbered entries removed from Parts I-II:
 * **15.** §4: unhide/clarify recognized/gated/audited but carry no deeper semantic effect — §4.3 now explicitly defines the semantics the possible fix requested: "`unhide` imports a name that is marked `private` in the imported module, as if it were exported"; "`clarify` …
 * **16.** §10.1.3,§10.2 vs §11.1: No universe size check for data ctor args — §10.4.1 'Constructor universe-size rule' (L9579) now requires every constructor-local binder `A : Type α` to satisfy solver-proved `α ≤ ρ` under the declared result universe `F Δ :…
 * **17.** RESOLVED: §11.1/§11.1.2/§11.3 lacked Pi formation & level discipline — Redesigned §11 supplies the missing rules: `TypeLevel` is an ordinary opaque prelude type whose values include `ω` (L10390-10419); universe formation `Γ ⊢ Type u : Type (succ u)` (…
+* **33.** §18.1.19 worked example described deep-handler behavior while using shallow `handle` — resolved 2026-07-27:
+  the examples now use valid declared effect labels, `deep handle`, and `runPure`; the prose separately pins exact-label
+  selection, reinstallation, nearest-handler selection, and identity-preserving rebinding.
+* **35.** §20.6.1 left `order by` direction and multi-key comparison unspecified — resolved 2026-07-27: missing directions
+  now mean ascending, descending reverses each key comparison while preserving `EQ`, and multi-key ordering is stable
+  lexicographic comparison in written left-to-right order. Portable Appendix-T fixtures cover all new cases.
 * **47.** Exported fixity was per operator, not per fixity kind — resolved 2026-07-24: operator identity, fixity,
   export, and import selectors are now per role (infix/prefix/postfix) (§5.5.2, §7.1.1, §8.3.1).
 * **88.** Conflicting imported fixities of the same operator and kind — resolved 2026-07-24: same-role fixity
@@ -941,38 +947,6 @@ particular, applying `restore` inside an outer `mask` or `uninterruptible`
 region whose masking was already in effect at that `mask`'s entry does not
 make the subcomputation interruptible." Mirror the sentence in §32.2.5.
 
-## 33. §18.1.19 vs §18.1.21: §18.1.19 worked example describes deep-handler behavior but uses shallow `handle`
-
-**contradiction** · severity **medium** · verification: **confirmed** ·
-Spec.md lines 19539-19562 vs 19766-19767
-
-The first worked example handles `do { inner.put 1; outer.put 2; inner.get ()
-}` with shallow `handle` whose clauses resume via bare `k ()` / `k 10` and
-never re-handle the resumption. Under §18.1.21 ("The current handler is not
-automatically reinstalled around `k`"), after the inner handler consumes
-`inner.put 1` and resumes, the inner handler is gone; after the outer handler
-consumes `outer.put 2` and resumes, both handlers are gone; so the trailing
-`inner.get ()` is unhandled. The example's normative prose — that `inner.get`
-"is intercepted by the handler for `inner`" — is therefore false as written;
-it holds only for `deep handle` (or for clauses that explicitly re-handle). An
-implementer calibrating handler semantics against this example would implement
-auto-reinstalling (deep) behavior for `handle`, directly contradicting
-§18.1.21.
-
-> line 19561-19562: "The operation `inner.get` is intercepted by the handler
-for `inner`, not by the handler for `outer`, even though both labels carry the
-same effect interface." — vs line 19766-19767: "The current handler is not
-automatically reinstalled around `k`. To continue handling the same label
-after resumption, the handler body must explicitly handle the resumed
-computation again."
-
-**Possible fix:** In §18.1.19, change both `handle` occurrences of the first
-example (and the outer/inner handlers) to `deep handle`, or rewrite the
-operation clauses to re-handle the resumed computation (e.g. `case put _ k ->
-handle inner (k ()) with ...`). The second (`sameLabel`) example only
-exercises one operation and may remain shallow, but should be changed to `deep
-handle` for consistency.
-
 ## 34. §20.2, §20.10.2 (cf. §6.4, §30.7): Element semantics of ranges (endpoint inclusion, direction, emptiness, meaning of `exclusive`) are never defined
 
 **omission** · severity **medium** · verification: **confirmed** · Spec.md
@@ -1005,34 +979,6 @@ ascending sequence from, from+1, ..., bounded above by to; `to` itself is
 included iff exclusive = False. If from > to (or from >= to when exclusive =
 True) the range is empty; ranges never enumerate descending. Cardinality of
 the resulting IntoQuery is QZeroOrMore.'
-
-## 35. §20.6.1: `order by expr` has no defined sort direction and multi-key ordering has no defined comparison rule
-
-**incompleteness** · severity **medium** · verification: **confirmed** ·
-Spec.md lines 23315-23356
-
-§20.6.1 gives four syntactic forms including bare `order by expr` and multi-
-key `order by (asc expr1, desc expr2, expr3)`, and gives typing (Ord K per
-key) and stability, but the only semantic sentence is 'order by applies stable
-sorting to the current query pipeline'. Nowhere does the spec say (a) that
-bare `order by expr` (and a direction-less key inside a tuple) sorts
-ascending, (b) how `asc`/`desc` map onto the `Ord` instance's comparison, or
-(c) that multiple keys compose lexicographically left-to-right. A whole-spec
-grep for 'ascending'/'descending' returns zero hits. Two conforming
-implementations can sort the same comprehension in opposite orders, or
-prioritize keys differently — directly observable in every `order by` result
-and also feeding the encounter-order-sensitive semantics of skip/take, keep
-first/last, and grouped fold order.
-
-> L23318-23321: "order by expr\norder by asc expr\norder by desc expr\norder
-by (asc expr1, desc expr2, expr3)" ... L23333: "* `order by` applies stable
-sorting to the current query pipeline."
-
-**Possible fix:** Add to §20.6.1 Semantics: 'A key without an explicit
-direction sorts ascending. `asc` orders rows so that keys are nondecreasing
-under Ord K; `desc` reverses that key comparison. Multiple keys compare
-lexicographically in written left-to-right order: later keys are consulted
-only when all earlier keys compare equal.'
 
 ## 36. §22 (22.4 signatures) vs §16.3.3 and §9.3: std.deriving.shape requires implicit discharge of a quantified goal `forall x. IsTrait (tc x)` that the implicit-resolution procedure cannot solve
 

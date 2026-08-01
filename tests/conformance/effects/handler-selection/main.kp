@@ -1,0 +1,54 @@
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect label outer : State
+effect label inner : State
+effect label state : State
+
+distinctComputation : Eff <[outer : State, inner : State]> Int
+let distinctComputation =
+    do
+        inner.put 1
+        outer.put 2
+        inner.get ()
+
+distinctInnerHandled : Eff <[outer : State]> Int
+let distinctInnerHandled =
+    deep handle inner distinctComputation with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+distinctFullyHandled : Eff <[ ]> Int
+let distinctFullyHandled =
+    deep handle outer distinctInnerHandled with
+        case return x -> pure x
+        case get _ k -> k 20
+        case put _ k -> k ()
+
+distinctLabels : Int
+let distinctLabels = runPure distinctFullyHandled
+
+nearestInnerHandled : Eff <[state : State]> Int
+let nearestInnerHandled =
+    deep handle state (state.get ()) with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+
+nearestFullyHandled : Eff <[ ]> Int
+let nearestFullyHandled =
+    deep handle state nearestInnerHandled with
+        case return x -> pure x
+        case get _ k -> k 2
+        case put _ k -> k ()
+
+nearestSameLabel : Int
+let nearestSameLabel = runPure nearestFullyHandled
+
+--! assertNoErrors
+--! assertEval distinctLabels 10
+--! assertEval nearestSameLabel 1

@@ -1,0 +1,114 @@
+module main
+
+-- Encode a list of single decimal digits in encounter order.  For example,
+-- [1, 2, 3] becomes 123.  This gives each ordering test one compact assertEval
+-- subject without hiding the produced sequence behind collection rendering.
+encodeDigits : List Int -> Int
+let encodeDigits xs =
+    block
+        go : List Int -> Int -> Int
+        let go ys acc decreases structural ys =
+            match ys
+            case Nil -> acc
+            case (::) digit rest -> go rest (acc * 10 + digit)
+
+        go xs 0
+
+defaultAscending : Int
+let defaultAscending =
+    encodeDigits [
+        for x in [3, 1, 2]
+        order by x
+        yield x
+    ]
+
+explicitAscending : Int
+let explicitAscending =
+    encodeDigits [
+        for x in [2, 3, 1]
+        order by asc x
+        yield x
+    ]
+
+explicitDescending : Int
+let explicitDescending =
+    encodeDigits [
+        for x in [1, 3, 2]
+        order by desc x
+        yield x
+    ]
+
+-- Written key priority is: major ascending, middle descending, minor
+-- ascending.  Rows 3 and 6 compare EQ under all three keys and therefore
+-- remain in encounter order.
+lexicographicMixedStable : Int
+let lexicographicMixedStable =
+    encodeDigits [
+        for (major, middle, minor, id) in [
+            (0, 1, 2, 1),
+            (0, 2, 2, 2),
+            (0, 2, 1, 3),
+            (1, 1, 1, 4),
+            (1, 1, 0, 5),
+            (0, 2, 1, 6)
+        ]
+        order by (major, desc middle, minor)
+        yield id
+    ]
+
+-- A directionless later key is ascending, not merely a directionless first
+-- key or single key.
+omittedLaterDirection : Int
+let omittedLaterDirection =
+    encodeDigits [
+        for (major, minor, id) in [
+            (0, 2, 2),
+            (1, 2, 4),
+            (0, 1, 1),
+            (1, 1, 3)
+        ]
+        order by (desc major, minor)
+        yield id
+    ]
+
+-- Different keys may use different key types and therefore different coherent
+-- Ord dictionaries.  Here the first key is Int and the second is String.
+heterogeneousKeyTypes : Int
+let heterogeneousKeyTypes =
+    encodeDigits [
+        for (major, name, id) in [
+            (0, "a", 1),
+            (0, "z", 2),
+            (1, "z", 3),
+            (1, "a", 4)
+        ]
+        order by (major, desc name)
+        yield id
+    ]
+
+ascendingTieStability : Int
+let ascendingTieStability =
+    encodeDigits [
+        for (key, id) in [(2, 1), (1, 2), (2, 3), (2, 4), (1, 5)]
+        order by key
+        yield id
+    ]
+
+descendingTieStability : Int
+let descendingTieStability =
+    encodeDigits [
+        for (key, id) in [(2, 1), (1, 2), (2, 3), (2, 4), (1, 5)]
+        order by desc key
+        yield id
+    ]
+
+--! assertNoErrors
+--! assertTotal encodeDigits
+--! assertEval defaultAscending 123
+--! assertEval explicitAscending 123
+--! assertEval explicitDescending 321
+--! assertEval lexicographicMixedStable 362154
+--! assertEval omittedLaterDirection 3412
+--! assertEval heterogeneousKeyTypes 2134
+--! assertEval ascendingTieStability 25134
+--! assertEval descendingTieStability 13425
