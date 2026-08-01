@@ -7,25 +7,20 @@
 
 module test
 
-data Nat : Type = Zero : Nat | Succ : Nat -> Nat
-data Bool : Type = False : Bool | True : Bool
-
-record Point : Type =
-    x : Nat
-    y : Nat
+type Point : Type = (x : Nat, y : Nat)
 
 -- A function that returns a record value.
 origin : Unit -> Point
-let origin () = Point { x = Zero, y = Zero }
+let origin () = (x = 0, y = 0)
 
 make_point : Nat -> Nat -> Point
-let make_point px py = Point { x = px, y = py }
+let make_point px py = (x = px, y = py)
 
 -- POSITIVE TEST 1: record patch on a function application.
 -- (make_point Zero Zero).{ x = Succ Zero } must be well-typed and produce
 -- Point { x = Succ Zero, y = Zero }.
 patched : Point
-let patched = (make_point Zero Zero).{ x = Succ Zero }
+let patched = (make_point 0 0).{ x = 1 }
 
 -- Verify the patch took effect.
 patched_x : Nat
@@ -34,16 +29,16 @@ let patched_x = patched.x
 -- POSITIVE TEST 2: field projection on a function application.
 -- (make_point Zero (Succ Zero)).y must be well-typed.
 proj_y : Nat
-let proj_y = (make_point Zero (Succ Zero)).y
+let proj_y = (make_point 0 1).y
 
 -- POSITIVE TEST 3: chained patch on application.
 -- (origin ()).{ x = Succ Zero }.{ y = Succ (Succ Zero) }
 chained : Point
-let chained = (origin ()).{ x = Succ Zero }.{ y = Succ (Succ Zero) }
+let chained = (origin ()).{ x = 1 }.{ y = 2 }
 
 -- POSITIVE TEST 4: record patch updating multiple fields.
 multi_patch : Point
-let multi_patch = (make_point Zero Zero).{ x = Succ Zero, y = Succ Zero }
+let multi_patch = (make_point 0 0).{ x = 1, y = 1 }
 
 -- All results must be well-typed.
 use_point : Point -> Nat
@@ -60,3 +55,8 @@ let check3 = use_point multi_patch
 
 --! mode check
 --! assertNoErrors
+--! assertType patched Point
+--! assertType proj_y Nat
+--! assertType chained Point
+
+-- STATUS(02405dba): PASS

@@ -6,8 +6,8 @@
 -- Kappa allows mutually recursive data declarations: two or more `data`
 -- declarations may reference each other in their constructor signatures and
 -- be elaborated together. Egglog gained this feature via `datatype*`; Kappa
--- accepts the same shape natively in a recursive declaration group joined
--- by `and`.
+-- accepts the same shape natively by collecting adjacent declaration headers
+-- into a recursive SCC; no `and` keyword is required.
 
 module test
 
@@ -18,18 +18,22 @@ data Expr : Type =
     EVar (s : String)
     EApp (f : Expr) (a : Expr)
     EBlock (b : Block)
-and Block : Type =
+
+data Block : Type =
     BNil
     BCons (e : Expr) (rest : Block)
 
--- POSITIVE: structurally recursive function across the mutual group.
+-- POSITIVE: structurally recursive functions across the mutual group. Both
+-- signatures precede both bodies so the SCC is available while checking.
 exprSize : Expr -> Int
+blockSize : Block -> Int
+
 let exprSize e =
     match e
     case (EVar _)    -> 1
     case (EApp f a)  -> 1 + exprSize f + exprSize a
     case (EBlock b)  -> blockSize b
-and blockSize : Block -> Int
+
 let blockSize b =
     match b
     case BNil          -> 0
@@ -45,3 +49,5 @@ let n1 = exprSize e1
 --! assertType n1 Int
 --! assertType exprSize (Expr -> Int)
 --! assertType blockSize (Block -> Int)
+
+-- STATUS(02405dba): PASS

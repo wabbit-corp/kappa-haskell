@@ -32,40 +32,48 @@ let projFst s =
 
 projSnd :
     forall (a : Type) (b : a -> Type).
-    (s : Sigma a b) -> b (projFst a b s)
+    (s : Sigma a b) -> b (projFst @a @b s)
 let projSnd s =
     match s
       case MkSigma _ y -> y
 
 -- POSITIVE: construct a Sigma whose second field's type depends on the
--- first.
-expect term Vec : Nat -> Type
-expect term mkVec : (n : Nat) -> Vec n
+-- first. Keep the indexed family concrete so the conformance fixture has no
+-- unsatisfied `expect term` declarations.
+data Vec (n : Nat) : Type =
+    VNil  : Vec Zero
+    VCons : (n : Nat) -> Vec n -> Vec (Suc n)
 
 aPair : Sigma Nat Vec
-let aPair = MkSigma (Suc Zero) (mkVec (Suc Zero))
+let aPair = MkSigma (Suc Zero) (VCons Zero VNil)
 
 -- POSITIVE: a nested dependent record models a PreCat-like signature
 -- (see narya issue #27 — under the Kappa obligation this signature
 -- must elaborate cleanly, not raise an internal anomaly).
-data PreCat : Type =
-    MkPreCat : (ob : Type) -> (hom : ob -> ob -> Type) -> PreCat
+data PreCat : Type1 =
+    MkPreCat : (ordinary 0 ob : Type0) ->
+        (ordinary hom : ob -> ob -> Type0) ->
+        PreCat
 
-obP : PreCat -> Type
+obP : PreCat -> Type0
 let obP c =
     match c
       case MkPreCat o _ -> o
 
-homP : (c : PreCat) -> obP c -> obP c -> Type
+homP : (c : PreCat) -> obP c -> obP c -> Type0
 let homP c =
     match c
       case MkPreCat _ h -> h
 
--- POSITIVE: a sanity application of the projections at a concrete
--- witness.
-expect term s : Sigma Nat Vec
+-- POSITIVE: a sanity application of the projections at a concrete witness.
+s : Sigma Nat Vec
+let s = aPair
 
 fstOfS : Nat
-let fstOfS = projFst Nat Vec s
+let fstOfS = projFst @Nat @Vec s
 
 --! assertNoErrors
+--! assertType aPair (Sigma Nat Vec)
+--! assertType fstOfS Nat
+
+-- STATUS(02405dba): PASS

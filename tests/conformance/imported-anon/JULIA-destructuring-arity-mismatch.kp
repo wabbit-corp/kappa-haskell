@@ -11,22 +11,15 @@
 triple : (Int, Int, Int)
 let triple = (1, 2, 3)
 
--- POSITIVE: exact arity — three binders for a triple.
-a : Int
-b : Int
-c : Int
+-- POSITIVE: exact arity — three binders for a triple. Component types are
+-- inferred from the pattern binding; separate signatures are declarations
+-- that a non-simple top-level pattern cannot satisfy (§9.1).
 let (a, b, c) = triple
 
 -- NEGATIVE: too few binders (2 for a 3-tuple).
-x : Int
-y : Int
 let (x, y) = triple   --!! kappa.type.mismatch
 
 -- NEGATIVE: too many binders (4 for a 3-tuple).
-p : Int
-q : Int
-r : Int
-s : Int
 let (p, q, r, s) = triple   --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
@@ -35,10 +28,9 @@ let (p, q, r, s) = triple   --!! kappa.type.mismatch
 pair : (String, Bool)
 let pair = ("yes", True)
 
-ps : String
-pb : Bool
 let (ps, pb) = pair
 
 --! assertType ps String
 --! assertType pb Bool
 
+-- STATUS(02405dba): PASS

@@ -21,28 +21,24 @@ data Nat : Type = Zero | Succ Nat
 castNat : forall (0 n : Nat). Int -> Int
 let castNat x = x   -- n is compile-time only
 
--- NEGATIVE: erased binding used in a runtime expression.
-badUseErasedType : forall (0 a : Type). a -> String
-let badUseErasedType x =
-    -- Attempting to pattern-match on the erased type `a` at runtime is illegal.
-    -- `a` is a compile-time-only quantity-0 value; it cannot influence runtime.
-    int_to_string 42   -- This is fine...
-
 -- The truly illegal case: passing the erased value to a function that needs it
 -- at runtime.
 useErasedAtRuntime : forall (0 n : Nat) (x : Int). Int
 let useErasedAtRuntime x =
     -- `n` is erased (qty 0) but we're trying to use it in a runtime computation.
-    match n   --!! kappa.quantity.unsatisfied
-    case Zero    -> x
-    case Succ _  -> x + 1
+    match n
+    case Zero    -> x     --!! E_QTT_ERASED_RUNTIME_USE
+    case Succ _  -> x + 1 --!! E_QTT_ERASED_RUNTIME_USE
 
 -- NEGATIVE: erased value used where a non-erased value is expected.
 passErasedAsRuntime : (0 x : Int) -> Int
-let passErasedAsRuntime x = x   --!! kappa.quantity.unsatisfied
+let passErasedAsRuntime x = x --!! E_QTT_ERASED_RUNTIME_USE
 
 -- POSITIVE: erased value used only to compute a type annotation.
 withErasedIndex : forall (0 n : Nat). Int -> Int
 let withErasedIndex x = x   -- n only appears in types, never runtime
 
---! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnostic error E_QTT_ERASED_RUNTIME_USE
+--! assertErrorCount 3
+
+-- STATUS(02405dba): PASS

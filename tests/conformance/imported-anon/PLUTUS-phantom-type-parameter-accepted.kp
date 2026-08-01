@@ -31,8 +31,9 @@ let sale    = MkWrapped 1
 payment : Wrapped TokenKind
 let payment = MkWrapped 2
 
--- POSITIVE: phantom parameter at a different kind (data type with no inhabitants).
-data Marker : Type =
+-- POSITIVE: phantom parameter instantiated with an uninhabited type. Empty
+-- data declarations omit `=` because there is no constructor block.
+data Marker : Type
 
 abstractMarker : Wrapped Marker
 let abstractMarker = MkWrapped 3
@@ -58,3 +59,8 @@ readMarker : Int
 let readMarker = peek Marker abstractMarker
 
 --! assertNoErrors
+--! assertType sale (Wrapped TokenKind)
+--! assertType abstractMarker (Wrapped Marker)
+--! assertType higherKind (Wrapped (Container Int))
+
+-- STATUS(02405dba): PASS
