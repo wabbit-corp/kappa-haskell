@@ -1,0 +1,26 @@
+-- Stress test: user-defined operator fixity declarations are accepted
+-- Spec: lexical.operator_identifiers_fixity.declarations
+
+--! mode check
+
+-- Declare right-associative operator at precedence 5.
+infix right 55 (^^)
+
+(^^) : Int -> Int -> Int
+let (^^) x y = x + y * 2
+
+-- POSITIVE: right-associativity means 1 ^^ 2 ^^ 3 parses as 1 ^^ (2 ^^ 3).
+let test : Int = 1 ^^ 2 ^^ 3
+
+-- Declare left-associative operator at precedence 6.
+infix left 60 (<+>)
+
+(<+>) : Int -> Int -> Int
+let (<+>) x y = x * 3 + y
+
+-- POSITIVE: left-associativity: 1 <+> 2 <+> 3 parses as (1 <+> 2) <+> 3.
+let test2 : Int = 1 <+> 2 <+> 3
+
+--! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS

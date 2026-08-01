@@ -4,15 +4,17 @@
 --! mode check
 
 -- POSITIVE: backslashes are not treated as escape sequences in a raw string.
-let path : String = r#"C:\Users\foo\bar.txt"#
+let path : String = #"C:\Users\foo\bar.txt"#
 
 -- POSITIVE: multi-hash delimiter allows a single '#' inside the literal.
-let withHash : String = r##"key#value"##
+let withHash : String = ##"key#value"##
 
 -- POSITIVE: a regex-like string with special characters.
-let regex : String = r#"[a-z]+\d{2,4}"#
+let regex : String = #"[a-z]+\d{2,4}"#
 
 -- POSITIVE: raw string with embedded double-quotes.
-let quoted : String = r#"He said "hello"."#
+let quoted : String = #"He said "hello"."#
 
 --! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS

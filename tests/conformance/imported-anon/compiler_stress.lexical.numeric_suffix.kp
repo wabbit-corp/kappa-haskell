@@ -1,0 +1,45 @@
+-- Stress test: numeric literals with type suffix select the correct type
+-- Spec: literals.numeric_literals.numeric_literal_suffixes
+
+--! mode check
+
+-- Numeric suffixes are ordinary terms (§6.1.6), not built-in type
+-- annotations. Each handler below determines the result type selected by its
+-- suffix spelling.
+i : Nat -> Int
+let i value = natToInt value
+
+n : Nat -> Nat
+let n value = value
+
+f : Double -> Double
+let f value = value
+
+data UInt32 : Type = UInt32 Int
+
+u32 : Nat -> UInt32
+let u32 value = UInt32 (natToInt value)
+
+data Int64 : Type = Int64 Int
+
+i64 : Nat -> Int64
+let i64 value = Int64 (natToInt value)
+
+-- POSITIVE: integer suffix i selects the handler's Int result type.
+let a : Int = 42i
+
+-- POSITIVE: natural suffix n selects the Nat type.
+let b : Nat = 100n
+
+-- POSITIVE: float suffix f receives a Double payload.
+let c : Double = 3.14f
+
+-- POSITIVE: unsigned 32-bit suffix.
+let d : UInt32 = 255u32
+
+-- POSITIVE: signed 64-bit suffix.
+let e : Int64 = 9000000000i64
+
+--! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS

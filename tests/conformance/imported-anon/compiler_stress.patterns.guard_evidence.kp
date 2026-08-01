@@ -3,15 +3,18 @@
 
 --! mode check
 
--- requirePositive demands a proof that n > 0; supplied by the guard evidence.
-requirePositive : (n : Int) -> n > 0 -> String
-let requirePositive n _ = "positive: " ++ toString n
+-- requirePositive demands erased implicit evidence that n > 0; the boolean
+-- proposition sugar elaborates to (n > 0) = True (§11.4.2).
+requirePositive : (n : Int) -> (@0 p : n > 0) -> String
+let requirePositive n = "positive: " ++ showInt n
 
 -- POSITIVE: inside the guarded branch, the compiler knows n > 0 from the guard.
 describeInt : Int -> String
 let describeInt n =
     match n
-    case n if n > 0 -> requirePositive n (guard_evidence)
+    case n if n > 0 -> requirePositive n
     case _          -> "non-positive"
 
 --! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS

@@ -16,19 +16,21 @@ reflNat : 1 = 1
 let reflNat = refl
 
 -- POSITIVE: symmetry on equality.
-sym : forall {a : Type} {x : a} {y : a}. x = y -> y = x
-let sym e =
+symmetry : forall (a : Type) (x : a) (y : a). x = y -> y = x
+let symmetry e =
     match e
     case refl -> refl
 
 -- POSITIVE: a rewrite uses the equality witness as evidence; Kappa's
 -- propositional-equality elimination permits substitution in either
 -- direction.
-transport : forall {a : Type} {x : a} {y : a} (P : a -> Type). x = y -> P x -> P y
+transport : forall (a : Type) (x : a) (y : a). (P : a -> Type) -> x = y -> P x -> P y
 let transport _ e px =
     match e
     case refl -> px
 
 --! assertNoErrors
---! assertType sym forall {a : Type} {x : a} {y : a}. x = y -> y = x
---! assertType transport forall {a : Type} {x : a} {y : a} (P : a -> Type). x = y -> P x -> P y
+--! assertType symmetry (forall (a : Type) (x : a) (y : a). x = y -> y = x)
+--! assertType transport (forall (a : Type) (x : a) (y : a). (P : a -> Type) -> x = y -> P x -> P y)
+
+-- STATUS(e8bef0f7): PASS

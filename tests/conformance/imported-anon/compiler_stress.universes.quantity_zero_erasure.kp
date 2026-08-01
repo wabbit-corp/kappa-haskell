@@ -18,6 +18,8 @@ let unPhantom (0 a) p =
     case MkPhantom n -> n
 
 -- Exercise both functions.
-let val : Int = unPhantom (0 Int) (mkPhantom (0 Int) 99)
+let val : Int = unPhantom Int (mkPhantom Int 99)
 
 --! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS

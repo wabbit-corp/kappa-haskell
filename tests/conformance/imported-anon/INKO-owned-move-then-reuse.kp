@@ -22,7 +22,10 @@ let useOnce b = useBox b
 doubleUse : (1 b : Box) -> Int
 let doubleUse b =
     let x = useBox b
-    let y = useBox b   --!! kappa.path.consumed
+    let y = useBox b   --!! kappa.quantity.unsatisfied
     x
 
---! assertDiagnosticFamily error kappa.path.consumed
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertErrorCount 1
+
+-- STATUS(e8bef0f7): PASS

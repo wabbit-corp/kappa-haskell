@@ -10,7 +10,7 @@ data Empty : Type
 
 -- Function from Empty to any type is trivially total.
 -- The match with case impossible must be accepted as exhaustive over Empty.
-vacuous_elim : {A : Type} -> Empty -> A
+vacuous_elim : forall (A : Type). Empty -> A
 let vacuous_elim e =
     match e
       case impossible
@@ -22,3 +22,5 @@ let ex_falso e =
       case impossible
 
 --! assertNoErrors
+
+-- STATUS(e8bef0f7): PASS
