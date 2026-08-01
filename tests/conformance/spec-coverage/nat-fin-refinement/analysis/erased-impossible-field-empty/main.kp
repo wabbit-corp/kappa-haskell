@@ -23,4 +23,8 @@ data GroundedEvidence : Type =
 
 --! assertNoErrors
 --! assertInhabitance SourceReachability Empty for ImpossibleEvidence
+--! assertInhabitance RuntimeShape Empty for ImpossibleEvidence
+--! assertInhabitance Optimization Empty for ImpossibleEvidence
 --! assertInhabitance SourceReachability Contractible for GroundedEvidence
+--! assertInhabitance RuntimeShape Contractible for GroundedEvidence
+--! assertInhabitance Optimization Contractible for GroundedEvidence

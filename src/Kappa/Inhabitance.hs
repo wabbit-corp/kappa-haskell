@@ -46,6 +46,7 @@ module Kappa.Inhabitance
 
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Text (Text)
 import Kappa.Cardinality
   ( CardExpr
   , cardAdd
@@ -53,7 +54,7 @@ import Kappa.Cardinality
   , cardMul
   , normalizeCardExpr
   )
-import Kappa.Core (GName, Value (..), pattern VRecordT)
+import Kappa.Core (GName, RecordField (..), Term, Value (..))
 import Numeric.Natural (Natural)
 
 -- | A finite upper cardinality bound or the absence of a finite upper bound.
@@ -117,10 +118,11 @@ instance Show InhabitanceSummary where
   show (InhabitanceSummary lo Unbounded) = "Range " ++ show lo ++ " Unbounded"
 
 -- | Why the summary is being computed (§30.2.7). The same source type may
--- receive different answers under different purposes. Only 'SourceReachability'
--- is consumed today; the rest are reserved so the keying is explicit and a
--- future @RuntimeShape@/@Optimization@ view cannot be silently substituted for
--- a source-acceptance decision.
+-- receive different answers under different purposes. Only
+-- 'SourceReachability' may feed source acceptance. The runtime purposes
+-- implement the target-neutral mandatory-erasure baseline; profile-specific
+-- strengthening remains unavailable until the selected backend profile is
+-- threaded through 'InhabEnv'.
 data InhabitancePurpose
   = SourceReachability -- ^ source-level inhabitants: match reachability, @impossible@
   | Completion -- ^ source-level inhabitants for diagnostics / case-split tooling
@@ -158,6 +160,20 @@ data InhabEnv m = InhabEnv
     -- depth lets the elaborator quote stable Nat indices into scope-correct
     -- KCore terms.
     ieExactSymbolicFamilyCardinality :: Int -> Value -> m (Maybe CardExpr)
+  , -- | Whether one checked record field survives mandatory runtime erasure.
+    -- The offset is its position in the dependency-respecting field telescope.
+    -- The elaborator supplies this from the same representation authority used
+    -- by KBackendIR; this module never infers erasure from source spelling.
+    ieRuntimeRecordField :: Int -> RecordField Value -> m Bool
+  , -- | Instantiate a dependent record field against the representatives
+    -- already established for its contractible prefix. Terms are scoped in
+    -- the lexical context of the query.
+    ieInstantiateRecordField :: [(Text, Term)] -> RecordField Value -> m Value
+  , -- | Labels projected from @this@ by one dependent record field.
+    ieRecordFieldDependencies :: RecordField Value -> m [Text]
+  , -- | Produce the checked representative promised by a 'Contractible'
+    -- summary. Returning 'Nothing' makes dependent continuation fail closed.
+    ieContractibleRepresentative :: Value -> m (Maybe Term)
   , -- | Classify a forced 'VGlobN' head. 'Nothing' means "not a closed
     -- algebraic data type I should reason about structurally" (parameterised
     -- abstract types, type families, opaque imports, …) and the caller must
@@ -189,6 +205,9 @@ data InhabEnv m = InhabEnv
     -- The implementation MUST NOT leak meta solutions or diagnostics from the
     -- speculative unification.
     ieCtorFiber :: Value -> GName -> m CtorFiber
+  , -- | Runtime-retention bits for the source fields returned by 'ieCtorFiber'.
+    -- A missing or arity-mismatched mask makes runtime analysis fail closed.
+    ieRuntimeCtorFieldMask :: Value -> GName -> m (Maybe [Bool])
   , -- | Does the local context carry @IsEmpty t@ evidence for this type?
     ieIsEmptyEvidence :: Value -> m Bool
   , -- | @IsContr t@ evidence.
@@ -234,9 +253,6 @@ data CtorFiber
 -- the stack is a recursive occurrence and yields 'Unknown' without unfolding,
 -- which is what guarantees termination on inductive types like @Nat@/@List@.
 --
--- Only 'SourceReachability' is implemented; every other purpose conservatively
--- answers 'Unknown' (it is always safe, and source acceptance must never lean
--- on a runtime-shape summary).
 inhabitanceSummary
   :: forall m
    . Monad m
@@ -244,12 +260,11 @@ inhabitanceSummary
   -> InhabitancePurpose
   -> Value
   -> m InhabitanceSummary
-inhabitanceSummary env purpose ty0
-  | purpose /= SourceReachability = pure Unknown
-  | otherwise = go Set.empty ty0
+inhabitanceSummary env purpose ty0 =
+  go purpose Set.empty ty0
   where
-    go :: Set GName -> Value -> m InhabitanceSummary
-    go seen ty = do
+    go :: InhabitancePurpose -> Set GName -> Value -> m InhabitanceSummary
+    go selectedPurpose seen ty = do
       mfinite <- ieExactFiniteFamilyCardinality env ty
       case mfinite of
         Just cardinality -> pure (canonicalizeFinite cardinality)
@@ -257,9 +272,12 @@ inhabitanceSummary env purpose ty0
           t <- ieForce env ty
           case t of
             -- Records / closed nondependent products: exact multiplication.
-            VRecordT fields -> productOf seen (map snd fields)
+            -- Runtime purposes first account for source inhabitance of erased
+            -- fields, then collapse every proved-inhabited erased field to its
+            -- single runtime representation.
+            VRecordTQ fields -> recordProduct selectedPurpose seen fields
             -- Closed `Variant` rows: exact addition over the member types.
-            VVariantT members -> sumOf seen members
+            VVariantT members -> sumOf selectedPurpose seen members
             -- A nominal data head. First consult the no-confusion / evidence rules
             -- that key on the type as a whole, then fall through to the structural
             -- data-type analysis.
@@ -272,7 +290,7 @@ inhabitanceSummary env purpose ty0
                   evid <- classifyByEvidence env t
                   case evid of
                     Just s -> pure s
-                    Nothing -> dataHead seen g t
+                    Nothing -> dataHead selectedPurpose seen g t
             _ -> do
               -- Not a structural-fragment head: still admit proof-classification
               -- evidence (IsEmpty/IsContr/IsSubsingleton) keyed on the type, then
@@ -282,29 +300,106 @@ inhabitanceSummary env purpose ty0
 
     -- A nominal data type. Guard against recursive unfolding, then summarise as
     -- a closed sum over its constructors with per-constructor GADT refinement.
-    dataHead :: Set GName -> GName -> Value -> m InhabitanceSummary
-    dataHead seen g scrutTy
+    dataHead
+      :: InhabitancePurpose
+      -> Set GName
+      -> GName
+      -> Value
+      -> m InhabitanceSummary
+    dataHead selectedPurpose seen g scrutTy
       | g `Set.member` seen = pure Unknown -- recursive occurrence: do not unfold
       | otherwise = do
           mcls <- ieClassifyHead env scrutTy
           case mcls of
             Nothing -> pure Unknown -- not a closed data type I can reason about
             Just (IsData scrut ctors) ->
-              sumOfCtors (Set.insert g seen) scrut ctors
+              sumOfCtors selectedPurpose (Set.insert g seen) scrut ctors
 
     -- Exact product of component summaries (records / nondependent tuples).
     -- Any Empty component ⇒ Empty (the absorbing element); see
     -- 'multiplySummaries'.
-    productOf :: Set GName -> [Value] -> m InhabitanceSummary
-    productOf seen comps = do
-      ss <- mapM (go seen) comps
+    productOf
+      :: InhabitancePurpose
+      -> Set GName
+      -> [Value]
+      -> m InhabitanceSummary
+    productOf selectedPurpose seen comps = do
+      ss <- mapM (go selectedPurpose seen) comps
       pure (foldr multiplySummaries Contractible ss)
+
+    recordProduct
+      :: InhabitancePurpose
+      -> Set GName
+      -> [RecordField Value]
+      -> m InhabitanceSummary
+    recordProduct selectedPurpose seen =
+      walk 0 [] Contractible
+      where
+        walk _ _ accumulated [] = pure accumulated
+        walk fieldOffset representatives accumulated (field : rest) = do
+          dependencies <- ieRecordFieldDependencies env field
+          let available = map fst representatives
+          if any (`notElem` available) dependencies
+            then pure Unknown
+            else do
+              fieldType <- ieInstantiateRecordField env representatives field
+              sourceSummary <- go SourceReachability seen fieldType
+              selectedSummary <-
+                case selectedPurpose of
+                  SourceReachability -> pure sourceSummary
+                  Completion -> pure sourceSummary
+                  RuntimeShape -> runtimeField fieldType sourceSummary
+                  Optimization -> runtimeField fieldType sourceSummary
+              if sourceSummary == Empty
+                then pure Empty
+                else do
+                  let accumulated' =
+                        multiplySummaries accumulated selectedSummary
+                  if accumulated' == Empty
+                    then pure Empty
+                    else do
+                      needed <-
+                        or <$> mapM
+                          (fmap (rfName field `elem`)
+                            . ieRecordFieldDependencies env)
+                          rest
+                      representatives' <-
+                        if needed && sourceSummary == Contractible
+                          then
+                            ieContractibleRepresentative env fieldType >>= \case
+                              Just representative ->
+                                pure
+                                  (Just
+                                    ((rfName field, representative)
+                                      : representatives))
+                              Nothing -> pure Nothing
+                          else
+                            if needed
+                              then pure Nothing
+                              else pure (Just representatives)
+                      case representatives' of
+                        Nothing -> pure Unknown
+                        Just established ->
+                          walk (fieldOffset + 1) established accumulated' rest
+          where
+            runtimeField fieldType sourceSummary = do
+              retained <-
+                ieRuntimeRecordField env
+                  fieldOffset
+                  field
+              if retained
+                then go selectedPurpose seen fieldType
+                else pure (erasedRuntimeSummary sourceSummary)
 
     -- Exact sum over closed variant member types (no GADT refinement: a bare
     -- `Variant` row has no family arguments to contradict).
-    sumOf :: Set GName -> [Value] -> m InhabitanceSummary
-    sumOf seen members = do
-      ss <- mapM (go seen) members
+    sumOf
+      :: InhabitancePurpose
+      -> Set GName
+      -> [Value]
+      -> m InhabitanceSummary
+    sumOf selectedPurpose seen members = do
+      ss <- mapM (go selectedPurpose seen) members
       pure (foldr addSummaries Empty ss)
 
     -- Exact sum over a data type's constructor arms, each refined against the
@@ -313,18 +408,60 @@ inhabitanceSummary env purpose ty0
     -- abstract (rigid-indexed) target a unify-failure is Unknown, which makes the
     -- whole sum Unknown — the sound answer for @Tag b@ and friends. Otherwise the
     -- arm summary is the product of its retained field-type summaries.
-    sumOfCtors :: Set GName -> Value -> [GName] -> m InhabitanceSummary
-    sumOfCtors seen scrut ctors = do
-      arms <- mapM (armSummary seen scrut) ctors
+    sumOfCtors
+      :: InhabitancePurpose
+      -> Set GName
+      -> Value
+      -> [GName]
+      -> m InhabitanceSummary
+    sumOfCtors selectedPurpose seen scrut ctors = do
+      arms <- mapM (armSummary selectedPurpose seen scrut) ctors
       pure (foldr addSummaries Empty arms)
 
-    armSummary :: Set GName -> Value -> GName -> m InhabitanceSummary
-    armSummary seen scrut c = do
+    armSummary
+      :: InhabitancePurpose
+      -> Set GName
+      -> Value
+      -> GName
+      -> m InhabitanceSummary
+    armSummary selectedPurpose seen scrut c = do
       fiber <- ieCtorFiber env scrut c
       case fiber of
-        CtorRefined fieldTys -> productOf seen fieldTys
+        CtorRefined fieldTys ->
+          case selectedPurpose of
+            SourceReachability -> productOf selectedPurpose seen fieldTys
+            Completion -> productOf selectedPurpose seen fieldTys
+            RuntimeShape -> runtimeArm selectedPurpose fieldTys
+            Optimization -> runtimeArm selectedPurpose fieldTys
         CtorContradiction -> pure Empty -- ground-index no-confusion: arm is Empty
         CtorIndexUnknown -> pure Unknown -- rigid index: emptiness undecidable
+      where
+        runtimeArm runtimePurpose fieldTys =
+          ieRuntimeCtorFieldMask env scrut c >>= \case
+            Just retained
+              | length retained == length fieldTys ->
+                  runtimeProduct runtimePurpose seen (zip retained fieldTys)
+            _ -> pure Unknown
+
+    runtimeProduct
+      :: InhabitancePurpose
+      -> Set GName
+      -> [(Bool, Value)]
+      -> m InhabitanceSummary
+    runtimeProduct selectedPurpose seen fields = do
+      summaries <- mapM fieldSummary fields
+      pure (foldr multiplySummaries Contractible summaries)
+      where
+        fieldSummary (True, fieldType) =
+          go selectedPurpose seen fieldType
+        fieldSummary (False, fieldType) = do
+          source <- go SourceReachability seen fieldType
+          pure (erasedRuntimeSummary source)
+
+    erasedRuntimeSummary summary
+      | summary == Empty = Empty
+      | minCount summary > 0 = Contractible
+      | otherwise = Unknown
 
 -- | Exact symbolic cardinality for the required first-order finite fragment.
 -- The result is absent rather than guessed when any component is unsupported.
@@ -347,7 +484,7 @@ symbolicCardinality env depth ty0 =
         Nothing -> do
           normalized <- ieForce env ty
           case normalized of
-            VRecordT fields -> productOf seen (map snd fields)
+            VRecordTQ fields -> productOf seen (map rfType fields)
             VVariantT members -> sumOf seen members
             VGlobal global _ _ -> dataHead seen global normalized
             _ -> concreteFallback normalized

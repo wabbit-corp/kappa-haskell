@@ -152,6 +152,7 @@ import Kappa.Inhabitance
   , CtorFiber (..)
   , inhabitanceSummary
   , isEmpty
+  , multiplySummaries
   , symbolicCardinality
   )
 import Kappa.Level
@@ -32072,8 +32073,14 @@ mkInhabEnv ctx =
       { ieForce = forceM
       , ieExactFiniteFamilyCardinality = inhabExactFiniteFamilyCardinality
       , ieExactSymbolicFamilyCardinality = inhabExactSymbolicFamilyCardinality
+      , ieRuntimeRecordField = inhabRuntimeRecordField ctx
+      , ieInstantiateRecordField = inhabInstantiateRecordField ctx
+      , ieRecordFieldDependencies = inhabRecordFieldDependencies ctx
+      , ieContractibleRepresentative =
+          inhabContractibleRepresentative ctx
       , ieClassifyHead = inhabClassifyHead
       , ieCtorFiber = inhabCtorFiber ctx
+      , ieRuntimeCtorFieldMask = inhabRuntimeCtorFieldMask ctx
       , ieIsEmptyEvidence = inhabHasEvidence ctx (gPrel "IsEmpty")
       , ieIsContrEvidence = inhabHasEvidence ctx (gPrel "IsContr")
       , ieIsSubsingletonEvidence = \t -> do
@@ -32081,6 +32088,227 @@ mkInhabEnv ctx =
           if a then pure True else inhabHasEvidence ctx (gPrel "IsProp") t
       , ieEqualityVerdict = inhabEqualityVerdict ctx
       }
+
+inhabInstantiateRecordField
+  :: Ctx
+  -> [(Text, Term)]
+  -> RecordField Value
+  -> CheckM Value
+inhabInstantiateRecordField ctx representatives field =
+  substThisInto
+    ctx
+    (CRecordV (sortOn fst representatives))
+    (rfType field)
+
+inhabRecordFieldDependencies
+  :: Ctx
+  -> RecordField Value
+  -> CheckM [Text]
+inhabRecordFieldDependencies ctx field = do
+  fieldType <- quoteIn ctx (rfType field)
+  pure
+    ( nub
+        (thisDepsOf fieldType ++ levelFieldDepsOf fieldType)
+    )
+
+-- | Materialize the representative promised by a Contractible summary.
+-- Construction goes through checked constructor/evidence interfaces and is
+-- zonked before speculative checker state is restored. A missing witness is a
+-- conservative analysis failure, never an invented inhabitant.
+inhabContractibleRepresentative
+  :: Ctx
+  -> Value
+  -> CheckM (Maybe Term)
+inhabContractibleRepresentative ctx ty = do
+  saved <- get
+  representative <- derive Set.empty ty
+  zonked <- traverse (zonkTermM (ctxLen ctx)) representative
+  put saved
+  pure zonked
+  where
+    derive seen candidate = do
+      normalized <- forceM candidate
+      equality <- inhabEqualityVerdict ctx normalized
+      cardinality <- inhabExactFiniteFamilyCardinality normalized
+      case (equality, cardinality) of
+        (Just False, _) ->
+          Just <$> generatedReflForGoalAtM ctx Nothing normalized
+        (_, Just 1) ->
+          finiteFamilyRepresentative normalized
+        _ ->
+          evidenceCenter normalized >>= \case
+            Just center -> pure (Just center)
+            Nothing ->
+              case normalized of
+                VRecordTQ fields -> recordRepresentative seen fields
+                VGlobal family _ _
+                  | family `Set.member` seen -> pure Nothing
+                  | otherwise ->
+                      nominalRepresentative
+                        (Set.insert family seen)
+                        normalized
+                _ -> pure Nothing
+
+    evidenceCenter candidate = do
+      goal <- globalValueM (gPrel "IsContr") [(Expl, candidate)]
+      traitEvidence ctx noSpan goal >>= \case
+        Nothing -> pure Nothing
+        Just dictionary ->
+          Just . fst
+            <$> knownTraitMemberProjection
+              ctx
+              noSpan
+              (gPrel "IsContr")
+              "center"
+              goal
+              dictionary
+
+    recordRepresentative seen = go []
+      where
+        go done [] =
+          pure (Just (CRecordV (sortOn fst done)))
+        go done (field : rest) = do
+          dependencies <- inhabRecordFieldDependencies ctx field
+          if any (`notElem` map fst done) dependencies
+            then pure Nothing
+            else do
+              fieldType <-
+                inhabInstantiateRecordField ctx done field
+              environment <- mkInhabEnv ctx
+              summary <-
+                inhabitanceSummary
+                  environment
+                  SourceReachability
+                  fieldType
+              if summary /= Contractible
+                then pure Nothing
+                else
+                  derive seen fieldType >>= \case
+                    Nothing -> pure Nothing
+                    Just value ->
+                      go ((rfName field, value) : done) rest
+
+    nominalRepresentative seen candidate = do
+      classification <- inhabClassifyHead candidate
+      case classification of
+        Nothing -> finiteFamilyRepresentative candidate
+        Just (IsData _ constructors) -> do
+          environment <- mkInhabEnv ctx
+          arms <-
+            forM constructors $ \constructor ->
+              inhabCtorFiber ctx candidate constructor >>= \case
+                CtorContradiction ->
+                  pure (Empty, Nothing)
+                CtorIndexUnknown ->
+                  pure (Unknown, Nothing)
+                CtorRefined fieldTypes -> do
+                  summaries <-
+                    mapM
+                      (inhabitanceSummary
+                        environment
+                        SourceReachability)
+                      fieldTypes
+                  let armSummary =
+                        foldr
+                          multiplySummaries
+                          Contractible
+                          summaries
+                  payload <-
+                    if armSummary == Contractible
+                      then mapM (derive seen) fieldTypes
+                      else pure []
+                  constructorTerm <-
+                    case sequence payload of
+                      Nothing -> pure Nothing
+                      Just values ->
+                        Just
+                          <$> generatedCtorApplyAtM
+                            ctx
+                            candidate
+                            constructor
+                            values
+                  pure (armSummary, constructorTerm)
+          pure $
+            case
+              [ value
+              | (summary, Just value) <- arms
+              , summary == Contractible
+              ]
+            of
+              [value]
+                | all
+                    (\(summary, _) ->
+                      summary == Empty
+                        || summary == Contractible)
+                    arms ->
+                    Just value
+              _ -> Nothing
+
+    finiteFamilyRepresentative candidate = do
+      cardinality <- inhabExactFiniteFamilyCardinality candidate
+      case cardinality of
+        Just 1 -> do
+          normalized <- forceM candidate
+          case normalized of
+            VGlobal family _ _
+              | family == prelFin -> do
+                  state <- get
+                  let constructor =
+                        Map.lookup family (csDatas state)
+                          >>= listToMaybe . diCtors
+                  traverse
+                    (\ctor ->
+                      generatedCtorApplyAtM
+                        ctx
+                        candidate
+                        ctor
+                        [CLit (LitInt 0)])
+                    constructor
+            _ -> pure Nothing
+        _ -> pure Nothing
+
+-- | Mandatory runtime-erasure decisions for inhabitance use the same checked
+-- representation predicate as KBackendIR lowering. The source inhabitance of
+-- an erased field is still accounted for by 'Kappa.Inhabitance'; this callback
+-- says only whether the field has a runtime slot.
+inhabRuntimeRecordField :: Ctx -> Int -> RecordField Value -> CheckM Bool
+inhabRuntimeRecordField ctx fieldOffset field = do
+  evaluation <- ec_
+  pure
+    ( not
+        ( Repr.runtimeErasedParam
+            evaluation
+            (ctxLen ctx + fieldOffset)
+            (rfQ field)
+            (rfType field)
+        )
+    )
+
+inhabRuntimeCtorFieldMask
+  :: Ctx
+  -> Value
+  -> GName
+  -> CheckM (Maybe [Bool])
+inhabRuntimeCtorFieldMask ctx represented constructor =
+  inhabCtorFiber ctx represented constructor >>= \case
+    CtorRefined fieldTypes -> do
+      evaluation <- ec_
+      constructorInfo <- gets (Map.lookup constructor . csCtors)
+      pure $ do
+        info <- constructorInfo
+        let contracts = constructorSourceContracts info
+        guard (length contracts == length fieldTypes)
+        pure
+          [ Repr.runtimeConstructorField
+              evaluation
+              (ctxLen ctx + fieldOffset)
+              icit
+              quantity
+              fieldType
+          | (fieldOffset, ((icit, quantity), fieldType)) <-
+              zip [0 :: Int ..] (zip contracts fieldTypes)
+          ]
+    _ -> pure Nothing
 
 -- | Exact finite-family cardinalities required by §30.2.7. Recognition uses
 -- resolved global identity and a normalized closed Nat index. Open indices are
@@ -32649,11 +32877,9 @@ branchFiberEmpty ctx scrutTy = \case
   CPAs _ p -> branchFiberEmpty ctx scrutTy p
   _ -> scrutineeEmpty ctx scrutTy
 
--- | §30.2.7 equality no-confusion: for a propositional equality @x = y@, decide
--- @Just True@ (provably 'Empty' — distinct visible constructor heads) and leave
--- everything else as 'Nothing' (no portable fact). The Contractible direction
--- is intentionally omitted for now (it needs proof/set evidence and is not
--- load-bearing for reachability). Conservative throughout.
+-- | §30.2.7 equality classification. @Just True@ is a checked no-confusion
+-- refutation. @Just False@ is a definitionally-equal pair whose path type is
+-- known proposition-valued through selected IsProp/IsSet evidence.
 inhabEqualityVerdict :: Ctx -> Value -> CheckM (Maybe Bool)
 inhabEqualityVerdict ctx t = do
   case eqComponents t of
@@ -32700,11 +32926,16 @@ inhabEqualityVerdict ctx t = do
                   || (leftFalse && rightTrue)
               )
           else pure False
+      proposition <-
+        inhabResolvableEvidence ctx (gPrel "IsProp") t
+      setCarrier <-
+        inhabResolvableEvidence ctx (gPrel "IsSet") carrier'
       if definitelyApart || branchApart
         then pure (Just True)
         else
           pure $
-            if canonicalNatCarrier && convertible evaluation (ctxLen ctx) l' r'
+            if convertible evaluation (ctxLen ctx) l' r'
+                && (proposition || setCarrier)
               then Just False
               else Nothing
   where
@@ -32721,6 +32952,22 @@ inhabEqualityVerdict ctx t = do
         | constructorInScope st c ->
             (\ci -> (c, ciData ci)) <$> Map.lookup c (csCtors st)
       _ -> Nothing
+
+-- | Side-effect-free ordinary evidence availability for an inhabitance query.
+-- This uses the same local/instance/supertrait selection as source
+-- elaboration, then restores all speculative metas and diagnostics.
+inhabResolvableEvidence :: Ctx -> GName -> Value -> CheckM Bool
+inhabResolvableEvidence ctx trait represented = do
+  saved <- get
+  result <-
+    trySpec $ do
+      goal <- globalValueM trait [(Expl, represented)]
+      traitEvidence ctx noSpan goal
+  put saved
+  pure $
+    case result of
+      Just (Just _) -> True
+      _ -> False
 
 -- exhaustiveness (§17.1): closed ADTs / Bool / variants / records /
 -- tuples; literal scrutinees require a catch-all.

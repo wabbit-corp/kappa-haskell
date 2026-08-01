@@ -1,0 +1,37 @@
+-- Spec 30.2.7 requires the structural fragment under every inhabitance
+-- purpose. Completion observes source inhabitants. RuntimeShape and
+-- Optimization apply mandatory erasure, so the quantity-zero Bool field has
+-- one runtime representation even though it has two source inhabitants.
+type SourcePair : Type =
+    (left : Bool, right : Unit)
+
+type ErasedBool : Type =
+    (0 witness : Bool, payload : Unit)
+
+type DependentSingleton : Type =
+    (u : Unit, proof : u = ())
+
+data UserSingleton : Type =
+    UserSingletonValue
+
+derive IsSet UserSingleton
+
+type DependentUserSingleton : Type =
+    (value : UserSingleton, proof : value = UserSingletonValue)
+
+--! assertNoErrors
+--! assertInhabitance Completion Finite(2) for SourcePair
+--! assertInhabitance RuntimeShape Finite(2) for SourcePair
+--! assertInhabitance Optimization Finite(2) for SourcePair
+--! assertInhabitance SourceReachability Finite(2) for ErasedBool
+--! assertInhabitance Completion Finite(2) for ErasedBool
+--! assertInhabitance RuntimeShape Contractible for ErasedBool
+--! assertInhabitance Optimization Contractible for ErasedBool
+--! assertInhabitance SourceReachability Contractible for DependentSingleton
+--! assertInhabitance Completion Contractible for DependentSingleton
+--! assertInhabitance RuntimeShape Contractible for DependentSingleton
+--! assertInhabitance Optimization Contractible for DependentSingleton
+--! assertInhabitance SourceReachability Contractible for DependentUserSingleton
+--! assertInhabitance Completion Contractible for DependentUserSingleton
+--! assertInhabitance RuntimeShape Contractible for DependentUserSingleton
+--! assertInhabitance Optimization Contractible for DependentUserSingleton
