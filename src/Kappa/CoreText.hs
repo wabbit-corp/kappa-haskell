@@ -8760,13 +8760,19 @@ verifyLevelTermAdmissibility context = go Set.empty Set.empty
       KTIf condition yes no ->
         mapM_ (go activeGlobals activeLocals env) [condition, yes, no]
       KTGeneric "impl.kappa.level-value" _ -> pure ()
-      KTGeneric tag _ ->
-        Left
-          ( invalid
-              ( "level-term stability/totality is not authenticated for implementation node "
-                  <> tag
+      generic@(KTGeneric tag fields) ->
+        case decodeBuiltinTermNode tag fields of
+          Left reason ->
+            Left (invalid ("malformed built-in level-term node: " <> reason))
+          Right decoded@KTGeneric {} | decoded == generic ->
+            Left
+              ( invalid
+                  ( "level-term stability/totality is not authenticated for implementation node "
+                      <> tag
+                  )
               )
-          )
+          Right decoded ->
+            go activeGlobals activeLocals env decoded
       where
         underBinder binder body = do
           go activeGlobals activeLocals env (kbType binder)

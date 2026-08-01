@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_REFUTABLE_LET_PATTERN
+-- Spec: §9.1.2. Selecting the only reachable outer constructor is not enough:
+-- every nested constructor subpattern must itself be irrefutable.
+
+module main
+
+data Choice : Type =
+    ChoiceA Int
+    ChoiceB Int
+
+data Box (flag : Bool) : Type =
+    Only : Choice -> Box True
+    Never : Box False
+
+bad : Box True -> Int
+let bad box =
+    block
+        let Only (ChoiceA _) = box
+        1
+
+let main = 0

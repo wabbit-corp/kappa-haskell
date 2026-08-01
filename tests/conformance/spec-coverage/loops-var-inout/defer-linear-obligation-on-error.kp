@@ -8,8 +8,11 @@
 -- monadic error raised before normal completion.
 module main
 
+-- The defer obligation is the outer quantity-1 Token binding. Its payload is
+-- ordinary: §12.2.6 would otherwise require an explicitly quantity-1
+-- formatter rather than the unrestricted showInt/stringAppend primitives.
 data Token : Type =
-    MkToken (1 secret : Int)
+    MkToken (secret : Int)
 
 consumeToken : (1 t : Token) -> IO String Unit
 let consumeToken (1 t : Token) : IO String Unit =

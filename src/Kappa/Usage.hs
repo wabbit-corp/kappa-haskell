@@ -3239,12 +3239,7 @@ walkERaw env e0 = case e0 of
         bindCheckedPats pats =
           forM (concatMap patternBinderNames pats) $ \n -> do
             key <- freshKey (nameText n)
-            let q = Map.lookup (nameSpan n) (ePatternBinderQuantities env)
-                vi =
-                  (plainV key (nameSpan n))
-                    { vQ = countedQ =<< q
-                    , vBorrowed = nameSpan n `Set.member` ePatternBinderBorrows env
-                    }
+            let vi = checkedPatternBinder env n key
             pure (nameText n, vi)
     crs <- forM cases $ \case
       HandlerReturn pat body sp -> do
@@ -3534,12 +3529,24 @@ walkMatch env scrut cases = do
     walkCase scrutV scrutTy (MatchCase pat mguard body csp) = do
       when (hasActive pat) bailOut
       checkRecordRest scrutV pat csp
+      let inheritedBorrow = maybe False vBorrowed scrutV
+          borrowOrigin = maybe csp vSpan scrutV
+          checkedBinders =
+            Map.fromList
+              [(nameText binder, binder) | binder <- patternBinderNames pat]
       shadow <- forM (patBindings env scrutV scrutTy pat) $ \(nm, mq, mty) -> do
         k <- freshKey nm
+        let checked =
+              maybe
+                (plainV k csp)
+                (\binder -> checkedPatternBinder env binder k)
+                (Map.lookup nm checkedBinders)
         pure
           ( nm
-          , (plainV k csp)
-              { vQ = mq
+          , checked
+              { vQ = mq <|> vQ checked
+              , vSpan = if inheritedBorrow then borrowOrigin else vSpan checked
+              , vBorrowed = inheritedBorrow || vBorrowed checked
               , vStoredTypeText = renderExprSrc <$> mty
               , vStoredTypeExpr = mty
               }
@@ -3548,8 +3555,9 @@ walkMatch env scrut cases = do
       gu <- maybe (pure Map.empty) (fmap (fst . flatR) . walkE envC) mguard
       r <- walkE envC body
       let (bu, t) = flatR r
-      forM_ shadow $ \(_, vi) -> closeVar vi bu
-      pure (gu `seqU` bu, t)
+          branchUsage = gu `seqU` bu
+      forM_ shadow $ \(_, vi) -> closeVar vi branchUsage
+      pure (branchUsage, t)
     walkCase _ _ (MatchImpossible _) = pure (Map.empty, Nothing)
     hasActive = \case
       PActive {} -> True
@@ -3562,6 +3570,14 @@ walkMatch env scrut cases = do
       POr ps _ -> any hasActive ps
       POpChain p chain _ -> hasActive p || any (hasActive . snd) chain
       _ -> False
+
+checkedPatternBinder :: Env -> Name -> Text -> VInfo
+checkedPatternBinder env binder key =
+  (plainV key (nameSpan binder))
+    { vQ = countedQ =<< Map.lookup (nameSpan binder) (ePatternBinderQuantities env)
+    , vStaticKind = nameSpan binder `Set.member` eStaticKindBinders env
+    , vBorrowed = nameSpan binder `Set.member` ePatternBinderBorrows env
+    }
 
 -- | Pattern-bound names, with quantity-1 fields of a tracked record
 -- scrutinee inherited by the bindings that receive them (§12.4), and
@@ -5591,12 +5607,7 @@ walkItems env0 items0 = go env0 items0
               HandlerOp _ argPats kN body _sp -> do
                 shadow <- forM (concatMap patternBinderNames argPats) $ \n -> do
                   key <- freshKey (nameText n)
-                  let q = Map.lookup (nameSpan n) (ePatternBinderQuantities envc)
-                      vi =
-                        (plainV key (nameSpan n))
-                          { vQ = countedQ =<< q
-                          , vBorrowed = nameSpan n `Set.member` ePatternBinderBorrows envc
-                          }
+                  let vi = checkedPatternBinder envc n key
                   pure (nameText n, vi)
                 kKey <- freshKey (nameText kN)
                 let q = Map.findWithDefault QOne (nameSpan kN) (eHandlerOpQuantities envc)

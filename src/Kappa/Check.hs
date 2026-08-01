@@ -2196,6 +2196,19 @@ recordPatternBinderQuantity sp q =
   modify' $ \st ->
     st {csPatternBinderQuantities = Map.insert sp q (csPatternBinderQuantities st)}
 
+-- | Publish the checked quantity and static-kind status of a pattern binder
+-- to the syntax-level usage pass. Observation mode and quantity are
+-- independent: an @ordinary 0 A : Type@ field remains statically observable
+-- in a pattern even though it contributes no runtime demand.
+recordPatternBinderFacts :: Ctx -> Span -> Q -> Value -> CheckM ()
+recordPatternBinderFacts ctx sp q ty = do
+  recordPatternBinderQuantity sp q
+  when (q == Q0) $ do
+    staticKind <- isParametricKind (ctxLen ctx) ty
+    when staticKind $
+      modify' $ \st ->
+        st {csStaticKindBinders = Set.insert sp (csStaticKindBinders st)}
+
 recordPatternBinderBorrow :: Span -> CheckM ()
 recordPatternBinderBorrow sp =
   modify' $ \st -> st {csPatternBinderBorrows = Set.insert sp (csPatternBinderBorrows st)}
@@ -7571,8 +7584,11 @@ instantiateGlobal g originalDefinition = do
       rawInterfaceTerms =
         map (zonkLevels assignments) (globalUniverseInterfaceTerms st g gd)
       ownUniverses = map LParam [0 .. dutParameterCount telescope - 1]
+      interfaceFinalized =
+        dutParameterCount telescope > 0
+          || g `Set.member` csFinalizedUniverseInterfaces st
   (universes, specialize) <-
-    if dutParameterCount telescope > 0
+    if interfaceFinalized
       then do
         instantiated <-
           if active == Just g
@@ -28654,30 +28670,45 @@ elabBlock ctx0 ds0 mfin sp mexpected =
         collectLetRun activeCtx ((nameText n, n, tyE) : signatures) acc rest
       DLet mods definition dsp
         | Just _ <- ldConstructorPatternCandidate definition -> do
-            selected <- selectConstructorPatternLet activeCtx dsp definition
-            case selected of
-              Just (ConstructorPatternCandidate pattern' rhs) ->
-                collectLetRun
-                  activeCtx
-                  signatures
-                  ( LocalLetBinding
-                      ( LetBind
-                          False
-                          (ldPrefix definition)
-                          pattern'
-                          (ldResultType definition)
-                          rhs
-                          dsp
-                      )
-                      : acc
-                  )
-                  rest
-              Nothing ->
+            let governed =
+                  case ldName definition of
+                    Just name ->
+                      any
+                        (\(source, _, _) -> source == nameText name)
+                        signatures
+                    Nothing -> False
+            if governed
+              then
                 collectLetRun
                   activeCtx
                   signatures
                   acc
                   (DLet mods definition {ldConstructorPatternCandidate = Nothing} dsp : rest)
+              else do
+                selected <- selectConstructorPatternLet activeCtx dsp definition
+                case selected of
+                  Just (ConstructorPatternCandidate pattern' rhs) ->
+                    collectLetRun
+                      activeCtx
+                      signatures
+                      ( LocalLetBinding
+                          ( LetBind
+                              False
+                              (ldPrefix definition)
+                              pattern'
+                              (ldResultType definition)
+                              rhs
+                              dsp
+                          )
+                          : acc
+                      )
+                      rest
+                  Nothing ->
+                    collectLetRun
+                      activeCtx
+                      signatures
+                      acc
+                      (DLet mods definition {ldConstructorPatternCandidate = Nothing} dsp : rest)
       DLet _ (LetDef (Just n) _ Nothing _ _ [] mty Nothing rhs) dsp -> do
         (headerName, annotation, rhs') <- localHeader n mty rhs signatures dsp
         collectLetRun activeCtx signatures
@@ -30061,7 +30092,7 @@ handlerClauseLamM ::
   Ctx -> ObservationMode -> Q -> Bool -> Pattern -> Value -> (Ctx -> CheckM Term) -> CheckM Term
 handlerClauseLamM ctx mode q borrowed pat ty mkBody = case pat of
   PVar n -> do
-    recordPatternBinderQuantity (nameSpan n) q
+    recordPatternBinderFacts ctx (nameSpan n) q ty
     let ctx' = bindCtxMQB mode q (nameText n) False borrowed ty ctx
     CLamM mode Expl q (nameText n) <$> mkBody ctx'
   PWild _ -> do
@@ -33005,8 +33036,15 @@ irrefutableFor ctx pat ty = case pat of
         | ciData constructorInfo == dataIdentity -> do
             state <- get
             case Map.lookup dataIdentity (csDatas state) of
-              Just dataInfo
-                | diCtors dataInfo == [constructor] -> do
+              Just dataInfo -> do
+                selectedEmpty <- constructorFiberEmpty ctx forced constructor
+                siblingFibersEmpty <-
+                  and
+                    <$> mapM
+                      (constructorFiberEmpty ctx forced)
+                      (filter (/= constructor) (diCtors dataInfo))
+                if not selectedEmpty && siblingFibersEmpty
+                  then do
                     (sourceSlots, constructorCtx, _, _, _) <-
                       ctorFieldTypesCtx
                         ctx
@@ -33027,6 +33065,7 @@ irrefutableFor ctx pat ty = case pat of
                             (irrefutableFor constructorCtx)
                             patterns
                             explicitTypes
+                  else pure False
               _ -> pure False
       _ -> pure False
   POr patterns _ ->
@@ -33168,7 +33207,7 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
                   , ctx'
                   )
               [] -> do
-                recordPatternBinderQuantity (nameSpan n) slotQ
+                recordPatternBinderFacts ctx (nameSpan n) slotQ ty
                 let ctx' = case knownValue of
                       Just value -> bindCtxLetProjOpMode (nameText n) False ty value Nothing Nothing slotMode (Just (nameText n)) ctx
                       Nothing -> bindCtxMQ slotMode slotQ (nameText n) False ty ctx
@@ -33187,7 +33226,7 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
             patternTypeMismatch ctx pat ty "literal pattern and scrutinee types differ"
           pure (CPLit (coreLit l), ctx)
         PAs n p -> do
-          recordPatternBinderQuantity (nameSpan n) slotQ
+          recordPatternBinderFacts ctx (nameSpan n) slotQ ty
           let ctx1 = case knownValue of
                 Just value -> bindCtxLetProjOpMode (nameText n) False ty value Nothing Nothing slotMode (Just (nameText n)) ctx
                 Nothing -> bindCtxMQ slotMode slotQ (nameText n) False ty ctx
@@ -47883,25 +47922,37 @@ recordDefinitionInoutParams g binders =
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 elabLetDecl mods definition sp
   | Just _ <- ldConstructorPatternCandidate definition = do
-      selected <- selectConstructorPatternLet emptyCtx sp definition
-      case selected of
-        Just (ConstructorPatternCandidate pattern' rhs) ->
-          elabLetDecl
-            mods
-            definition
-              { ldName = Nothing
-              , ldPattern = Just pattern'
-              , ldConstructorPatternCandidate = Nothing
-              , ldBinders = []
-              , ldDecreases = Nothing
-              , ldBody = rhs
-              }
-            sp
-        Nothing ->
+      governed <- case ldName definition of
+        Nothing -> pure False
+        Just name -> do
+          global <- ownName name
+          gets (Map.member global . csCoreSignatures)
+      if governed
+        then
           elabLetDecl
             mods
             definition {ldConstructorPatternCandidate = Nothing}
             sp
+        else do
+          selected <- selectConstructorPatternLet emptyCtx sp definition
+          case selected of
+            Just (ConstructorPatternCandidate pattern' rhs) ->
+              elabLetDecl
+                mods
+                definition
+                  { ldName = Nothing
+                  , ldPattern = Just pattern'
+                  , ldConstructorPatternCandidate = Nothing
+                  , ldBinders = []
+                  , ldDecreases = Nothing
+                  , ldBody = rhs
+                  }
+                sp
+            Nothing ->
+              elabLetDecl
+                mods
+                definition {ldConstructorPatternCandidate = Nothing}
+                sp
 -- Signature-governed functions are recorded for the SCC termination pass;
 -- non-recursive values still become reducible immediately.
 elabLetDecl mods (LetDef (Just n) _ Nothing _ prefix binders mResTy mdec body) sp = do

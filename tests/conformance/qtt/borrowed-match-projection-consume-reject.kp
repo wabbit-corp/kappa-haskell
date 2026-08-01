@@ -1,0 +1,32 @@
+-- §17.1.8: constructor-field projections of a borrowed scrutinee remain
+-- borrowed projections of the same source path. They cannot satisfy a
+-- quantity-1 demand.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+module main
+
+data Res : Type =
+    MkRes (n : Int)
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+peek : (& r : Res) -> Int
+let peek (& r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Two : Type =
+    TA (1 r : Res)
+    TB (1 r : Res)
+
+bad : (& t : Two) -> Int
+let bad (& t : Two) : Int =
+    match t
+    case TA r -> resVal r
+    case TB r -> peek r

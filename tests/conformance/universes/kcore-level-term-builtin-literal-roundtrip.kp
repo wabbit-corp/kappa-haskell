@@ -1,0 +1,22 @@
+-- §11.1.1/§30.2.1A: KCore level admissibility must replay the same typed
+-- built-in literal nodes accepted by ordinary KCore verification.
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+module main
+
+data N : Type0 =
+    Z
+    | S N
+
+levelOf : N -> TypeLevel
+let levelOf n =
+    match n
+    case Z -> 0
+    case S predecessor -> omega
+
+idAt :
+    (n : N) ->
+    (A : Type (levelOf n)) ->
+    A -> A
+let idAt n A x = x

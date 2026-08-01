@@ -1,0 +1,20 @@
+--! mode check
+--! assertNoErrors
+--! assertEval answer 1
+-- Spec: §9.1.2. A constructor pattern is irrefutable when the scrutinee's
+-- refined fiber has exactly one reachable constructor, even if the data type
+-- has other constructors in disjoint fibers.
+
+module main
+
+data Tag (flag : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+onlyTrue : Tag True -> Int
+let onlyTrue tag =
+    block
+        let TT = tag
+        1
+
+let answer = onlyTrue TT

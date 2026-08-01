@@ -1,0 +1,19 @@
+-- §11.1.2.3A: a finalized declaration with an empty hidden universe telescope
+-- is still finalized. Referencing it from a first-class level term must not
+-- rescan its raw interface and manufacture a provisional universe argument.
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+module main
+
+data Marker : Type0 =
+    Marker
+
+constLevel : Marker -> TypeLevel
+opaque let constLevel marker = 0
+
+idAt :
+    (marker : Marker) ->
+    (A : Type (constLevel marker)) ->
+    A -> A
+let idAt marker A x = x

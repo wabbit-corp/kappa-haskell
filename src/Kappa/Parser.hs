@@ -612,7 +612,7 @@ pLetDef = do
       when continued (void (many pNewline) *> token TokDedent)
       let patternCandidate =
             case (dec, patternArguments) of
-              (Nothing, Just arguments@(_ : _)) ->
+              (Nothing, Just arguments) ->
                 Just
                   ( ConstructorPatternCandidate
                       (PCtor (CtorRef Nothing n) arguments (nameSpan n))

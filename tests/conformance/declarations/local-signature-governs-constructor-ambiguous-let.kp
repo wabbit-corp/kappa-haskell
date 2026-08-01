@@ -1,0 +1,18 @@
+-- §9.2/§9.3.1: a preceding local signature governs the following named
+-- definition. Constructor-pattern ambiguity must not reinterpret that
+-- definition.
+--! mode check
+--! assertNoErrors
+--! assertEval answer 8
+
+module main
+
+data Apply : Type =
+    Apply Int
+
+answer : Int
+let answer =
+    block
+        Apply : Int -> Int
+        let Apply x = x + 1
+        Apply 7

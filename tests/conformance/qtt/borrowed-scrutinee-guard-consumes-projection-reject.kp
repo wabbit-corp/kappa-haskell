@@ -1,0 +1,26 @@
+-- §17.1.8/§17.1.9: a guard cannot consume a pattern projection from a
+-- borrowed scrutinee, including on a selection attempt whose guard fails.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+module main
+
+data Res : Type =
+    MkRes (n : Int)
+
+spend : (1 r : Res) -> Bool
+let spend (1 r : Res) : Bool =
+    match r
+    case MkRes n -> n > 0
+
+data Two : Type =
+    TA (1 r : Res)
+    TB (1 r : Res)
+
+bad : (& t : Two) -> Int
+let bad (& t : Two) : Int =
+    match t
+    case TA r if spend r -> 1
+    case _ -> 0

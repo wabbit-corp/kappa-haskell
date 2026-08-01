@@ -123,6 +123,14 @@ instance Monad RW where
 emit :: Diagnostic -> RW ()
 emit d = RW ((), (d :))
 
+-- | Resolve a speculative syntax alternative without duplicating diagnostics
+-- already emitted while resolving the authoritative source tree. Constructor-
+-- pattern candidates retain a second RHS only so the checker can select its
+-- semantic reading after name resolution; that RHS is the same source
+-- expression embedded in the ordinary named-definition body.
+silence :: RW a -> RW a
+silence (RW (a, _)) = RW (a, id)
+
 -- ── Operator chain re-association ────────────────────────────────────
 --
 -- Precedence-climbing over the flat element list. Prefix operators bind
@@ -351,7 +359,7 @@ rLetDef env (LetDef n imp p candidate brw bs ty dec body) =
     rCandidate (ConstructorPatternCandidate pattern' rhs) =
       ConstructorPatternCandidate
         <$> rPattern env pattern'
-        <*> rExpr env rhs
+        <*> silence (rExpr env rhs)
 
 rDecreases :: FixityEnv -> Decreases -> RW Decreases
 rDecreases env = \case
