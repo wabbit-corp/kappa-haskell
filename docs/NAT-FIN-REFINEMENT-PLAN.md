@@ -196,6 +196,11 @@ representative before reification, with the identifying `IsSubsingleton`
 equalities recorded as quantity-`0` bridge evidence; closures at distinct
 normalized trait applications are never mixed (§15.8.2). Unrelated imports
 cannot change the selected provider, certificate identity, or semantic hash.
+The portable semiring normal form is a sum of ordered multiplicative words:
+additive terms may be canonicalized, but factor order is preserved unless a
+separate checked commutative-multiplication provider explicitly authorizes
+reordering. Polynomial replay has deterministic limits of 4096 input nodes and
+4096 materialized terms; exceeding either limit produces no proof.
 
 ### 2.4 Source analysis is not runtime-layout analysis
 
@@ -350,7 +355,8 @@ Deliverables:
 * select providers through ordinary local/global implicit resolution and freeze
   the selected evidence in the elaborated artifact;
 * implement the required portable solver fragment, principal outcomes,
-  underconstrained rejection, resource limits, and local diagnostics;
+  underconstrained rejection, deterministic 4096-node/4096-term polynomial
+  resource limits, and local diagnostics;
 * insert explicit equality evidence and `subst` transport for indexed terms
   rather than extending conversion, including direct source expected-type
   checking from `NatIndex (natAdd n Nat.Zero)` to `NatIndex n`;
@@ -383,9 +389,12 @@ Gate:
 * the right-identity source suite accepts and its verified KCore contains
   explicit transport evidence rather than an untransported conversion;
 * the noncommutative and underconstrained cases reject with their portable
-  diagnostics;
+  diagnostics, multiplicative factors are not reordered without checked
+  commutative-multiplication evidence, and polynomial expansion fails closed
+  at the deterministic resource limit;
 * adding an unrelated import leaves provider selection, certificate content,
-  and semantic identity unchanged;
+  and semantic identity unchanged, checked by byte-identical canonical
+  proof/certificate bodies from independently compiled variants;
 * certificate mutation of every decisive field rejects independently.
 
 ### NFR-4 - Fin, Refined, subsumption, and ranges (implemented)

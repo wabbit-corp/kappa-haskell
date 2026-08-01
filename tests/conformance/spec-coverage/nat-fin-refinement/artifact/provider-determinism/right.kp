@@ -1,9 +1,8 @@
 -- Identical to left.kp except for one unrelated import, which must not
 -- change provider selection, certificate content, or semantic identity
--- (Spec 15.8.2). This suite is the well-formed smoke check; comparing
--- the selected provider identity and certificate bytes across the two
--- modules is the NFR-0 extended-harness deliverable
--- (docs/NAT-FIN-REFINEMENT-PLAN.md).
+-- (Spec 15.8.2). The suite compares canonical proof/certificate body
+-- bytes across both independently compiled modules through production
+-- KCoreText (docs/NAT-FIN-REFINEMENT-PLAN.md).
 import std.hash
 
 public data ProviderCarrier : Type =

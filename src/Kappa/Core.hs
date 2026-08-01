@@ -70,6 +70,7 @@ module Kappa.Core
   , ArithmeticAssumptionSource (..)
   , ArithmeticAssumption (..)
   , ArithmeticCertificate (..)
+  , arithmeticCertificateVersion
   , mapArithmeticCertificate
   , traverseArithmeticCertificate
   , foldMapArithmeticCertificate
@@ -543,6 +544,11 @@ data ArithmeticCertificate a = ArithmeticCertificate
   -- elaborator-only normalization state.
   }
   deriving stock (Eq, Show)
+
+-- | Version of the independently replayed arithmetic-certificate payload.
+-- Version 3 uses ordered multiplicative words in polynomial normal forms.
+arithmeticCertificateVersion :: Integer
+arithmeticCertificateVersion = 3
 
 mapArithmeticCertificate :: (a -> b) -> ArithmeticCertificate a -> ArithmeticCertificate b
 mapArithmeticCertificate transform certificate =

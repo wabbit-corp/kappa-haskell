@@ -1038,8 +1038,10 @@ capabilities, stage ownership, and T.12 coverage.
       `AdditivelyNoncommutativeSemiring`, coherent standard evidence, deterministic
       provider selection, the portable proof solver, automatic explicit transports
       at expected-type boundaries, compact certificates, and mutation-checked
-      replay. Keep this authority separate from universe-level `TypeLevel`
-      arithmetic.
+      replay. Portable polynomial replay preserves multiplicative factor order,
+      fails closed at deterministic 4096-node/4096-term limits, and compares
+      canonical proof/certificate bodies across unrelated-import variants. Keep
+      this authority separate from universe-level `TypeLevel` arithmetic.
 - [x] **NFR-4 - Fin, Refined, subsumption, and ranges.** Add the proof-carrying
       prelude surface, exactly-once proof synthesis, ownership-preserving
       construction/projection, and ordinary `contains`; retain rejection of special

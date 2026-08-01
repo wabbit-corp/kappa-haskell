@@ -16073,7 +16073,7 @@ providerLawProof ctx sourceGoal sourceProof equalityGoal carrier _lhsValue _rhsV
         pure
           ( CArithmeticProof
               ArithmeticCertificate
-                { acVersion = 2
+                { acVersion = arithmeticCertificateVersion
                 , acDomain = ArithmeticProviderLaw
                 , acProviders =
                     [ ArithmeticProviderEvidence
@@ -16654,7 +16654,7 @@ typeLevelPropositionCertificate ctx goal = do
   pure
     ( CArithmeticProof
         ArithmeticCertificate
-          { acVersion = 2
+          { acVersion = arithmeticCertificateVersion
           , acDomain = ArithmeticTypeLevel
           , acProviders = providers
           , acVariables = []
@@ -17125,7 +17125,7 @@ arithmeticCertificateForDomain ctx domain variables goal replayGoal = do
               ]
         pure
           ArithmeticCertificate
-            { acVersion = 2
+            { acVersion = arithmeticCertificateVersion
             , acDomain = domain
             , acProviders = providers
             , acVariables = certificateVariables

@@ -2,3 +2,4 @@
 --! requires capability arithmeticCertificates
 --! assertNoErrors
 --! assertArithmeticCertificatesValid
+--! assertArithmeticEvidenceEquals left.kp right.kp stable

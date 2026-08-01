@@ -2979,25 +2979,26 @@ arithmeticReplayDomain = do
       mutated = do
         replay <- polynomialReplay
         pure replay {arNormalForm = NormalLowerBound 0}
-      distinctMonomials =
-        let x = AVar 0
-            y = AVar 1
-         in arNormalForm
-              <$> deriveArithmeticReplay
-                ArithmeticNaturalSemantics
-                (Set.fromList [0, 1])
-                []
-                (AFact ACmpEq (AAdd (AMul x y) (AConst 1)) (AAdd (AConst 1) (AMul y x)))
+      reorderedProduct =
+        deriveArithmeticReplay
+          ArithmeticNaturalSemantics
+          (Set.fromList [0, 1])
+          []
+          (AFact ACmpEq (AMul n m) (AMul m n))
+      explosiveProduct =
+        foldr1 AMul (replicate 13 (AAdd n m))
+      overBudgetPolynomial =
+        deriveArithmeticReplay
+          ArithmeticNaturalSemantics
+          naturalVariables
+          []
+          (AFact ACmpEq explosiveProduct explosiveProduct)
       checks =
         [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) polynomialReplay)
         , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [boundedAssumption]) strictReplay)
         , ("mutated normal form rejects", maybe True (not . verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) mutated)
-        , ( "polynomial replay preserves monomial boundaries"
-          , case distinctMonomials of
-              Just (NormalPolynomial monomials) ->
-                any (\(variables, _) -> variables == [(0, 1), (1, 1)]) monomials
-              _ -> False
-          )
+        , ("multiplicative factor order is preserved", reorderedProduct == Nothing)
+        , ("polynomial expansion fails closed at its deterministic budget", overBudgetPolynomial == Nothing)
         , ("underconstrained order remains unknown", deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] strictGoal == Nothing)
         , ( "equality assumptions support cancellation"
           , maybe False

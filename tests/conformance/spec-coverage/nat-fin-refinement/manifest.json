@@ -170,7 +170,7 @@
         "right.kp",
         "suite.ktest"
       ],
-      "description": "Two modules differing only in an unrelated std.hash import elaborate with valid arithmetic certificates as the well-formed smoke check; comparing selected provider identity and certificate bytes across the variants is the NFR-0 extended-harness deliverable."
+      "description": "Two modules differing only in an unrelated std.hash import elaborate with valid arithmetic certificates and byte-identical canonical proof/certificate bodies through the production KCore checkpoint."
     },
     {
       "path": "artifact/representation-certificates",

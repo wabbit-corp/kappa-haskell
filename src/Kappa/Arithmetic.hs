@@ -147,7 +147,10 @@ data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
 data ALin = ALin !Integer !(Map Int Integer)
   deriving stock (Eq, Show)
 
-newtype Monomial = Monomial (Map Int Int)
+-- | One multiplicative word. Adjacent equal factors are run-length encoded,
+-- but their left-to-right order is semantic: §15.8.4 does not authorize
+-- multiplicative commutation for the portable semiring theories.
+newtype Monomial = Monomial [(Int, Int)]
   deriving stock (Eq, Ord, Show)
 
 newtype Poly = Poly (Map Monomial Integer)
@@ -158,8 +161,9 @@ newtype Poly = Poly (Map Monomial Integer)
 -- result.
 data ArithmeticNormalForm
   = NormalPolynomial ![([(Int, Int)], Integer)]
-    -- ^ Canonical monomials: each variable/exponent vector is kept together
-    -- with its coefficient. Constants use the empty variable vector.
+    -- ^ Canonical sums of multiplicative words. Each word is an ordered,
+    -- run-length-encoded sequence of variable factors; constants use the
+    -- empty word.
   | NormalLinear !Integer ![(Int, Integer)]
   | NormalLowerBound !Integer
   | NormalDisequality
@@ -740,11 +744,11 @@ deriveArithmeticReplayUnchecked naturalVariables assumptions goal =
   case goal of
     AFact ACmpEq lhs rhs ->
       let difference = simplifyA naturalVariables assumptions (ASub lhs rhs)
-       in case polyOf difference of
+       in case boundedPolyOf difference of
             Just polynomial
               | polyIsZero polynomial
               , Just lhsPolynomial <-
-                  polyOf (simplifyA naturalVariables assumptions lhs) ->
+                  boundedPolyOf (simplifyA naturalVariables assumptions lhs) ->
                   Just
                     ( ArithmeticReplay
                         goal
@@ -943,8 +947,8 @@ formulaDomainObligations semantics = \case
 
 canonicalPolynomial :: Poly -> [([(Int, Int)], Integer)]
 canonicalPolynomial (Poly terms) =
-  [ (Map.toAscList variables, coefficient)
-  | (Monomial variables, coefficient) <- Map.toAscList terms
+  [ (factors, coefficient)
+  | (Monomial factors, coefficient) <- Map.toAscList terms
   ]
 
 simplifyA :: Set Int -> [AFact] -> AExpr -> AExpr
@@ -1214,7 +1218,7 @@ lowerBoundExpr naturalVariables assumptions expression0 =
     Just lower -> Just lower
     Nothing -> case linOf expression >>= lowerBoundLin naturalVariables assumptions of
       Just lower -> Just lower
-      Nothing -> case polyOf expression >>= lowerBoundPoly naturalVariables assumptions of
+      Nothing -> case boundedPolyOf expression >>= lowerBoundPoly naturalVariables assumptions of
         Just lower -> Just lower
         Nothing -> lowerBound naturalVariables assumptions expression
   where
@@ -1487,20 +1491,40 @@ scaleLin k (ALin constant coefficients) =
     (k * constant)
     (Map.filter (/= 0) (Map.map (k *) coefficients))
 
-polyOf :: AExpr -> Maybe Poly
-polyOf = \case
-  AConst k -> Just (polyConst k)
-  AVar variable -> Just (polyVar variable)
-  AScale k a -> polyScale k <$> polyOf a
-  AAdd a b -> polyAdd <$> polyOf a <*> polyOf b
-  ASub a b -> polySub <$> polyOf a <*> polyOf b
-  AMul a b -> polyMul <$> polyOf a <*> polyOf b
-  ANeg a -> polyScale (-1) <$> polyOf a
-  AMax {} -> Nothing
-  AMin {} -> Nothing
-  AIf {} -> Nothing
-  ADiv {} -> Nothing
-  AMod {} -> Nothing
+-- These bounds are part of the portable solver contract. They are deliberately
+-- independent of wall-clock time and checked before an expanding product is
+-- materialized.
+arithmeticPolynomialNodeLimit, arithmeticPolynomialTermLimit :: Int
+arithmeticPolynomialNodeLimit = 4096
+arithmeticPolynomialTermLimit = 4096
+
+boundedPolyOf :: AExpr -> Maybe Poly
+boundedPolyOf expression = snd <$> go arithmeticPolynomialNodeLimit expression
+  where
+    go fuel _ | fuel <= 0 = Nothing
+    go fuel expression' = case expression' of
+      AConst k -> pure (fuel - 1, polyConst k)
+      AVar variable -> pure (fuel - 1, polyVar variable)
+      AScale k a -> do
+        (fuel', polynomial) <- go (fuel - 1) a
+        pure (fuel', polyScale k polynomial)
+      AAdd a b -> binary polyAddBounded fuel a b
+      ASub a b -> binary polySubBounded fuel a b
+      AMul a b -> binary polyMulBounded fuel a b
+      ANeg a -> do
+        (fuel', polynomial) <- go (fuel - 1) a
+        pure (fuel', polyScale (-1) polynomial)
+      AMax {} -> Nothing
+      AMin {} -> Nothing
+      AIf {} -> Nothing
+      ADiv {} -> Nothing
+      AMod {} -> Nothing
+
+    binary combine fuel lhs rhs = do
+      (afterLeft, left) <- go (fuel - 1) lhs
+      (afterRight, right) <- go afterLeft rhs
+      result <- combine arithmeticPolynomialTermLimit left right
+      pure (afterRight, result)
 
 splitFirstConditionalFact :: AFact -> Maybe (AFormula, AFact, AFact)
 splitFirstConditionalFact (AFact comparison lhs rhs) =
@@ -1613,24 +1637,40 @@ specializeConditionalExpression condition branch = expression
 
 polyConst :: Integer -> Poly
 polyConst 0 = Poly Map.empty
-polyConst k = Poly (Map.singleton (Monomial Map.empty) k)
+polyConst k = Poly (Map.singleton (Monomial []) k)
 
 polyVar :: Int -> Poly
 polyVar variable =
-  Poly (Map.singleton (Monomial (Map.singleton variable 1)) 1)
+  Poly (Map.singleton (Monomial [(variable, 1)]) 1)
 
-polyAdd, polySub, polyMul :: Poly -> Poly -> Poly
+polyAdd, polySub :: Poly -> Poly -> Poly
 polyAdd (Poly a) (Poly b) =
   normalizePoly (Poly (Map.unionWith (+) a b))
 polySub polynomial other = polyAdd polynomial (polyScale (-1) other)
-polyMul (Poly a) (Poly b) =
-  normalizePoly $
-    Poly $
-      Map.fromListWith (+)
-        [ (mulMonomial monomialA monomialB, coefficientA * coefficientB)
-        | (monomialA, coefficientA) <- Map.toList a
-        , (monomialB, coefficientB) <- Map.toList b
-        ]
+
+polyAddBounded, polySubBounded, polyMulBounded
+  :: Int -> Poly -> Poly -> Maybe Poly
+polyAddBounded limit lhs rhs =
+  withinPolynomialTermLimit limit (polyAdd lhs rhs)
+polySubBounded limit lhs rhs =
+  withinPolynomialTermLimit limit (polySub lhs rhs)
+polyMulBounded limit (Poly a) (Poly b)
+  | Map.null a || Map.null b = Just (Poly Map.empty)
+  | Map.size a > limit `div` Map.size b = Nothing
+  | otherwise =
+      withinPolynomialTermLimit limit $
+        normalizePoly $
+          Poly $
+            Map.fromListWith (+)
+              [ (mulMonomial monomialA monomialB, coefficientA * coefficientB)
+              | (monomialA, coefficientA) <- Map.toAscList a
+              , (monomialB, coefficientB) <- Map.toAscList b
+              ]
+
+withinPolynomialTermLimit :: Int -> Poly -> Maybe Poly
+withinPolynomialTermLimit limit polynomial@(Poly terms)
+  | Map.size terms <= limit = Just polynomial
+  | otherwise = Nothing
 
 polyScale :: Integer -> Poly -> Poly
 polyScale k (Poly polynomial)
@@ -1645,8 +1685,18 @@ polyIsZero :: Poly -> Bool
 polyIsZero (Poly polynomial) = Map.null polynomial
 
 mulMonomial :: Monomial -> Monomial -> Monomial
-mulMonomial (Monomial a) (Monomial b) =
-  Monomial (Map.filter (> 0) (Map.unionWith (+) a b))
+mulMonomial (Monomial lhs) (Monomial rhs) =
+  Monomial (appendRuns lhs rhs)
+  where
+    appendRuns [] ys = ys
+    appendRuns xs [] = xs
+    appendRuns xs ys =
+      case (List.unsnoc xs, ys) of
+        (Just (prefix, (leftVariable, leftPower)), (rightVariable, rightPower) : suffix)
+          | leftVariable == rightVariable ->
+              prefix
+                ++ ((leftVariable, leftPower + rightPower) : suffix)
+        _ -> xs ++ ys
 
 lowerBoundPoly :: Set Int -> [AFact] -> Poly -> Maybe Integer
 lowerBoundPoly naturalVariables assumptions (Poly polynomial) =
@@ -1662,10 +1712,10 @@ lowerBoundPoly naturalVariables assumptions (Poly polynomial) =
           pure (accumulator + coefficient * upper)
 
 boundsMonomial :: Set Int -> [AFact] -> Monomial -> ABounds
-boundsMonomial naturalVariables assumptions (Monomial powers) =
+boundsMonomial naturalVariables assumptions (Monomial factors) =
   List.foldl' mulBounds (ABounds (Just 1) (Just 1))
     [ powBounds power (varBounds naturalVariables assumptions variable)
-    | (variable, power) <- Map.toList powers
+    | (variable, power) <- factors
     ]
 
 powBounds :: Int -> ABounds -> ABounds

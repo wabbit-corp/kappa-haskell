@@ -258,6 +258,7 @@ data Assertion
   | AInterfaceContainsCurrentUniverseRoles !Text ![UniverseVariance]
   | ATotal !Text
   | AArithmeticCertificatesValid
+  | AArithmeticEvidenceEquals !Text !Text !Text
   | AArithmeticCertificateMutationsReject
   | ATerminationCertificateMutationsReject
   | ARepresentationCertificateMutationsReject
@@ -608,6 +609,11 @@ parseDirective allLines lno body =
       "assertArithmeticCertificatesValid"
         | null args -> ok (SAssert AArithmeticCertificatesValid)
         | otherwise -> bad "malformed 'assertArithmeticCertificatesValid' directive"
+      "assertArithmeticEvidenceEquals" ->
+        case args of
+          [left, right, declaration] ->
+            ok (SAssert (AArithmeticEvidenceEquals left right declaration))
+          _ -> bad "malformed 'assertArithmeticEvidenceEquals' directive"
       "assertArithmeticCertificateMutationsReject"
         | null args ->
             ok (SAssert AArithmeticCertificateMutationsReject)
@@ -2185,6 +2191,32 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
               parseKCore
               "generated arithmetic-certificate KCore"
               dump
+  AArithmeticEvidenceEquals left right declaration -> do
+    leftUnit <- compileSuiteFile left
+    rightUnit <- compileSuiteFile right
+    pure $
+      compareCompiledUnits "assertArithmeticEvidenceEquals" leftUnit rightUnit $ \leftCompiled rightCompiled ->
+        case
+            ( compiledKCoreArtifact declaration leftCompiled
+            , compiledKCoreArtifact declaration rightCompiled
+            ) of
+          (Left detail, _) ->
+            AssertFail ("left KCore artifact failed: " <> detail)
+          (_, Left detail) ->
+            AssertFail ("right KCore artifact failed: " <> detail)
+          (Right leftArtifact, Right rightArtifact) ->
+            case
+                ( kcoreDeclarationBodyBytes declaration leftArtifact
+                , kcoreDeclarationBodyBytes declaration rightArtifact
+                ) of
+              (Just leftBytes, Just rightBytes) ->
+                requirePure
+                  (leftBytes == rightBytes)
+                  ("canonical proof/certificate bytes differ for declaration " <> declaration)
+              (Nothing, _) ->
+                AssertFail ("left KCore artifact has no unique declaration " <> declaration)
+              (_, Nothing) ->
+                AssertFail ("right KCore artifact has no unique declaration " <> declaration)
   AArithmeticCertificateMutationsReject ->
     pure
       (assertCertificateMutationsReject
@@ -2634,18 +2666,32 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
           ownModule = case matchingOwners of
             owner : _ -> owner
             [] -> cuModule unit
-          fullEval = EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty
-          importedGlobals = Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csGlobals state)
-          importedConstructors =
+      artifact <- verifiedKCoreArtifactForModule unit ownModule
+      pure (kcoreNominalRoles artifact family)
+    compiledKCoreArtifact declaration unit = do
+      let state = cuState unit
+          ownModule =
+            case
+                [ owner
+                | GName owner name <- Map.keys (csCoreBodies state)
+                , normalizedFamilyName name
+                    == normalizedFamilyName declaration
+                ] of
+              [owner] -> owner
+              _ -> cuModule unit
+      verifiedKCoreArtifactForModule unit ownModule
+    verifiedKCoreArtifactForModule unit ownModule = do
+      let state = cuState unit
+          fullEval =
+            EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty
+          importedGlobals =
+            Map.filterWithKey
+              (\(GName owner _) _ -> owner /= ownModule)
+              (csGlobals state)
+          dataInterfaces =
             Map.map
-              (\CtorInfo {..} ->
-                KCoreConstructorInfo
-                  ciData
-                  ciUniverses
-                  ciType
-                  ciSourceFields)
-              (Map.filterWithKey (\(GName owner _) _ -> owner /= ownModule) (csCtors state))
-          dataInterfaces = Map.map (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount) (csDatas state)
+              (\DataInfo {..} -> KCoreDataInfo diCtors diParamCount)
+              (csDatas state)
           importedDataInterfaces =
             Map.filterWithKey
               (\(GName owner _) _ -> owner /= ownModule)
@@ -2659,7 +2705,12 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
                   ciType
                   ciSourceFields)
               (csCtors state)
-          importedEval = EvalCtx (Globals importedGlobals) (csMetas state) False mempty
+          importedConstructors =
+            Map.filterWithKey
+              (\(GName owner _) _ -> owner /= ownModule)
+              constructorInterfaces
+          importedEval =
+            EvalCtx (Globals importedGlobals) (csMetas state) False mempty
       dump <-
         firstKCoreError $
           renderKCoreModule
@@ -2675,15 +2726,13 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
                     state
                 )
             )
-      artifact <-
-        firstKCoreError $
-          parseAndVerifyKCoreTextWithEnvironment
-            importedEval
-            importedGlobals
-            importedDataInterfaces
-            importedConstructors
-            dump
-      pure (kcoreNominalRoles artifact family)
+      firstKCoreError $
+        parseAndVerifyKCoreTextWithEnvironment
+          importedEval
+          importedGlobals
+          importedDataInterfaces
+          importedConstructors
+          dump
     firstKCoreError = either (Left . (\err -> kcteCode err <> ": " <> kcteMessage err)) Right
     schemaLiftFamilies unit =
       concat

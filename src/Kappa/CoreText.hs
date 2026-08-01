@@ -25,6 +25,7 @@ module Kappa.CoreText
   , verifyKCoreTextWithInterfaces
   , printCanonicalKCoreText
   , semanticHashKCoreText
+  , kcoreDeclarationBodyBytes
   , kcoreArithmeticCertificateCount
   , kcoreRepresentationCertificateCount
   , kcoreArithmeticCertificateMutationCases
@@ -10680,7 +10681,7 @@ verifyArithmeticCertificate context universes assumptions env fields =
     version <- case lookup "version" fields of
       Just (KVInteger value) -> pure value
       _ -> invalidArithmetic "certificate version must be an integer"
-    unless (version == 2) $
+    unless (version == arithmeticCertificateVersion) $
       invalidArithmetic "certificate version is unsupported"
     domain <-
       maybe
@@ -13680,6 +13681,27 @@ printCanonicalKCoreText file0 =
    in
   "kcore " <> tshow version <> ";\n\n"
     <> T.intercalate "\n" (map printModule modules)
+
+-- | Canonical bytes of one definition body, excluding its enclosing module and
+-- declaration identity. This is the artifact-level comparison needed when two
+-- source variants intentionally have different import graphs but must select
+-- byte-identical proof evidence and certificates.
+kcoreDeclarationBodyBytes :: Text -> KCoreFile -> Maybe Text
+kcoreDeclarationBodyBytes requested file0 =
+  case
+      [ printTerm body
+      | KModule {kmDecls = declarations} <- modules
+      , KDDef ref _ _ _ body <- declarations
+      , srName ref == requested || stableLeaf ref == requested
+      ] of
+    [body] -> Just body
+    _ -> Nothing
+  where
+    KCoreFile _ modules = canonicalizeKCoreFile file0
+    stableLeaf ref =
+      case reverse (T.splitOn "." (srName ref)) of
+        leaf : _ -> leaf
+        [] -> srName ref
 
 printModule :: KModule -> Text
 printModule KModule {..} =

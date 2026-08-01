@@ -33,9 +33,9 @@ The artifact suites use executable harness mutations. Each decisive
 certificate field class is changed independently, canonically serialized, and
 required to fail replay with the certificate-specific diagnostic.
 
-The provider-determinism pair compares selected provider identity and generated
-certificate bytes across an unrelated import through the production KCore
-checkpoint.
+The provider-determinism pair independently compiles variants separated by an
+unrelated import and compares their canonical generated proof/certificate body
+bytes through the production KCore checkpoint.
 
 ## Active gate
 
