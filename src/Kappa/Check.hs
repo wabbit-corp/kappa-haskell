@@ -8976,7 +8976,14 @@ checkedArgumentValue :: Ctx -> Span -> Value -> Term -> CheckM Value
 checkedArgumentValue ctx sp domain term = do
   isLevel <- isTypeLevelValue domain
   if not isLevel
-    then evalIn ctx term
+    then do
+      let requiresContextualReplay =
+            not (null (metaIdsOf term) && null (levelMetasOfTerm term))
+      replayable <-
+        if requiresContextualReplay
+          then zonkTermM (ctxLen ctx) term
+          else pure term
+      evalIn ctx replayable
     else do
       (_, result) <- levelIdentityOfCheckedTerm ctx term
       case result of

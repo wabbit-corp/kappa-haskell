@@ -1,0 +1,12 @@
+--! assertNoErrors
+
+module test
+
+pathSelf :
+    forall (a : Type).
+    (x : a) ->
+    (y : a) ->
+    (p : x = y) ->
+    p = p
+let pathSelf @a x y p =
+    pathInd @a @x @(\(@ordinary 0 endpoint : a) (@parametric 0 proof : x = endpoint) -> proof = proof) refl @y p
