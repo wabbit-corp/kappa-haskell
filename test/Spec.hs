@@ -5302,6 +5302,7 @@ backendIRValidatorS5 = do
       codesOf = map bivCode . validateKBackendIR
       checks =
         [ ("clean lowered KBackendIR validates", null cleanCodes)
+        , ("missing exact-natural runtime certificate caught", T.pack "E_BACKEND_REQUIRED_REPRESENTATION_MISSING" `elem` codesOf badCtor)
         , ("ctor runtime-field mismatch caught", T.pack "W_BACKENDIR_CTOR_FIELD_MISMATCH" `elem` codesOf badCtor)
         , ("ctor layout-info mismatch caught", T.pack "W_BACKENDIR_CTOR_LAYOUT_INCONSISTENT" `elem` codesOf badCtorInfo)
         , ("runtime variable missing ownership use caught", T.pack "W_BACKENDIR_MISSING_USE" `elem` codesOf badUse)

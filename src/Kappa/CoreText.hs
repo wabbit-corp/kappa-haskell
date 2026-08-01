@@ -2455,7 +2455,7 @@ parseAndVerifyKCoreTextWithEnvironment ec globals dataInfos constructors source 
 verifyKCoreText :: KCoreFile -> Either KCoreTextError ()
 verifyKCoreText =
   verifyKCoreTextWithExternal
-    Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty
+    Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty
 
 parseAndVerifyKCoreInterface :: Text -> Either KCoreTextError KCoreInterface
 parseAndVerifyKCoreInterface =
@@ -2486,6 +2486,7 @@ verifyKCoreTextWithInterfaces interfaces file = do
     Map.empty
     (kciLevelCertificates merged)
     (kciSchemaCertificates merged)
+    (kciRepresentationCertificates merged)
     (kciNominalFamilies merged)
     (kciTerminationCertified merged)
     file
@@ -2668,7 +2669,7 @@ verifyKCoreTextWithEnvironment ec globals dataInfos constructors file = do
       externalAssociatedContext
       externalAssociatedCandidates
   verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors
-    externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies
+    externalConstructorFields externalLevelCertificates externalSchemaCertificates Map.empty externalNominalFamilies
     externalTerminationCertified file
   where
     conversionContext = CoreConversionContext (Just ec) globals constructors
@@ -2948,18 +2949,25 @@ verifyKCoreTextWithExternal
   -> Map StableRef (Map StableRef Int)
   -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof)
   -> Map StableRef KSchemaCertificate
+  -> Map StableRef KRepresentationCertificate
   -> Map StableRef KNominalFamily
   -> Set StableRef
   -> KCoreFile
   -> Either KCoreTextError ()
-verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies externalTerminationCertified file@(KCoreFile version modules) = do
+verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors externalConstructorFields externalLevelCertificates externalSchemaCertificates externalRepresentationCertificates externalNominalFamilies externalTerminationCertified file@(KCoreFile version modules) = do
   when (version /= 1) $
     Left (KCoreTextError "E_KCORE_TEXT_UNSUPPORTED_VERSION" ("unsupported KCoreText schema " <> T.pack (show version)))
-  verifyStableIdentities (Map.keys externalTypes) file
+  verifyStableIdentities
+    (Map.keys externalTypes ++ Map.keys externalRepresentationCertificates)
+    file
   let declaredRefs = concatMap (concatMap declRefs . kmDecls) modules
       semanticOwners = map kmRef modules ++ declaredRefs
       semanticOwnerIds = map srId semanticOwners
-      externalIds = Set.fromList (map srId (Map.keys externalTypes))
+      externalIds =
+        Set.fromList
+          ( map srId
+              (Map.keys externalTypes ++ Map.keys externalRepresentationCertificates)
+          )
   when (length semanticOwnerIds /= Set.size (Set.fromList semanticOwnerIds)) $
     Left (invalid "a stable module or global identity is declared more than once in this KCoreText file")
   when (any (`Set.member` externalIds) (map srId declaredRefs)) $
@@ -3024,6 +3032,8 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
   forM_ (Map.toAscList externalLevelCertificates) $
     \(ref, (universes, constraints, theorem, proof)) ->
       verifyLevelCertificate externalCertificateContext ref universes constraints theorem proof
+  forM_ (Map.elems externalRepresentationCertificates) $
+    verifyRepresentationCertificate externalCertificateContext
   verifySchemaMonotoneWitnesses
     externalCertificateContext
     externalNominalFamilies
@@ -10506,7 +10516,10 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
             )
         )
         (Left "ordinal representation auxiliary is not Fin cardinality")
-      verifyOrdinalEncoding (Just target) encoding
+      encodedCardinality <- verifyOrdinalEncoding (Just target) encoding
+      unless (same encodedCardinality cardinality) $
+        Left
+          "ordinal representation cardinality disagrees with its independently replayed structural encoding"
     KVList
       [ KVText "exact-natural-v1"
       , zeroNode
@@ -10684,11 +10697,12 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
       _ -> Left "representation program field-path collection is not a list"
 
     verifyOrdinalEncoding expected = \case
-      KVList [KVText "fin", KVTerm cardinality] ->
+      KVList [KVText "fin", KVTerm cardinality] -> do
         liftKCore
           (checkTerm context universes assumptions env cardinality naturalType)
+        pure cardinality
       KVList [KVText "contractible"] ->
-        pure ()
+        pure (naturalLiteral 1)
       KVList [KVText "record", KVList fields] -> do
         expectedFields <- case expected of
           Just represented ->
@@ -10698,10 +10712,12 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
                     pure (map (Just . kbType . snd) recordFields)
               _ -> Left "record ordinal encoding does not match its represented record"
           Nothing -> pure (replicate (length fields) Nothing)
-        zipWithM_
+        cardinalities <-
+          zipWithM
           (\field expectedField -> verifyOrdinalEncoding expectedField field)
           fields
           expectedFields
+        pure (foldl' naturalMultiply (naturalLiteral 1) cardinalities)
       KVList [KVText "variant", KVList members] -> do
         expectedMembers <- case expected of
           Just represented ->
@@ -10711,10 +10727,12 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
                     pure (map Just memberTypes)
               _ -> Left "variant ordinal encoding does not match its represented variant"
           Nothing -> pure (replicate (length members) Nothing)
-        zipWithM_
+        cardinalities <-
+          zipWithM
           (\member expectedMember -> verifyOrdinalEncoding expectedMember member)
           members
           expectedMembers
+        pure (foldl' naturalAdd (naturalLiteral 0) cardinalities)
       KVList [KVText "data", KVList constructors] -> do
         represented <-
           maybe
@@ -10722,34 +10740,94 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
             pure
             expected
         family <- nominalTargetFamily represented
-        encoded <- mapM (verifyOrdinalConstructor represented) constructors
-        unless (map fst encoded == familyConstructorRefs family) $
+        (encoded, cardinality) <-
+          foldM
+            (verifyOrdinalConstructor represented)
+            ([], naturalLiteral 0)
+            constructors
+        unless (encoded == familyConstructorRefs family) $
           Left "data ordinal constructor order does not match its represented family"
+        pure cardinality
       KVList [KVText "inclusive-range", KVTerm lower, KVTerm upper] -> do
         liftKCore (checkTerm context universes assumptions env lower naturalType)
         liftKCore (checkTerm context universes assumptions env upper naturalType)
+        lowerValue <-
+          maybe
+            (Left "symbolic inclusive-range cardinality is not independently replayable")
+            pure
+            (logicalNaturalKTermValue lower)
+        upperValue <-
+          maybe
+            (Left "symbolic inclusive-range cardinality is not independently replayable")
+            pure
+            (logicalNaturalKTermValue upper)
+        pure
+          ( naturalLiteral
+              (if lowerValue <= upperValue
+                 then upperValue - lowerValue + 1
+                 else 0)
+          )
       KVList [KVText "filtered", base, KVList ordinals] -> do
-        verifyOrdinalEncoding expected base
+        baseCardinality <- verifyOrdinalEncoding expected base
         values <- mapM decodeNatural ordinals
         unless (and (zipWith (<) values (drop 1 values))) $
           Left "filtered ordinal list is not strictly increasing"
+        bound <-
+          maybe
+            (Left "filtered ordinal base cardinality is not independently replayable")
+            pure
+            (logicalNaturalKTermValue baseCardinality)
+        unless (all (< bound) values) $
+          Left "filtered ordinal lies outside its independently replayed base cardinality"
+        pure (naturalLiteral (toInteger (length values)))
       _ -> Left "ordinal representation contains an unknown or malformed encoding"
 
-    verifyOrdinalConstructor represented = \case
+    verifyOrdinalConstructor represented (constructors, expectedOffset) = \case
       KVList [constructorNode, KVTerm offset, KVList fields] -> do
         constructor <- decodeRepresentationSemanticRef constructorNode
         liftKCore
           (checkTerm context universes assumptions env offset naturalType)
+        unless (same expectedOffset offset) $
+          Left
+            "ordinal constructor offset is not the sum of all preceding constructor arms"
         payload <- instantiatedConstructorPayload represented constructor
         unless (length payload == length fields) $
           Left "ordinal constructor encoding arity does not match its payload telescope"
-        zipWithM_
+        fieldCardinalities <-
+          zipWithM
           (\field parameter ->
              verifyOrdinalEncoding (Just (kbType parameter)) field)
           fields
           payload
-        pure (constructor, fields)
+        let armCardinality =
+              foldl'
+                naturalMultiply
+                (naturalLiteral 1)
+                fieldCardinalities
+        pure
+          ( constructors ++ [constructor]
+          , naturalAdd expectedOffset armCardinality
+          )
       _ -> Left "ordinal constructor encoding is malformed"
+
+    naturalLiteral = KTLiteral . LitInt
+
+    naturalBinary operation left right =
+      KTApply
+        (KTGlobal (stableRefForGlobal operation) [])
+        [KArgument KExplicit left, KArgument KExplicit right]
+
+    naturalAdd left right =
+      case (logicalNaturalKTermValue left, logicalNaturalKTermValue right) of
+        (Just leftValue, Just rightValue) ->
+          naturalLiteral (leftValue + rightValue)
+        _ -> naturalBinary prelNatAdd left right
+
+    naturalMultiply left right =
+      case (logicalNaturalKTermValue left, logicalNaturalKTermValue right) of
+        (Just leftValue, Just rightValue) ->
+          naturalLiteral (leftValue * rightValue)
+        _ -> naturalBinary prelNatMultiply left right
 
     variantMembers term =
       case unfoldTypeHeadWithLocals context env term of
@@ -14802,8 +14880,9 @@ kcoreArithmeticCertificateMutationCases file =
 kcoreRepresentationCertificateMutationCases
   :: KCoreFile
   -> Either Text [(Text, Text)]
-kcoreRepresentationCertificateMutationCases file =
-  traverse build
+kcoreRepresentationCertificateMutationCases file = do
+  certificateMutations <-
+    traverse build
     [ ("round-trip-proof", mutateRoundTrip)
     , ("target-type-identity", mutatePayloadAny "typeIdentity" (const (Just (KVText "mutated-type-identity"))))
     , ("retained-field-summary", mutatePayloadKind KRepresentationRefinement "retainedBaseField" (const (Just (KVList []))))
@@ -14812,6 +14891,14 @@ kcoreRepresentationCertificateMutationCases file =
     , ("erased-field-summary", mutatePayloadAny "erasureView" (const (Just (KVList [KVText "malformed-erasure-view"]))))
     , ("backend-profile-restriction", mutatePayloadAny "profileRestrictions" duplicateRestriction)
     ]
+  constructorOffsetMutation <-
+    maybe
+      (Left "representation-certificate fixture cannot mutate constructor-offset")
+      (Right . printCanonicalKCoreText)
+      (mutateOrdinalConstructorOffset file)
+  pure
+    (certificateMutations
+      ++ [("constructor-offset", constructorOffsetMutation)])
   where
     build (label, mutateCertificate) =
       case mutateFirstRepresentationCertificate mutateCertificate file of
@@ -14857,6 +14944,74 @@ kcoreRepresentationCertificateMutationCases file =
       KVList [] ->
         Just (KVList [KVText "unknown-profile-restriction"])
       _ -> Nothing
+
+    mutateOrdinalConstructorOffset original = do
+      oldEncoding <-
+        listToMaybe
+          [ encoding
+          | KModule {kmDecls = declarations} <- modules
+          , KDRepresentationCertificate certificate <- declarations
+          , krcKind certificate == KRepresentationOrdinal
+          , Just encoding <- [lookup "constructorEncoding" (krcPayload certificate)]
+          , isDataEncoding encoding
+          ]
+      newEncoding <- bumpFirstConstructorOffset oldEncoding
+      let rewriteNode node
+            | node == oldEncoding = newEncoding
+          rewriteNode (KVList nodes) = KVList (map rewriteNode nodes)
+          rewriteNode node = node
+          rewriteGeneric = \case
+            KTGeneric tag fields ->
+              KTGeneric tag
+                [(name, rewriteNode node) | (name, node) <- fields]
+            term -> term
+          programsRewritten = mapKCoreFileTerms rewriteGeneric original
+      pure (rewriteCertificates programsRewritten rewriteNode)
+      where
+        KCoreFile _ modules = original
+
+        rewriteCertificates
+          (KCoreFile version fileModules)
+          rewriteNode =
+            KCoreFile version (map rewriteModule fileModules)
+          where
+            rewriteModule module0 =
+              module0
+                { kmDecls = map rewriteDeclaration (kmDecls module0)
+                }
+            rewriteDeclaration = \case
+              KDRepresentationCertificate certificate ->
+                KDRepresentationCertificate
+                  ( reidentifyRepresentationCertificate
+                      certificate
+                        { krcPayload =
+                            [ (name, rewriteNode node)
+                            | (name, node) <- krcPayload certificate
+                            ]
+                        }
+                  )
+              declaration -> declaration
+
+    isDataEncoding = \case
+      KVList [KVText "data", KVList (_ : _)] -> True
+      _ -> False
+
+    bumpFirstConstructorOffset = \case
+      KVList [tag@(KVText "data"), KVList constructors] -> do
+        constructors' <- mutateFirst bumpConstructor constructors
+        pure (KVList [tag, KVList constructors'])
+      _ -> Nothing
+      where
+        bumpConstructor = \case
+          KVList [constructor, KVTerm _, fields] ->
+            Just
+              ( KVList
+                  [ constructor
+                  , KVTerm (KTLiteral (LitInt 1))
+                  , fields
+                  ]
+              )
+          _ -> Nothing
 
 -- | Remove one certified exact-natural erased field coherently from every
 -- summary and embedded structural program, then recompute the certificate

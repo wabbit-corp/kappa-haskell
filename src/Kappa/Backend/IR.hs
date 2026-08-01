@@ -2155,20 +2155,39 @@ validateKBackendIR backendIr =
 validateExactNaturalRuntimeCertificate :: KBackendIR -> [BackendIRViolation]
 validateExactNaturalRuntimeCertificate backendIr =
   case kbirExactNaturalCertificate backendIr of
-    Nothing -> []
+    Nothing ->
+      [ certificateViolation
+          "E_BACKEND_REQUIRED_REPRESENTATION_MISSING"
+          "the runnable backend IR has no verified exact-natural runtime certificate"
+      ]
     Just certificate ->
       case verifyExactNaturalRepresentationCertificate certificate of
         Right () -> []
         Left detail ->
-          case Map.elems (kbirBodies backendIr) of
-            body : _ ->
-              [ violation
-                  (bbOwner body)
-                  (backendMeta (bbRoot body))
-                  "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
-                  ("exact-natural runtime certificate replay failed: " <> T.unpack detail)
-              ]
-            [] -> []
+          [ certificateViolation
+              "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+              ("exact-natural runtime certificate replay failed: " <> T.unpack detail)
+          ]
+  where
+    certificateViolation code detail =
+      case Map.elems (kbirBodies backendIr) of
+        body : _ ->
+          violation
+            (bbOwner body)
+            (backendMeta (bbRoot body))
+            code
+            detail
+        [] ->
+          BackendIRViolation
+            { bivBody =
+                GName
+                  (kbirModule backendIr)
+                  "<backend-ir>"
+            , bivNode = BackendNodeId (-1)
+            , bivCode = T.pack code
+            , bivMessage = T.pack detail
+            , bivPayloadFields = []
+            }
 
 validateRepresentationDecisions :: KBackendIR -> [BackendIRViolation]
 validateRepresentationDecisions backendIr =
