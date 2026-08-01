@@ -1,0 +1,15 @@
+-- §15.3/§15.11: sequential do binders must not hide the structural origin of
+-- an enclosing match binder from termination checking.
+--! mode check
+--! assertNoErrors
+module main
+
+build : Nat -> UIO (List Int)
+let build n decreases structural n =
+    match n
+    case Nat.Zero -> pure Nil
+    case Nat.Succ predecessor -> do
+        let first <- pure 1
+        let second <- pure 2
+        let rest <- build predecessor
+        pure (first :: second :: rest)

@@ -116,12 +116,9 @@ type system carries the termination argument; the runtime carries the safety one
   indices + `decreases` + erased indices + existentials, all of which this
   example uses; it defines its own indexed `Route` rather than reaching for a
   library vector.
-- **Two `W_TERMINATION_UNVERIFIED` warnings** remain, on `buildMain` and
-  `spawnCarts`. Both recurse by counting down an `Int`, which the front end can't
-  certify well-founded (an `Int` could go negative). They could be made Nat-typed
-  to clear the warning; they're left as plain plumbing to keep the spotlight on
-  the route functions, which *are* proven total. This mirrors how the
-  `bench/xlang` concurrency programs are written.
+- `buildMain` and `spawnCarts` retain public `Int` wrappers for the package API,
+  but recurse only in private `Nat` workers after a positive-input guard. Their
+  termination is certified by ordinary structural descent.
 
 ## Possible extensions
 

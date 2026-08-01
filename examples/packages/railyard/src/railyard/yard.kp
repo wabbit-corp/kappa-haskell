@@ -19,15 +19,21 @@ data YardResult : Type =
         (occMain : Int)      -- main-line segments still occupied at the end
 
 -- Lay down `count` clear main-line segments — the single shared track every cart
--- must cross. (Counts down a plain Int, so the front end records but cannot
--- verify termination here; the dependent-typed route functions carry the proofs.)
+-- must cross. The public Int wrapper preserves the non-positive-input behavior;
+-- the worker recurses structurally over the corresponding Nat.
+buildMainNat : Nat -> UIO (List (TVar Bool))
+let buildMainNat count decreases structural count =
+    match count
+    case Nat.Zero -> pure Nil
+    case Nat.Succ predecessor -> do
+        let s  <- track.newSegFree
+        let ss <- buildMainNat predecessor
+        pure (s :: ss)
+
 buildMain : Int -> UIO (List (TVar Bool))
 let buildMain count =
     if leInt count 0 then pure Nil
-    else do
-        let s  <- track.newSegFree
-        let ss <- buildMain (subInt count 1)
-        pure (s :: ss)
+    else buildMainNat (intToNat count)
 
 -- Spawn carts numbered [1..i]. Each gets a private entry siding (already
 -- occupied — the cart waits there) and a private exit siding (clear), plus a
@@ -35,18 +41,24 @@ let buildMain count =
 -- return the list of receipt promises. Going the same way down one track, a cart
 -- only ever waits on the segment directly ahead, which the cart in front will
 -- vacate, so the pipeline drains without deadlock.
-spawnCarts : Int -> List (TVar Bool) -> AtomicRef Integer -> UIO (List (Promise Void Receipt))
-let spawnCarts i mainSegs counter =
-    if leInt i 0 then pure Nil
-    else do
+spawnCartsNat : Nat -> List (TVar Bool) -> AtomicRef Integer -> UIO (List (Promise Void Receipt))
+let spawnCartsNat remaining mainSegs counter decreases structural remaining =
+    match remaining
+    case Nat.Zero -> pure Nil
+    case Nat.Succ predecessor -> do
         let entry <- track.newSegOcc
         let exit  <- track.newSegFree
         let p     <- newPromise
         let r = route.buildRoute mainSegs exit
-        let f <- forkDaemon (cart.runCart i r entry counter p)
+        let f <- forkDaemon (cart.runCart (natToInt remaining) r entry counter p)
         let _ = f
-        let rest <- spawnCarts (subInt i 1) mainSegs counter
+        let rest <- spawnCartsNat predecessor mainSegs counter
         pure (p :: rest)
+
+spawnCarts : Int -> List (TVar Bool) -> AtomicRef Integer -> UIO (List (Promise Void Receipt))
+let spawnCarts i mainSegs counter =
+    if leInt i 0 then pure Nil
+    else spawnCartsNat (intToNat i) mainSegs counter
 
 -- Await every cart's receipt and sum the moves they report. Total by recursion
 -- on the promise list.

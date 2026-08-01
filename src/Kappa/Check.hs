@@ -49116,7 +49116,7 @@ collectFunEdges funMap src =
         bodyEdges <- go depth' sub ho esc facts boolFacts body
         pure (joinManyEdges [types, rhss, bodyEdges])
       CQuote _ slots -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) slots
-      CDo _ items -> joinManyEdges <$> mapM (goK d sub ho esc facts boolFacts) items
+      CDo _ items -> goKItems d sub ho esc facts boolFacts items
       _ -> pure (Just [])
 
     collectApplication d sub ho esc facts boolFacts t =
@@ -49223,8 +49223,23 @@ collectFunEdges funMap src =
         rhss <- joinManyEdges <$> mapM (collectStrictSubtermEdges depth' sub ho facts boolFacts . clrdRhs) definitions
         bodyEdges <- collectStrictSubtermEdges depth' sub ho facts boolFacts body
         pure (joinManyEdges [types, rhss, bodyEdges])
-      CDo _ items -> joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts) items
+      CDo _ items -> collectStrictSubtermEdgesItems d sub ho facts boolFacts items
       _ -> pure (Just [])
+
+    collectStrictSubtermEdgesItems
+      :: Int
+      -> StructuralOrigins
+      -> Map Int PartialCall
+      -> [AFact]
+      -> [(Term, Bool)]
+      -> [KItem]
+      -> CheckM (Maybe [CallEdge])
+    collectStrictSubtermEdgesItems _ _ _ _ _ [] = pure (Just [])
+    collectStrictSubtermEdgesItems d sub ho facts boolFacts (item : rest) = do
+      current <- collectStrictSubtermEdgesK d sub ho facts boolFacts item
+      let (d', sub') = advanceKItemStructuralContext d sub item
+      following <- collectStrictSubtermEdgesItems d' sub' ho facts boolFacts rest
+      pure (joinEdges current following)
 
     collectStrictSubtermEdgesK :: Int -> StructuralOrigins -> Map Int PartialCall -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
     collectStrictSubtermEdgesK d sub ho facts boolFacts = \case
@@ -49232,7 +49247,18 @@ collectFunEdges funMap src =
       KLet _ _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KLetQ _ t m -> do
         rt <- collectStrictSubtermEdges d sub ho facts boolFacts t
-        rm <- maybe (pure (Just [])) (collectStrictSubtermEdges d sub ho facts boolFacts . snd) m
+        rm <-
+          maybe
+            (pure (Just []))
+            (\(rejectionPattern, rejection) ->
+               collectStrictSubtermEdges
+                 (d + patBindersC rejectionPattern)
+                 sub
+                 ho
+                 facts
+                 boolFacts
+                 rejection)
+            m
         pure (joinEdges rt rm)
       KExpr t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KVarItem _ initT actT _ ->
@@ -49246,23 +49272,50 @@ collectFunEdges funMap src =
             ]
       KReturn t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KWhile _ c b e ->
-        joinManyEdges <$>
-          sequence (collectStrictSubtermEdges d sub ho facts boolFacts (kCondTerm c) : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
-      KFor _ _ s b e ->
-        joinManyEdges <$>
-          sequence (collectStrictSubtermEdges d sub ho facts boolFacts s : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
+        join3Edges
+          <$> collectStrictSubtermEdges d sub ho facts boolFacts (kCondTerm c)
+          <*> collectStrictSubtermEdgesItems d sub ho facts boolFacts b
+          <*> maybe
+            (pure (Just []))
+            (collectStrictSubtermEdgesItems d sub ho facts boolFacts)
+            e
+      KFor _ pattern' s b e ->
+        join3Edges
+          <$> collectStrictSubtermEdges d sub ho facts boolFacts s
+          <*> collectStrictSubtermEdgesItems
+            (d + patBindersC pattern')
+            sub
+            ho
+            facts
+            boolFacts
+            b
+          <*> maybe
+            (pure (Just []))
+            (collectStrictSubtermEdgesItems d sub ho facts boolFacts)
+            e
       KIf alts e -> do
         ralts <- forM alts $ \(c, b) -> do
           rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
           c' <- normalizeTermAt d c
           trueFacts <- assumeBoolM d True c'
-          rb <- joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho (trueFacts ++ facts) ((c', True) : boolFacts)) b
+          rb <-
+            collectStrictSubtermEdgesItems
+              d
+              sub
+              ho
+              (trueFacts ++ facts)
+              ((c', True) : boolFacts)
+              b
           pure (joinEdges rc rb)
-        relse <- maybe (pure []) (mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e
-        pure (joinManyEdges (ralts ++ relse))
+        relse <-
+          maybe
+            (pure (Just []))
+            (collectStrictSubtermEdgesItems d sub ho facts boolFacts)
+            e
+        pure (joinManyEdges (ralts ++ [relse]))
       KDefer _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KUsing _ a r -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges d sub ho facts boolFacts r
-      KSubDo _ b -> joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts) b
+      KSubDo _ b -> collectStrictSubtermEdgesItems d sub ho facts boolFacts b
       _ -> pure (Just [])
 
     -- Traversal for syntactic positions that pass a value to an unknown
@@ -49332,7 +49385,7 @@ collectFunEdges funMap src =
          in any (containsSccReference d ho esc . clrdType) definitions
               || any (containsSccReference depth' ho esc . clrdRhs) definitions
               || containsSccReference depth' ho esc body
-      CDo _ items -> any (containsSccReferenceK d ho esc) items
+      CDo _ items -> containsSccReferenceItems d ho esc items
       CSealE _ e -> containsSccReference d ho esc e
       CSigT _ e -> containsSccReference d ho esc e
       CUniverseLift _ _ _ e -> containsSccReference d ho esc e
@@ -49344,11 +49397,27 @@ collectFunEdges funMap src =
       CQuote _ slots -> any (containsSccReference d ho esc) slots
       _ -> False
 
+    containsSccReferenceItems :: Int -> Map Int PartialCall -> Set Int -> [KItem] -> Bool
+    containsSccReferenceItems _ _ _ [] = False
+    containsSccReferenceItems d ho esc (item : rest) =
+      containsSccReferenceK d ho esc item
+        || containsSccReferenceItems (advanceKItemDepth d item) ho esc rest
+
     containsSccReferenceK :: Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
     containsSccReferenceK d ho esc = \case
       KBind _ _ t _ -> containsSccReference d ho esc t
       KLet _ _ t -> containsSccReference d ho esc t
-      KLetQ _ t m -> containsSccReference d ho esc t || maybe False (containsSccReference d ho esc . snd) m
+      KLetQ _ t m ->
+        containsSccReference d ho esc t
+          || maybe
+            False
+            (\(rejectionPattern, rejection) ->
+               containsSccReference
+                 (d + patBindersC rejectionPattern)
+                 ho
+                 esc
+                 rejection)
+            m
       KExpr t -> containsSccReference d ho esc t
       KVarItem _ initT actT _ -> containsSccReference d ho esc initT || containsSccReference d ho esc actT
       KAssign lhs _ rhs actT _ ->
@@ -49357,15 +49426,23 @@ collectFunEdges funMap src =
           || containsSccReference d ho esc actT
       KReturn t -> containsSccReference d ho esc t
       KWhile _ c b e ->
-        containsSccReference d ho esc (kCondTerm c) || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
-      KFor _ _ s b e ->
-        containsSccReference d ho esc s || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
+        containsSccReference d ho esc (kCondTerm c)
+          || containsSccReferenceItems d ho esc b
+          || maybe False (containsSccReferenceItems d ho esc) e
+      KFor _ pattern' s b e ->
+        containsSccReference d ho esc s
+          || containsSccReferenceItems (d + patBindersC pattern') ho esc b
+          || maybe False (containsSccReferenceItems d ho esc) e
       KIf alts e ->
-        any (\(c, b) -> containsSccReference d ho esc c || any (containsSccReferenceK d ho esc) b) alts
-          || maybe False (any (containsSccReferenceK d ho esc)) e
+        any
+          (\(c, b) ->
+             containsSccReference d ho esc c
+               || containsSccReferenceItems d ho esc b)
+          alts
+          || maybe False (containsSccReferenceItems d ho esc) e
       KDefer _ t -> containsSccReference d ho esc t
       KUsing _ a r -> containsSccReference d ho esc a || containsSccReference d ho esc r
-      KSubDo _ b -> any (containsSccReferenceK d ho esc) b
+      KSubDo _ b -> containsSccReferenceItems d ho esc b
       _ -> False
 
     partialCallOf :: Int -> Map Int PartialCall -> Term -> Maybe PartialCall
@@ -49391,13 +49468,41 @@ collectFunEdges funMap src =
         Nothing -> False
         Just target -> length (pcArgs pc) >= length (tfParams target)
 
+    goKItems
+      :: Int
+      -> StructuralOrigins
+      -> Map Int PartialCall
+      -> Set Int
+      -> [AFact]
+      -> [(Term, Bool)]
+      -> [KItem]
+      -> CheckM (Maybe [CallEdge])
+    goKItems _ _ _ _ _ _ [] = pure (Just [])
+    goKItems d sub ho esc facts boolFacts (item : rest) = do
+      current <- goK d sub ho esc facts boolFacts item
+      let (d', sub') = advanceKItemStructuralContext d sub item
+      following <- goKItems d' sub' ho esc facts boolFacts rest
+      pure (joinEdges current following)
+
     goK :: Int -> StructuralOrigins -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
     goK d sub ho esc facts boolFacts = \case
       KBind _ _ t _ -> goArg d sub ho esc facts boolFacts t
       KLet _ _ t -> goArg d sub ho esc facts boolFacts t
       KLetQ _ t m -> do
         rt <- goArg d sub ho esc facts boolFacts t
-        rm <- maybe (pure (Just [])) (goArg d sub ho esc facts boolFacts . snd) m
+        rm <-
+          maybe
+            (pure (Just []))
+            (\(rejectionPattern, rejection) ->
+               goArg
+                 (d + patBindersC rejectionPattern)
+                 sub
+                 ho
+                 esc
+                 facts
+                 boolFacts
+                 rejection)
+            m
         pure (joinEdges rt rm)
       KExpr t -> goArg d sub ho esc facts boolFacts t
       KVarItem _ initT actT _ ->
@@ -49411,24 +49516,74 @@ collectFunEdges funMap src =
             ]
       KReturn t -> go d sub ho esc facts boolFacts t
       KWhile _ c b e ->
-        joinManyEdges <$>
-          sequence (go d sub ho esc facts boolFacts (kCondTerm c) : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
-      KFor _ _ s b e ->
-        joinManyEdges <$>
-          sequence (goArg d sub ho esc facts boolFacts s : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
+        join3Edges
+          <$> go d sub ho esc facts boolFacts (kCondTerm c)
+          <*> goKItems d sub ho esc facts boolFacts b
+          <*> maybe
+            (pure (Just []))
+            (goKItems d sub ho esc facts boolFacts)
+            e
+      KFor _ pattern' s b e ->
+        join3Edges
+          <$> goArg d sub ho esc facts boolFacts s
+          <*> goKItems
+            (d + patBindersC pattern')
+            sub
+            ho
+            esc
+            facts
+            boolFacts
+            b
+          <*> maybe
+            (pure (Just []))
+            (goKItems d sub ho esc facts boolFacts)
+            e
       KIf alts e -> do
         ralts <- forM alts $ \(c, b) -> do
           rc <- go d sub ho esc facts boolFacts c
           c' <- normalizeTermAt d c
           trueFacts <- assumeBoolM d True c'
-          rb <- joinManyEdges <$> mapM (goK d sub ho esc (trueFacts ++ facts) ((c', True) : boolFacts)) b
+          rb <-
+            goKItems
+              d
+              sub
+              ho
+              esc
+              (trueFacts ++ facts)
+              ((c', True) : boolFacts)
+              b
           pure (joinEdges rc rb)
-        relse <- maybe (pure []) (mapM (goK d sub ho esc facts boolFacts)) e
-        pure (joinManyEdges (ralts ++ relse))
+        relse <-
+          maybe
+            (pure (Just []))
+            (goKItems d sub ho esc facts boolFacts)
+            e
+        pure (joinManyEdges (ralts ++ [relse]))
       KDefer _ t -> goArg d sub ho esc facts boolFacts t
       KUsing _ a r -> joinEdges <$> goArg d sub ho esc facts boolFacts a <*> goArg d sub ho esc facts boolFacts r
-      KSubDo _ b -> joinManyEdges <$> mapM (goK d sub ho esc facts boolFacts) b
+      KSubDo _ b -> goKItems d sub ho esc facts boolFacts b
       _ -> pure (Just [])
+
+    advanceKItemDepth :: Int -> KItem -> Int
+    advanceKItemDepth d = \case
+      KBind _ pattern' _ _ -> d + patBindersC pattern'
+      KLet _ pattern' _ -> d + patBindersC pattern'
+      KLetQ pattern' _ _ -> d + patBindersC pattern'
+      KVarItem {} -> d + 1
+      KUsing pattern' _ _ -> d + patBindersC pattern'
+      _ -> d
+
+    advanceKItemStructuralContext
+      :: Int -> StructuralOrigins -> KItem -> (Int, StructuralOrigins)
+    advanceKItemStructuralContext d sub item =
+      ( advanceKItemDepth d item
+      , case item of
+          KLet _ pattern' value ->
+            bindPatternStructuralOrigins d sub value pattern'
+          KLetQ pattern' value _ ->
+            bindPatternStructuralOrigins d sub value pattern'
+          _ -> sub
+      )
 
     joinEdges :: Maybe [CallEdge] -> Maybe [CallEdge] -> Maybe [CallEdge]
     joinEdges (Just a) (Just b) = Just (a ++ b)

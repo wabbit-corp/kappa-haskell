@@ -1,0 +1,18 @@
+-- §15.3/§15.11: correcting sequential do-item binder depths must not turn an
+-- unchanged recursive argument into a structural subterm. The recursive call
+-- remains non-decreasing even though earlier monadic binds shift its Core
+-- de Bruijn indices.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
+module main
+
+build : Nat -> UIO (List Int)
+let build n decreases structural n =
+    match n
+    case Nat.Zero -> pure Nil
+    case Nat.Succ predecessor -> do
+        let first <- pure 1
+        let second <- pure 2
+        let rest <- build n
+        pure (first :: second :: rest)

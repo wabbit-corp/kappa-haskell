@@ -53,11 +53,10 @@ cabal run -v0 kappa -- build --manifest examples/packages/railyard -o /tmp/raily
 /tmp/railyard-tests   # -> RAILYARD TESTS: ALL PASS
 ```
 
-The build emits two `W_TERMINATION_UNVERIFIED` warnings, for `buildMain` and
-`spawnCarts` — the two helpers that count down a plain `Int`. The front end
-records rather than verifies their termination; the route functions that the
-dependent types are *about* (`runRoute`, `routeLen`, `buildRoute`) are proven
-total and warning-free. See `DESIGN.md` for why.
+`buildMain` and `spawnCarts` preserve their public `Int` APIs but delegate
+guarded non-negative inputs to structurally recursive `Nat` workers. The
+package therefore remains inside Kappa's total-by-default contract without
+an unchecked integer countdown.
 
 ## Layout
 
