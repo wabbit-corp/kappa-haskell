@@ -30,6 +30,7 @@ module Kappa.CoreText
   , kcoreRepresentationCertificateCount
   , kcoreArithmeticCertificateMutationCases
   , kcoreRepresentationCertificateMutationCases
+  , kcoreExactNaturalErasureOmissionMutation
   , kcoreTerminationCertificateMutationCases
   , kcoreHasValidSchemaCertificate
   , kcoreLevelCertificateDependencies
@@ -98,6 +99,7 @@ import Kappa.Builtins
   , prelGrapheme
   , prelInt
   , prelInteger
+  , prelIsProp
   , prelIsTraitWitness
   , prelList
   , prelLT
@@ -6181,15 +6183,65 @@ kTermMonadicResult context term = do
 -- A KCore codomain is a parametric kind exactly by the normalized grammar of
 -- §11.1.2.3B; quantity/access are independent and therefore checked here too.
 kParametricKind :: VerifyContext -> KTerm -> Bool
-kParametricKind context term = case unfoldTypeHead context term of
+kParametricKind context = kParametricKindUnder context Map.empty
+
+kParametricKindUnder :: VerifyContext -> LocalEnv -> KTerm -> Bool
+kParametricKindUnder context env term = case unfoldTypeHeadWithLocals context env term of
   KTType _ -> True
   KTPi binder codomain ->
     kbMode binder == Parametric
       && kbQuantity binder == KQ0
       && kbAccess binder == KValue
-      && kParametricKind context (kbType binder)
-      && kParametricKind context codomain
+      && kParametricKindUnder context env (kbType binder)
+      && kParametricKindUnder
+        context
+        (Map.insert (lrId (kbRef binder)) (LocalBinder binder) env)
+        codomain
   _ -> False
+
+-- | Independently replay the mandatory constructor-field erasure fragment
+-- used by representation certificates. The decision is based only on checked
+-- binder facts and semantic identities available in KCoreText.
+kRuntimeConstructorField :: VerifyContext -> LocalEnv -> KBinder -> Bool
+kRuntimeConstructorField context env binder =
+  (kbExplicitness binder == KExplicit || kbQuantity binder /= KQ0)
+    && not
+      ( kbQuantity binder == KQ0
+          || kParametricKindUnder context env (kbType binder)
+          || kRuntimeErasedProofType context env (kbType binder)
+      )
+
+kRuntimeErasedProofType :: VerifyContext -> LocalEnv -> KTerm -> Bool
+kRuntimeErasedProofType context = go Set.empty
+  where
+    isPropRef = stableRefForGlobal prelIsProp
+
+    go proofLocals env term =
+      case unfoldTypeHeadWithLocals context env term of
+        KTPi binder codomain ->
+          let proofLocals' =
+                case isPropHypothesis env (kbType binder) of
+                  Just local -> Set.insert local proofLocals
+                  Nothing -> proofLocals
+              env' =
+                Map.insert
+                  (lrId (kbRef binder))
+                  (LocalBinder binder)
+                  env
+           in go proofLocals' env' codomain
+        result ->
+          case collectKApplication result of
+            (KTGlobal ref _, _)
+              | ref == isPropRef -> True
+            (KTLocal ref _, [])
+              | lrId ref `Set.member` proofLocals -> True
+            _ -> False
+
+    isPropHypothesis env domain =
+      case collectKApplication (unfoldTypeHeadWithLocals context env domain) of
+        (KTGlobal ref _, [KArgument _ (KTLocal local _)])
+          | ref == isPropRef -> Just (lrId local)
+        _ -> Nothing
 
 -- | Independent §11.1.6/§14.2.1 classification for associated static-member
 -- types. Unlike 'kParametricKind', this descends through arbitrary checked Pi
@@ -10468,13 +10520,34 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
           Left "exact-natural representation auxiliary is not Nat"
         family <- nominalTargetFamily target
         let constructors = familyConstructorRefs family
-        unless (constructors == [zero, successor]) $
+        unless
+          ( length constructors == 2
+              && Set.fromList constructors == Set.fromList [zero, successor]
+          ) $
           Left "exact-natural constructors do not exactly match the represented family"
         recursive <- decodeFieldPath recursiveField
         erased <- decodeFieldPaths erasedFields
         unless (fst recursive == successor) $
           Left "exact-natural recursive field does not belong to the successor constructor"
-        mapM_ (verifyFieldPath family) (recursive : erased)
+        unless (erased == sort (nub erased)) $
+          Left "exact-natural erased fields are not a canonical unique collection"
+        zeroShape <- constructorRuntimeShape zero
+        successorShape <- constructorRuntimeShape successor
+        unless (null (retainedFields zero zeroShape)) $
+          Left "exact-natural zero constructor retains a runtime payload"
+        unless (retainedFields successor successorShape == [recursive]) $
+          Left "exact-natural successor does not retain exactly its recursive field"
+        (recursiveBinder, recursiveEnv) <-
+          runtimeField successorShape (snd recursive)
+        unless (sameKCoreTypeUnderIn assumptions recursiveEnv context (kbType recursiveBinder) target) $
+          Left "exact-natural successor field is not recursive at the represented type"
+        let expectedErased =
+              sort
+                ( erasedFieldsFor zero zeroShape
+                    ++ erasedFieldsFor successor successorShape
+                )
+        unless (erased == expectedErased) $
+          Left "exact-natural erasure view does not exactly match the constructor payloads"
     KVList
       [ KVText "refinement-v1"
       , constructorNode
@@ -10529,16 +10602,28 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
       levels <- case headTerm of
         KTGlobal _ targetLevels -> pure targetLevels
         _ -> Left "represented target is not a nominal family application"
-      unless (length schema == length levels) $
-        Left "represented target universe arity disagrees with its constructor"
+      family <- nominalTargetFamily represented
+      let familyUniverses = map fst (knfUniverses family)
+          familyArity = length familyUniverses
+      unless (length levels == familyArity) $
+        Left "represented target universe arity disagrees with its nominal family"
+      unless (null schema || length schema >= familyArity) $
+        Left "constructor universe schema omits part of its nominal family schema"
       unless (length parameters == length arguments) $
         Left "represented target saturation disagrees with its constructor"
       -- Constructor occurrences omit family parameters and recover them
       -- bidirectionally from their demanded result. Their constructor-side
       -- binders may therefore be implicit even when the represented family
       -- application spells the corresponding argument explicitly.
-      let universeSubstitution =
-            Map.fromList (zip (map urId schema) levels)
+      let familyUniverseSubstitution =
+            Map.fromList (zip (map urId familyUniverses) levels)
+          constructorUniverseSubstitution =
+            Map.fromList
+              (zip (map urId (take familyArity schema)) levels)
+          universeSubstitution =
+            Map.union
+              constructorUniverseSubstitution
+              familyUniverseSubstitution
           constructorType1 =
             substituteUniverseParameters universeSubstitution constructorType0
           constructorType =
@@ -10557,6 +10642,35 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
         Left "representation field path belongs to another nominal family"
       _ <- constructorPayloadType constructor sourceIndex
       pure ()
+
+    constructorRuntimeShape constructor = do
+      payload <- instantiatedConstructorPayload target constructor
+      pure
+        (reverse (snd (foldl' classify (env, []) (zip [0 :: Int ..] payload))))
+      where
+        classify (environment, fields) (sourceIndex, binder) =
+          let retained = kRuntimeConstructorField context environment binder
+              field = (sourceIndex, binder, environment, retained)
+              environment' =
+                Map.insert
+                  (lrId (kbRef binder))
+                  (LocalBinder binder)
+                  environment
+           in (environment', field : fields)
+
+    retainedFields constructor =
+      map (\(sourceIndex, _, _, _) -> (constructor, sourceIndex))
+        . filter (\(_, _, _, retained) -> retained)
+
+    erasedFieldsFor constructor =
+      map (\(sourceIndex, _, _, _) -> (constructor, sourceIndex))
+        . filter (\(_, _, _, retained) -> not retained)
+
+    runtimeField fields sourceIndex =
+      maybe
+        (Left "exact-natural recursive field is outside the constructor payload")
+        (\(_, binder, environment, _) -> pure (binder, environment))
+        (find (\(index, _, _, _) -> index == sourceIndex) fields)
 
     decodeFieldPath = \case
       KVList [constructorNode, KVInteger sourceIndex]
@@ -14743,6 +14857,79 @@ kcoreRepresentationCertificateMutationCases file =
       KVList [] ->
         Just (KVList [KVText "unknown-profile-restriction"])
       _ -> Nothing
+
+-- | Remove one certified exact-natural erased field coherently from every
+-- summary and embedded structural program, then recompute the certificate
+-- identity. This mutation exercises independent shape replay: consistency
+-- checks between duplicated certificate fields cannot detect the omission.
+kcoreExactNaturalErasureOmissionMutation
+  :: KCoreFile
+  -> Either Text Text
+kcoreExactNaturalErasureOmissionMutation file = do
+  omitted <-
+    maybe
+      (Left "exact-natural fixture has no erased field to omit")
+      pure
+      (firstExactNaturalErasedField file)
+  let programsMutated = mapKCoreFileTerms (rewriteTerm omitted) file
+  mutated <-
+    maybe
+      (Left "exact-natural fixture cannot omit its erased field")
+      pure
+      (mutateFirstRepresentationCertificate (rewriteCertificate omitted) programsMutated)
+  pure (printCanonicalKCoreText mutated)
+  where
+    rewriteCertificate omitted certificate
+      | krcKind certificate /= KRepresentationExactNatural = Nothing
+      | otherwise = do
+          KVList erased <-
+            lookup "erasureView" (krcPayload certificate)
+          guard (omitted `elem` erased)
+          let rewriteField (name, node)
+                | name == "erasureView" =
+                    (name, KVList (filter (/= omitted) erased))
+                | otherwise =
+                    (name, rewriteValue omitted node)
+              payload = map rewriteField (krcPayload certificate)
+          pure
+            (reidentifyRepresentationCertificate certificate {krcPayload = payload})
+
+    rewriteTerm omitted = \case
+      KTGeneric tag fields ->
+        KTGeneric tag
+          [ (name, rewriteValue omitted node)
+          | (name, node) <- fields
+          ]
+      term -> term
+
+    rewriteValue omitted = \case
+      KVList
+        [ tag@(KVText "exact-natural-v1")
+        , zero
+        , successor
+        , recursive
+        , KVList erased
+        ] ->
+          KVList
+            [ tag
+            , zero
+            , successor
+            , recursive
+            , KVList (filter (/= omitted) erased)
+            ]
+      KVList nodes -> KVList (map (rewriteValue omitted) nodes)
+      node -> node
+
+firstExactNaturalErasedField :: KCoreFile -> Maybe KValueNode
+firstExactNaturalErasedField (KCoreFile _ modules) =
+  listToMaybe
+    [ field
+    | KModule {kmDecls = declarations} <- modules
+    , KDRepresentationCertificate certificate <- declarations
+    , krcKind certificate == KRepresentationExactNatural
+    , Just (KVList erased) <- [lookup "erasureView" (krcPayload certificate)]
+    , field <- erased
+    ]
 
 traverseNamedValue
   :: Text

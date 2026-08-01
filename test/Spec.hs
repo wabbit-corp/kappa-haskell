@@ -156,6 +156,7 @@ import Kappa.CoreText
   , parseAndVerifyKCoreInterfaceWithInterfaces
   , parseKCoreText
   , printCanonicalKCoreText
+  , kcoreExactNaturalErasureOmissionMutation
   , kcoreRepresentationCertificateCount
   , renderKCoreModule
   , semanticHashKCoreText
@@ -309,6 +310,7 @@ main = do
   arithmeticReplayOk <- arithmeticReplayDomain
   constructorPatternAlignmentOk <- constructorPatternAlignmentDomain
   representationCertificateOk <- representationCertificateIdentityDomain
+  exactNaturalShapeReplayOk <- exactNaturalShapeReplayDomain
   inhabitanceOk <- inhabitanceIntervalDomain
   universeLevelOk <- universeLevelDomain
   universeLiftOk <- universeLiftEvidenceDomain
@@ -355,6 +357,7 @@ main = do
         , ("arithmeticReplayDomain", arithmeticReplayOk)
         , ("constructorPatternAlignmentDomain", constructorPatternAlignmentOk)
         , ("representationCertificateIdentityDomain", representationCertificateOk)
+        , ("exactNaturalShapeReplayDomain", exactNaturalShapeReplayOk)
         , ("inhabitanceIntervalDomain", inhabitanceOk)
         , ("universeLevelDomain", universeLevelOk)
         , ("universeLiftEvidenceDomain", universeLiftOk)
@@ -3322,6 +3325,104 @@ representationCertificateIdentityDomain = do
   unless (null failures) $ do
     putStrLn "representationCertificateIdentityDomain FAILED:"
     mapM_ (putStrLn . ("  " ++)) failures
+  pure (null failures)
+
+-- | NFR-6/NFR-7 trust-boundary regression. The exact-natural certificate is
+-- rendered for a user-defined unary natural whose successor is declared before
+-- zero and carries an erased kind field before its recursive payload. Removing
+-- that erased path coherently from every serialized summary must still be
+-- rejected by independent constructor-shape replay.
+exactNaturalShapeReplayDomain :: IO Bool
+exactNaturalShapeReplayDomain = do
+  let source =
+        T.unlines
+          [ "module exact_natural_shape"
+          , "data UNat : Type ="
+          , "    S (@0 marker : Type) (pred : UNat)"
+          , "    Z"
+          , "derive ExactNaturalRepresentation UNat"
+          ]
+      cu = compileSourceWithPrelude "exact-natural-shape.kp" source
+      state = cuState cu
+      backendIr = lowerKBackendIR state
+      certificates = kbackendRepresentationCertificates backendIr
+      dataInterfaces =
+        Map.map
+          (\info -> KCoreDataInfo (diCtors info) (diParamCount info))
+          (csDatas state)
+      constructorInterfaces =
+        Map.map
+          (\info ->
+             KCoreConstructorInfo
+               (ciData info)
+               (ciUniverses info)
+               (ciType info)
+               (ciSourceFields info))
+          (csCtors state)
+      importedGlobals =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          (csGlobals state)
+      importedDataInterfaces =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          dataInterfaces
+      importedConstructorInterfaces =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner /= cuModule cu)
+          constructorInterfaces
+      importedEval =
+        EvalCtx
+          (Globals importedGlobals)
+          (csMetas state)
+          False
+          mempty
+      parseArtifact =
+        parseAndVerifyKCoreTextWithEnvironment
+          importedEval
+          importedGlobals
+          importedDataInterfaces
+          importedConstructorInterfaces
+      artifact = do
+        rendered <-
+          renderKCoreModule
+            (cuModule cu)
+            (EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty)
+            (csGlobals state)
+            (csCoreBodies state)
+            dataInterfaces
+            constructorInterfaces
+            certificates
+        parseArtifact rendered
+      mutantResult = case artifact of
+        Left err -> Left ("original artifact rejected: " <> kcteMessage err)
+        Right parsed -> do
+          mutant <- kcoreExactNaturalErasureOmissionMutation parsed
+          case parseArtifact mutant of
+            Left err
+              | kcteCode err == "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID" ->
+                  Right ()
+              | otherwise ->
+                  Left
+                    ( "mutant rejected with "
+                        <> kcteCode err
+                        <> " instead of E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+                    )
+            Right _ ->
+              Left "coherent erased-field omission was accepted"
+      checks =
+        [ ("source fixture checks", not (any isError (cuDiags cu)))
+        , ("source fixture derives one exact-natural certificate", length certificates == 1)
+        , ("original exact-natural artifact verifies", either (const False) (const True) artifact)
+        , ("coherent erased-field omission rejects", mutantResult == Right ())
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "exactNaturalShapeReplayDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    case mutantResult of
+      Left detail -> putStrLn ("  detail: " <> T.unpack detail)
+      Right () -> pure ()
   pure (null failures)
 
 -- | Perceus S2.3c/S3.1 regression: primitive call conventions are not the source
