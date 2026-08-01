@@ -1209,6 +1209,16 @@ universeLevelDomain = do
                 [1 :: Int .. 1000]
          in proveLevelLeq crowded (LMeta 1000) (LMeta 1001)
               == IndeterminateResourceLimit
+      maxTranslationBudgetFailsBeforeSatExpansion =
+        let arms = map LVar [0 .. 2]
+            joined = foldl1 levelMax arms
+            distributed =
+              foldl1 levelMax (map (levelAdd (LVar 20)) arms)
+         in proveLevelLeq
+              emptyAssumptions
+              (levelAdd (LVar 20) joined)
+              distributed
+              == IndeterminateResourceLimit
       incrementalAssignmentGraphFailsBeforeExpansion =
         let extendOne (Right (assignments, dependents, budget, _)) meta =
               extendLevelAssignmentGraphWithBudget
@@ -1375,6 +1385,7 @@ universeLevelDomain = do
         , ("selected-meta assignment DAGs fail closed before exponential materialization", explosiveAssignmentGraphFailsClosed)
         , ("contradictory assumptions dominate trivially true queries", contradictoryAssumptionsDominateTrivialQueries)
         , ("resource limits dominate blocked metavariables", resourceLimitDominatesBlockedMetavariables)
+        , ("max-heavy Presburger translation fails closed before SAT expansion", maxTranslationBudgetFailsBeforeSatExpansion)
         , ("incremental assignment graphs fail before exponential materialization", incrementalAssignmentGraphFailsBeforeExpansion)
         , ("principal inference classifies opaque meta contexts outside the portable fragment", outsidePortableClass)
         , ("large finite levels remain exact", proveLevelLeq emptyAssumptions hugeFinite LOmega == Proved && hugeFinite /= LZero)

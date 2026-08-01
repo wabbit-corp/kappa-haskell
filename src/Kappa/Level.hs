@@ -415,6 +415,19 @@ emptyLevelAssignmentGraphBudget = LevelAssignmentGraphBudget Map.empty 0
 solverNodeBudget :: Int
 solverNodeBudget = 100000
 
+-- A source-level 'LMax' becomes guarded Presburger expressions for both the
+-- omega coefficient and finite tail. 'Data.Integer.SAT' expands every guard
+-- into a binary 'Choice', and nested guards are revisited at each occurrence.
+-- Counting only source 'Level' nodes therefore does not bound the translated
+-- formula or the solver's branch tree. Keep the exact solver inside a second,
+-- deliberately conservative portable boundary measured on the expanded
+-- translation shape.
+solverTranslationNodeBudget :: Int
+solverTranslationNodeBudget = solverNodeBudget
+
+solverTranslationChoiceBudget :: Int
+solverTranslationChoiceBudget = 32
+
 levelForestWithinBudget :: [Level] -> Bool
 levelForestWithinBudget levels =
   snd (foldl countOne (0, True) levels)
@@ -1760,6 +1773,131 @@ data SymbolicLevel = SymbolicLevel
   , soTail :: !SAT.Expr
   }
 
+data TranslationCost = TranslationCost
+  { tcNodes :: !Int
+  , tcChoices :: !Int
+  }
+
+data SymbolicTranslationCost =
+  SymbolicTranslationCost !TranslationCost !TranslationCost
+
+translationCostWithinBudget
+  :: [(Level, Level)]
+  -> Maybe (Level, Level)
+  -> Int
+  -> Bool
+translationCostWithinBudget edges refuted rigidCount =
+  within
+    ( foldl
+        addCost
+        (TranslationCost (1 + 4 * rigidCount) 0)
+        ( map (uncurry levelLeTranslationCost) edges
+            ++ maybe [] (\(left, right) -> [levelLeTranslationCost left right]) refuted
+        )
+    )
+  where
+    within cost =
+      tcNodes cost <= solverTranslationNodeBudget
+        && tcChoices cost <= solverTranslationChoiceBudget
+
+levelLeTranslationCost :: Level -> Level -> TranslationCost
+levelLeTranslationCost left right =
+  propOrCost
+    (relationCost leftCoefficient rightCoefficient)
+    ( propAndCost
+        (relationCost leftCoefficient rightCoefficient)
+        (relationCost leftTail rightTail)
+    )
+  where
+    SymbolicTranslationCost leftCoefficient leftTail =
+      symbolicTranslationCost left
+    SymbolicTranslationCost rightCoefficient rightTail =
+      symbolicTranslationCost right
+
+symbolicTranslationCost :: Level -> SymbolicTranslationCost
+symbolicTranslationCost = go . normalizeLevel
+  where
+    go = \case
+      LSucc child ->
+        let SymbolicTranslationCost coefficient tailCost = go child
+         in SymbolicTranslationCost coefficient (exprUnaryCost tailCost)
+      LAdd left right ->
+        let SymbolicTranslationCost leftCoefficient leftTail = go left
+            SymbolicTranslationCost rightCoefficient rightTail = go right
+         in SymbolicTranslationCost
+              (exprBinaryCost leftCoefficient rightCoefficient)
+              (exprBinaryCost leftTail rightTail)
+      LMax left right ->
+        let SymbolicTranslationCost leftCoefficient leftTail = go left
+            SymbolicTranslationCost rightCoefficient rightTail = go right
+            condition =
+              propOrCost
+                (relationCost leftCoefficient rightCoefficient)
+                ( propAndCost
+                    (relationCost leftCoefficient rightCoefficient)
+                    (relationCost leftTail rightTail)
+                )
+         in SymbolicTranslationCost
+              (exprIfCost condition rightCoefficient leftCoefficient)
+              (exprIfCost condition rightTail leftTail)
+      _ -> SymbolicTranslationCost unitCost unitCost
+
+unitCost :: TranslationCost
+unitCost = TranslationCost 1 0
+
+addCost :: TranslationCost -> TranslationCost -> TranslationCost
+addCost left right =
+  TranslationCost
+    (boundedAdd solverTranslationNodeBudget (tcNodes left) (tcNodes right))
+    (boundedAdd solverTranslationChoiceBudget (tcChoices left) (tcChoices right))
+
+addNode :: TranslationCost -> TranslationCost
+addNode = addCost unitCost
+
+exprUnaryCost :: TranslationCost -> TranslationCost
+exprUnaryCost = addNode
+
+exprBinaryCost :: TranslationCost -> TranslationCost -> TranslationCost
+exprBinaryCost left right = addNode (addCost left right)
+
+relationCost :: TranslationCost -> TranslationCost -> TranslationCost
+relationCost = exprBinaryCost
+
+propAndCost :: TranslationCost -> TranslationCost -> TranslationCost
+propAndCost = exprBinaryCost
+
+propOrCost :: TranslationCost -> TranslationCost -> TranslationCost
+propOrCost left right =
+  let combined = exprBinaryCost left right
+   in combined
+        { tcChoices =
+            boundedAdd
+              solverTranslationChoiceBudget
+              1
+              (tcChoices combined)
+        }
+
+-- 'SAT.expr (If p a b)' introduces a fresh variable and asserts
+-- @(p && x == a) || (!p && x == b)@. The guard is traversed twice, so
+-- nested choices in it must be charged twice as well.
+exprIfCost
+  :: TranslationCost
+  -> TranslationCost
+  -> TranslationCost
+  -> TranslationCost
+exprIfCost condition yes no =
+  addNode
+    ( propOrCost
+        (propAndCost condition (relationCost unitCost yes))
+        (propAndCost (addNode condition) (relationCost unitCost no))
+    )
+
+boundedAdd :: Int -> Int -> Int -> Int
+boundedAdd limit left right
+  | left > limit || right > limit = limit + 1
+  | left > limit - right = limit + 1
+  | otherwise = left + right
+
 -- | Is there a non-negative level valuation satisfying all assumptions and,
 -- when supplied, refuting the queried inequality? 'Data.Integer.SAT' is the
 -- maintained pure Omega-style QF integer procedure vendored under its BSD
@@ -1773,6 +1911,7 @@ presburgerSatisfiability :: Assumptions -> Maybe (Level, Level) -> Satisfiabilit
 presburgerSatisfiability (Assumptions edges0) refuted
   | not (levelForestWithinBudget inputLevels) = SatisfiabilityResourceLimit
   | zeroValuationSatisfies edges0 refuted = Satisfiable
+  | not translationWithinBudget = SatisfiabilityResourceLimit
   | otherwise =
       case SAT.checkSat (SAT.assert formula SAT.noProps) of
         Nothing -> UnsatisfiableFormula
@@ -1803,6 +1942,8 @@ presburgerSatisfiability (Assumptions edges0) refuted
         ++ maybe [] (\(a, b) -> [a, b]) refuted'
     rigidIds = sort . nub $ concatMap rigidLevelIds allLevels
     symbols = Map.fromList (zip rigidIds [0 :: Int ..])
+    translationWithinBudget =
+      translationCostWithinBudget edges refuted' (length rigidIds)
     nonNegative =
       foldr satAnd SAT.PTrue
         [ SAT.K 0 SAT.:<= SAT.Var (SAT.toName index)
