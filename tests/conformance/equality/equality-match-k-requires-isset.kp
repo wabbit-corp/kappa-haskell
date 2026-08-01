@@ -1,0 +1,50 @@
+-- Spec 11.4.1: eliminating a self-equality proof into a motive that still
+-- mentions that proof requires K/UIP. The rule follows the checked shape of
+-- the equality family, so a user-defined reflexive relation is governed by
+-- the same h-level requirement as the standard equality type.
+module main
+
+constantStandard :
+    forall (@0 x : Int -> Int).
+    (proof : x = x) ->
+    Int
+
+let constantStandard proof =
+    match proof
+    case refl -> 1
+
+badStandard :
+    forall (@0 x : Int -> Int).
+    (proof : x = x) ->
+    proof = refl
+
+let badStandard proof =
+    match proof --!! E_EQUALITY_MATCH_REQUIRES_ISSET
+    case refl -> refl
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+constantUser :
+    forall (@0 x : Int -> Int).
+    (proof : Equal x x) ->
+    Int
+
+let constantUser proof =
+    match proof
+    case Refl -> 1
+
+badUser :
+    forall (@0 x : Int -> Int).
+    (proof : Equal x x) ->
+    proof = Refl
+
+let badUser proof =
+    match proof --!! E_EQUALITY_MATCH_REQUIRES_ISSET
+    case Refl -> refl
+
+--! mode check

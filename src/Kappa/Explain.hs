@@ -419,6 +419,8 @@ registry =
       "A parametric type witness is used where an ordinary inspectable type-code value is required (§11.1.2.3A)."
   , ent "E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE" (Just "kappa.equality.transport-not-lowerable")
       "A runtime-relevant equality transport has no verified computational lowering rule (§11.4.1)."
+  , ent "E_EQUALITY_MATCH_REQUIRES_ISSET" (Just "kappa.equality.match-requires-hlevel")
+      "A proof-dependent match on a reflexive equality fiber would require K, UIP, or proof irrelevance without IsProp evidence for the fiber or IsSet evidence for its endpoint carrier (§11.4.1)."
   , ent "E_KCORE_TEXT_INVALID" (Just "kappa.kcore.text-invalid")
       "A KCoreText artifact is malformed or fails ordinary KCore checkpoint verification."
   , ent "E_KCORE_TEXT_UNSUPPORTED_VERSION" (Just "kappa.kcore.unsupported-version")

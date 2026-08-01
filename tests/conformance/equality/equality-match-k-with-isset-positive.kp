@@ -1,0 +1,51 @@
+-- Spec 11.4.1: IsSet evidence for the endpoint carrier makes each equality
+-- fiber a proposition, so proof-dependent elimination on a reflexive fiber is
+-- valid. This applies equally to the standard and user-defined equality
+-- families; constructor spelling is not semantic authority.
+module main
+
+standardK :
+    (proof : True = True) ->
+    proof = refl.{0}
+
+let standardK proof =
+    match proof
+    case refl -> refl.{0}
+
+transportStandard :
+    forall (@0 x : Bool) (@0 y : Bool).
+    (proof : x = y) ->
+    x = y
+
+let transportStandard proof =
+    match proof
+    case refl -> refl
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+userK :
+    (proof : Equal True True) ->
+    proof = Refl
+
+let userK proof =
+    match proof
+    case Refl -> refl
+
+userKWithDirectProp :
+    forall
+        (@0 x : Int -> Int)
+        (@_ : IsProp (Equal x x)).
+    (proof : Equal x x) ->
+    proof = Refl
+
+let userKWithDirectProp proof =
+    match proof
+    case Refl -> refl
+
+--! mode check
+--! assertNoErrors

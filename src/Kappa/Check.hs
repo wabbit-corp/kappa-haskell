@@ -4999,9 +4999,19 @@ normalizeProvisionalBodyReferences body = do
   let targets = Set.toList (globalsOfTerm body)
       globalProjections =
         Map.unions [provisionalUniverseProjections st target | target <- targets]
+      constructorProjections =
+        Map.unions
+          [ provisionalConstructorUniverseProjections st target
+          | target <- targets
+          ]
   pure
     ( rewriteProvisionalUniverseReferences
-        (UniverseReferenceProjections globalProjections Map.empty Map.empty Map.empty)
+        ( UniverseReferenceProjections
+            globalProjections
+            constructorProjections
+            Map.empty
+            Map.empty
+        )
         body
     )
 
@@ -5035,6 +5045,40 @@ provisionalUniverseProjections st global = fromMaybe Map.empty $ do
     uniqueUniverseReferenceProjections
       [ ( (global, length sourceMetas)
         , deriveUniverseReferenceProjectionToLevels assignments sourceMetas retainedLevels
+        )
+      | sourceMetas <- sourceSpines
+      ]
+
+provisionalConstructorUniverseProjections
+  :: CheckState
+  -> GName
+  -> Map (GName, Int) UniverseReferenceProjection
+provisionalConstructorUniverseProjections st constructor = fromMaybe Map.empty $ do
+  info <- Map.lookup constructor (csCtors st)
+  guard (not (dutExplicit (ciUniverses info)))
+  let assignments =
+        Map.union
+          ( Map.findWithDefault
+              Map.empty
+              constructor
+              (csFinalizedGlobalUniverseMetaMaps st)
+          )
+          (csLevelAssignments st)
+      fallbackSource = nub (levelMetasOfTerm (ciType info))
+      sourceSpines =
+        Map.findWithDefault
+          [fallbackSource]
+          constructor
+          (csProvisionalConstructorUniverseMetas st)
+      retainedLevels =
+        map LParam [0 .. dutParameterCount (ciUniverses info) - 1]
+  pure $
+    uniqueUniverseReferenceProjections
+      [ ( (constructor, length sourceMetas)
+        , deriveUniverseReferenceProjectionToLevels
+            assignments
+            sourceMetas
+            retainedLevels
         )
       | sourceMetas <- sourceSpines
       ]
@@ -12127,11 +12171,23 @@ isPropClosureFromTerm ctx sp sourceGoal goal = do
 -- 'Nothing' when no evidence is in reach, so the caller can honestly fail the
 -- 'IsProp (x = y)' obligation rather than fabricate set-ness (Spec §14.4).
 isSetEvidence :: Ctx -> Span -> Value -> CheckM (Maybe Term)
-isSetEvidence cx sp aV = do
-  unaryTraitGoalForCarrier cx prelIsSet aV >>= \case
+isSetEvidence cx sp = hLevelTraitEvidence cx sp prelIsSet
+
+-- | Probe one unary h-level trait through the ordinary evidence ladder.
+-- Keeping the ladder shared prevents equality-match authorization and the
+-- IsProp closure solver from disagreeing about which local, supertrait, or
+-- registered instance evidence is in scope.
+hLevelTraitEvidence
+  :: Ctx
+  -> Span
+  -> GName
+  -> Value
+  -> CheckM (Maybe Term)
+hLevelTraitEvidence cx sp trait carrier = do
+  unaryTraitGoalForCarrier cx trait carrier >>= \case
     Nothing -> pure Nothing
     Just goalV -> do
-      -- An @a@ still carrying unsolved metavariables is underdetermined;
+      -- A carrier still carrying unsolved metavariables is underdetermined;
       -- declining here keeps instance selection from committing on a flexible
       -- head.
       flex <- goalHasFlex goalV
@@ -31275,22 +31331,16 @@ checkMatchPlain ctx scrut cases sp resT = do
                 (EVar n, CPCtor g _ _) -> refineCtx [(nameText n, [g])] ctx'
                 _ -> ctx'
           -- §7.4.1 dependent-match value refinement: in this arm the
-          -- scrutinee equals its constructor pattern, so substitute that
-          -- value for the scrutinee rigid via 'FactIs'. A nullary
-          -- constructor refines to 'VCtor g []'. A NON-nullary constructor
-          -- whose fields are all plain binders (no GADT skolems, no nested
-          -- patterns, no wildcards) refines to 'VCtor g [field rigids]':
-          -- the fields were bound by 'elabPattern' at consecutive levels
-          -- from 'ctxLen ctx' (implicit type args are not stored in a
-          -- 'VCtor', so only the explicit field rigids appear). This lets a
-          -- dependent return type mentioning the scrutinee (e.g. an
-          -- inductive proof's '(=) (f xs) xs') reduce in the arm. The
-          -- reconstruction is conservative: anything outside this shape
-          -- records no positive fact (only the 'FactNot' lacks-fact), which
-          -- is always sound — it just forgoes the refinement.
+          -- scrutinee equals its constructor pattern, so substitute the
+          -- complete typed constructor value for the scrutinee rigid via
+          -- 'FactIs'. Nullary constructors still carry declaration universes
+          -- and hidden erased arguments; rebuilding them through the
+          -- payload-only 'VCtor' compatibility view would discard those facts.
+          -- The reconstruction is conservative: anything outside a plain
+          -- binder shape records no positive fact (only the 'FactNot'
+          -- lacks-fact), which is always sound — it just forgoes refinement.
           fact <- case patC of
-            CPCtor g _ [] -> pure (Just (FactIs (VCtor g [])))
-            CPCtor _ _ (_ : _) -> do
+            CPCtor _ _ _ -> do
               complete <- constructorPatternFact ctx sTy1 patC
               pure $ case complete of
                 Just value -> Just (FactIs value)
@@ -31341,6 +31391,15 @@ checkMatchPlain ctx scrut cases sp resT = do
   nErrsBefore <- gets (length . filter isError . csDiags)
   (alts, checkedCases, _, _) <- foldM goCase ([], [], [], []) cases
   nErrsAfter <- gets (length . filter isError . csDiags)
+  when (nErrsAfter == nErrsBefore) $
+    checkEqualityMatchHLevel
+      ctx
+      sp
+      sTm1
+      sTy1
+      sTyTm
+      resTyTm
+      checkedCases
   -- §16.4.1: a flow-refined variable scrutinee (e.g. after `if e is C`)
   -- only needs the refined constructor subset covered for exhaustiveness.
   let scrutRefined = case scrut of
@@ -31365,6 +31424,183 @@ checkMatchPlain ctx scrut cases sp resT = do
           <> prettyCallStack callStack
       )
   pure (CMatch sTm1 (Just sTyTm') (Just resTyTm') alts)
+
+-- | Enforce §11.4.1 without privileging the prelude equality spelling. A
+-- reflexive relation is recognized from its checked declaration identity and
+-- constructor telescope: one fieldless constructor returns the same
+-- constructor-bound endpoint in two family positions, and that endpoint's
+-- binder domain is another family argument. Eliminating a self-fiber into a
+-- motive that contains the matched proof would then require K/UIP. Ordinary
+-- path induction (distinct endpoints or a proof-independent motive) remains
+-- available, while direct IsProp evidence for the fiber or IsSet evidence for
+-- the endpoint carrier authorizes the stronger elimination.
+checkEqualityMatchHLevel
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Term
+  -> Term
+  -> [(CorePat, Maybe Term)]
+  -> CheckM ()
+checkEqualityMatchHLevel
+  ctx
+  site
+  scrutinee
+  scrutineeType
+  scrutineeTypeTerm
+  motive
+  checkedCases = do
+    classification <- reflexiveSelfFiber ctx scrutineeType
+    case classification of
+      Nothing -> pure ()
+      Just (constructor, carrier)
+        | not (any (matchesConstructor constructor . fst) checkedCases) ->
+            pure ()
+        | not (termContainsAtScope scrutinee motive) ->
+            pure ()
+        | otherwise -> do
+            propEvidence <-
+              hLevelTraitEvidence ctx site prelIsProp scrutineeType
+            setEvidence <- isSetEvidence ctx site carrier
+            when (isNothing propEvidence && isNothing setEvidence) $ do
+              carrierTerm <- quoteIn ctx carrier
+              let relevance =
+                    case stripIdentityWrappers scrutinee of
+                      CVar index ->
+                        case drop index (ctxEntries ctx) of
+                          entry : _
+                            | ceCoreQ entry == Q0 -> "erased"
+                          _ -> "runtime-relevant"
+                      _ -> "runtime-relevant"
+                  payload =
+                    withPayloadField "matchedEqualityProof" (renderTerm scrutinee)
+                      $ withPayloadField "equalityType" (renderTerm scrutineeTypeTerm)
+                      $ withPayloadField "endpointType" (renderTerm carrierTerm)
+                      $ withPayloadField "inferredMotive" (renderTerm motive)
+                      $ withPayloadField "requiredPrinciple" "K/UIP/proof-irrelevance"
+                      $ withPayloadField
+                          "missingEvidence"
+                          "IsProp (matched equality type) or IsSet (endpoint type)"
+                      $ withPayloadField
+                          "hLevelEvidenceConsidered"
+                          "direct/local/supertrait/registered IsProp and IsSet evidence"
+                      $ withPayloadField "sourceOrigin" (T.pack (show site))
+                      $ withPayloadField "scrutineeRelevance" relevance
+                      $ payloadKind "equality-match-requires-hlevel"
+              report $
+                withPayload payload $
+                  diag
+                    SevError
+                    StageElaborate
+                    "E_EQUALITY_MATCH_REQUIRES_ISSET"
+                    (Just "kappa.equality.match-requires-hlevel")
+                    site
+                    "proof-dependent elimination of this reflexive equality fiber requires IsProp evidence for the fiber or IsSet evidence for its endpoint carrier (§11.4.1)"
+  where
+    matchesConstructor expected = \case
+      CPCtorM _ _ _ actual _ _ -> actual == expected
+      _ -> False
+
+-- | Recover the endpoint carrier of a structurally reflexive self-fiber.
+-- Every decision is made from checked identities and typed telescopes. A
+-- malformed, ambiguous, or more general singleton family is left
+-- unclassified rather than being granted equality elimination rules.
+reflexiveSelfFiber :: Ctx -> Value -> CheckM (Maybe (GName, Value))
+reflexiveSelfFiber ctx scrutineeType = do
+  forced <- forceM scrutineeType
+  case forced of
+    VGlobI family _ arguments -> do
+      dataInfo <- gets (Map.lookup family . csDatas)
+      constructors <- gets csCtors
+      case dataInfo >>= singleConstructor of
+        Nothing -> pure Nothing
+        Just constructor ->
+          case Map.lookup constructor constructors >>= reflexiveEndpointPositions family of
+            Just (carrierPosition, leftPosition, rightPosition)
+              | maximum [carrierPosition, leftPosition, rightPosition]
+                  < length arguments -> do
+                  let values = map snd arguments
+                      carrier = values !! carrierPosition
+                      leftEndpoint = values !! leftPosition
+                      rightEndpoint = values !! rightPosition
+                  evaluation <- ec_
+                  pure $
+                    if convertible
+                         evaluation
+                         (ctxLen ctx)
+                         (force evaluation leftEndpoint)
+                         (force evaluation rightEndpoint)
+                      then Just (constructor, carrier)
+                      else Nothing
+            _ -> pure Nothing
+    _ -> pure Nothing
+  where
+    singleConstructor DataInfo {diCtors = [constructor]} = Just constructor
+    singleConstructor _ = Nothing
+
+reflexiveEndpointPositions
+  :: GName
+  -> CtorInfo
+  -> Maybe (Int, Int, Int)
+reflexiveEndpointPositions family constructor = do
+  guard (ciData constructor == family)
+  guard (null (ciSourceFields constructor))
+  let (binders, result) = constructorTelescope (ciType constructor)
+      (headTerm, resultArguments) =
+        spineOfTerm (stripIdentityWrappers result)
+      arguments =
+        [stripIdentityWrappers argument | (_, argument) <- resultArguments]
+  guard (termHeadGlob (stripIdentityWrappers headTerm) == Just family)
+  (leftPosition, rightPosition, endpointVariable) <-
+    case
+        [ (left, right, variable)
+        | (left, leftTerm) <- zip [0 :: Int ..] arguments
+        , (right, rightTerm) <- zip [0 :: Int ..] arguments
+        , left < right
+        , leftTerm == rightTerm
+        , CVar variable <- [leftTerm]
+        ]
+      of
+        [positions] -> Just positions
+        _ -> Nothing
+  let binderCount = length binders
+      binderPosition = binderCount - endpointVariable - 1
+  guard (binderPosition >= 0 && binderPosition < binderCount)
+  let endpointDomain =
+        shiftTerm
+          (binderCount - binderPosition)
+          0
+          (binders !! binderPosition)
+      carrierPositions =
+        [ position
+        | (position, argument) <- zip [0 :: Int ..] arguments
+        , argument == stripIdentityWrappers endpointDomain
+        ]
+  carrierPosition <- case carrierPositions of
+    [position] -> Just position
+    _ -> Nothing
+  pure (carrierPosition, leftPosition, rightPosition)
+  where
+    constructorTelescope = go []
+      where
+        go domains (CPiEvidenceM _ _ _ _ _ _ _ _ domain codomain) =
+          go (domains ++ [domain]) codomain
+        go domains result = (domains, result)
+
+-- | Does a term from the surrounding scope occur in another term at that
+-- scope? The needle is shifted under each traversed binder before comparison,
+-- so dependent motives remain detectable beneath Pi/lambda/match nodes.
+termContainsAtScope :: Term -> Term -> Bool
+termContainsAtScope needle =
+  getAny . foldTermWithDepth occurrence 0
+  where
+    normalizedNeedle = stripIdentityWrappers needle
+    occurrence depth candidate =
+      Any
+        ( stripIdentityWrappers candidate
+            == shiftTerm depth 0 normalizedNeedle
+        )
 
 -- | Reconstruct the complete typed constructor occurrence established by a
 -- plain constructor branch. The older branch fact retained only runtime

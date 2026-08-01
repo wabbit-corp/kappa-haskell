@@ -8,14 +8,12 @@ module main
 -- between two PROOFS of '(=) x x') is an h-prop only when its carrier '(=) x x'
 -- is a set, which needs evidence this context does not provide.
 --
--- This implementation does NOT realize K through 'match p case refl' (matching
--- on 'refl' performs no path-induction refinement of the goal; see
--- 'eq-match-transport-deferred' notes).  Equality is instead eliminated through
--- the prelude combinators, and an h-prop is collapsed through the gated
--- 'unsafeAssertProof'.  So the faithful 'badK' asserts '(=) p refl' with the
--- 'unsafeAssertProof' escape and NO set/prop evidence: the §11.4 IsProp-under-Pi
--- solver reaches 'IsProp ((=) p refl)', finds no 'IsSet ((=) x x)' evidence,
--- refuses to fabricate set-ness, and the obligation is left UNSOLVED.
+-- Source equality matching is covered directly by
+-- 'equality/equality-match-k-requires-isset.kp'. This companion exercises the
+-- independent h-prop closure used by gated 'unsafeAssertProof': asserting
+-- '(=) p refl' with NO set/prop evidence makes the §11.4 IsProp-under-Pi solver
+-- reach 'IsProp ((=) p refl)', find no 'IsSet ((=) x x)' evidence, refuse to
+-- fabricate set-ness, and leave the obligation UNSOLVED.
 --
 -- Were this accepted, 'subst' over a discriminator type family would transport
 -- a true proposition into a false one and inhabit 'Void' — the §14.4 soundness
