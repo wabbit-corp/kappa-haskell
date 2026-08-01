@@ -3112,6 +3112,16 @@ identify the reporting campaign lane; many entries cite a pinning test under
 
 - **§7, §18.1.15** (L6042-L6053, L8144-L8149, L19370-L19420) `[writer1:modules-imports]`
   Effect-label declarations are introduced ONLY by explicit `effect label` declarations and the canonical self label of `scoped effect` (L6046-L6049, L19413), and only scoped effects get a self-label rule (L8144). Yet sanctioned usage (existing conformance tests such as effects/effect-label-decl.kp) writes rows `<[Counter : Counter]>` and operation selection `Counter.tick` against a plain top-level `effect Counter` declaration, which per the spec introduces only a type-kind interface constructor and no label. Nothing in §18.1.15 explains what introduces this default/top-level self label.
+  Requiring every ordinary top-level effect to be followed by a separate
+  `effect label` declaration is an ergonomic antipattern: the overwhelmingly
+  common one-interface/one-label case acquires boilerplate, while the explicit
+  form should be reserved for additional independently handled labels of the
+  same interface. This also prevents direct translations such as the staged
+  `WEBPPL-observe-shape.kp` fixture from expressing the natural `effect Prob`
+  / `prob.sample` API without an artificial declaration. The preferred fix is
+  for every top-level `effect E` declaration to introduce one canonical
+  self-label, with a specified source spelling and identity; `effect label l :
+  E` should remain the way to introduce extra distinct labels.
 
 - **§7.1** (L6074-L6075) `[analysis:names-resolution]`
   Step 10 of unqualified lookup says 'apply §7.2 when the ambiguity is solely the same-spelling data-family pairing'. The word 'solely' is ambiguous: does it mean exactly two declarations (type + constructor)? Or is it OK if there are multiple data families of the same name? The rule should specify: 'apply §7.2 if and only if the filtered set contains exactly one type declaration and exactly one constructor declaration with matching binding group'
@@ -3520,6 +3530,19 @@ identify the reporting campaign lane; many entries cite a pinning test under
 - **§17.1, §17.1.9, §17.3.4** (L21912-21938, L22297-22328, L22732) `[r3:dx-warnings]`
   First-match-wins / in-source-order case trying is never normatively stated for plain `match`. §17.1 gives syntax and exhaustiveness only; the order semantics are implied indirectly by §17.1.9 (guard failure falls through to 'subsequent cases') and by §17.3.4 L22732, where 'left-to-right case order' appears only as a preservation condition on an optional active-pattern lowering. With overlapping arms being silently accepted today, an implementation could defensibly pick a different arm-selection rule. Not in docs/SPEC_ISSUES.md. Pinned observationally by spec-coverage/combo-2026-07-23/overlapping-arms-first-match-run.kp.
 
+- **§3.2.10, §17.1, §17.2.3** (L3791-L3794, L21912-L21938, L23582-L23596) `[2026-07-30:pattern-usefulness]`
+  The Spec registers `kappa.pattern.unreachable` for an unreachable branch,
+  case, or incorrectly claimed `impossible`, but never requires a usefulness
+  or redundancy pass to emit it for an ordinary shadowed arm or a redundant
+  alternative inside one or-pattern. Consequently `case Red | Red -> ...`,
+  duplicate literal or constructor arms, and cases following a total wildcard
+  may all be accepted silently while still conforming. That is a defensible v1
+  baseline, but these diagnostics are valuable for detecting stale cases and
+  copy/paste errors. A future revision should decide whether statically
+  provable redundancy is a normative warning (preferably suppressible), which
+  forms it covers, and whether the diagnostic points at the redundant
+  alternative, the whole arm, or both it and the earlier covering origin.
+
 - **§17.1.4, §17.1.5, §30.2.2.11, §16.4.1** (L22027-L22030, L22066-L22070 vs L39060-L39061, L39136-L39137, L21634-L21637) `[r3:combo-gadt-flow]`
   §17.1.4/§17.1.5 state impossible/case-impossible are accepted 'only if' unreachability is proved 'using definitional equality, family-argument unification, and the required structural inhabitance rules of §30.2.7' — flow-refinement facts (HasCtor/LacksCtor from §16.4.1, narrowing, contradictory contexts) are absent from this closed justification list, yet §30.2.2.11 mandates the impossible check run under the active refinement context and §16.4.1 requires success evidence to let a subsequent match treat non-C cases as unreachable. Read strictly the lists conflict (acceptance justified only by flow facts would violate the 'only if'); read charitably 'definitional equality' means refinement-aware §31.1.2 def-eq and there is no conflict. The observed compiler behavior (exhaustiveness consults flow facts, impossible checks do not) matches the strict reading. §17.1.4/5 should explicitly include active-refinement-context facts.
 
@@ -3692,6 +3715,15 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   not an oversight to patch casually.
 
 ## III.10 Spec-coverage promotion review additions (2026-07-28)
+
+- **§17.2.2: should repeated pattern names express an equality constraint?**
+  The current rule rejects `case F x x` with `E_DUPLICATE_PATTERN_BINDER`.
+  Consider instead supporting that spelling as nonlinear-pattern sugar for
+  `case F x y if x == y`. If adopted, the Spec must define which equality
+  evidence is required, whether the comparison has ordinary guard semantics,
+  how failure continues to later cases, and how the form interacts with
+  quantities, borrows, and erased fields. Until those questions are resolved,
+  repeated names remain duplicate binders rather than equality patterns.
 
 - **§5.1: should ASCII identifiers admit trailing prime marks?**
   The ASCII grammar `[A-Za-z_][A-Za-z0-9_]*` rejects conventional functional

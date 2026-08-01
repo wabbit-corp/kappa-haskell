@@ -21,5 +21,7 @@ let v1 : Vec Unit 1 = Cons () Nil
 let v2 : Vec Unit 2 = Cons () (Cons () Nil)
 
 --! assertNoErrors
+--! assertType v1 (Vec Unit 1)
+--! assertType v2 (Vec Unit 2)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

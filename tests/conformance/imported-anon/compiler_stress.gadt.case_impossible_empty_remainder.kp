@@ -31,5 +31,8 @@ let useTag01 v = match v
   case impossible
 
 --! assertNoErrors
+--! assertType extractTrue (Val True -> Int)
+--! assertType extractFalse (Val False -> Int)
+--! assertType useTag01 (ThreeTag 0 -> Int)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

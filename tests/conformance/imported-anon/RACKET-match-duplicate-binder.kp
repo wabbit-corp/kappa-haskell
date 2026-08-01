@@ -1,0 +1,57 @@
+-- Source: Racket PR #5464 (duplicate ID handling),
+--         Racket PR #2000 (match: check duplicate identifiers across patterns)
+-- Spec: expressions.patterns.scoping_validity
+--
+-- A single pattern clause may not bind the same identifier twice. If the same
+-- variable name appears twice in one pattern, the second occurrence is a
+-- duplicate binder and must be rejected with E_DUPLICATE_PATTERN_BINDER.
+--
+-- A safe alternative: use a guard to test equality of two sub-expressions.
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: two distinct variable names in a pattern; no duplication.
+fstPair : forall (a : Type) (b : Type). Pair a b -> a
+let fstPair p =
+    match p
+    case MkPair x _ -> x
+
+sndPair : forall (a : Type) (b : Type). Pair a b -> b
+let sndPair p =
+    match p
+    case MkPair _ y -> y
+
+-- POSITIVE: wildcard `_` may appear multiple times; it binds nothing.
+bothWild : forall (a : Type) (b : Type). Pair a b -> Bool
+let bothWild p =
+    match p
+    case MkPair _ _ -> True
+
+-- POSITIVE: using a guard to check equality instead of duplicate binder.
+equalPair : Pair Int Int -> Bool
+let equalPair p =
+    match p
+    case MkPair x y if x == y -> True
+    case _                     -> False
+
+-- NEGATIVE: duplicate variable name `x` in a single pattern is invalid.
+badDuplicate : Pair Int Int -> Bool
+let badDuplicate p =
+    match p
+    case MkPair x x -> True
+    case _          -> False
+
+-- NEGATIVE: duplicate binder in a list pattern.
+badListDup : List Int -> Bool
+let badListDup xs =
+    match xs
+    case x :: x :: _ -> True
+    case _           -> False
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_DUPLICATE_PATTERN_BINDER, E_DUPLICATE_PATTERN_BINDER
+
+-- STATUS(8bac0dbe): PASS

@@ -23,6 +23,7 @@ let absurd v =
     case impossible
 
 --! assertNoErrors
+--! assertType headEmpty (forall (a : Type). Vect a 0 -> Unit)
 --! assertType absurd (forall (a : Type). Void -> a)
 
 -- POSITIVE: indexed elimination using `-> impossible` for a constructor branch
@@ -51,4 +52,4 @@ let discardVoid v =
 --! assertNoErrors
 --! assertType discardVoid (Void -> Unit)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

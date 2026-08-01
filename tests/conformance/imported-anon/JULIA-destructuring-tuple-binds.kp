@@ -11,8 +11,6 @@
 pair : (Int, String)
 let pair = (42, "hello")
 
-first : Int
-second : String
 let (first, second) = pair
 
 --! assertType first  Int
@@ -22,9 +20,6 @@ let (first, second) = pair
 triple : (Int, Bool, Float)
 let triple = (1, True, 3.14)
 
-n : Int
-b : Bool
-f : Float
 let (n, b, f) = triple
 
 --! assertType n Int
@@ -35,12 +30,8 @@ let (n, b, f) = triple
 nested : (Int, (String, Bool))
 let nested = (0, ("x", False))
 
-outer : Int
-innerPair : (String, Bool)
 let (outer, innerPair) = nested
 
-s : String
-flag : Bool
 let (s, flag) = innerPair
 
 --! assertType outer Int
@@ -59,3 +50,5 @@ let total = sumPair (3, 4)
 --! assertType total Int
 
 --! assertNoErrors
+
+-- STATUS(8bac0dbe): PASS

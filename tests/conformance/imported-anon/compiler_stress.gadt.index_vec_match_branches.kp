@@ -29,5 +29,8 @@ let tail v =
   case VNil       -> impossible
 
 --! assertNoErrors
+--! assertType head (forall (a : Type) (n : Nat). Vec a (n + 1) -> a)
+--! assertType safeHead (forall (a : Type) (n : Nat). Vec a (n + 1) -> a)
+--! assertType tail (forall (a : Type) (n : Nat). Vec a (n + 1) -> Vec a n)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

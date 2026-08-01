@@ -4,11 +4,8 @@
 --   egraphs-good/egglog tests/fail-typecheck/repro-duplicated-var.egg.
 -- Spec: expressions.patterns.scoping_validity
 --       (§17.2.2 — "Duplicate binders within the same pattern are an error").
--- Duplicate variable binders in a single pattern are an error. §17.2.2 mandates
--- the rejection but does not name a dedicated diagnostic family; Kappa
--- implementations therefore report it under kappa.name.ambiguous (two
--- bindings of the same spelling visible in the same pattern's scope). See
--- EGGLOG-SA-08 in EGGLOG_SPEC_ADDITIONS.md for a proposed dedicated family.
+-- Duplicate variable binders in a single pattern are an error. §17.2.2 names
+-- E_DUPLICATE_PATTERN_BINDER as the portable diagnostic alias.
 
 module test
 
@@ -28,9 +25,10 @@ let bothSame p =
 dupTuple : Pair -> Int
 let dupTuple p =
     match p
-    case (MkPair x x) -> x       --!! kappa.name.ambiguous
+    case (MkPair x x) -> x       --!! E_DUPLICATE_PATTERN_BINDER
 
---! assertDiagnosticFamily error kappa.name.ambiguous
+--! assertErrorCount 1
+--! assertDiagnostic error E_DUPLICATE_PATTERN_BINDER
 
 -- POSITIVE: repeated `_` (wildcards) is NOT a duplicate binder; each `_` is
 -- a fresh independent discard pattern (§17.2.1).
@@ -41,3 +39,5 @@ twoWild : Triple -> Bool
 let twoWild t =
     match t
     case (MkTriple _ _ _) -> True
+
+-- STATUS(8bac0dbe): PASS

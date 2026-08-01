@@ -22,5 +22,7 @@ getLen : R -> Nat
 let getLen r = r.len
 
 --! assertNoErrors
+--! assertType makeR ((n : Nat) -> Vec n Int -> R)
+--! assertType getLen (R -> Nat)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

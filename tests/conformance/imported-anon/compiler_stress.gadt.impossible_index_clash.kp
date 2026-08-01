@@ -27,5 +27,8 @@ let valToInt v = match v
   case FalseVal -> 0
 
 --! assertNoErrors
+--! assertType onlyTrue (Val True -> Int)
+--! assertType onlyFalse (Val False -> Int)
+--! assertType valToInt (forall (b : Bool). Val b -> Int)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(8bac0dbe): PASS

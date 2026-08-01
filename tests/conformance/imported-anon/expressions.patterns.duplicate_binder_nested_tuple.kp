@@ -19,17 +19,11 @@ let dupInNestedTuple t =
     x + y
 
 --! mode check
---! assertErrorCount 2
--- NOTE (2026-06-11, FAB-011): no registered diagnostic family/code exists yet
--- for this spec-mandated error; the suite asserts an exact error count instead.
--- Re-tag to assertDiagnosticFamily when the spec registers one.
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_DUPLICATE_PATTERN_BINDER
 
--- Rejected: duplicate binder at the same tuple level.
-dupSameLevel : (Int, Int) -> Int
-let dupSameLevel t =
-    let (x, x) = t         -- ERROR EXPECTED: duplicate binder (counted below)
-    x
-
+-- Flat duplicate tuple binders are covered by the GLEAM, RACKET, and UNISON
+-- fixtures; this fixture keeps the distinct nested-pattern case isolated.
 
 -- Accepted: different binder names — no duplicate.
 noDup : (Int, (Int, Int)) -> Int
@@ -37,3 +31,4 @@ let noDup t =
     let (a, (b, c)) = t
     a + b + c
 
+-- STATUS(8bac0dbe): PASS
