@@ -12,9 +12,9 @@
 module move_955_lambda_drop
 
 -- Rejected: lambda body silently drops the linear argument.
--- `x` is demanded at quantity 1; the body `unit` demands it 0 times.
+-- `x` is demanded at quantity 1; the body `()` demands it 0 times.
 dropLinear : (1 x : Int) -> Unit
-let dropLinear = \ (1 x : Int) -> unit   --!! kappa.quantity.unsatisfied
+let dropLinear = \ (1 x : Int) -> ()   --!! kappa.quantity.positive-lower-bound
 
 -- Accepted: linear argument consumed exactly once.
 consumeLinear : (1 x : Int) -> Int
@@ -22,6 +22,9 @@ let consumeLinear = \ (1 x : Int) -> x
 
 -- Rejected: lambda ignores a linear argument while returning a constant.
 constDrop : (1 x : Int) -> Int
-let constDrop = \ (1 x : Int) -> 42   --!! kappa.quantity.unsatisfied
+let constDrop = \ (1 x : Int) -> 42   --!! kappa.quantity.positive-lower-bound
 
---! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertErrorCount 2
+
+-- STATUS(a88dde53): PASS

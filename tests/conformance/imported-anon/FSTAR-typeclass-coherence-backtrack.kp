@@ -4,8 +4,11 @@
 
 --! mode check
 
-expect term intEq : Int -> Int -> Bool
-expect term natEq : Nat -> Nat -> Bool
+intEq : Int -> Int -> Bool
+let intEq x y = x == y
+
+natEq : Nat -> Nat -> Bool
+let natEq x y = x == y
 
 trait Equatable (T : Type) =
     eq : T -> T -> Bool
@@ -17,7 +20,7 @@ instance Equatable Nat =
     let eq = natEq
 
 -- Resolution of Equatable instances should not cause exponential backtracking.
-check : {T : Type} -> (@_ : Equatable T) => T -> T -> Bool
+check : forall (T : Type). (@_ : Equatable T) -> T -> T -> Bool
 let check x y = eq x y
 
 test_int : Bool
@@ -27,3 +30,5 @@ test_nat : Bool
 let test_nat = check (3 : Nat) (3 : Nat)
 
 --! assertNoErrors
+
+-- STATUS(a88dde53): PASS

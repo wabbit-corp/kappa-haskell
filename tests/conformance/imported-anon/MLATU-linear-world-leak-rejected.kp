@@ -1,7 +1,9 @@
 -- [import note] the source asserted family kappa.quantity.unsatisfied; Kappa classifies this same
 -- error more specifically as kappa.quantity.positive-lower-bound (E_QTT_LINEAR_DROP). The assertion was re-pointed to
 -- Kappa's family on import (verified: same error count, single family).
--- Source issue: MLatu #25 ("Add a substructural type system"); PR#26
+-- Source issues: MLatu #25 ("Add a substructural type system"); PR#26;
+--   Kitten #119 (resources must be consumed or disposed), Kitten #156
+--   (linear destructors and rejected silent leaks)
 --   ("Linear types"). A linear World handle must be consumed; dropping
 --   it without using it violates the substructural discipline. The
 --   portable Kappa obligation is that a linear-quantity binder left

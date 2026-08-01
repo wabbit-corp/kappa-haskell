@@ -8,27 +8,29 @@
 
 -- A function with an implicit type parameter, defined at top level.
 -- Calling it with an empty list must resolve `A` to the correct type.
-top_find : {A : Type} -> Nat -> List (Nat, A) -> Maybe (Nat, A)
+top_find : forall (A : Type). Nat -> List (Nat, A) -> Option (Nat, A)
 let top_find x l =
     match l
-      case Nil      -> Nothing
-      case (h :: _) -> Just h
+      case Nil      -> Option.None
+      case (h :: _) -> Option.Some h
 
 -- Top-level call: implicit `A` must be resolved from the argument type.
-test_top : Maybe (Nat, Bool)
+test_top : Option (Nat, Bool)
 let test_top = top_find 0 (Nil : List (Nat, Bool))
 
 --! assertNoErrors
 
 -- Local binding: the same function defined locally.
 -- The implicit `A` must still be resolved at the call site.
-test_local : Maybe (Nat, Bool)
+test_local : Option (Nat, Bool)
 let test_local =
-    let local_find : {A : Type} -> Nat -> List (Nat, A) -> Maybe (Nat, A)
-        let local_find x l =
-              match l
-                case Nil      -> Nothing
-                case (h :: _) -> Just h
-    local_find 0 (Nil : List (Nat, Bool))
+    let local_find : forall (A : Type). Nat -> List (Nat, A) -> Option (Nat, A) =
+        \x l ->
+            match l
+              case Nil      -> Option.None
+              case (h :: _) -> Option.Some h
+    in local_find 0 (Nil : List (Nat, Bool))
 
 --! assertNoErrors
+
+-- STATUS(a88dde53): PASS

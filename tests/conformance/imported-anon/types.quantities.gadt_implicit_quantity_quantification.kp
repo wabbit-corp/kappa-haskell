@@ -7,6 +7,8 @@
 module test
 
 data Existential (a : Type) : Type =
-  MkE : forall {q} (a : Type) -> (q & x : a) -> Existential a
+  MkE : forall (q : Quantity) (b : Type). (q x : b) -> Existential b
 
 --! assertNoErrors
+
+-- STATUS(a88dde53): PASS

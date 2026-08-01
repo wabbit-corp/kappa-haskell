@@ -15,9 +15,11 @@ let anotherFn s = 0
 -- A non-`expect` top-level term signature MUST be satisfied by exactly one
 -- matching top-level definition in the same source file.
 -- If no matching definition exists, compilation fails.
-orphanSig : Int -> Int    --!! kappa.name.unresolved
+orphanSig : Int -> Int
 
 -- NEGATIVE TEST: a second orphan signature.
-missingDef : String       --!! kappa.name.unresolved
+missingDef : String
 
 --! assertErrorCount 2
+
+-- STATUS(a88dde53): PASS

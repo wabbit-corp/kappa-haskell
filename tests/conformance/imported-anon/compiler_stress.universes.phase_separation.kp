@@ -13,8 +13,13 @@ let show (0 A) inst x = inst.toString x
 
 -- Calling with explicit erased argument is valid.
 showInt : Show Int
-let showInt = Show { toString = \n -> "Int" }
+instance Show Int =
+    let toString _ = "Int"
 
-let result : String = show (0 Int) showInt 42
+let showInt = summon (Show Int)
+
+let result : String = show Int showInt 42
 
 --! assertNoErrors
+
+-- STATUS(a88dde53): PASS

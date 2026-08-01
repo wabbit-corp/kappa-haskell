@@ -13,20 +13,20 @@ trait Debug (a : Type) =
 data Widget : Type = Widget Int String
 
 instance Show Widget =
-    let show (Widget n s) = "Widget(" ++ int_to_string n ++ "," ++ s ++ ")"
+    let show (Widget n s) = "Widget(" ++ showInt n ++ "," ++ s ++ ")"
 
 instance Debug Widget =
-    let show (Widget n s) = "DBG[" ++ int_to_string n ++ "|" ++ s ++ "]"
+    let show (Widget n s) = "DBG[" ++ showInt n ++ "|" ++ s ++ "]"
 
 -- Disambiguate via explicit evidence projection.
 showWidget : Widget -> String
 let showWidget w =
-    let ev : Show Widget = summon
+    let ev = summon (Show Widget)
     ev.show w
 
 debugWidget : Widget -> String
 let debugWidget w =
-    let ev : Debug Widget = summon
+    let ev = summon (Debug Widget)
     ev.show w
 
 -- Both disambiguated uses work without ambiguity error.
@@ -35,3 +35,5 @@ let example =
     showWidget (Widget 1 "hello") ++ " / " ++ debugWidget (Widget 1 "hello")
 
 --! assertNoErrors
+
+-- STATUS(a88dde53): PASS

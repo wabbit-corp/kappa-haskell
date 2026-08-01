@@ -14,21 +14,30 @@ module test
 -- Accepted: empty-string case handled explicitly; wildcard covers the rest.
 -- The exhaustiveness checker MUST accept this as covering all String values.
 stringTag : String -> Int
-let stringTag ""  = 0
-let stringTag _   = 1
+let stringTag value =
+    match value
+    case "" -> 0
+    case _  -> 1
 
 --! mode check
 
 -- Variant: multiple explicit string literals plus wildcard.
 classifyStr : String -> Int
-let classifyStr "hello" = 1
-let classifyStr "world" = 2
-let classifyStr _       = 0
+let classifyStr value =
+    match value
+    case "hello" -> 1
+    case "world" -> 2
+    case _       -> 0
 
 
 -- Negative: no wildcard and only one literal — NOT exhaustive over all strings.
 -- MUST produce a non-exhaustive diagnostic.
 badStringMatch : String -> Int
-let badStringMatch "" = 0   --!! kappa.pattern.non-exhaustive
+let badStringMatch value =
+    match value                    --!! kappa.pattern.non-exhaustive
+    case "" -> 0
 
 --! assertDiagnostic error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+
+-- STATUS(a88dde53): PASS
