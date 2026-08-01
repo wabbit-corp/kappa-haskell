@@ -18,7 +18,12 @@ let applyInt = 1 2                         --!! E_APPLICATION_NON_CALLABLE
 data Box (a : Type) : Type =
     Box a
 
+boxed : Box Int
+let boxed = Box 1
+
 applyRecord : Int
-let applyRecord = (Box 1) 2                --!! E_APPLICATION_NON_CALLABLE
+let applyRecord = boxed 2                  --!! E_APPLICATION_NON_CALLABLE
 
 --! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+-- STATUS(df39c0eb): PASS — the implementation code is E_APPLICATION_NONCALLABLE, and the harness successfully recovers the required E_APPLICATION_NON_CALLABLE portable alias (§3.1.4).

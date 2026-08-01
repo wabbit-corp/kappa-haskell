@@ -33,6 +33,10 @@ data Bush (a : Type) : Type =
 emptyBush : Bush A
 let emptyBush = BLeaf
 
+-- Actually instantiate the non-uniform recursive field at Bush (Bush A).
+nonUniformBush : Bush A
+let nonUniformBush = BNode MkA (BLeaf : Bush (Bush A))
+
 -- POSITIVE: a rose tree — the recursive occurrence applies the type
 -- constructor to a list of trees with the same parameter.
 data List (a : Type) : Type =
@@ -56,5 +60,6 @@ shortVec : Vec A Zero
 let shortVec = VNil
 
 --! assertNoErrors
+--! assertType nonUniformBush (Bush A)
 
--- STATUS(f1b025a3): PASS
+-- STATUS(df39c0eb): PASS

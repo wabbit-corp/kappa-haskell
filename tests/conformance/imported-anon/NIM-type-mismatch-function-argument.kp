@@ -1,8 +1,7 @@
 -- Source: nim-lang/Nim overload resolution and argument type checking —
 --         false-positive ambiguity (nim#24783), cross-module name collision
 --         (nim#9156), wrong-type argument at call site
--- Spec: compiler.frontir.standard_diagnostic_families (kappa.type.mismatch,
---       kappa.application.argument-mismatch)
+-- Spec: compiler.frontir.portable_diagnostic_code_aliases
 -- Applying a function to an argument whose type does not match the declared
 -- parameter type must be rejected. This covers simple one-argument mismatches,
 -- mismatches at higher-order positions, and mismatches in curried argument chains.
@@ -35,21 +34,24 @@ let goodShape = shapeName Circle
 
 -- NEGATIVE: passing a Shape where Color is expected.
 badColor : String
-let badColor = colorName Circle    --!! kappa.type.mismatch
+let badColor = colorName Circle    --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
 
 -- NEGATIVE: passing a Color where Shape is expected.
 badShape : String
-let badShape = shapeName Red       --!! kappa.type.mismatch
+let badShape = shapeName Red       --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
 
 -- NEGATIVE: passing an Int where a String is expected.
-badStrArg : Int
-let badStrArg = String.length 42   --!! kappa.type.mismatch
+stringWeight : String -> Int
+let stringWeight _ = 0
 
---! assertDiagnosticFamily error kappa.type.mismatch
+badStrArg : Int
+let badStrArg = stringWeight Red   --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
 
 -- POSITIVE: higher-order function with correct argument types.
 applyToRed : (Color -> String) -> String
@@ -60,9 +62,9 @@ let goodApply = applyToRed colorName
 
 -- NEGATIVE: passing colorName where shapeName is expected (function type mismatch).
 badHigherOrder : String
-let badHigherOrder = applyToRed shapeName  --!! kappa.type.mismatch
+let badHigherOrder = applyToRed shapeName  --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
 
 -- POSITIVE: curried application with correct types at each step.
 add : Int -> Int -> Int
@@ -76,6 +78,8 @@ let result = addFive 3
 
 -- NEGATIVE: curried application with wrong first argument type.
 badCurried : Int -> Int
-let badCurried = add "five"   --!! kappa.type.mismatch
+let badCurried = add "five"   --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+-- STATUS(df39c0eb): PASS

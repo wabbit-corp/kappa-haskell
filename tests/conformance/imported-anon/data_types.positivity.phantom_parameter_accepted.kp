@@ -43,6 +43,9 @@ data Box (a : Type) : Type =
 -- Bad appears to the left of `->` in the constructor argument type `Bad -> Bad`,
 -- which is a negative (domain) position.  This must be rejected per §10.4.
 data Bad : Type =
-    MkBad : (Bad -> Bad) -> Bad   --!! kappa.type.mismatch
+    MkBad : (Bad -> Bad) -> Bad
 
 --! assertErrorCount 1
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+
+-- STATUS(df39c0eb): PASS

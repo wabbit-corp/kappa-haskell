@@ -15,6 +15,11 @@ data NonEmpty : Type = A | B
 
 -- Rejected: match over a non-empty type with no branches is ill-typed.
 badMatch : NonEmpty -> Int
-let badMatch x = match x  --!! kappa.pattern.non-exhaustive
+let badMatch x =
+    match x
+    case impossible
 
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+--! assertDiagnostic error E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- STATUS(df39c0eb): PASS

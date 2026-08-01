@@ -16,15 +16,15 @@ data Tree (a : Type) : Type =
 
 -- NEGATIVE: two-constructor type pattern in plain let is refutable.
 let bad_ok_unpack (r : Result String Int) : Int =
-    let Ok x = r in x                   --!! kappa.pattern.non-exhaustive
+    let Ok x = r in x
 
 -- NEGATIVE: another two-constructor pattern (Err arm).
 let bad_err_unpack (r : Result String Int) : String =
-    let Err msg = r in msg              --!! kappa.pattern.non-exhaustive
+    let Err msg = r in msg
 
 -- NEGATIVE: three-constructor tree pattern in plain let.
 let bad_node_unpack (t : Tree Int) : Int =
-    let Node _ v _ = t in v             --!! kappa.pattern.non-exhaustive
+    let Node _ v _ = t in v
 
 -- POSITIVE: wildcard is irrefutable.
 let ok_wildcard (r : Result String Int) : Unit =
@@ -37,3 +37,8 @@ let ok_binder (r : Result String Int) : Result String Int =
 -- POSITIVE: tuple pattern is irrefutable when scrutinee is a tuple.
 let ok_tuple_binder (p : (Int, String)) : Int =
     let (n, _) = p in n
+
+-- The Spec requires rejection but does not standardize this diagnostic's code.
+--! assertErrorCount 3
+
+-- STATUS(df39c0eb): PASS

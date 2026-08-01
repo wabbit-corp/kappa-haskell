@@ -23,5 +23,6 @@ emptyBuf : SizedBuf
 let emptyBuf = mkBuf 0 VNil
 
 --! assertNoErrors
+--! assertType emptyBuf SizedBuf
 
--- STATUS(f1b025a3): PASS
+-- STATUS(df39c0eb): PASS

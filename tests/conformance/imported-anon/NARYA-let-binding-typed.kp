@@ -33,8 +33,9 @@ letDefEq : Eq Nat (Suc Zero) (Suc Zero)
 let letDefEq =
     let
         x : Nat = Suc Zero
+        witness : Eq Nat x (Suc Zero) = Refl
     in
-        Refl
+        witness
 
 -- POSITIVE: nested let-expressions (two consecutive bindings inside a
 -- single `let ... in` are also valid via the multi-binding form).
@@ -57,4 +58,4 @@ let shadow x =
 
 --! assertNoErrors
 
--- STATUS(f1b025a3): PASS
+-- STATUS(df39c0eb): PASS

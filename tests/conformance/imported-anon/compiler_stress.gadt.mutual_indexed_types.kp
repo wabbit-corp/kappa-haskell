@@ -31,5 +31,6 @@ let headE xs =
   case ENil      -> impossible
 
 --! assertNoErrors
+--! assertNoWarnings
 
--- STATUS(f1b025a3): PASS
+-- STATUS(df39c0eb): PASS
