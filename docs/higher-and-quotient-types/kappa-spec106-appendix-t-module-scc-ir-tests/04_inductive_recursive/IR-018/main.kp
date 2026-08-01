@@ -1,0 +1,9 @@
+data Code : Type =
+    NatCode
+    Wrap (inner : Code) (value : decode inner)
+
+decode : Code -> Type
+let decode code =
+    match code
+    case NatCode -> Nat
+    case Wrap inner value -> decode (Wrap inner value)

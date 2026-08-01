@@ -1,0 +1,29 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/positivity-mutual-iteration-reject.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / portable alias
+-- E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A); the old alias E_DATA_NOT_STRICTLY_POSITIVE is gone.
+
+-- Spec: §10.4.2 (L10688-10719). Signature recomputation must iterate to
+-- convergence: from the all-positive start, B.x turns non-positive on the
+-- first recomputation (x occurs in a function domain), and A.x only on the
+-- SECOND (x occurs under B whose parameter just became non-positive). The
+-- A/B group itself is accepted (its recursive occurrences are all strictly
+-- positive), but the final judgment must then reject Bad, whose recursive
+-- occurrence sits in A's converged-non-positive parameter.
+
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+--! assertErrorCount 1
+@PrivateByDefault module main
+
+data A (x : Type) : Type =
+    MkA (B x)
+    MkARec (A x)
+
+data B (x : Type) : Type =
+    MkB (x -> Integer)
+    MkBRec (A x)
+
+data Bad : Type =
+    MkBad (A Bad)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

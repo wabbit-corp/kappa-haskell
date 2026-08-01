@@ -1,0 +1,32 @@
+data TypeCode : Type =
+    NatType
+    RecordType (fields : RowCode)
+
+data RowCode : Type =
+    EmptyRow
+    FieldRow
+        (fieldType : TypeCode)
+        (rest : RowCode)
+    DepFieldRow
+        (fieldType : TypeCode)
+        (rest : decodeType fieldType -> RowCode)
+
+decodeType : TypeCode -> Type
+let decodeType code decreases structural code =
+    match code
+    case NatType ->
+        Nat
+    case RecordType fields ->
+        decodeRow fields
+
+decodeRow : RowCode -> Type
+let decodeRow row decreases structural row =
+    match row
+    case EmptyRow ->
+        Unit
+    case FieldRow fieldType rest ->
+        (head : decodeType fieldType, tail : decodeRow rest)
+    case DepFieldRow fieldType rest ->
+        (head : decodeType fieldType, tail : decodeRow (rest head))
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupMembers' is not defined by Appendix T (§T.3); line 5: unknown directi

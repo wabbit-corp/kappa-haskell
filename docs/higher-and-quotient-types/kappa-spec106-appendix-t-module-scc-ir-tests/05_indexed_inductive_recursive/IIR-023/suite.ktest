@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertRecursiveOperation PairEl subjects 1,2
+--! assertInductiveGroupCertificateValid PairCode

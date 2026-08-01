@@ -1,0 +1,29 @@
+-- Retargeted from tests/conformance/spec-coverage/proofs-deriving-totality/CREUSOT-termination-direct-recursion-caught.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Strict non-function value cycles are now rejected at group admission with
+-- E_RECURSIVE_VALUE_CYCLE, family kappa.declaration.recursive-group, reason
+-- strict-value-cycle (§9.5.6, §3.2.11A); kappa.termination.failure now covers only
+-- the termination checker rejecting recursive function/SCC members, which this
+-- group never reaches.
+-- Source issues: CREUSOT-1966
+-- Spec: §9.2 (a cyclic SCC containing a strict non-function value initializer
+--       is rejected under §9.5), §9.5.6 (strict value cycles: a cyclic
+--       body-facet SCC containing a non-function simple value initializer is
+--       rejected with E_RECURSIVE_VALUE_CYCLE — no signature exception),
+--       §3.2.11A (kappa.declaration.recursive-group, reason strict-value-cycle)
+-- Pins: a strict non-function value whose initializer is an unconditional
+-- reference to itself is a strict value cycle. It must be rejected at group
+-- admission with family kappa.declaration.recursive-group, portable alias
+-- E_RECURSIVE_VALUE_CYCLE, reason strict-value-cycle.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: strict non-function value initializer referring to itself.
+falso : Unit
+let falso = falso                            --!! kappa.declaration.recursive-group
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.declaration.recursive-group
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,5 @@
+module demo
+
+bad : N
+let bad =
+    Zero

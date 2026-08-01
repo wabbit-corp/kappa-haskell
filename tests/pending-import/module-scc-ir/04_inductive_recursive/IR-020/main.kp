@@ -1,0 +1,13 @@
+data Code : Type =
+    NatCode
+    Use (inner : Code) (value : decodeA inner)
+
+decodeA : Code -> Type
+let decodeA code =
+    decodeB code
+
+decodeB : Code -> Type
+let decodeB code =
+    decodeA code
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

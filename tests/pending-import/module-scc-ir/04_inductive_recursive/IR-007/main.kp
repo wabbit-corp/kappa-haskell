@@ -1,0 +1,16 @@
+data Code : Type =
+    NatCode
+    PairField
+        (parts : (Code, Code))
+        (leftValue : decode parts.0)
+        (rightValue : decode parts.1)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PairField parts leftValue rightValue ->
+        (left : decode parts.0, right : decode parts.1)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStructuralChildEdge' is not defined by Appendix T (§T.3); line 5: unknown directive '

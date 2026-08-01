@@ -1,0 +1,11 @@
+phaseB : Nat -> Bool
+let phaseB n =
+    match n
+    case Zero ->
+        True
+    case Succ k ->
+        phaseA k
+
+phaseA : Nat -> Bool
+let phaseA n =
+    phaseB n

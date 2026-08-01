@@ -1,0 +1,16 @@
+data ImpCode (@tag : Bool) : Type =
+    ImpBool : ImpCode @True
+    ImpNat  : ImpCode @False
+    ImpBox
+        (inner : ImpCode @tag)
+        (value : ImpEl @tag inner) :
+        ImpCode @tag
+
+ImpEl : (@tag : Bool) -> ImpCode @tag -> Type
+let ImpEl tag code decreases structural code =
+    match code
+    case ImpBool -> Bool
+    case ImpNat -> Nat
+    case ImpBox inner value -> ImpEl @tag inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertNoParameterIndexPartition' is not defined by Appendix T (§T.3); line 5: unknown direc

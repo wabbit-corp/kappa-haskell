@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertRecursiveOperation MEl subjects 2
+--! assertNoParameterIndexPartition MatrixCode

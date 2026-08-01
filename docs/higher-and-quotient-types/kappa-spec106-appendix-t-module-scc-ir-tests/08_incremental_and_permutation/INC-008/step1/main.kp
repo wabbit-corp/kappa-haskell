@@ -1,0 +1,4 @@
+data A : Type =
+    MkA (consume : B -> Nat)
+data B : Type =
+    MkB (a : A)

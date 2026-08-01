@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers Red Red,Green,Blue
+--! assertDeclarationGroupFeature Red mutually-inductive
+--! assertInductiveGroupCertificateValid Red

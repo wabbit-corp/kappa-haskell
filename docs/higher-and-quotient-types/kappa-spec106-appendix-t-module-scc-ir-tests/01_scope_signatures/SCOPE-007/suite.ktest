@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertType make Later
+--! assertDeclarationGroupClass Later inductive

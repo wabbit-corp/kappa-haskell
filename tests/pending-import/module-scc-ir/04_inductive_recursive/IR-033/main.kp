@@ -1,0 +1,14 @@
+data Code (parametric 0 a : Type) : Type =
+    ValueCode
+    PairCode
+        (left : Code a)
+        (right : Code a)
+        (sample : decode left)
+
+decode : Code a -> Type
+let decode code decreases structural code =
+    match code
+    case ValueCode -> a
+    case PairCode left right sample -> (decode left, decode right)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertInductiveGroupCertificateValid' is not defined by Appendix T (§T.3); line 6: unknown 

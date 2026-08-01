@@ -1,0 +1,57 @@
+-- Retargeted from tests/conformance/imported-anon/data_types.positivity.phantom_parameter_accepted.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Vacuous positivity is now the Σ0 = all-positive start of the greatest-fixed-point
+-- signature iteration (§10.4.2); the Bad rejection now uses family
+-- kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A).
+--
+-- Source issue: Rocq #14938 (RSA-23)
+-- Spec: data_types.well_formedness (§10.4.2)
+-- A data type constructor whose parameter never appears in any constructor
+-- argument type has that parameter vacuously marked as POSITIVE in its
+-- parameter-positivity signature.  (§10.4.2: signature computation is a
+-- greatest fixed point starting from Σ0 = every uniform family argument
+-- positive; recompute(Σ) keeps `pi` positive iff every occurrence of `pi` in
+-- the constructor-local binder types occurs positively.  Zero occurrences
+-- vacuously satisfy this, so the fixed point leaves `pi` positive.)
+--
+-- A downstream type may therefore use that constructor with the recursive type
+-- as the argument value and the occurrence is strictly positive.  Rocq #14938
+-- showed Rocq's checker rejected such a definition even though it is safe; the
+-- Kappa spec correctly requires acceptance via the vacuous positivity rule.
+
+module test
+
+-- Phantom: the parameter `a` has no occurrences in constructor argument types.
+-- The single constructor PhantomOnly takes no arguments (the result type is
+-- `Phantom a` but the result type is not part of the positivity check for `a`).
+-- Per §10.4.2, `a` is vacuously positive → Phantom's parameter-positivity
+-- signature records parameter 0 as POSITIVE.
+data Phantom (a : Type) : Type =
+    PhantomOnly : Phantom a
+
+--! mode check
+
+-- ACCEPTED: Outer uses `Phantom Outer` as a constructor argument type.
+-- Check:  F = Phantom (admissible; it is a strict-positive data type whose
+--         parameter is marked positive), A₁ = Outer = T, T occurs strictly
+--         positively in A₁ (it IS the argument type, so rule 1 applies).
+-- Result: strictly positive occurrence → MkOuter accepted.
+data Outer : Type =
+    MkOuter : Phantom Outer -> Outer
+
+
+-- ACCEPTED: a second example with a non-recursive type, confirming that
+-- Phantom can be used normally as a container.
+data Box (a : Type) : Type =
+    BoxVal : Phantom a -> Box a
+
+
+-- REJECTED: baseline negative occurrence.
+-- Bad appears to the left of `->` in the constructor argument type `Bad -> Bad`,
+-- which is a negative (domain) position.  This must be rejected per §10.4.2.
+data Bad : Type =
+    MkBad : (Bad -> Bad) -> Bad
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

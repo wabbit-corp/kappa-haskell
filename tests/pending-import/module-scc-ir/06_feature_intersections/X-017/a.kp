@@ -1,0 +1,7 @@
+module demo
+
+import lib
+
+identity : lib.N -> lib.N
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

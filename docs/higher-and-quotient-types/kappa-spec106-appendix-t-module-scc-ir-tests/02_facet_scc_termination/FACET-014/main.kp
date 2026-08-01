@@ -1,0 +1,7 @@
+loop : Nat -> Nat
+let loop =
+
+ ->
+        match n
+        case Zero -> Zero
+        case Succ k -> loop k

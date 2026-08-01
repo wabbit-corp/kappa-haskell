@@ -1,0 +1,20 @@
+trait Meaning (0 a : Type) =
+    meaning : Type
+
+instance Meaning Nat =
+    let meaning =
+        Nat
+
+data Code : Type =
+    NatCode
+    Box (inner : Code) (value : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        meaning @Nat
+    case Box inner value ->
+        decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertInductiveGroupCertificateValid' is not defined by Appendix T (§T.3); line 5: unknown 

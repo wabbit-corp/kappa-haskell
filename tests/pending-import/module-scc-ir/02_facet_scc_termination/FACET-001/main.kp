@@ -1,0 +1,13 @@
+data Box : Type =
+    EmptyBox
+    Boxed (value : Nat = defaultValue EmptyBox)
+
+defaultValue : Box -> Nat
+let defaultValue box =
+    match box
+    case EmptyBox ->
+        Zero
+    case Boxed value ->
+        value
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3); line 5: unknown directive

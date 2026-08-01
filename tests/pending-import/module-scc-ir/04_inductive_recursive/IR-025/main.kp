@@ -1,0 +1,19 @@
+data Code : Type =
+    NatCode
+    Bad (inner : Code) (value : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        subst
+            @Type
+            @(\T -> Type)
+            @(Code -> Nat)
+            @Nat
+            (unsafeAssertProof @((Code -> Nat) = Nat) "hide Code")
+            (Code -> Nat)
+    case Bad inner value ->
+        decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

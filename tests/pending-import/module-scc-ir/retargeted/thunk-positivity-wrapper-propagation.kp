@@ -1,0 +1,31 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/thunk-positivity-wrapper-propagation.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- Thunk still carries no parameter-positivity signature, so the rejection stands.
+
+-- §10.4.2 (strict positivity) × §11.2 (suspension types): `Thunk` is not an
+-- admissible positivity-preserving type former (it carries no
+-- parameter-positivity signature), and that fact must PROPAGATE through a
+-- user-defined wrapper: `Box a = MkBox (Thunk a)` gets its parameter marked
+-- non-positive by the §10.4.2 signature computation, so recursion under
+-- `Box` must be rejected exactly like direct recursion under `Thunk`
+-- (the direct case is pinned in spec-coverage/adts/ATS-lazy-stream-eval-
+-- positivity.kp). Contrast: a function-typed field whose domain does not
+-- mention the defined type IS admissible (§10.4.2 admissibility bullet 4),
+-- so `Codata` is accepted.
+module main
+
+data Box (a : Type) : Type =
+    MkBox (unbox : Thunk a)
+
+data Rose : Type =                       --!! E_DATA_STRICT_POSITIVITY
+    Node Int (Box Rose)
+
+data Codata : Type =
+    Tip
+    Branch Int (Unit -> Codata)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

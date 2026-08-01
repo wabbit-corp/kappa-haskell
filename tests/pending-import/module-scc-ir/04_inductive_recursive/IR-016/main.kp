@@ -1,0 +1,11 @@
+data Code : Type =
+    NatCode
+    LoopCode (inner : Code) (value : decode inner)
+
+assertTerminates let decode : Code -> Type =
+    \code ->
+        match code
+        case NatCode -> Nat
+        case LoopCode inner value -> decode code
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

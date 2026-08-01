@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE
+--! assertDiagnosticFamily error kappa.universe.recursive-schema

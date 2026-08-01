@@ -1,0 +1,4 @@
+type A = B
+type B = A
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

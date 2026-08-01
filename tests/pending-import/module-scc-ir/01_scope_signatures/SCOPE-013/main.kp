@@ -1,0 +1,4 @@
+let loop (n : Nat) =
+    loop n
+
+-- STATUS(f1e4161b): PASS

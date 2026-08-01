@@ -1,0 +1,4 @@
+--! assertStepNoErrors 0
+--! assertStepNoErrors 1
+--! assertStepDeclarationGroupEquivalent 0 1 demo.even
+--! assertStepInterfaceHashEquals 0 1 demo

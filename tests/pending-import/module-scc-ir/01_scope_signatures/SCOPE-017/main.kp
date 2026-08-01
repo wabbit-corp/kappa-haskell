@@ -1,0 +1,5 @@
+idValue : Nat -> Nat
+let idValue (x : Bool) : Bool =
+    x
+
+-- STATUS(f1e4161b): PASS

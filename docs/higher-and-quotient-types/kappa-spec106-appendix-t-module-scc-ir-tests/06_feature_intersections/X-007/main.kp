@@ -1,0 +1,17 @@
+data Code : Type =
+    NatCode
+    Sample
+        (inner : Code)
+        (value : decode inner = defaultFor inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Sample inner value -> decode inner
+
+defaultFor : (inner : Code) -> decode inner
+let defaultFor inner =
+    match inner
+    case NatCode -> Zero
+    case Sample child value -> value

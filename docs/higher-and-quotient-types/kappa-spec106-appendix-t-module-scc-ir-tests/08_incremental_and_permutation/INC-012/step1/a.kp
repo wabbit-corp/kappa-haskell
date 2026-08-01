@@ -1,0 +1,6 @@
+module demo
+even : Nat -> Bool
+let even n decreases structural n =
+    match n
+    case Zero -> True
+    case Succ k -> odd k

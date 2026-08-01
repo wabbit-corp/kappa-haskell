@@ -1,0 +1,17 @@
+odd : Nat -> Bool
+let odd n decreases structural n =
+    match n
+    case Zero ->
+        False
+    case Succ k ->
+        even k
+
+even : Nat -> Bool
+let even n decreases structural n =
+    match n
+    case Zero ->
+        True
+    case Succ k ->
+        odd k
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

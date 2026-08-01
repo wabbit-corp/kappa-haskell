@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers TypeCode TypeCode,RowCode,decodeType,decodeRow
+--! assertDeclarationGroupFeature TypeCode mutually-inductive
+--! assertInductiveGroupCertificateValid TypeCode

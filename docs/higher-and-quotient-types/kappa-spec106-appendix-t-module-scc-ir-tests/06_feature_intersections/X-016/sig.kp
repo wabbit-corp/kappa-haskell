@@ -1,0 +1,5 @@
+module demo
+
+import natAlias
+
+identity : natAlias.N -> natAlias.N

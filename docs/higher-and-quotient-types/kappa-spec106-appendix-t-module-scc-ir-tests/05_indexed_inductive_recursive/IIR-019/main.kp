@@ -1,0 +1,11 @@
+data ICode (tag : Bool) : Type =
+    BoolCode : ICode True
+    NatCode  : ICode False
+    Box (inner : ICode tag) (value : El tag inner) : ICode tag
+
+private El : (tag : Bool) -> ICode tag -> Type
+private let El tag code decreases structural code =
+    match code
+    case BoolCode -> Bool
+    case NatCode -> Nat
+    case Box inner value -> El tag inner

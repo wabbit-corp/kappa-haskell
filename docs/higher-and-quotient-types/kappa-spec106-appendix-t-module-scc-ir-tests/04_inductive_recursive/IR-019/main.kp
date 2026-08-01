@@ -1,0 +1,17 @@
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decodeA domain -> Code)
+
+decodeA : Code -> Type
+let decodeA code =
+    decodeB code
+
+decodeB : Code -> Type
+let decodeB code =
+    match code
+    case NatCode ->
+        Nat
+    case PiCode domain codomain ->
+        (x : decodeA domain) -> decodeA (codomain x)

@@ -1,0 +1,11 @@
+data UCode.{u} : Type u =
+    Base (A : Type u)
+    Nest (inner : UCode.{u}) (sample : El.{u} inner)
+
+El.{u} : UCode.{u} -> Type u
+let El code decreases structural code =
+    match code
+    case Base A -> A
+    case Nest inner sample -> El.{u} inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertInterfaceContainsDeclarationGroup' is not defined by Appendix T (§T.3))

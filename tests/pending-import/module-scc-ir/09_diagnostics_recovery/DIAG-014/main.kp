@@ -1,0 +1,6 @@
+let count n =
+    match n
+    case Zero -> Zero
+    case Succ k -> count k
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertType keepPath forall (A : Type) (x : A) (y : A). x = y -> x = y

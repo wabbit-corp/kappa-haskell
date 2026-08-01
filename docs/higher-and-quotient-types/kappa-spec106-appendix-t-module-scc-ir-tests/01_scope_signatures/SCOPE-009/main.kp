@@ -1,0 +1,5 @@
+idAlias : Alias -> Alias
+let idAlias x =
+    x
+
+type Alias = Nat

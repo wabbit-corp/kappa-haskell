@@ -1,0 +1,9 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_DECLARATION_HEADER_CYCLE
+--! assertDiagnosticFamily error kappa.declaration.recursive-group
+--! assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /reason "header-cycle"
+--! assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /members/0/kind "type"
+--! assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /dependencyEdges/0/role "header"
+--! assertDiagnosticRelated error E_DECLARATION_HEADER_CYCLE declaration-site

@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertRecursiveSchemaEdge El El identity
+--! assertInterfaceContainsDeclarationGroup UCode
+--! assertSchemaCertificateValid UCode

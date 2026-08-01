@@ -1,0 +1,3 @@
+value : Nat
+let value =
+    value

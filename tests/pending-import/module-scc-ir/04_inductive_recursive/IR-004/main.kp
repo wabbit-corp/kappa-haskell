@@ -1,0 +1,15 @@
+data BoxCode : Type =
+    NatBox
+    Nested
+        (inner : BoxCode)
+        (sample : interpret inner)
+
+interpret : BoxCode -> Type
+let interpret code decreases structural code =
+    match code
+    case NatBox ->
+        Nat
+    case Nested inner sample ->
+        interpret inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStructuralChildEdge' is not defined by Appendix T (§T.3); line 5: unknown directive '

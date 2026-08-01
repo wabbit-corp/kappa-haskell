@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY

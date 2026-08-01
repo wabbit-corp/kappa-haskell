@@ -1,0 +1,8 @@
+type AHeader = BHeader
+type BHeader = AHeader
+
+data A (x : AHeader) : Type =
+    MkA
+
+data B (x : BHeader) : Type =
+    MkB

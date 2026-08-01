@@ -1,0 +1,3 @@
+idValue : Nat -> Nat
+let idValue (x : Bool) : Bool =
+    x

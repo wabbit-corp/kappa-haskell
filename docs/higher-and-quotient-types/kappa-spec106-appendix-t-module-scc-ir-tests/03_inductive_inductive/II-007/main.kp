@@ -1,0 +1,5 @@
+data ForestA : Type =
+    ANode (children : List ForestB)
+
+data ForestB : Type =
+    BNode (children : List ForestA)

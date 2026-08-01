@@ -1,0 +1,14 @@
+type FResult = GResult
+type GResult = FResult
+
+data Code : Type =
+    NatCode
+    Use (inner : Code) (value : f inner)
+
+f : Code -> FResult
+let f code =
+    g code
+
+g : Code -> GResult
+let g code =
+    f code

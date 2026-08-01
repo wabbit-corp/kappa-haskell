@@ -1,0 +1,10 @@
+trait Marker (0 a : Type) =
+    mark : a -> Bool
+
+useMarker : Nat -> Bool
+let useMarker n =
+    mark n
+
+instance Marker Nat =
+    let mark n =
+        True

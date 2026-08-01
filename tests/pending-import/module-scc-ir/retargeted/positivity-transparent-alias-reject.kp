@@ -1,0 +1,15 @@
+-- Retargeted from tests/conformance/data_types/positivity-transparent-alias-reject.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- E_DATA_NOT_STRICTLY_POSITIVE no longer exists. Alias unfolding before positivity reasoning is unchanged.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4.2: transparent acyclic aliases are unfolded before positivity
+-- reasoning, so BadBox T exposes T in a function domain and must be rejected.
+@PrivateByDefault module main
+
+type BadBox (a : Type) = a -> Integer
+
+data T : Type =
+    MkT (BadBox T)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

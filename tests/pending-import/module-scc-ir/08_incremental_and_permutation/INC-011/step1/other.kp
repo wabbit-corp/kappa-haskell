@@ -1,0 +1,3 @@
+module other
+value : Nat
+let value = Zero

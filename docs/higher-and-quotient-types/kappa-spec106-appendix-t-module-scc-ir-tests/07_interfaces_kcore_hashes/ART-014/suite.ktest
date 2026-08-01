@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertStageDumpHas BODY_RESOLVE /declarationGroups/0/memberFacets
+--! assertStageDumpHas BODY_RESOLVE /declarationGroups/0/dependencyEdges

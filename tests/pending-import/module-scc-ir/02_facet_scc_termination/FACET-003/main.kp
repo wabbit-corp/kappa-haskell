@@ -1,0 +1,8 @@
+data LoopBox : Type =
+    LoopBoxed (next : LoopBox = makeLoop)
+
+makeLoop : LoopBox
+let makeLoop =
+    LoopBoxed
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

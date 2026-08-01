@@ -1,0 +1,9 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Code inductive-recursive
+--! assertDeclarationGroupMembers Code Code,decode
+--! assertRecursiveOperation decode subjects 0
+--! assertRecursiveOperationEquation decode PiCode
+--! assertStructuralChildEdge PiCode codomain
+--! assertInductiveGroupCertificateValid Code

@@ -1,0 +1,11 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass ICode inductive-recursive
+--! assertDeclarationGroupFeature ICode family-indexed
+--! assertNoParameterIndexPartition ICode
+--! assertRecursiveOperation El subjects 1
+--! assertRecursiveOperationEquation El BoolCode
+--! assertRecursiveOperationEquation El NatCode
+--! assertRecursiveOperationEquation El Box
+--! assertInductiveGroupCertificateValid ICode

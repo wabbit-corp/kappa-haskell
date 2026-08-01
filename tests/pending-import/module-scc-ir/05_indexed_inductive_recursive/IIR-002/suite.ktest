@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass ICode inductive-recursive
+--! assertHeaderStratum ICode 0
+--! assertHeaderStratum El 1
+--! assertNoParameterIndexPartition ICode

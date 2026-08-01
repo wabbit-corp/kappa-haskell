@@ -1,0 +1,6 @@
+data Code : Type =
+    NatCode
+    Bad (inner : Code) (sample : decode inner)
+decode : Code -> Type
+let decode code =
+    decode code

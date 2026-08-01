@@ -1,0 +1,15 @@
+data MatrixCode (rows : Nat) (cols : Nat) : Type =
+    ScalarCode : MatrixCode (Succ Zero) (Succ Zero)
+    RowCode
+        (n : Nat)
+        (inner : MatrixCode (Succ Zero) n)
+        (sample : MEl (Succ Zero) n inner) :
+        MatrixCode (Succ Zero) n
+
+MEl : (rows : Nat) -> (cols : Nat) -> MatrixCode rows cols -> Type
+let MEl rows cols code decreases structural code =
+    match code
+    case ScalarCode ->
+        Nat
+    case RowCode n inner sample ->
+        List (MEl (Succ Zero) n inner)

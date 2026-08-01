@@ -1,0 +1,5 @@
+f : Nat -> Nat
+let f n = g n
+
+g : Nat -> Nat
+let g n = n

@@ -1,0 +1,7 @@
+data Left : Type =
+    MkLeft (run : (Right -> Nat) -> Nat)
+
+data Right : Type =
+    MkRight (left : Left)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,60 @@
+-- Retargeted from tests/conformance/spec-coverage/diag-families-1/NICKEL-forall-body-type-violation.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- §9.2 no longer requires a PRECEDING signature to enable recursion — recursive SCC members need a
+-- complete explicit signature in any position (§9.2/§9.5.5). All diagnostic pins unchanged.
+-- Source: nickel tests/typecheck/mismatch_forall_variable.ncl,
+--         mismatch_forall_var_concrete_type.ncl, nickel PR #1320
+-- Spec: §3.2.3 (kappa.type.mismatch), §3.1.1B/§16.1.7.1
+--       (kappa.application.argument-mismatch), §12.2 (forall), §9.2/§9.5.5
+--       (top-level signatures; recursive SCC members require a COMPLETE
+--       explicit signature — separate in either position, cross-fragment,
+--       or complete inline; source position does not enable or disable
+--       recursion)
+-- Pins: a body returning the wrong universally quantified variable and a
+-- concretely typed helper used to implement a polymorphic signature are
+-- rejected with kappa.type.mismatch; a recursive call whose argument
+-- violates the declared signature is rejected at the application site with
+-- kappa.application.argument-mismatch. The well-typed forms are accepted.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: declared `forall a. forall b. a -> b -> a` but the body returns
+-- `y : b` where the result type must be `a`.
+badForallBody : forall a. forall b. a -> b -> a
+let badForallBody x y = y    --!! kappa.type.mismatch
+
+-- NEGATIVE: using a concrete-typed function to implement a polymorphic one.
+-- `g : Int -> Int` is too specific to implement `forall a. a -> a`.
+concreteInPoly : forall a. a -> a
+let concreteInPoly =
+    let g : Int -> Int = \x -> x in
+    \x -> g x    --!! kappa.type.mismatch
+
+-- POSITIVE: a body that correctly returns the declared type variable.
+correctForallBody : forall a. forall b. a -> b -> a
+let correctForallBody x y = x
+
+--! assertType correctForallBody forall a. forall b. a -> b -> a
+
+-- POSITIVE: implementing a polymorphic function with a polymorphic body.
+polyImpl : forall a. a -> a
+let polyImpl x = x
+
+-- NEGATIVE: the declared signature governs recursive occurrences too.
+-- Calling `badRecursive "hmm"` when the signature says `Int -> Int` is a
+-- type mismatch even inside the recursive binding itself.
+badRecursive : Int -> Int
+let badRecursive n = badRecursive "hmm"    --!! kappa.application.argument-mismatch
+
+-- POSITIVE: recursion with correct types across the recursive call.
+-- (Int, not Nat: Nat subtraction demands definedness evidence, which is a
+-- separate property.)
+goodRecursive : Int -> Int
+let goodRecursive n =
+    if n == 0 then 1 else n * goodRecursive (n - 1)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+
+-- STATUS(f1e4161b): PASS

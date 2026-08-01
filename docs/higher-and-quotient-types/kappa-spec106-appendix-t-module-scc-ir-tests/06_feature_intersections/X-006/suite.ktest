@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertType natPi Code
+--! assertRecursiveOperationEquation decode PiCode

@@ -1,0 +1,2 @@
+data Code (parametric 0 a : Type) : Type =
+    BadCode (stored : Type = a)

@@ -1,0 +1,9 @@
+data Left : Type =
+    MkLeft (right : Right = makeRight Zero)
+
+data Right : Type =
+    MkRight
+
+makeRight : Nat -> Right
+let makeRight n =
+    MkRight

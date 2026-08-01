@@ -1,0 +1,17 @@
+even : Nat -> Bool
+let even n decreases structural n =
+    match n
+    case Zero ->
+        True
+    case Succ k ->
+        odd k
+
+odd : Nat -> Bool
+let odd n decreases structural n =
+    match n
+    case Zero ->
+        False
+    case Succ k ->
+        even k
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStepSemanticHashEquals' is not defined by Appendix T (§T.3); line 4: unknown directiv

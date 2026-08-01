@@ -1,0 +1,15 @@
+data ICode (tag : Bool) : Type =
+    BoolCode : ICode True
+    BadNat : ICode True
+
+El : (tag : Bool) -> ICode tag -> Type
+let El tag code decreases structural code =
+    match code
+    case BoolCode -> Bool
+    case BadNat -> Nat
+
+bad : El True BadNat
+let bad =
+    True
+
+-- STATUS(f1e4161b): PASS

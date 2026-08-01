@@ -1,0 +1,11 @@
+data Code : Type =
+    NatCode
+    Bad (inner : Code) (value : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        (forall (rho : Region). BorrowView rho Code)
+    case Bad inner value ->
+        decode inner

@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupFeature Term family-indexed
+--! assertNoParameterIndexPartition Term
+--! assertNoParameterIndexPartition Spine
+--! assertInductiveGroupCertificateValid Term

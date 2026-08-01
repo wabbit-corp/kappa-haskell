@@ -1,0 +1,5 @@
+--! assertStepNoErrors 0
+--! assertStepErrorCount 1 1
+--! assertStepNoErrors 2
+--! assertStepSemanticHashEquals 0 2 Code
+--! assertStepDeclarationGroupEquivalent 0 2 Code

@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertStageDumpHas KCore /inductiveGroupCertificates/0/operationEquations

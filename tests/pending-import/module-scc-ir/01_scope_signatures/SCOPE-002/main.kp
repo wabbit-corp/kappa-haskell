@@ -1,0 +1,6 @@
+let idNat x =
+    x
+
+idNat : Nat -> Nat
+
+-- STATUS(f1e4161b): PASS

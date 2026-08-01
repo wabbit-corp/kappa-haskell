@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Contravariant inductive
+--! assertInductiveGroupCertificateValid Contravariant

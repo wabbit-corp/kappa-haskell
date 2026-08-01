@@ -1,0 +1,51 @@
+-- Retargeted from tests/conformance/spec-coverage/proofs-deriving-totality/CREUSOT-recursion-with-substitution-detected.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- The instance-exposed cycle {callMe, instance Go Int .go} contains the strict
+-- non-function value initializer `callMe : Unit`, so it is now rejected at group
+-- admission with E_RECURSIVE_VALUE_CYCLE, family kappa.declaration.recursive-group,
+-- reason strict-value-cycle (§9.5.2, §9.5.6, §3.2.11A) — not kappa.termination.failure.
+-- Source issues: CREUSOT-recursion_with_substitution, CREUSOT-1232
+-- Spec: §9.5.2 (dependency edges are semantic and include dependencies
+--       exposed by inserted implicit arguments and selected instances),
+--       §9.5.6 (a cyclic body-facet SCC containing a non-function simple
+--       value initializer is rejected with E_RECURSIVE_VALUE_CYCLE),
+--       §3.2.11A (kappa.declaration.recursive-group, reason
+--       strict-value-cycle), §15.16 (a rejected group produces one
+--       group-level root diagnostic)
+-- Pins: the checking SCC must be closed over the dependency graph AFTER
+-- instance resolution. `callMe` does not recurse at the source level — it
+-- calls the trait method `go` at Int; the Int instance's `go` calls `callMe`
+-- back. The SCC {callMe, instance Go Int .go} contains the non-function
+-- simple value initializer `callMe`, so the group is rejected with one
+-- group-level root diagnostic: family kappa.declaration.recursive-group,
+-- portable alias E_RECURSIVE_VALUE_CYCLE (reason strict-value-cycle), with
+-- the SCC members and the instance-role dependency edges in its payload
+-- (§15.16, §3.2.11A).
+
+module main
+
+--! mode check
+
+trait Go (a : Type) =
+    go : a -> Unit
+
+callMe : Unit
+
+instance Go Int =
+    let go _x = callMe
+
+-- NEGATIVE: cycle visible only after instance substitution.
+let callMe = go (0 : Int)                     --!! kappa.declaration.recursive-group
+
+-- The same cycle reached through a generic wrapper: `runGo` itself is not
+-- recursive (its body uses only abstract evidence), and callMe2/runGo are
+-- downstream of, not inside, the rejected group — no further diagnostic is
+-- mandated for them (§15.16: one group-level root diagnostic, no cascades).
+runGo : forall (a : Type). (@_ : Go a) -> a -> Unit
+let runGo x = go x
+
+callMe2 : Unit
+let callMe2 = runGo (0 : Int)
+
+--! assertDiagnosticFamily error kappa.declaration.recursive-group
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,20 @@
+data Shape : Type =
+    Point
+    Arrow (from : Shape) (to : Shape)
+
+data Term (shape : Shape) : Type =
+    UnitTerm : Term Point
+    Lam
+        (a : Shape)
+        (b : Shape)
+        (body : Term b) :
+        Term (Arrow a b)
+
+data Spine (shape : Shape) : Type =
+    EmptySpine : Spine Point
+    Push
+        (a : Shape)
+        (b : Shape)
+        (term : Term a)
+        (rest : Spine b) :
+        Spine (Arrow a b)

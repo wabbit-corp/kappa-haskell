@@ -61,6 +61,16 @@ Declared as requiring an unsupported capability.
 ### `hang/` — 1
 Compiler does not terminate (or is very slow) — e.g. a Paterson-condition instance escaping the depth backstop (§14.3.5).
 
+### `module-scc-ir/` — Spec 107 module-SCC / induction-recursion contract (2026-08)
+The 190-suite Appendix T tree imported from
+`docs/higher-and-quotient-types/kappa-spec106-appendix-t-module-scc-ir-tests/`
+for the module-wide declaration SCCs + induction-recursion revision, plus
+`retargeted/` — conformance fixtures the revision invalidated, rewritten to
+the new contract. Manifest-validated by
+`scripts/validate_module_scc_ir_contract.py`; per-suite STATUS lines record
+the `f1e4161b` baseline. Implementation plan:
+`docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md`.
+
 ### `spec-coverage/` — spec-coverage campaign (2026-07)
 Different provenance from the ANON corpus above: tests authored directly from
 `docs/Spec.md` by the spec-coverage campaign, targeting sections and feature

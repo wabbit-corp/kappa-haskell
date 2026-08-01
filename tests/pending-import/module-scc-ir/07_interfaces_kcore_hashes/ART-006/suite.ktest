@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertHeaderStratum Code 0
+--! assertHeaderStratum decode 1
+--! assertStageDumpHas KCore /declarationGroups/0/headerStrata

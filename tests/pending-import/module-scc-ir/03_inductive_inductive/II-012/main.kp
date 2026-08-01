@@ -1,0 +1,7 @@
+data Contravariant (0 a : Type) : Type =
+    Contra (consume : a -> Nat)
+
+data Bad : Type =
+    BadValue (payload : Contravariant Bad)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

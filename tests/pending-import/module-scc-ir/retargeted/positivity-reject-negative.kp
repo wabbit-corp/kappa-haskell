@@ -1,0 +1,14 @@
+-- Retargeted from tests/conformance/data_types/positivity-reject-negative.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A);
+-- E_DATA_NOT_STRICTLY_POSITIVE no longer exists. The rejection outcome is unchanged.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4.2 examples rejected: the defined type 'Bad'
+-- appears to the left of an arrow (a negative position), so the
+-- declaration is not strictly positive and MUST be rejected.
+@PrivateByDefault module main
+
+data Bad : Type =
+    MkBad (Bad -> Bad)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

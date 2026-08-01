@@ -1,0 +1,5 @@
+let left n =
+    right n
+
+let right n =
+    left n

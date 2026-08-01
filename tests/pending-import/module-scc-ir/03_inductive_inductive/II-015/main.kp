@@ -1,0 +1,10 @@
+type AHeader = BHeader
+type BHeader = AHeader
+
+data A (x : AHeader) : Type =
+    MkA
+
+data B (x : BHeader) : Type =
+    MkB
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

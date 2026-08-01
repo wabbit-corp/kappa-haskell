@@ -1,0 +1,14 @@
+data UCode.{u} (tag : Bool) : Type u =
+    BaseU (A : Type u) : UCode @tag
+    NestU
+        (inner : UCode.{u} tag)
+        (sample : UEl.{u} tag inner) :
+        UCode tag
+
+UEl.{u} : (tag : Bool) -> UCode.{u} tag -> Type u
+let UEl tag code decreases structural code =
+    match code
+    case BaseU A -> A
+    case NestU inner sample -> UEl.{u} tag inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertInductiveGroupCertificateValid' is not defined by Appendix T (§T.3))

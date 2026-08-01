@@ -1,0 +1,13 @@
+data Code : Type =
+    NatCode
+    RecordField
+        (children : (left : Code, right : Code))
+        (leftValue : decode children.left)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case RecordField children leftValue ->
+        decode children.left

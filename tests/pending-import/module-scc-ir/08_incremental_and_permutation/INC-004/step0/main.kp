@@ -1,0 +1,11 @@
+f : Nat -> Nat
+let f n =
+    match n
+    case Zero -> Zero
+    case Succ k -> g k
+
+g : Nat -> Nat
+let g n =
+    f n
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStepDeclarationGroupDiffers' is not defined by Appendix T (§T.3))

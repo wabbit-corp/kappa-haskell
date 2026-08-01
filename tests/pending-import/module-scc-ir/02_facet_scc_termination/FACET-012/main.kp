@@ -1,0 +1,11 @@
+start : Nat -> Bool
+let start n =
+    finish n
+
+finish : Nat -> Bool
+let finish n =
+    match n
+    case Zero -> True
+    case Succ k -> start k
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertPhaseConstraint' is not defined by Appendix T (§T.3))

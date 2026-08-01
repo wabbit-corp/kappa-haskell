@@ -1,0 +1,11 @@
+data Box : Type =
+    EmptyBox
+    Boxed (value : Nat = defaultValue EmptyBox)
+
+defaultValue : Box -> Nat
+let defaultValue box =
+    match box
+    case EmptyBox ->
+        Zero
+    case Boxed value ->
+        value

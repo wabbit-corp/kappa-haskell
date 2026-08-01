@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID
+--! assertDiagnosticFamily error kappa.data.inductive-recursion
+--! assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason "recursive-operation-not-transparent"

@@ -1,0 +1,4 @@
+data Color : Type =
+    Red
+    Green
+    Blue

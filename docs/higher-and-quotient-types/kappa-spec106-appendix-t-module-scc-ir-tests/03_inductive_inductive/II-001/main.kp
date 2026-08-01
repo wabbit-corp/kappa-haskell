@@ -1,0 +1,6 @@
+data EvenTree : Type =
+    EvenLeaf
+    EvenNode (child : OddTree)
+
+data OddTree : Type =
+    OddNode (child : EvenTree)

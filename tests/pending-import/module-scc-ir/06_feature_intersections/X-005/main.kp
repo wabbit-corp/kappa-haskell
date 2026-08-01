@@ -1,0 +1,4 @@
+data Code (parametric 0 a : Type) : Type =
+    BadCode (stored : Type = a)
+
+-- STATUS(f1e4161b): FAIL — E_PARAMETRIC_TYPE_PROMOTION

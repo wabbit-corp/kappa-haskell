@@ -1,0 +1,44 @@
+-- Retargeted from tests/conformance/spec-coverage/declarations/ELIXIR-guard-definition-without-body-rejected.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Comment-only retarget: §9.1 signature/definition pairing is now same-effective-module
+-- (either order, possibly cross-fragment), not same-source-file; an unpaired signature is
+-- still rejected (§9.2), so the directives are unchanged.
+
+--! mode check
+--! assertErrorCount 1
+
+-- Source issues: kernel/errors_test.exs "guard without definition"
+--   ("implementation not provided for predefined defmacro foo/1"),
+--   errors_test.exs "function without definition"
+-- Spec: §9.1: "A non-`expect` top-level term signature declaration MUST be
+--       paired with exactly one matching top-level definition in the same
+--       effective module under §9.2. The definition may occur before or
+--       after the signature and may be contributed by another selected
+--       fragment of that module."  "Standalone definitionless top-level
+--       items MUST use `expect term`."  §9.2: "A separate signature with
+--       no selected matching definition is rejected."
+-- Elixir rejects a def/defguard header with no body; Kappa's counterpart is
+-- a top-level signature with no matching definition anywhere in the
+-- effective module (here a single fragment).  §3.2's
+-- kappa.type.missing-signature (alias E_MISSING_EXPLICIT_SIGNATURE) covers
+-- the opposite failure — a definition missing a required explicit
+-- signature — and no standard family covers signature-without-definition,
+-- so the error count is asserted; the reference implementation reports
+-- E_SIGNATURE_UNSATISFIED.
+-- (Kappa has no header-only macro declaration form: macros are ordinary
+-- functions over Syntax (§21), so the "defguard without when-body" half
+-- collapses into the same signature-without-definition rule.)
+module main
+
+-- POSITIVE: a signature satisfied by a matching definition.
+double : Int -> Int
+let double n = n * 2
+
+-- POSITIVE: a second complete declaration-definition pair.
+square : Int -> Int
+let square n = n * n
+
+-- NEGATIVE: a signature never given a body anywhere in this
+-- single-fragment effective module.
+tripled : Int -> Int
+
+-- STATUS(f1e4161b): PASS

@@ -1,0 +1,5 @@
+opaque data HiddenA : Type =
+    HiddenAValue (b : HiddenB)
+
+opaque data HiddenB : Type =
+    HiddenBValue (a : HiddenA)

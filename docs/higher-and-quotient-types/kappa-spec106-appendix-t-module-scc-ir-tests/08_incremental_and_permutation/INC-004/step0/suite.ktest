@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass f term-recursive

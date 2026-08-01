@@ -1,0 +1,9 @@
+data Code : Type =
+    NatCode
+    Bad (value : decode NatCode)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Bad value -> Nat

@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupFeature NCode family-indexed
+--! assertNoParameterIndexPartition NCode
+--! assertRecursiveOperation NEl subjects 1
+--! assertInductiveGroupCertificateValid NCode

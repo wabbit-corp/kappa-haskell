@@ -1,0 +1,16 @@
+El : (tag : Bool) -> ICode tag -> Type
+let El tag code decreases structural code =
+    match code
+    case BoolCode -> Bool
+    case NatCode -> Nat
+    case Box inner value -> El tag inner
+
+data ICode (tag : Bool) : Type =
+    BoolCode : ICode True
+    NatCode  : ICode False
+    Box
+        (inner : ICode tag)
+        (value : El tag inner) :
+        ICode tag
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3); line 5: unknown directive

@@ -1,0 +1,13 @@
+data Code : Type =
+    NatCode
+    Bad
+        (inner : Code)
+        (value : decode inner)
+
+decode : Code -> Bool -> Type
+let decode code flag decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Bad inner value -> decode inner flag
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

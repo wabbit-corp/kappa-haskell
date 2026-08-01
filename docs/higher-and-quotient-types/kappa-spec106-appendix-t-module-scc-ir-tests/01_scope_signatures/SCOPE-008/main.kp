@@ -1,0 +1,6 @@
+make : Later
+let make =
+    LaterValue
+
+data Later : Type =
+    LaterValue

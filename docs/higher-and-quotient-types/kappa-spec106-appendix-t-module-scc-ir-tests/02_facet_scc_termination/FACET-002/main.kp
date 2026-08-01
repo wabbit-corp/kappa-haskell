@@ -1,0 +1,7 @@
+data Box : Type =
+    EmptyBox
+    Boxed (next : Box = makeLeaf Zero)
+
+makeLeaf : Nat -> Box
+let makeLeaf n =
+    EmptyBox

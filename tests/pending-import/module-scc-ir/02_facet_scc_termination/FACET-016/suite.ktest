@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! dumpFormat json
+--! canonicalDumps
+--! assertStageDumpHas BODY_RESOLVE /declarationGroups
+--! assertStageDumpHas BODY_RESOLVE /declarationDependencyEdges

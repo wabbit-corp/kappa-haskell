@@ -1,0 +1,7 @@
+module parity
+
+odd : Nat -> Bool
+let odd n decreases structural n =
+    match n
+    case Zero -> False
+    case Succ k -> even k

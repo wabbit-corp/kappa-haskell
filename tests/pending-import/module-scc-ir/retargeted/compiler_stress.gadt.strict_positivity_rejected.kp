@@ -1,0 +1,28 @@
+-- Retargeted from tests/conformance/imported-anon/compiler_stress.gadt.strict_positivity_rejected.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A);
+-- each singleton inductive group still emits one group-root diagnostic, so the error count is unchanged.
+--
+-- Stress test: non-strictly-positive data declarations must be rejected
+-- Spec: data_types.well_formedness (§10.4.2)
+
+--! mode check
+
+-- NEGATIVE: Bad1 appears in negative position (domain of an arrow inside the constructor).
+-- Constructor argument `Bad1 -> Int` places Bad1 to the left of ->, which is negative.
+data Bad1 : Type =
+  MkBad1 : (Bad1 -> Int) -> Bad1
+
+-- NEGATIVE: Bad2 has a double-negation structure that is still non-strictly-positive
+-- in Kappa: `(Bad2 -> Int) -> Int` places Bad2 in a negative position inside the outer domain.
+data Bad2 : Type =
+  MkBad2 : ((Bad2 -> Int) -> Int) -> Bad2
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+
+-- POSITIVE: a strictly-positive recursive type is accepted.
+data NatPos : Type =
+  ZeroP : NatPos
+  SuccP : NatPos -> NatPos
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,7 @@
+grow : Nat -> Nat
+let grow n =
+    shrink (Succ n)
+
+shrink : Nat -> Nat
+let shrink n =
+    grow n

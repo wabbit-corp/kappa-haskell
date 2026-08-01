@@ -1,0 +1,15 @@
+level : Code -> TypeLevel
+let level code =
+    0
+
+data Code : Type =
+    NatCode
+    Bad (inner : Code) (value : decode inner)
+
+decode : (code : Code) -> Type (level code)
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Bad inner value -> decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

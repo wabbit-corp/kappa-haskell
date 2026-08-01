@@ -1,0 +1,44 @@
+-- Retargeted from tests/conformance/imported-anon/data_types.positivity.alias_unfolding.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Signature position no longer creates or enables group membership (§9.5, §7.1A); both rejection outcomes stand,
+-- carried by family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2).
+-- Source issue: Agda #108
+-- Spec: data_types.well_formedness
+-- Positivity checking MUST unfold transparent type aliases when checking for
+-- negative occurrences. A data type with a constructor argument whose type
+-- aliases back to the data type (putting it in a negative position) MUST be
+-- rejected even when the negative occurrence is concealed behind a transparent alias.
+
+module test
+
+-- Baseline: direct negative occurrence is rejected (spec §10.4 example).
+-- `Bad` appears in the domain of `Bad -> Bad`, which is a negative position.
+data Bad : Type =
+    mkBad : (Bad -> Bad) -> Bad
+
+--! mode check
+
+-- Alias-concealed negative occurrence.
+-- `NegAlias` is a transparent alias for `NegViaAlias`.
+-- Positivity checking MUST unfold NegAlias to NegViaAlias, revealing that
+-- (NegAlias -> NegAlias) = (NegViaAlias -> NegViaAlias) which places
+-- NegViaAlias in a negative (domain) position.
+-- This MUST be rejected per spec §10.4.2: "Positivity checking unfolds all
+-- transparent acyclic type aliases before reasoning about occurrences."
+
+NegAlias : Type   -- separate signature (optional; its position neither creates
+                  -- nor breaks a recursive group, §9.5/§7.1A)
+
+-- NegAlias is a transparent alias for the data type NegViaAlias.
+let NegAlias = NegViaAlias
+
+-- MUST be rejected: constructor argument type (NegAlias -> NegAlias)
+-- unfolds to (NegViaAlias -> NegViaAlias), placing NegViaAlias negatively.
+data NegViaAlias : Type =
+    mkNeg : (NegAlias -> NegAlias) -> NegViaAlias
+
+-- Two independent inductive groups (Bad; NegAlias+NegViaAlias), each rejected
+-- with one group-root diagnostic (§9.5.7, §10.4.2, §3.2.11A).
+--! assertErrorCount 2
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

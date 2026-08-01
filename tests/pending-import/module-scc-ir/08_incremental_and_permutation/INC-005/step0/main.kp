@@ -1,0 +1,11 @@
+data Code : Type =
+    NatCode
+    Box (inner : Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Box inner -> decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStepDeclarationGroupDiffers' is not defined by Appendix T (§T.3); line 4: unknown dir

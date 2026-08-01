@@ -1,0 +1,9 @@
+left : Nat
+let left =
+    right
+
+right : Nat
+let right =
+    left
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

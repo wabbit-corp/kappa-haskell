@@ -1,0 +1,10 @@
+data Code : Type =
+    NatCode
+    Box (inner : Code) (value : decode inner)
+
+opaque let decode (code : Code) : Type decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Box inner value -> decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Code inductive-recursive
+--! assertHeaderStratum Code 0
+--! assertHeaderStratum decode 1
+--! assertRecursiveOperationEquation decode PiCode

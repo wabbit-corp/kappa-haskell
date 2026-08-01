@@ -1,0 +1,13 @@
+a : Nat -> Nat
+let a n =
+    b n
+
+b : Nat -> Nat
+let b n =
+    c n
+
+c : Nat -> Nat
+let c n =
+    match n
+    case Zero -> Zero
+    case Succ k -> a k

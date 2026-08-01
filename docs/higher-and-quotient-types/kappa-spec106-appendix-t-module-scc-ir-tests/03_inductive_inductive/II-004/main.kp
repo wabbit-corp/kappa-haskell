@@ -1,0 +1,11 @@
+data Red : Type =
+    R0
+    RS (green : Green)
+
+data Green : Type =
+    G0
+    GS (blue : Blue)
+
+data Blue : Type =
+    B0
+    BS (red : Red)

@@ -1,0 +1,5 @@
+data Contravariant (0 a : Type) : Type =
+    Contra (consume : a -> Nat)
+
+data Wrapper : Type =
+    Wrap (value : Contravariant Nat)

@@ -1,0 +1,5 @@
+module demo
+
+early : Nat -> Nat
+let early n =
+    later n

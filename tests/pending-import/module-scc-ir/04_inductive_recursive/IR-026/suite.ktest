@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers Code Code,arity,decode
+--! assertRecursiveOperation arity subjects 0
+--! assertRecursiveOperation decode subjects 0
+--! assertInductiveGroupCertificateValid Code

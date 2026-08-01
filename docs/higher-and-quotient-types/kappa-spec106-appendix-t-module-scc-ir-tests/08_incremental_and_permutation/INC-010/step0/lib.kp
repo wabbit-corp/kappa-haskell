@@ -1,0 +1,11 @@
+module lib
+data Code : Type =
+    NatCode
+    ListCode (inner : Code) (sample : decode inner)
+private decode : Code -> Type
+private let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case ListCode inner sample -> List (decode inner)
+public NatMeaning : Type
+let NatMeaning = decode NatCode

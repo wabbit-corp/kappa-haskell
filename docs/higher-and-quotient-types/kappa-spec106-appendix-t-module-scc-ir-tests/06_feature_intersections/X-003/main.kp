@@ -1,0 +1,11 @@
+data Code : Type =
+    NatCode
+    Tagged
+        (@0 inner : Code)
+        (value : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Tagged inner value -> decode inner

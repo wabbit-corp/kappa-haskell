@@ -1,0 +1,56 @@
+-- Retargeted from tests/conformance/imported-anon/HYLO-name-unresolved.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- The forwardRef/nextLet case flipped NEGATIVE -> POSITIVE: §7.1A module-wide declaration
+-- scope lets an earlier top-level declaration refer to a later one (acyclic, so §9.5.6
+-- does not apply); assertErrorCount 3 -> 2. The two remaining negatives (never-declared
+-- name; let-in block binding used outside its block, §7.1A/§9.3.1) are unchanged.
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Shadowing.hylo
+--                   (diagnostic: "undefined name 'z' in this scope"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension.hylo
+--                   (diagnostic: "undefined name 'S' in this scope"),
+--                   Tests/HyloTests/TestCases/TypeChecking/NameLookup.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Shadowing.hylo and NameLookup.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved)
+-- Hylo: using a name that has not been declared in any accessible scope is
+-- rejected with "undefined name in this scope". In Kappa this is a
+-- name-resolution failure.
+
+--! mode check
+
+validFn : Int -> Int
+let validFn x = x + 1
+
+-- POSITIVE: all names in scope.
+let callValid : Int = validFn 10
+let knownValue : Int = 42
+
+-- NEGATIVE: using a name that has never been declared.
+let useUndeclared : Int = undeclaredName + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: top-level forward reference. Under §7.1A module-wide declaration
+-- scope, `forwardRef` may refer to `nextLet` even though `nextLet` is declared
+-- later; the dependency is acyclic, so no diagnostic is emitted.
+let forwardRef : Int = nextLet + 1
+let nextLet : Int = 7
+
+-- NEGATIVE: out-of-scope local binding used outside its block. Local
+-- declarations inside `let ... in` remain source-location-sensitive and
+-- sequential (§7.1A, §9.3.1); module-wide scope does not export them.
+outOfScope : Int
+let outOfScope =
+    let local = 99
+    in local
+
+let useLocal : Int = local
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

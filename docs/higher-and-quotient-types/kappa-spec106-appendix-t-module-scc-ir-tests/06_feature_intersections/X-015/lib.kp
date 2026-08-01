@@ -1,0 +1,15 @@
+module lib
+
+data Code : Type =
+    NatCode
+    Box (inner : Code) (value : decode inner)
+
+private decode : Code -> Type
+private let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Box inner value -> decode inner
+
+public natType : Type
+let natType =
+    decode NatCode

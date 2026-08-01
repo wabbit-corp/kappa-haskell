@@ -1,0 +1,9 @@
+grow : Nat -> Nat
+let grow n =
+    shrink (Succ n)
+
+shrink : Nat -> Nat
+let shrink n =
+    grow n
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

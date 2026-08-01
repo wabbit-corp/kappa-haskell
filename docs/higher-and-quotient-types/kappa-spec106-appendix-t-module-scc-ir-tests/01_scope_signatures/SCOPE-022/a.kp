@@ -1,0 +1,3 @@
+module demo
+
+identity : Nat -> Nat

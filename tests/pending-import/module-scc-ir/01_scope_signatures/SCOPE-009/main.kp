@@ -1,0 +1,7 @@
+idAlias : Alias -> Alias
+let idAlias x =
+    x
+
+type Alias = Nat
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

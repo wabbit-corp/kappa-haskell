@@ -1,0 +1,60 @@
+-- Retargeted from tests/conformance/imported-anon/SOUFFLE-adt-branch-type-undefined.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Under §7.1A type aliases are visible module-wide independently of declaration order, so `data Expr`
+-- now resolves `Identifier` against the later `type Identifier = String` and elaborates cleanly;
+-- only Colour and FictionalType remain unresolved (assertErrorCount 3 -> 2).
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: souffle-lang/souffle tests/semantic/adt_invalid_branch/adt_invalid_branch.dl,
+--   souffle-lang #1775 (undefined type in branch definition),
+--   tests/semantic/type_udef/type_udef.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- When an ADT branch (constructor) declares a field whose type is not in scope,
+-- the compiler must reject the declaration with kappa.name.unresolved. Souffle
+-- reports "Undefined type n in definition of branch Int" when a branch field refers
+-- to an unknown type name.
+
+--! mode check
+
+-- POSITIVE: all field types are in scope.
+data Tree (a : Type) : Type =
+    Leaf
+    Node (value : a) (left : Tree a) (right : Tree a)
+
+data Box : Type =
+    MkBox (contents : Int) (label : String)
+
+-- NEGATIVE: field type `Colour` is not declared anywhere.
+data PaintedBox : Type =
+    MkPaintedBox (contents : Int) (color : Colour)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: `Identifier` is declared later in the module (`type Identifier = String`);
+-- §7.1A makes top-level type aliases visible module-wide independently of textual
+-- declaration order, so this declaration elaborates cleanly.
+data Expr : Type =
+    Lit  (n : Int)
+    Var  (name : Identifier)
+
+-- NEGATIVE: multiple constructors with one bad type in each.
+data Mixed : Type =
+    GoodBranch   (x : Int)
+    BadBranch    (y : FictionalType)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: the alias and a datatype that uses it. Under §7.1A the alias's position
+-- in the module is irrelevant; it also serves the `Expr` declaration above.
+type Identifier = String
+
+data ExprFixed : Type =
+    LitF  (n : Int)
+    VarF  (name : Identifier)
+
+--! assertErrorCount 2
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

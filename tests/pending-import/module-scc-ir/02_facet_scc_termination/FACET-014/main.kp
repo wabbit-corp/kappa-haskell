@@ -1,0 +1,9 @@
+loop : Nat -> Nat
+let loop =
+
+ ->
+        match n
+        case Zero -> Zero
+        case Succ k -> loop k
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3))

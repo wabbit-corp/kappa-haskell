@@ -1,0 +1,6 @@
+module demo
+
+let identity x =
+    x
+
+-- STATUS(f1e4161b): PASS

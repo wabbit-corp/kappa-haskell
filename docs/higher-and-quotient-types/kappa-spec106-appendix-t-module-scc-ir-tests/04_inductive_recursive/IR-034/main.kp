@@ -1,0 +1,11 @@
+data Code (0 a : Type) : Type =
+    ValueCode
+    ListCode
+        (element : Code a)
+        (sample : decode element)
+
+decode : Code a -> Type
+let decode code decreases structural code =
+    match code
+    case ValueCode -> a
+    case ListCode element sample -> List (decode element)

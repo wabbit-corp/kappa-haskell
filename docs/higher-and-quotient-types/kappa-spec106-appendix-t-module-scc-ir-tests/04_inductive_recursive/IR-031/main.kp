@@ -1,0 +1,12 @@
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+private decode : Code -> Type
+private let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)

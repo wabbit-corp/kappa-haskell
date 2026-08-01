@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertSchemaCertificateValid Left
+--! assertSchemaCertificateValid Right
+--! assertInductiveGroupCertificateMutationsReject Left

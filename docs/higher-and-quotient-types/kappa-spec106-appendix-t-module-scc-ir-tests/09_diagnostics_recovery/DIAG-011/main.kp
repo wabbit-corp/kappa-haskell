@@ -1,0 +1,7 @@
+decode : Code -> Type
+let decode code =
+    decode code
+
+data Code : Type =
+    NatCode
+    Box (inner : Code) (sample : decode inner)

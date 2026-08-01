@@ -1,0 +1,14 @@
+opaque let choose (code : Code) : Code =
+    code
+
+data Code : Type =
+    NatCode
+    Bad
+        (inner : Code)
+        (value : decode (choose inner))
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Bad inner value -> Nat

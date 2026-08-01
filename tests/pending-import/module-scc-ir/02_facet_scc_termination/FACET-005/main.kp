@@ -1,0 +1,11 @@
+type Alias = Nat
+
+useAlias : Alias -> Alias
+let useAlias x =
+    helper x
+
+helper : Nat -> Nat
+let helper x =
+    x
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationDependencyEdge' is not defined by Appendix T (§T.3))

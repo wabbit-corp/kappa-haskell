@@ -1,0 +1,7 @@
+module demo
+
+early : Nat -> Nat
+let early n =
+    later n
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationDependencyEdge' is not defined by Appendix T (§T.3))

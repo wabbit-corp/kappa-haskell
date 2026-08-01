@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE
+--! assertDiagnosticFamily error kappa.type.missing-signature
+--! assertDiagnosticRelated error E_MISSING_EXPLICIT_SIGNATURE declaration-site

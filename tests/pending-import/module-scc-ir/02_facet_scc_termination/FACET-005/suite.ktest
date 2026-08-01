@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationDependencyEdge useAlias/body helper/body body

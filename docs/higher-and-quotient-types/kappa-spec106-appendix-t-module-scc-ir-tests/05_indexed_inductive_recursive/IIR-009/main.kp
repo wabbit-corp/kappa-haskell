@@ -1,0 +1,11 @@
+data TypedCode (parametric 0 a : Type) : Type =
+    ValueCode
+    ListCode
+        (inner : TypedCode a)
+        (sample : TypedEl a inner)
+
+TypedEl : (parametric 0 a : Type) -> TypedCode a -> Type
+let TypedEl a code decreases structural code =
+    match code
+    case ValueCode -> a
+    case ListCode inner sample -> List (TypedEl a inner)

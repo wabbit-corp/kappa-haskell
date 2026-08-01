@@ -1,0 +1,25 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/positivity-function-domain.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- the function-domain rule itself is unchanged.
+
+-- Spec: §10.4.2. A function type is admissible in a strictly positive
+-- position only when its domain contains no current-group recursive head.
+-- T may occur in a codomain (Int -> T) but any occurrence in a domain —
+-- including doubly-negative ones like (T -> Int) -> Int — is not strictly
+-- positive and must be rejected.
+
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+--! assertErrorCount 1
+@PrivateByDefault module main
+
+-- POSITIVE: the recursive type appears only in the codomain.
+data Stream : Type =
+    MkStream (Integer -> Stream)
+
+-- NEGATIVE: Bad occurs in the domain of the outer function's domain.
+-- Double negation is NOT positive under strict positivity.
+data Bad : Type =
+    MkBad ((Bad -> Integer) -> Integer)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

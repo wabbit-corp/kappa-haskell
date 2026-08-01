@@ -1,0 +1,20 @@
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)
+type Packed =
+    (code : Code,
+     value : decode code)
+
+badPacked : Packed
+let badPacked =
+    (code = NatCode, value = True)

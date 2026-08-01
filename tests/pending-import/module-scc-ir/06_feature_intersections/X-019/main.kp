@@ -1,0 +1,13 @@
+data Code.{u} (A : Type u) : Type (succ u) =
+    ValueCode (value : A)
+    InspectCode
+        (inner : Code.{u} A)
+        (sample : decode.{u} A inner)
+
+decode.{u} : (A : Type u) -> Code.{u} A -> Type u
+let decode A code decreases structural code =
+    match code
+    case ValueCode value -> A
+    case InspectCode inner sample -> decode.{u} A inner
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

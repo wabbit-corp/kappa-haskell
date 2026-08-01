@@ -1,0 +1,4 @@
+data Code : Type =
+    NatCode
+
+derive BadRecursiveOperation Code

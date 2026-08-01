@@ -1,0 +1,7 @@
+let left n =
+    right n
+
+let right n =
+    left n
+
+-- STATUS(f1e4161b): FAIL — E_MISSING_EXPLICIT_SIGNATURE

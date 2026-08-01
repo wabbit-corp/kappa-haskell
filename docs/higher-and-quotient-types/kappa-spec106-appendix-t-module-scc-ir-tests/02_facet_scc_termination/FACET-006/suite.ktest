@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass caller acyclic
+--! assertDeclarationGroupClass callee acyclic

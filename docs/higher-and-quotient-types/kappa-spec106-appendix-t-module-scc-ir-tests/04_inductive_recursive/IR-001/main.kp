@@ -1,0 +1,11 @@
+data Code : Type =
+    NatCode
+    ListCode (element : Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case ListCode element ->
+        List (decode element)

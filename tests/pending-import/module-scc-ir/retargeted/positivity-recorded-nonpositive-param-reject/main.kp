@@ -1,0 +1,14 @@
+-- Retargeted from tests/conformance/data_types/positivity-recorded-nonpositive-param-reject/main.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- recorded external parameter-positivity signatures are still consulted, so the rejection stands.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4.2 recorded signatures: Contra is accepted in another module with a
+-- non-positive parameter signature. Importing that type must not make its
+-- parameter position positive for later strict-positivity checks.
+module main
+
+import lib.(type Contra)
+
+data Bad : Type =
+    MkBad (Contra Bad)

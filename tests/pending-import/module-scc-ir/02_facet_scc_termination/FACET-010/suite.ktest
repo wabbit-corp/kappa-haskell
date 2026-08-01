@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertHiddenPhase count 0
+--! assertTotal count

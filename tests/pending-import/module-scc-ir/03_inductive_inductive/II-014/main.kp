@@ -1,0 +1,10 @@
+data WrapA (0 a : Type) : Type =
+    ANode (other : WrapB a)
+
+data WrapB (0 a : Type) : Type =
+    BNode (consume : a -> Nat) (other : WrapA a)
+
+data Bad : Type =
+    BadNode (payload : WrapA Bad)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

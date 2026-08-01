@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertInterfaceContainsDeclarationGroup Ctx
+--! assertInductiveGroupCertificateValid Ctx
+--! assertStageDumpHas KCore /inductiveGroupCertificates/0/parameterPositivity

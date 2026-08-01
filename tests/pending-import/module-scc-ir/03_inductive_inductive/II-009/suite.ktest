@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+--! assertDiagnosticFamily error kappa.data.strict-positivity
+--! assertDiagnosticPayload error E_DATA_STRICT_POSITIVITY /transparentAliases/0 "Consumer"

@@ -1,0 +1,14 @@
+data ErasedCode (@0 tag : Bool) : Type =
+    EBool : ErasedCode @True
+    ENat  : ErasedCode @False
+    EBox
+        (inner : ErasedCode @tag)
+        (value : EEl @tag inner) :
+        ErasedCode @tag
+
+EEl : (@0 tag : Bool) -> ErasedCode @tag -> Type
+let EEl tag code decreases structural code =
+    match code
+    case EBool -> Bool
+    case ENat -> Nat
+    case EBox inner value -> EEl @tag inner

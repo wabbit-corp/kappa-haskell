@@ -1,0 +1,15 @@
+data Code : Type =
+    NatCode
+    ListCode (inner : Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case ListCode inner -> List (decode inner)
+
+derive Eq Code
+
+private unused : Nat
+private let unused =
+    Zero

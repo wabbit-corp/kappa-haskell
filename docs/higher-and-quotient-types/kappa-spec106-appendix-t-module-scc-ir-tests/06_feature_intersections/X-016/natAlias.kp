@@ -1,0 +1,3 @@
+module natAlias
+
+type N = Nat

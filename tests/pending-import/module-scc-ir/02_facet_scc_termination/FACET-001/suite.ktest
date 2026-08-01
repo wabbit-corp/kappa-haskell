@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Box inductive
+--! assertDeclarationGroupFacets Box Box/formation
+--! assertDeclarationGroupClass consumeBox acyclic
+--! assertInductiveGroupCertificateValid Box

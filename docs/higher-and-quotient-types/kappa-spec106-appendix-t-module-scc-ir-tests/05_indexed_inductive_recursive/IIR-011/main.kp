@@ -1,0 +1,21 @@
+data Ctx : Type =
+    Empty
+    Extend (ctx : Ctx) (ty : Ty ctx)
+
+data Ty (ctx : Ctx) : Type =
+    NatTy : Ty ctx
+    PiTy
+        (domain : Ty ctx)
+        (codomain : ElTy ctx domain -> Ty ctx) :
+        Ty ctx
+
+data Tm (ctx : Ctx) (ty : Ty ctx) : Type =
+    ZeroTm : Tm ctx NatTy
+    SuccTm (value : Tm ctx NatTy) : Tm ctx NatTy
+
+ElTy : (ctx : Ctx) -> Ty ctx -> Type
+let ElTy ctx ty decreases structural ty =
+    match ty
+    case NatTy -> Nat
+    case PiTy domain codomain ->
+        (x : ElTy ctx domain) -> ElTy ctx (codomain x)

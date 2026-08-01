@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertInductiveGroupCertificateValid Code
+--! assertInductiveGroupCertificateMutationsReject Code
+--! assertStageDumpRoundTrips KCore

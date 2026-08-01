@@ -1,0 +1,9 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! dumpFormat json
+--! canonicalDumps
+--! assertStageDumpHas BODY_RESOLVE /declarationGroups
+--! assertStageDumpHas BODY_RESOLVE /declarationGroups/0/memberFacets
+--! assertStageDumpHas BODY_RESOLVE /inductiveGroupCertificates
+--! assertStageDumpRoundTrips BODY_RESOLVE

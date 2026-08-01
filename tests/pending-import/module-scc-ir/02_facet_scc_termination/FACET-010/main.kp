@@ -1,0 +1,7 @@
+count : Nat -> Nat
+let count n decreases structural n =
+    match n
+    case Zero -> Zero
+    case Succ k -> count k
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertHiddenPhase' is not defined by Appendix T (§T.3))

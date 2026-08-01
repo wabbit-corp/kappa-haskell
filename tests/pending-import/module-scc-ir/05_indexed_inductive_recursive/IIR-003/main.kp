@@ -1,0 +1,17 @@
+data NCode (rank : Nat) : Type =
+    ZeroCode : NCode Zero
+    SuccCode
+        (n : Nat)
+        (inner : NCode n)
+        (sample : NEl n inner) :
+        NCode (Succ n)
+
+NEl : (rank : Nat) -> NCode rank -> Type
+let NEl rank code decreases structural code =
+    match code
+    case ZeroCode ->
+        Unit
+    case SuccCode n inner sample ->
+        List (NEl n inner)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupFeature' is not defined by Appendix T (§T.3); line 5: unknown directi

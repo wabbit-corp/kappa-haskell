@@ -1,0 +1,7 @@
+left : Nat -> Nat
+let left n =
+    right n
+
+right : Nat -> Nat
+let right n =
+    left n

@@ -1,0 +1,3 @@
+data Flag : Type =
+    Off
+    On

@@ -1,0 +1,12 @@
+effect DecodeEffect =
+    decode : Nat -> Nat
+
+data Code : Type =
+    NatCode
+    Wrap (inner : Code) (value : interpret inner)
+
+interpret : Code -> Type
+let interpret code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Wrap inner value -> interpret inner

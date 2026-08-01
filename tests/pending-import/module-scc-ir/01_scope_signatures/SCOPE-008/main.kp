@@ -1,0 +1,8 @@
+make : Later
+let make =
+    LaterValue
+
+data Later : Type =
+    LaterValue
+
+-- STATUS(f1e4161b): PASS

@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.termination.failure
+--! assertDiagnosticPayload error kappa.termination.failure /strategy "hidden-phase"

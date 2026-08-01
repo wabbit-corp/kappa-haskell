@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertType early Nat -> Nat
+--! assertDeclarationDependencyEdge early/body later/body body

@@ -1,0 +1,6 @@
+test : Nat
+let test =
+    block
+        let x = y
+        let y = Zero
+        x

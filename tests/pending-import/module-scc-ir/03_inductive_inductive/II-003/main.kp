@@ -1,0 +1,12 @@
+data Ty (ctx : Ctx) : Type =
+    Base : Ty Empty
+    Lift
+        (parent : Ctx)
+        (ty : Ty parent) :
+        Ty (Extend parent ty)
+
+data Ctx : Type =
+    Empty
+    Extend (ctx : Ctx) (ty : Ty ctx)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupMembers' is not defined by Appendix T (§T.3); line 5: unknown directi

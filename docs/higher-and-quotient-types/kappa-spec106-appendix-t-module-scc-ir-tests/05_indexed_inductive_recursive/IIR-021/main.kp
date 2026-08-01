@@ -1,0 +1,12 @@
+data ICode (tag : Bool) : Type =
+    Base : ICode tag
+    Bad
+        (sample : El tag later)
+        (later : ICode tag) :
+        ICode tag
+
+El : (tag : Bool) -> ICode tag -> Type
+let El tag code decreases structural code =
+    match code
+    case Base -> Unit
+    case Bad sample later -> El tag later

@@ -1,0 +1,7 @@
+data ForestA : Type =
+    ANode (children : List ForestB)
+
+data ForestB : Type =
+    BNode (children : List ForestA)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertInductiveGroupCertificateValid' is not defined by Appendix T (§T.3))

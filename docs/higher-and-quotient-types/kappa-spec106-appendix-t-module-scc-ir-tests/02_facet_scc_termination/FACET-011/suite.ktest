@@ -1,0 +1,11 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertPhaseConstraint a b
+--! assertPhaseConstraint b c
+--! assertHiddenPhase a 2
+--! assertHiddenPhase b 1
+--! assertHiddenPhase c 0
+--! assertTotal a
+--! assertTotal b
+--! assertTotal c

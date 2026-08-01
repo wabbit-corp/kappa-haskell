@@ -1,0 +1,6 @@
+let countDown (n : Nat) : Nat decreases structural n =
+    match n
+    case Zero ->
+        Zero
+    case Succ k ->
+        countDown k

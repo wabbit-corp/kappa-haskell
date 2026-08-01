@@ -1,0 +1,65 @@
+-- Retargeted from tests/conformance/imported-anon/NARYA-mutual-recursive-fns.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Signature position no longer enables recursion (§9.2/§15.17); groups are semantic facet SCCs (§9.5),
+-- and U/El are separate singleton groups, not one induction-recursion SCC. Accept outcome unchanged.
+-- Source artifacts: narya docs/mutual-definitions.rst (def even / and odd
+--               using the mutual `and` keyword).
+-- Spec: declarations.terms,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Kappa elaborates mutually recursive top-level declarations as one SCC
+-- (§15.16). Every recursive computational member must have a COMPLETE
+-- explicit signature (§9.2/§9.5.5/§15.17), inline or separate, appearing
+-- before or after its definition — source position does not enable or
+-- disable recursion. There is no `mutual ... end` syntax: recursive groups
+-- are semantic facet SCCs inferred under §9.5, not source adjacency.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: mutually recursive even/odd. The two signature declarations
+-- are visible to each other's bodies via module-wide scope (§7.1A); the
+-- pair forms one recursive SCC under §9.5.
+isEven : Nat -> Bool
+isOdd  : Nat -> Bool
+
+let isEven n =
+    match n
+      case Zero  -> True
+      case Suc k -> isOdd k
+
+let isOdd n =
+    match n
+      case Zero  -> False
+      case Suc k -> isEven k
+
+-- POSITIVE: witnesses using both definitions.
+twoEven : Bool
+let twoEven = isEven (Suc (Suc Zero))
+
+threeOdd : Bool
+let threeOdd = isOdd (Suc (Suc (Suc Zero)))
+
+-- POSITIVE: an ordinary inductive singleton U plus a separate structurally
+-- recursive singleton El over U. U's constructors never mention El, so no
+-- U -> El dependency edge exists (§9.5.2): these are two singleton groups
+-- (§9.5.4), NOT one checking SCC and not induction-recursion. Module-wide
+-- scope (§7.1A) makes both headers available.
+data U : Type =
+    UUnit : U
+    UArr  : U -> U -> U
+
+El : U -> Type
+let El u =
+    match u
+      case UUnit    -> Bool
+      case UArr a b -> El a -> El b
+
+useArr : El (UArr UUnit UUnit)
+let useArr b = b
+
+--! assertNoErrors
+
+-- STATUS(f1e4161b): PASS

@@ -1,0 +1,14 @@
+data DepCode (n : Nat) : Type =
+    Base : DepCode Zero
+    Branch
+        (n : Nat)
+        (next : (m : Nat) -> DepCode m)
+        (sample : (m : Nat) -> DepEl m (next m)) :
+        DepCode n
+
+DepEl : (n : Nat) -> DepCode n -> Type
+let DepEl n code decreases structural code =
+    match code
+    case Base -> Unit
+    case Branch k next sample ->
+        (m : Nat) -> DepEl m (next m)

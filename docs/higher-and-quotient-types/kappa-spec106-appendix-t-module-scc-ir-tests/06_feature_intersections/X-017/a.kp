@@ -1,0 +1,5 @@
+module demo
+
+import lib
+
+identity : lib.N -> lib.N

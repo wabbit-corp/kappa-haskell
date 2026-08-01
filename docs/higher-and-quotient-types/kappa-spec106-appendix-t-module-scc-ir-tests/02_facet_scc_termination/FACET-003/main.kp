@@ -1,0 +1,6 @@
+data LoopBox : Type =
+    LoopBoxed (next : LoopBox = makeLoop)
+
+makeLoop : LoopBox
+let makeLoop =
+    LoopBoxed

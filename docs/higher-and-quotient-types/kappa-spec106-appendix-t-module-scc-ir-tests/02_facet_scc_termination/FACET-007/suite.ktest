@@ -1,0 +1,9 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass phaseA term-recursive
+--! assertPhaseConstraint phaseA phaseB
+--! assertHiddenPhase phaseA 1
+--! assertHiddenPhase phaseB 0
+--! assertTotal phaseA
+--! assertTotal phaseB

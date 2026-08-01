@@ -1,0 +1,6 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/positivity-abstract-alias-not-admissible/suite.ktest (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A).
+--! mode check
+--! packageMode
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+--! assertErrorCount 1

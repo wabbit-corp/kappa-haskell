@@ -1,0 +1,3 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1

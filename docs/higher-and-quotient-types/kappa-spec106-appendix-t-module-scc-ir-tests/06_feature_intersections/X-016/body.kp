@@ -1,0 +1,4 @@
+module demo
+
+let identity x =
+    x

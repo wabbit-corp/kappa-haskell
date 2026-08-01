@@ -1,0 +1,22 @@
+-- Retargeted from tests/conformance/recursion/decreases-transparent-helper-cycle-reject.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Unsigned computational members of a discovered body cycle are now rejected at the signature
+-- stage with family kappa.type.missing-signature / E_MISSING_EXPLICIT_SIGNATURE (§9.5.5, §9.2,
+-- §3.2.11A), before termination checking runs — so no kappa.termination.failure is emitted.
+-- Transparent helper unfolding still participates in SCC discovery (§9.2 closes the
+-- "helper is just transparent/inlined" escape): the unsigned 'helper' is a computational
+-- member of the cyclic body SCC {helper, badViaTransparentHelper}, and every unsigned
+-- computational member of a discovered body cycle is rejected with
+-- E_MISSING_EXPLICIT_SIGNATURE (§9.5.5), anchored on 'helper' with the full SCC in the
+-- payload.
+--! assertErrorCount 1
+--! assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE
+module main
+
+badViaTransparentHelper : Int -> Int
+
+let helper n = badViaTransparentHelper n
+
+let badViaTransparentHelper n decreases n =
+    helper n
+
+-- STATUS(f1e4161b): FAIL — E_MISSING_EXPLICIT_SIGNATURE

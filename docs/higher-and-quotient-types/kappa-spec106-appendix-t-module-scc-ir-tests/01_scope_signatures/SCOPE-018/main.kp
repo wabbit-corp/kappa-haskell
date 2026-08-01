@@ -1,0 +1,6 @@
+value : Nat
+let value =
+    Zero
+
+let value : Nat =
+    Succ Zero

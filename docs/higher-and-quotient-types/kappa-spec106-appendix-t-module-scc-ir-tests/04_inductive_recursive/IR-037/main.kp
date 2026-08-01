@@ -1,0 +1,9 @@
+data Code : Type =
+    NatCode
+    ListCode (inner : Code) (sample : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat

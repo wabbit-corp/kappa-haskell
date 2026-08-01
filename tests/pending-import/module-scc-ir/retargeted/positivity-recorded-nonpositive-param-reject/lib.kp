@@ -1,0 +1,6 @@
+module lib
+
+data Contra (a : Type) : Type =
+    MkContra (a -> Integer)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

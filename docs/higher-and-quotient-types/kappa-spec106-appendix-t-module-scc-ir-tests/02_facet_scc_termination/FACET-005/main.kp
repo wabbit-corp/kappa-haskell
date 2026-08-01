@@ -1,0 +1,9 @@
+type Alias = Nat
+
+useAlias : Alias -> Alias
+let useAlias x =
+    helper x
+
+helper : Nat -> Nat
+let helper x =
+    x

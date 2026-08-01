@@ -1,0 +1,15 @@
+data Code : Type =
+    NatCode
+    Many
+        (children : List Code)
+        (sample : decode (head children))
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case Many children sample ->
+        Nat
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,7 @@
+data Left (0 a : Type) : Type =
+    LeftLeaf (value : a)
+    LeftNext (right : Right a)
+
+data Right (0 a : Type) : Type =
+    RightLeaf
+    RightNext (left : Left a)

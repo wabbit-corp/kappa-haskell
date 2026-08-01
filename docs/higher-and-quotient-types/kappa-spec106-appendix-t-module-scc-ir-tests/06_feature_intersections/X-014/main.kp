@@ -1,0 +1,7 @@
+module main
+
+import lib
+
+value : lib.decode lib.NatCode
+let value =
+    Zero

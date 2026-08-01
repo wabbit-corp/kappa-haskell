@@ -1,0 +1,6 @@
+module main
+import lib
+
+nat : lib.NatMeaning
+let nat =
+    Zero

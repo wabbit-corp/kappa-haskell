@@ -1,0 +1,14 @@
+effect DecodeEffect =
+    decode : Nat -> Nat
+
+data Code : Type =
+    NatCode
+    Wrap (inner : Code) (value : interpret inner)
+
+interpret : Code -> Type
+let interpret code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Wrap inner value -> interpret inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3); line 5: unknown directive

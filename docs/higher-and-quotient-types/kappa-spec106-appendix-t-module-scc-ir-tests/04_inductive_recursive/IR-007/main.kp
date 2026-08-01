@@ -1,0 +1,14 @@
+data Code : Type =
+    NatCode
+    PairField
+        (parts : (Code, Code))
+        (leftValue : decode parts.0)
+        (rightValue : decode parts.1)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PairField parts leftValue rightValue ->
+        (left : decode parts.0, right : decode parts.1)

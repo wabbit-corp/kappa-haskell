@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertSchemaCertificateValid Code
+--! assertInductiveGroupCertificateValid Code
+--! assertInductiveGroupCertificateMutationsReject Code

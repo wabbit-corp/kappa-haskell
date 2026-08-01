@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Flag inductive
+--! assertDeclarationGroupFacets Flag Flag/formation
+--! assertInductiveGroupCertificateValid Flag
+--! assertInductiveGroupCertificateMutationsReject Flag

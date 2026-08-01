@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertNoParameterIndexPartition ImpCode
+--! assertRecursiveOperation ImpEl subjects 1

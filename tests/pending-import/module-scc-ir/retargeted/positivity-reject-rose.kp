@@ -1,0 +1,15 @@
+-- Retargeted from tests/conformance/data_types/positivity-reject-rose.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- E_DATA_NOT_STRICTLY_POSITIVE no longer exists. This exact Rose shape is listed among §10.4.2's rejected examples.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4.2 consequences: 'Rose' occurs inside the
+-- domain of a function type ('Rose a -> a' is the argument of the
+-- outer arrow), a negative occurrence, so the declaration MUST be
+-- rejected.
+@PrivateByDefault module main
+
+data Rose (a : Type) : Type =
+    Node a ((Rose a -> a) -> Rose a)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

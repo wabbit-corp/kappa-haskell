@@ -1,0 +1,35 @@
+-- Retargeted from tests/conformance/imported-anon/METACOQ-data-strict-positivity.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Header rewritten: Spec 107 closes former spec gap MSA-METACOQ-11 by assigning positivity rejections
+-- the family kappa.data.strict-positivity / portable alias E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A).
+-- Source issues: METACOQ-504, METACOQ-1129
+-- Spec: data_types.well_formedness, declarations.totality
+--
+-- Kappa requires strict positivity for every data declaration (§10.4.2). A
+-- constructor argument whose type is an arrow with the recursive type on
+-- the left introduces a negative occurrence and must be rejected; such a
+-- rejection uses diagnostic family kappa.data.strict-positivity with
+-- portable alias E_DATA_STRICT_POSITIVITY. This file contains only
+-- accepted declarations; negative companion tests should pin that alias.
+
+module test
+
+--! mode check
+
+-- POSITIVE: T occurs strictly positively in `T -> T` only when it is on the
+-- right of every arrow.
+data Tree : Type =
+    Leaf Nat
+    Branch Tree Tree
+
+-- POSITIVE: occurrence under an admissible type constructor (List preserves
+-- strict positivity in its parameter).
+data Rose : Type =
+    RoseNode Nat (List Rose)
+
+-- POSITIVE: arrow domain that does not mention the recursive type.
+data Indexed : Type =
+    MkIndexed Nat (Nat -> Nat)
+
+--! assertNoErrors
+
+-- STATUS(f1e4161b): PASS

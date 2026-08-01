@@ -1,0 +1,13 @@
+data Code : Type =
+    NatCode
+    Bad
+        (value : decode later)
+        (later : Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Bad value later -> decode later
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

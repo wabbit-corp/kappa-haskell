@@ -1,0 +1,13 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/positivity-abstract-alias-not-admissible/main.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Same rejection; the failure now carries family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A).
+module main
+
+-- §10.4.2: an imported opaque/abstract type constructor whose
+-- interface carries NO parameter-positivity signature is not admissible in
+-- a strictly positive position. The recursive occurrence of D inside
+-- Hidden's argument must therefore be rejected — Hidden MUST NOT be assumed
+-- to preserve positivity.
+import lib.(type Hidden)
+
+data D : Type =
+    MkD (Hidden D)

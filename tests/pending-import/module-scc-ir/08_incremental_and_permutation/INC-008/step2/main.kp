@@ -1,0 +1,4 @@
+data A : Type =
+    MkA (b : B)
+data B : Type =
+    MkB (a : A)

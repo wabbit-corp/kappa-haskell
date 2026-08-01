@@ -1,0 +1,15 @@
+module lib
+
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        (Nat, Nat)
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)

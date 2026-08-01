@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertInterfaceContainsDeclarationGroup even
+--! assertDeclarationGroupFacets even even/body,odd/body
+--! assertStageDumpHas KCore /declarationGroups

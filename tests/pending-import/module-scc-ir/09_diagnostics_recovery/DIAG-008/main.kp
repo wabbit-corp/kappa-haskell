@@ -1,0 +1,6 @@
+data Code : Type =
+    NatCode
+
+derive BadRecursiveOperation Code
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

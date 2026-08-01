@@ -1,0 +1,17 @@
+module lib
+
+data Code : Type =
+    NatCode
+    Box (inner : Code) (sample : decode inner)
+
+private decode : Code -> Type
+private let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Box inner sample -> decode inner
+
+public NatMeaning : Type
+let NatMeaning =
+    decode NatCode
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

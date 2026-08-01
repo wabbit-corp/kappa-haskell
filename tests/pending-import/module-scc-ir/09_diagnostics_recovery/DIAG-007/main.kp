@@ -1,0 +1,4 @@
+data Small : Type0 =
+    TooLarge (A : Type1)
+
+-- STATUS(f1e4161b): FAIL — E_DATA_CONSTRUCTOR_FIELD_UNIVERSE

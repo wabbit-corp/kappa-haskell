@@ -1,0 +1,19 @@
+data Code : Type =
+    NatCode
+    Sample
+        (inner : Code)
+        (value : decode inner = defaultFor inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Sample inner value -> decode inner
+
+defaultFor : (inner : Code) -> decode inner
+let defaultFor inner =
+    match inner
+    case NatCode -> Zero
+    case Sample child value -> value
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3); line 5: unknown directive

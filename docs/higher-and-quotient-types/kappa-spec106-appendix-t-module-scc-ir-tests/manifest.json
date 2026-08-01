@@ -1,0 +1,4086 @@
+{
+  "schemaVersion": 1,
+  "baselineSpec": "Spec(106).md",
+  "baselineSha256": "782a655f903c3a521f3de0e1e8e99b5fa0c7dc4e1ea9dc95413c1ba3b94d900b",
+  "suiteCount": 190,
+  "categories": [
+    "01_scope_signatures",
+    "02_facet_scc_termination",
+    "03_inductive_inductive",
+    "04_inductive_recursive",
+    "05_indexed_inductive_recursive",
+    "06_feature_intersections",
+    "07_interfaces_kcore_hashes",
+    "08_incremental_and_permutation",
+    "09_diagnostics_recovery"
+  ],
+  "suites": [
+    {
+      "id": "SCOPE-001",
+      "category": "01_scope_signatures",
+      "title": "Forward acyclic term reference",
+      "description": "An earlier top-level body may call a later definition without becoming recursive.",
+      "rules": [
+        "§7.1A",
+        "§9.5.2",
+        "§9.5.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass first acyclic",
+        "assertDeclarationDependencyEdge first/body second/body body",
+        "assertTotal first"
+      ]
+    },
+    {
+      "id": "SCOPE-002",
+      "category": "01_scope_signatures",
+      "title": "Signature after definition",
+      "description": "A complete separate signature may follow its definition.",
+      "rules": [
+        "§9.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType idNat Nat -> Nat",
+        "assertTotal idNat"
+      ]
+    },
+    {
+      "id": "SCOPE-003",
+      "category": "01_scope_signatures",
+      "title": "Inline recursive signature",
+      "description": "A complete inline signature enables recursion without a separate declaration.",
+      "rules": [
+        "§9.2",
+        "§9.5.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass countDown term-recursive",
+        "assertTotal countDown"
+      ]
+    },
+    {
+      "id": "SCOPE-004",
+      "category": "01_scope_signatures",
+      "title": "Separate recursive signature after body",
+      "description": "A later separate signature enables a self-recursive function.",
+      "rules": [
+        "§9.2",
+        "§9.5.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass countDown term-recursive",
+        "assertTotal countDown"
+      ]
+    },
+    {
+      "id": "SCOPE-005",
+      "category": "01_scope_signatures",
+      "title": "Mutual recursion without block syntax",
+      "description": "Top-level semantic dependencies discover a two-function SCC.",
+      "rules": [
+        "§9.5.4",
+        "§15.16"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass even term-recursive",
+        "assertDeclarationGroupMembers even even,odd",
+        "assertDeclarationGroupFacets even even/body,odd/body",
+        "assertTotal even",
+        "assertTotal odd"
+      ]
+    },
+    {
+      "id": "SCOPE-006",
+      "category": "01_scope_signatures",
+      "title": "Mutual recursion reversed",
+      "description": "Reversing members preserves the same semantic group.",
+      "rules": [
+        "§9.5.8",
+        "§15.16"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass even term-recursive",
+        "assertDeclarationGroupMembers even even,odd",
+        "assertDeclarationGroupFacets even even/body,odd/body",
+        "assertTotal even",
+        "assertTotal odd"
+      ]
+    },
+    {
+      "id": "SCOPE-007",
+      "category": "01_scope_signatures",
+      "title": "Later data family in earlier signature",
+      "description": "A signature may name a data family declared later.",
+      "rules": [
+        "§7.1A",
+        "§9.5.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType make Later",
+        "assertDeclarationGroupClass Later inductive"
+      ]
+    },
+    {
+      "id": "SCOPE-008",
+      "category": "01_scope_signatures",
+      "title": "Later constructor in earlier body",
+      "description": "Constructor shapes are module-wide.",
+      "rules": [
+        "§7.1A"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertEval make LaterValue"
+      ]
+    },
+    {
+      "id": "SCOPE-009",
+      "category": "01_scope_signatures",
+      "title": "Later transparent alias",
+      "description": "A header may use a transparent type alias declared later.",
+      "rules": [
+        "§7.1A",
+        "§9.5.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType idAlias Alias -> Alias"
+      ]
+    },
+    {
+      "id": "SCOPE-010",
+      "category": "01_scope_signatures",
+      "title": "Later trait and instance",
+      "description": "Instance search may use a later top-level instance head.",
+      "rules": [
+        "§7.1A",
+        "§9.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType useMarker Nat -> Bool"
+      ]
+    },
+    {
+      "id": "SCOPE-011",
+      "category": "01_scope_signatures",
+      "title": "Unsigned self recursion",
+      "description": "A cyclic computational body requires a complete explicit signature.",
+      "rules": [
+        "§9.2",
+        "§9.5.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature",
+        "assertDiagnosticPayload error E_MISSING_EXPLICIT_SIGNATURE /rule \"recursive-declaration\""
+      ]
+    },
+    {
+      "id": "SCOPE-012",
+      "category": "01_scope_signatures",
+      "title": "Unsigned mutual recursion",
+      "description": "Every unsigned computational member of a body SCC is reported in one root diagnostic.",
+      "rules": [
+        "§9.5.5",
+        "§3.1.11"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature",
+        "assertDiagnosticRelated error E_MISSING_EXPLICIT_SIGNATURE declaration-site"
+      ]
+    },
+    {
+      "id": "SCOPE-013",
+      "category": "01_scope_signatures",
+      "title": "Partial inline signature",
+      "description": "Typed parameters without an explicit result do not form a complete recursive signature.",
+      "rules": [
+        "§9.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature"
+      ]
+    },
+    {
+      "id": "SCOPE-014",
+      "category": "01_scope_signatures",
+      "title": "Strict value self-cycle",
+      "description": "Module-wide scope does not invent black-hole semantics.",
+      "rules": [
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\""
+      ]
+    },
+    {
+      "id": "SCOPE-015",
+      "category": "01_scope_signatures",
+      "title": "Strict value mutual cycle",
+      "description": "A mutually cyclic pair of strict initializers is rejected.",
+      "rules": [
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\""
+      ]
+    },
+    {
+      "id": "SCOPE-016",
+      "category": "01_scope_signatures",
+      "title": "Recursive pattern initializer",
+      "description": "An irrefutable pattern initializer cannot be cyclic.",
+      "rules": [
+        "§9.1",
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"recursive-pattern-binding\""
+      ]
+    },
+    {
+      "id": "SCOPE-017",
+      "category": "01_scope_signatures",
+      "title": "Conflicting inline and separate signatures",
+      "description": "Paired explicit signatures must be definitionally equal.",
+      "rules": [
+        "§9.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_TYPE_MISMATCH",
+        "assertDiagnosticFamily error kappa.type.mismatch"
+      ]
+    },
+    {
+      "id": "SCOPE-018",
+      "category": "01_scope_signatures",
+      "title": "Duplicate definitions across one module",
+      "description": "No definition wins by appearing first.",
+      "rules": [
+        "§7.1A",
+        "§9.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1"
+      ]
+    },
+    {
+      "id": "SCOPE-019",
+      "category": "01_scope_signatures",
+      "title": "Unmatched ordinary signature",
+      "description": "A non-expect signature requires exactly one selected definition.",
+      "rules": [
+        "§9.2",
+        "§9.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature"
+      ]
+    },
+    {
+      "id": "SCOPE-020",
+      "category": "01_scope_signatures",
+      "title": "Local forward reference remains sequential",
+      "description": "Module-wide scope does not apply to local blocks.",
+      "rules": [
+        "§7.1A",
+        "§9.3.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnosticFamily error kappa.name.unresolved"
+      ]
+    },
+    {
+      "id": "SCOPE-021",
+      "category": "01_scope_signatures",
+      "title": "Cross-fragment forward reference",
+      "description": "Selected script fragments with one module name share declaration shapes.",
+      "rules": [
+        "§7.1A",
+        "§36.12.1"
+      ],
+      "incremental": false,
+      "files": [
+        "a.kp",
+        "b.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType early Nat -> Nat",
+        "assertDeclarationDependencyEdge early/body later/body body"
+      ]
+    },
+    {
+      "id": "SCOPE-022",
+      "category": "01_scope_signatures",
+      "title": "Cross-fragment signature pairing",
+      "description": "A separate signature and definition may occupy different selected fragments.",
+      "rules": [
+        "§9.2",
+        "§36.12.1"
+      ],
+      "incremental": false,
+      "files": [
+        "a.kp",
+        "b.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType identity Nat -> Nat"
+      ]
+    },
+    {
+      "id": "SCOPE-023",
+      "category": "01_scope_signatures",
+      "title": "Cross-fragment mutual recursion",
+      "description": "The semantic body SCC spans selected fragments.",
+      "rules": [
+        "§9.5",
+        "§36.12.1"
+      ],
+      "incremental": false,
+      "files": [
+        "a.kp",
+        "b.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass even term-recursive",
+        "assertDeclarationGroupMembers even even,odd",
+        "assertTotal even",
+        "assertTotal odd"
+      ]
+    },
+    {
+      "id": "FACET-001",
+      "category": "02_facet_scc_termination",
+      "title": "Constructor default does not create formation IR",
+      "description": "A default may call a function that consumes an already formed data family without joining the formation facet to that body.",
+      "rules": [
+        "§9.5.1",
+        "§9.5.2",
+        "§9.5.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Box inductive",
+        "assertDeclarationGroupFacets Box Box/formation",
+        "assertDeclarationGroupClass consumeBox acyclic",
+        "assertInductiveGroupCertificateValid Box"
+      ]
+    },
+    {
+      "id": "FACET-002",
+      "category": "02_facet_scc_termination",
+      "title": "Default calls constructor consumer",
+      "description": "The data formation is complete before a default body calls a function whose body constructs or consumes the data.",
+      "rules": [
+        "§9.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Box inductive",
+        "assertDeclarationGroupFacets Box Box/formation"
+      ]
+    },
+    {
+      "id": "FACET-003",
+      "category": "02_facet_scc_termination",
+      "title": "Runtime default cycle is a value cycle",
+      "description": "A default-body cycle is checked after formation and rejected as strict runtime recursion rather than as induction-recursion.",
+      "rules": [
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\""
+      ]
+    },
+    {
+      "id": "FACET-004",
+      "category": "02_facet_scc_termination",
+      "title": "Function body cycle excludes headers",
+      "description": "A term recursive group contains body facets rather than acyclic signature headers.",
+      "rules": [
+        "§9.5.1",
+        "§9.5.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFacets even even/body,odd/body",
+        "assertHeaderStratum even 0",
+        "assertHeaderStratum odd 0"
+      ]
+    },
+    {
+      "id": "FACET-005",
+      "category": "02_facet_scc_termination",
+      "title": "Transparent alias exposes body dependency",
+      "description": "Facet edges include dependencies revealed by transparent normalization.",
+      "rules": [
+        "§9.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationDependencyEdge useAlias/body helper/body body"
+      ]
+    },
+    {
+      "id": "FACET-006",
+      "category": "02_facet_scc_termination",
+      "title": "One-way dependency remains acyclic",
+      "description": "A declaration-level pair is not forced into one SCC merely because both have headers.",
+      "rules": [
+        "§9.5.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass caller acyclic",
+        "assertDeclarationGroupClass callee acyclic"
+      ]
+    },
+    {
+      "id": "FACET-007",
+      "category": "02_facet_scc_termination",
+      "title": "Hidden phase accepts same-subject routing",
+      "description": "One same-measure edge is ordered by a call-graph-derived phase and the return edge decreases structurally.",
+      "rules": [
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass phaseA term-recursive",
+        "assertPhaseConstraint phaseA phaseB",
+        "assertHiddenPhase phaseA 1",
+        "assertHiddenPhase phaseB 0",
+        "assertTotal phaseA",
+        "assertTotal phaseB"
+      ]
+    },
+    {
+      "id": "FACET-008",
+      "category": "02_facet_scc_termination",
+      "title": "Hidden phase is source-order invariant",
+      "description": "Reversing functions leaves the canonical phase assignment unchanged.",
+      "rules": [
+        "§15.10",
+        "§15.16"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertPhaseConstraint phaseA phaseB",
+        "assertHiddenPhase phaseA 1",
+        "assertHiddenPhase phaseB 0"
+      ]
+    },
+    {
+      "id": "FACET-009",
+      "category": "02_facet_scc_termination",
+      "title": "Phase-constraint cycle rejects",
+      "description": "Same-subject calls in both directions cannot be repaired by source order.",
+      "rules": [
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnosticFamily error kappa.termination.failure",
+        "assertDiagnosticPayload error kappa.termination.failure /strategy \"hidden-phase\""
+      ]
+    },
+    {
+      "id": "FACET-010",
+      "category": "02_facet_scc_termination",
+      "title": "Visible strict edge needs no phase",
+      "description": "A structurally decreasing self-call is certified without a phase constraint.",
+      "rules": [
+        "§15.3",
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertHiddenPhase count 0",
+        "assertTotal count"
+      ]
+    },
+    {
+      "id": "FACET-011",
+      "category": "02_facet_scc_termination",
+      "title": "Three-member phase DAG",
+      "description": "Canonical phases are longest-path heights in the nonincrease graph.",
+      "rules": [
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertPhaseConstraint a b",
+        "assertPhaseConstraint b c",
+        "assertHiddenPhase a 2",
+        "assertHiddenPhase b 1",
+        "assertHiddenPhase c 0",
+        "assertTotal a",
+        "assertTotal b",
+        "assertTotal c"
+      ]
+    },
+    {
+      "id": "FACET-012",
+      "category": "02_facet_scc_termination",
+      "title": "Branch-specific visible decrease",
+      "description": "A cycle may have a same-subject phase edge and a structurally strict edge only in a recursive branch.",
+      "rules": [
+        "§15.10",
+        "§15.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertPhaseConstraint start finish",
+        "assertTotal start",
+        "assertTotal finish"
+      ]
+    },
+    {
+      "id": "FACET-013",
+      "category": "02_facet_scc_termination",
+      "title": "Unproved nonincrease cannot use phase",
+      "description": "A phase does not repair a recursive call whose visible measure may grow.",
+      "rules": [
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnosticFamily error kappa.termination.failure"
+      ]
+    },
+    {
+      "id": "FACET-014",
+      "category": "02_facet_scc_termination",
+      "title": "Lambda initializer is a function body",
+      "description": "A named lambda RHS participates in ordinary function recursion rather than strict-value recursion.",
+      "rules": [
+        "§9.1",
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass loop term-recursive",
+        "assertTotal loop"
+      ]
+    },
+    {
+      "id": "FACET-015",
+      "category": "02_facet_scc_termination",
+      "title": "Interface retains term group facets",
+      "description": "Interface metadata records exact body-facet membership.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup even",
+        "assertDeclarationGroupFacets even even/body,odd/body"
+      ]
+    },
+    {
+      "id": "FACET-016",
+      "category": "02_facet_scc_termination",
+      "title": "Stage dump exposes facet edges",
+      "description": "BODY_RESOLVE dumps expose typed facet dependency records.",
+      "rules": [
+        "§34.2.12B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "dumpFormat json",
+        "canonicalDumps",
+        "assertStageDumpHas BODY_RESOLVE /declarationGroups",
+        "assertStageDumpHas BODY_RESOLVE /declarationDependencyEdges"
+      ]
+    },
+    {
+      "id": "FACET-017",
+      "category": "02_facet_scc_termination",
+      "title": "Certificate facets are distinct",
+      "description": "An inductive certificate is not conflated with the data formation facet.",
+      "rules": [
+        "§9.5.1",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Flag inductive",
+        "assertDeclarationGroupFacets Flag Flag/formation",
+        "assertInductiveGroupCertificateValid Flag",
+        "assertInductiveGroupCertificateMutationsReject Flag"
+      ]
+    },
+    {
+      "id": "FACET-018",
+      "category": "02_facet_scc_termination",
+      "title": "Transparent alias header cycle",
+      "description": "A transparent alias cycle has no acyclic header stratum.",
+      "rules": [
+        "§9.5.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DECLARATION_HEADER_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /reason \"header-cycle\""
+      ]
+    },
+    {
+      "id": "II-001",
+      "category": "03_inductive_inductive",
+      "title": "Simple mutually inductive families",
+      "description": "Two data families may refer positively to each other without a block marker.",
+      "rules": [
+        "§9.5.4",
+        "§10.4.2",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass EvenTree inductive",
+        "assertDeclarationGroupMembers EvenTree EvenTree,OddTree",
+        "assertDeclarationGroupFeature EvenTree mutually-inductive",
+        "assertInductiveGroupCertificateValid EvenTree"
+      ]
+    },
+    {
+      "id": "II-002",
+      "category": "03_inductive_inductive",
+      "title": "Canonical context/type induction-induction",
+      "description": "A context sort and a type family over contexts are introduced jointly.",
+      "rules": [
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Ctx inductive",
+        "assertDeclarationGroupMembers Ctx Ctx,Ty",
+        "assertDeclarationGroupFeature Ctx inductive-inductive",
+        "assertDeclarationGroupFeature Ty family-indexed",
+        "assertHeaderStratum Ctx 0",
+        "assertHeaderStratum Ty 1",
+        "assertNoParameterIndexPartition Ty",
+        "assertInductiveGroupCertificateValid Ctx"
+      ]
+    },
+    {
+      "id": "II-003",
+      "category": "03_inductive_inductive",
+      "title": "Context/type source order reversed",
+      "description": "Header strata rather than textual order justify induction-induction.",
+      "rules": [
+        "§9.5.8",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Ctx Ctx,Ty",
+        "assertDeclarationGroupFeature Ctx inductive-inductive",
+        "assertHeaderStratum Ctx 0",
+        "assertHeaderStratum Ty 1"
+      ]
+    },
+    {
+      "id": "II-004",
+      "category": "03_inductive_inductive",
+      "title": "Three mutually inductive families",
+      "description": "Joint positivity and elimination scale beyond pairs.",
+      "rules": [
+        "§10.4.2",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Red Red,Green,Blue",
+        "assertDeclarationGroupFeature Red mutually-inductive",
+        "assertInductiveGroupCertificateValid Red"
+      ]
+    },
+    {
+      "id": "II-005",
+      "category": "03_inductive_inductive",
+      "title": "Indexed mutual family refinements",
+      "description": "Constructor results refine complete family arguments inside a joint group.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFeature Term family-indexed",
+        "assertNoParameterIndexPartition Term",
+        "assertNoParameterIndexPartition Spine",
+        "assertInductiveGroupCertificateValid Term"
+      ]
+    },
+    {
+      "id": "II-006",
+      "category": "03_inductive_inductive",
+      "title": "Uniform family arguments remain one telescope",
+      "description": "An ordinary argument used uniformly is not separately labeled a parameter.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFeature Left family-indexed",
+        "assertNoParameterIndexPartition Left",
+        "assertNoParameterIndexPartition Right"
+      ]
+    },
+    {
+      "id": "II-007",
+      "category": "03_inductive_inductive",
+      "title": "Positive nesting through List",
+      "description": "An external positive parameter signature transports mutual positivity.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid ForestA"
+      ]
+    },
+    {
+      "id": "II-008",
+      "category": "03_inductive_inductive",
+      "title": "Direct cross-family negativity",
+      "description": "A sibling family in a function domain is rejected jointly.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity",
+        "assertDiagnosticPayload error E_DATA_STRICT_POSITIVITY /occurrenceKind \"function-domain\""
+      ]
+    },
+    {
+      "id": "II-009",
+      "category": "03_inductive_inductive",
+      "title": "Alias-hidden cross-family negativity",
+      "description": "Transparent aliases cannot conceal a negative sibling occurrence.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity",
+        "assertDiagnosticPayload error E_DATA_STRICT_POSITIVITY /transparentAliases/0 \"Consumer\""
+      ]
+    },
+    {
+      "id": "II-010",
+      "category": "03_inductive_inductive",
+      "title": "Nested double-negativity is still checked structurally",
+      "description": "A recursive head in a forbidden domain is not accepted by parity folklore.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity"
+      ]
+    },
+    {
+      "id": "II-011",
+      "category": "03_inductive_inductive",
+      "title": "Non-positive parameter signature is not immediate rejection",
+      "description": "A parameter may be marked non-positive when no current-group recursive head occupies that use.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Contravariant inductive",
+        "assertInductiveGroupCertificateValid Contravariant"
+      ]
+    },
+    {
+      "id": "II-012",
+      "category": "03_inductive_inductive",
+      "title": "Non-positive external argument rejects recursion",
+      "description": "A current-group family may not be placed in an external non-positive argument.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity"
+      ]
+    },
+    {
+      "id": "II-013",
+      "category": "03_inductive_inductive",
+      "title": "Greatest fixed point preserves mutual positivity",
+      "description": "Tentative current-group signatures converge from positive to the greatest sound fixed point.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid WrapA",
+        "assertNoParameterIndexPartition WrapA"
+      ]
+    },
+    {
+      "id": "II-014",
+      "category": "03_inductive_inductive",
+      "title": "Greatest fixed point propagates non-positivity",
+      "description": "One negative parameter use poisons reliance on the corresponding sibling position.",
+      "rules": [
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity"
+      ]
+    },
+    {
+      "id": "II-015",
+      "category": "03_inductive_inductive",
+      "title": "Sort header cycle",
+      "description": "Cyclic sort headers with no prior stratum are rejected before constructor checking.",
+      "rules": [
+        "§9.5.3",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DECLARATION_HEADER_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /reason \"header-cycle\""
+      ]
+    },
+    {
+      "id": "II-016",
+      "category": "03_inductive_inductive",
+      "title": "Constructor universe failure precedes positivity",
+      "description": "An independently oversized constructor field reports the universe diagnostic.",
+      "rules": [
+        "§10.4",
+        "§10.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE",
+        "assertDiagnosticFamily error kappa.universe.constructor-size"
+      ]
+    },
+    {
+      "id": "II-017",
+      "category": "03_inductive_inductive",
+      "title": "Joint universe-role certificate",
+      "description": "Mutually inductive nominal signatures carry independently verified schema actions.",
+      "rules": [
+        "§10.4.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertSchemaCertificateValid Left",
+        "assertSchemaCertificateValid Right",
+        "assertInductiveGroupCertificateMutationsReject Left"
+      ]
+    },
+    {
+      "id": "II-018",
+      "category": "03_inductive_inductive",
+      "title": "Opaque mutually inductive representation",
+      "description": "Opacity changes visibility, not the defining module's joint formation obligations.",
+      "rules": [
+        "§8.5.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFeature HiddenA mutually-inductive",
+        "assertInductiveGroupCertificateValid HiddenA"
+      ]
+    },
+    {
+      "id": "II-019",
+      "category": "03_inductive_inductive",
+      "title": "Constructor defaults stay outside formation SCC",
+      "description": "A sibling-returning default body is staged after the mutually inductive certificate.",
+      "rules": [
+        "§9.5.2",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Left Left,Right",
+        "assertDeclarationGroupFacets Left Left/formation,Right/formation",
+        "assertInductiveGroupCertificateValid Left"
+      ]
+    },
+    {
+      "id": "II-020",
+      "category": "03_inductive_inductive",
+      "title": "KCore mutation audit for induction-induction",
+      "description": "Independent verification rejects mutated member, edge, positivity, and nominal-action fields.",
+      "rules": [
+        "§30.2.0B",
+        "§T.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Ctx",
+        "assertInductiveGroupCertificateMutationsReject Ctx",
+        "assertStageDumpRoundTrips KCore"
+      ]
+    },
+    {
+      "id": "IR-001",
+      "category": "04_inductive_recursive",
+      "title": "Minimal code decoder",
+      "description": "A data family and a structurally recursive Type-valued operation form one inductive-recursive group.",
+      "rules": [
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Code inductive-recursive",
+        "assertDeclarationGroupMembers Code Code,decode",
+        "assertDeclarationGroupFacets Code Code/formation,decode/body",
+        "assertRecursiveOperation decode subjects 0",
+        "assertRecursiveOperationEquation decode NatCode",
+        "assertRecursiveOperationEquation decode ListCode",
+        "assertStructuralChildEdge ListCode element",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-002",
+      "category": "04_inductive_recursive",
+      "title": "Dependent function code",
+      "description": "A positive function-valued recursive field contributes pointwise children.",
+      "rules": [
+        "§10.4.4.4",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Code inductive-recursive",
+        "assertDeclarationGroupMembers Code Code,decode",
+        "assertRecursiveOperation decode subjects 0",
+        "assertRecursiveOperationEquation decode PiCode",
+        "assertStructuralChildEdge PiCode codomain",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-003",
+      "category": "04_inductive_recursive",
+      "title": "Dependent function code reversed",
+      "description": "Operation-before-data source order has identical header strata and group semantics.",
+      "rules": [
+        "§9.5.8",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Code inductive-recursive",
+        "assertHeaderStratum Code 0",
+        "assertHeaderStratum decode 1",
+        "assertRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "IR-004",
+      "category": "04_inductive_recursive",
+      "title": "Direct child available in later field type",
+      "description": "An earlier direct recursive field is an available subject for later recursive-operation applications.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge Nested inner",
+        "assertRecursiveOperationEquation interpret Nested",
+        "assertInductiveGroupCertificateValid BoxCode"
+      ]
+    },
+    {
+      "id": "IR-005",
+      "category": "04_inductive_recursive",
+      "title": "Pointwise child with dependent domain",
+      "description": "A field returning codes from decoded arguments creates pointwise structural children.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge PiCode codomain",
+        "assertRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "IR-006",
+      "category": "04_inductive_recursive",
+      "title": "Nested pointwise children",
+      "description": "A fully applied nested positive function field contributes a child.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge NestedPi b",
+        "assertStructuralChildEdge NestedPi c",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-007",
+      "category": "04_inductive_recursive",
+      "title": "Tuple-projected structural child",
+      "description": "A transparent tuple component carrying a code may be certified as a structural child.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge PairField parts",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-008",
+      "category": "04_inductive_recursive",
+      "title": "Closed-record projected structural child",
+      "description": "Transparent closed-record projections expose child codes.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge RecordField children",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-009",
+      "category": "04_inductive_recursive",
+      "title": "Uncertified external container child",
+      "description": "Positivity of a container argument does not provide a structural-child projection certificate.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\""
+      ]
+    },
+    {
+      "id": "IR-010",
+      "category": "04_inductive_recursive",
+      "title": "Operation missing explicit signature",
+      "description": "A recursive operation used during formation cannot obtain its signature by inference.",
+      "rules": [
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature",
+        "assertDiagnosticPayload error E_MISSING_EXPLICIT_SIGNATURE /rule \"recursive-operation\""
+      ]
+    },
+    {
+      "id": "IR-011",
+      "category": "04_inductive_recursive",
+      "title": "Opaque recursive operation",
+      "description": "Formation cannot rely on an opaque operation's equations.",
+      "rules": [
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-transparent\""
+      ]
+    },
+    {
+      "id": "IR-012",
+      "category": "04_inductive_recursive",
+      "title": "Unsaturated recursive operation application",
+      "description": "A constructor type receives no IR privilege for a partial operation application.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-not-saturated\""
+      ]
+    },
+    {
+      "id": "IR-013",
+      "category": "04_inductive_recursive",
+      "title": "Later field used as operation subject",
+      "description": "Constructor telescopes remain left-to-right.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-forward-field\""
+      ]
+    },
+    {
+      "id": "IR-014",
+      "category": "04_inductive_recursive",
+      "title": "Newly constructed subject unavailable",
+      "description": "A type-forming operation may not be applied to a newly constructed group value.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\""
+      ]
+    },
+    {
+      "id": "IR-015",
+      "category": "04_inductive_recursive",
+      "title": "Opaque helper does not expose a child",
+      "description": "An opaque helper returning Code cannot manufacture an available structural subject.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\""
+      ]
+    },
+    {
+      "id": "IR-016",
+      "category": "04_inductive_recursive",
+      "title": "Unsafe termination cannot justify formation",
+      "description": "assertTerminates does not establish a recursive operation.",
+      "rules": [
+        "§4.4",
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "requires capability unsafeDebug",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-unsafe-assertion\""
+      ]
+    },
+    {
+      "id": "IR-017",
+      "category": "04_inductive_recursive",
+      "title": "Unsafe reducibility cannot justify formation",
+      "description": "assertReducible is not a substitute for checked structural recursion.",
+      "rules": [
+        "§4.4",
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "requires capability unsafeDebug",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-unsafe-assertion\""
+      ]
+    },
+    {
+      "id": "IR-018",
+      "category": "04_inductive_recursive",
+      "title": "Nonstructural recursive call",
+      "description": "A recursive operation call on the current or larger subject is rejected.",
+      "rules": [
+        "§10.4.4.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-child-not-smaller\""
+      ]
+    },
+    {
+      "id": "IR-019",
+      "category": "04_inductive_recursive",
+      "title": "Mutual recursive operations with hidden phase",
+      "description": "A same-subject routing edge between recursive operations is ordered by the call graph.",
+      "rules": [
+        "§10.4.4.5",
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Code Code,decodeA,decodeB",
+        "assertPhaseConstraint decodeA decodeB",
+        "assertHiddenPhase decodeA 1",
+        "assertHiddenPhase decodeB 0",
+        "assertRecursiveOperation decodeA subjects 0",
+        "assertRecursiveOperation decodeB subjects 0",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-020",
+      "category": "04_inductive_recursive",
+      "title": "Recursive-operation phase cycle",
+      "description": "Same-subject operation calls in both directions cannot be accepted by arbitrary declaration order.",
+      "rules": [
+        "§10.4.4.5",
+        "§15.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\""
+      ]
+    },
+    {
+      "id": "IR-021",
+      "category": "04_inductive_recursive",
+      "title": "Equation exposes current group negatively",
+      "description": "The externality checker rejects a Type result containing Code in a function domain.",
+      "rules": [
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\""
+      ]
+    },
+    {
+      "id": "IR-022",
+      "category": "04_inductive_recursive",
+      "title": "Alias-hidden externality violation",
+      "description": "Transparent aliases do not conceal a returned type containing the group.",
+      "rules": [
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\""
+      ]
+    },
+    {
+      "id": "IR-023",
+      "category": "04_inductive_recursive",
+      "title": "Record result exposes current group",
+      "description": "A returned record type containing Code is not external.",
+      "rules": [
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\""
+      ]
+    },
+    {
+      "id": "IR-024",
+      "category": "04_inductive_recursive",
+      "title": "Operation result classifier depends on subject",
+      "description": "A recursive operation's declared result may not depend on the concrete structural subject.",
+      "rules": [
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-depends-on-subject\""
+      ]
+    },
+    {
+      "id": "IR-025",
+      "category": "04_inductive_recursive",
+      "title": "Unsafe proof cannot hide externality",
+      "description": "Unchecked proof evidence cannot make a group-containing result external.",
+      "rules": [
+        "§4.5",
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "requires capability unsafeDebug",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-unsafe-assertion\""
+      ]
+    },
+    {
+      "id": "IR-026",
+      "category": "04_inductive_recursive",
+      "title": "Multiple recursive operations",
+      "description": "A group may jointly define semantic Type and Nat operations.",
+      "rules": [
+        "§10.4.4.2",
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Code Code,arity,decode",
+        "assertRecursiveOperation arity subjects 0",
+        "assertRecursiveOperation decode subjects 0",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-027",
+      "category": "04_inductive_recursive",
+      "title": "Multiple data families and operations",
+      "description": "Type and row codes are formed and interpreted in one joint group.",
+      "rules": [
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers TypeCode TypeCode,RowCode,decodeType,decodeRow",
+        "assertDeclarationGroupFeature TypeCode mutually-inductive",
+        "assertInductiveGroupCertificateValid TypeCode"
+      ]
+    },
+    {
+      "id": "IR-028",
+      "category": "04_inductive_recursive",
+      "title": "Function-valued field domain contains group",
+      "description": "A pointwise child field may not quantify over the current inductive group.",
+      "rules": [
+        "§10.4.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"pointwise-child-domain-not-external\""
+      ]
+    },
+    {
+      "id": "IR-029",
+      "category": "04_inductive_recursive",
+      "title": "Constructor universe failure in IR group",
+      "description": "Independent constructor-size failure keeps its specific diagnostic.",
+      "rules": [
+        "§10.4.1",
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE",
+        "assertDiagnosticFamily error kappa.universe.constructor-size"
+      ]
+    },
+    {
+      "id": "IR-030",
+      "category": "04_inductive_recursive",
+      "title": "Recursive equations are definitional",
+      "description": "Expected-type checking sees the verified decoder equation without propositional transport.",
+      "rules": [
+        "§10.4.4.8",
+        "§31.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType idNat NatEndo",
+        "assertRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "IR-031",
+      "category": "04_inductive_recursive",
+      "title": "Private recursive operation retained in interface",
+      "description": "An exported constructor may depend on a private operation without exporting its spelling.",
+      "rules": [
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup Code",
+        "assertInterfaceContainsRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "IR-032",
+      "category": "04_inductive_recursive",
+      "title": "Opaque data retains defining certificate",
+      "description": "Opaque representation does not waive induction-recursion checking.",
+      "rules": [
+        "§8.5.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertInterfaceContainsDeclarationGroup Code"
+      ]
+    },
+    {
+      "id": "IR-033",
+      "category": "04_inductive_recursive",
+      "title": "Nominal action certificate for IR group",
+      "description": "Recursive operations and equations participate in universe-role certification.",
+      "rules": [
+        "§10.4.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertSchemaCertificateValid Code",
+        "assertInductiveGroupCertificateValid Code",
+        "assertInductiveGroupCertificateMutationsReject Code"
+      ]
+    },
+    {
+      "id": "IR-034",
+      "category": "04_inductive_recursive",
+      "title": "No parameter/index serialization",
+      "description": "Even an IR family with a uniform argument has one ordered family telescope.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4.9",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoParameterIndexPartition Code",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "IR-035",
+      "category": "04_inductive_recursive",
+      "title": "KCore certificate mutation audit",
+      "description": "Every decisive induction-recursion certificate field is independently checked.",
+      "rules": [
+        "§30.2.0B",
+        "§T.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertInductiveGroupCertificateMutationsReject Code",
+        "assertStageDumpRoundTrips KCore"
+      ]
+    },
+    {
+      "id": "IR-036",
+      "category": "04_inductive_recursive",
+      "title": "Operation-header cycle",
+      "description": "A recursive-operation signature cycle has no source-order escape hatch.",
+      "rules": [
+        "§9.5.3",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DECLARATION_HEADER_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /reason \"header-cycle\""
+      ]
+    },
+    {
+      "id": "IIR-001",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Boolean-indexed decoder",
+      "description": "Constructor-result refinements drive an indexed recursive operation without a parameter/index split.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass ICode inductive-recursive",
+        "assertDeclarationGroupFeature ICode family-indexed",
+        "assertNoParameterIndexPartition ICode",
+        "assertRecursiveOperation El subjects 1",
+        "assertRecursiveOperationEquation El BoolCode",
+        "assertRecursiveOperationEquation El NatCode",
+        "assertRecursiveOperationEquation El Box",
+        "assertInductiveGroupCertificateValid ICode"
+      ]
+    },
+    {
+      "id": "IIR-002",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Boolean-indexed decoder reversed",
+      "description": "Source order does not affect indexed induction-recursion.",
+      "rules": [
+        "§9.5.8",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass ICode inductive-recursive",
+        "assertHeaderStratum ICode 0",
+        "assertHeaderStratum El 1",
+        "assertNoParameterIndexPartition ICode"
+      ]
+    },
+    {
+      "id": "IIR-003",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Natural-indexed universe codes",
+      "description": "A complete Nat family argument is refined by each constructor.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFeature NCode family-indexed",
+        "assertNoParameterIndexPartition NCode",
+        "assertRecursiveOperation NEl subjects 1",
+        "assertInductiveGroupCertificateValid NCode"
+      ]
+    },
+    {
+      "id": "IIR-004",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Two ordered family arguments",
+      "description": "All family arguments remain in one telescope and may be jointly refined.",
+      "rules": [
+        "§10.1.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertRecursiveOperation MEl subjects 2",
+        "assertNoParameterIndexPartition MatrixCode"
+      ]
+    },
+    {
+      "id": "IIR-005",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Index changes across structural child",
+      "description": "A structural edge carries the child's declared full family application.",
+      "rules": [
+        "§10.4.4.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge NextCode inner",
+        "assertRecursiveOperationEquation StepEl NextCode"
+      ]
+    },
+    {
+      "id": "IIR-006",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Pointwise child changes index",
+      "description": "A function-valued child may return family applications whose index depends on its argument.",
+      "rules": [
+        "§10.4.4.4",
+        "§10.4.4.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge Branch next",
+        "assertInductiveGroupCertificateValid DepCode"
+      ]
+    },
+    {
+      "id": "IIR-007",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Implicit family argument",
+      "description": "Implicit and explicit family arguments share the same ordered semantic telescope.",
+      "rules": [
+        "§10.1.3",
+        "§10.4.4.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoParameterIndexPartition ImpCode",
+        "assertRecursiveOperation ImpEl subjects 1"
+      ]
+    },
+    {
+      "id": "IIR-008",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Erased family argument",
+      "description": "An erased family argument remains an ordinary ordered argument rather than a special parameter class.",
+      "rules": [
+        "§10.1.3",
+        "§12.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoParameterIndexPartition ErasedCode"
+      ]
+    },
+    {
+      "id": "IIR-009",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Parametric type family argument",
+      "description": "A parametric type witness may index the family while the decoder returns that witness as a type.",
+      "rules": [
+        "§11.1.2.3A",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoParameterIndexPartition TypedCode",
+        "assertInductiveGroupCertificateValid TypedCode"
+      ]
+    },
+    {
+      "id": "IIR-010",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Inductive-inductive plus indexed recursion",
+      "description": "Contexts, types, and interpretation share one stratified joint group.",
+      "rules": [
+        "§10.4.4.1",
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupMembers Ctx Ctx,Ty,ElTy",
+        "assertDeclarationGroupFeature Ctx inductive-inductive",
+        "assertDeclarationGroupFeature Ty family-indexed",
+        "assertRecursiveOperation ElTy subjects 1",
+        "assertNoParameterIndexPartition Ty",
+        "assertInductiveGroupCertificateValid Ctx"
+      ]
+    },
+    {
+      "id": "IIR-011",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Three-level context/type/term group",
+      "description": "A term family may be indexed by a jointly defined context and type while interpretation recurses over types.",
+      "rules": [
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupFeature Tm family-indexed",
+        "assertNoParameterIndexPartition Tm",
+        "assertInductiveGroupCertificateValid Ty"
+      ]
+    },
+    {
+      "id": "IIR-012",
+      "category": "05_indexed_inductive_recursive",
+      "title": "GADT impossible branch",
+      "description": "Constructor family-argument refinements remain available to reachability checking.",
+      "rules": [
+        "§10.2",
+        "§17",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType onlyBool ICode True -> Bool"
+      ]
+    },
+    {
+      "id": "IIR-013",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Definitional equality at refined index",
+      "description": "Decoder equations normalize after constructor-result refinement.",
+      "rules": [
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType boolValue El True BoolCode",
+        "assertType natValue El False NatCode"
+      ]
+    },
+    {
+      "id": "IIR-014",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Wrong refined decoder branch",
+      "description": "The ordinary type checker rejects a branch result inconsistent with its constructor refinement.",
+      "rules": [
+        "§10.2",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_TYPE_MISMATCH",
+        "assertDiagnosticFamily error kappa.type.mismatch"
+      ]
+    },
+    {
+      "id": "IIR-015",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Recursive declaration-universe identity edge",
+      "description": "Indexed recursive operations preserve their declaration-universe instance.",
+      "rules": [
+        "§11.1.2.3A",
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertRecursiveSchemaEdge UEl UEl identity",
+        "assertInductiveGroupCertificateValid UCode"
+      ]
+    },
+    {
+      "id": "IIR-016",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Upward recursive universe schema",
+      "description": "A recursive operation may not recurse at an unproved larger declaration-universe instance.",
+      "rules": [
+        "§11.1.2.3A"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE",
+        "assertDiagnosticFamily error kappa.universe.recursive-schema"
+      ]
+    },
+    {
+      "id": "IIR-017",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Implicit non-identity recursive universe schema",
+      "description": "A non-identity recursive schema call must be explicit.",
+      "rules": [
+        "§11.1.2.3A"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT",
+        "assertDiagnosticFamily error kappa.universe.recursive-schema"
+      ]
+    },
+    {
+      "id": "IIR-018",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Joint universe roles over indexed family",
+      "description": "The schema certificate covers family refinements and recursive equations.",
+      "rules": [
+        "§10.4.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertSchemaCertificateValid UCode",
+        "assertInterfaceContainsUniverseRoles UCode invariant",
+        "assertInductiveGroupCertificateMutationsReject UCode"
+      ]
+    },
+    {
+      "id": "IIR-019",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Indexed private decoder interface",
+      "description": "Private operation equations remain interface-reachable for exported indexed constructors.",
+      "rules": [
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup ICode",
+        "assertInterfaceContainsRecursiveOperationEquation El Box"
+      ]
+    },
+    {
+      "id": "IIR-020",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Indexed KCore round trip",
+      "description": "Family arguments, refinements, and operation equations survive canonical KCoreText.",
+      "rules": [
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStageDumpRoundTrips KCore",
+        "assertInductiveGroupCertificateMutationsReject ICode",
+        "assertNoParameterIndexPartition ICode"
+      ]
+    },
+    {
+      "id": "IIR-021",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Later indexed child unavailable",
+      "description": "A later field cannot be used merely because its full family application is known.",
+      "rules": [
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-forward-field\""
+      ]
+    },
+    {
+      "id": "IIR-022",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Index mismatch does not fabricate a parameter split",
+      "description": "A malformed constructor result is an ordinary family-argument mismatch.",
+      "rules": [
+        "§10.1.3",
+        "§10.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_TYPE_MISMATCH",
+        "assertDiagnosticFamily error kappa.type.mismatch"
+      ]
+    },
+    {
+      "id": "IIR-023",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Indexed structural tuple",
+      "description": "A recursive operation may select multiple group-valued subjects with indexed types.",
+      "rules": [
+        "§10.4.4.2",
+        "§15.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertRecursiveOperation PairEl subjects 1,2",
+        "assertInductiveGroupCertificateValid PairCode"
+      ]
+    },
+    {
+      "id": "IIR-024",
+      "category": "05_indexed_inductive_recursive",
+      "title": "Indexed operation subject is not saturated",
+      "description": "A subject must itself be a fully saturated family application.",
+      "rules": [
+        "§10.4.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\""
+      ]
+    },
+    {
+      "id": "X-001",
+      "category": "06_feature_intersections",
+      "title": "Trait instance normalizes recursive equation",
+      "description": "Instance checking may normalize an imported or local recursive-operation equation.",
+      "rules": [
+        "§10.4.4.8",
+        "§14"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType useDefault decode NatCode"
+      ]
+    },
+    {
+      "id": "X-002",
+      "category": "06_feature_intersections",
+      "title": "Implicit evidence in operation result",
+      "description": "Ordinary implicit resolution may discharge external constraints in a recursive equation.",
+      "rules": [
+        "§10.4.4.2",
+        "§14"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertRecursiveOperationEquation decode NatCode"
+      ]
+    },
+    {
+      "id": "X-003",
+      "category": "06_feature_intersections",
+      "title": "Erased recursive field used in a later type",
+      "description": "Quantity erasure does not remove static availability or structural metadata.",
+      "rules": [
+        "§10.4.4.3",
+        "§12.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge Tagged inner",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-004",
+      "category": "06_feature_intersections",
+      "title": "Parametric type witness in IR family",
+      "description": "Parametric observation mode remains intact through family arguments and recursive equations.",
+      "rules": [
+        "§11.1.2.3A",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertNoParameterIndexPartition Code"
+      ]
+    },
+    {
+      "id": "X-005",
+      "category": "06_feature_intersections",
+      "title": "Parametric witness promotion remains rejected",
+      "description": "Induction-recursion does not grant ordinary type-code capability to a parametric witness.",
+      "rules": [
+        "§11.1.2.3A",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION",
+        "assertDiagnosticFamily error kappa.type.parametric-promotion"
+      ]
+    },
+    {
+      "id": "X-006",
+      "category": "06_feature_intersections",
+      "title": "Constructor named arguments and recursive defaults",
+      "description": "Named constructor metadata remains valid for IR constructors.",
+      "rules": [
+        "§10.1.1",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType natPi Code",
+        "assertRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "X-007",
+      "category": "06_feature_intersections",
+      "title": "Constructor default uses decoded earlier field",
+      "description": "A default body may use an IR operation after formation has certified its type.",
+      "rules": [
+        "§10.1",
+        "§9.5.2",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Code inductive-recursive",
+        "assertDeclarationGroupFacets Code Code/formation,decode/body"
+      ]
+    },
+    {
+      "id": "X-008",
+      "category": "06_feature_intersections",
+      "title": "Derive observes ordinary IR data shape",
+      "description": "Derivation-shape inspection sees constructors after the inductive certificate is accepted.",
+      "rules": [
+        "§19",
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertDeclKinds data,signature,let,derive"
+      ]
+    },
+    {
+      "id": "X-009",
+      "category": "06_feature_intersections",
+      "title": "Projection over recursive operation result",
+      "description": "A projection whose result type uses a decoder equation is checked after group formation.",
+      "rules": [
+        "§9.1.1",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-010",
+      "category": "06_feature_intersections",
+      "title": "Dependent record stores decoded value",
+      "description": "Record dependency substitution can mention a verified recursive operation.",
+      "rules": [
+        "§13",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType natPacked Packed"
+      ]
+    },
+    {
+      "id": "X-011",
+      "category": "06_feature_intersections",
+      "title": "Dependent record mismatch remains ordinary",
+      "description": "A wrong decoded payload reports the record-field mismatch, not an IR failure.",
+      "rules": [
+        "§13",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_TYPE_MISMATCH",
+        "assertDiagnosticFamily error kappa.type.mismatch"
+      ]
+    },
+    {
+      "id": "X-012",
+      "category": "06_feature_intersections",
+      "title": "Equality transport not needed for definitional equation",
+      "description": "Constructor-headed recursive operation equations reduce before transport synthesis.",
+      "rules": [
+        "§11.4",
+        "§31.1"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType natIsNat decode NatCode = Nat"
+      ]
+    },
+    {
+      "id": "X-013",
+      "category": "06_feature_intersections",
+      "title": "No UIP introduced by IR elimination",
+      "description": "Ordinary recursive operation matching uses data elimination and does not alter equality proof relevance.",
+      "rules": [
+        "§11.4",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType keepPath forall (A : Type) (x : A) (y : A). x = y -> x = y"
+      ]
+    },
+    {
+      "id": "X-014",
+      "category": "06_feature_intersections",
+      "title": "Opaque data downstream interface",
+      "description": "A downstream module can normalize exported recursive equations without seeing hidden constructors not exported to it.",
+      "rules": [
+        "§8.5.3",
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "lib.kp",
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType main.value Nat"
+      ]
+    },
+    {
+      "id": "X-015",
+      "category": "06_feature_intersections",
+      "title": "Private operation downstream normalization",
+      "description": "The interface retains private semantic equations required by a public constructor signature.",
+      "rules": [
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "lib.kp",
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType main.value Nat"
+      ]
+    },
+    {
+      "id": "X-016",
+      "category": "06_feature_intersections",
+      "title": "Fragment-local import used by signature",
+      "description": "A semantic header may be consumed in another fragment without leaking the signature fragment's imported spelling.",
+      "rules": [
+        "§7.1A",
+        "§9.2",
+        "§36.12.1"
+      ],
+      "incremental": false,
+      "files": [
+        "body.kp",
+        "natAlias.kp",
+        "sig.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType demo.identity Nat -> Nat"
+      ]
+    },
+    {
+      "id": "X-017",
+      "category": "06_feature_intersections",
+      "title": "Fragment import does not leak",
+      "description": "A body fragment cannot directly use an unimported spelling merely because another fragment imported it.",
+      "rules": [
+        "§7.1A",
+        "§36.12.1"
+      ],
+      "incremental": false,
+      "files": [
+        "a.kp",
+        "b.kp",
+        "lib.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnosticFamily error kappa.name.unresolved"
+      ]
+    },
+    {
+      "id": "X-018",
+      "category": "06_feature_intersections",
+      "title": "Universe-polymorphic IR interface",
+      "description": "Declaration-universe schemas and recursive-operation equations round-trip through the interface.",
+      "rules": [
+        "§11.1.2.3A",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertRecursiveSchemaEdge El El identity",
+        "assertInterfaceContainsDeclarationGroup UCode",
+        "assertSchemaCertificateValid UCode"
+      ]
+    },
+    {
+      "id": "X-019",
+      "category": "06_feature_intersections",
+      "title": "Universe role invariant when operation action is unavailable",
+      "description": "The conservative role fallback remains independently certified.",
+      "rules": [
+        "§10.4.3",
+        "§10.4.4.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertUniverseRole Code 0 invariant",
+        "assertSchemaCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-021",
+      "category": "06_feature_intersections",
+      "title": "KFrontIR checkpoint group invariants",
+      "description": "Resolved frontend state exposes exact group facets, equations, and certificate identity.",
+      "rules": [
+        "§34.1.6A",
+        "§34.2.12B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "dumpFormat json",
+        "canonicalDumps",
+        "assertStageDumpHas BODY_RESOLVE /declarationGroups",
+        "assertStageDumpHas BODY_RESOLVE /declarationGroups/0/memberFacets",
+        "assertStageDumpHas BODY_RESOLVE /inductiveGroupCertificates",
+        "assertStageDumpRoundTrips BODY_RESOLVE"
+      ]
+    },
+    {
+      "id": "X-022",
+      "category": "06_feature_intersections",
+      "title": "KCore round trip preserves operation equations",
+      "description": "Canonical KCoreText parse-print-parse retains group semantic identity.",
+      "rules": [
+        "§30.2.0B",
+        "§T.5.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "dumpFormat kcore",
+        "assertStageDumpRoundTrips KCore",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-023",
+      "category": "06_feature_intersections",
+      "title": "Interface round trip preserves operation equation",
+      "description": "Separate compilation can use an equation without source bodies.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup Code",
+        "assertInterfaceContainsRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "X-024",
+      "category": "06_feature_intersections",
+      "title": "Generated derive does not suppress source warnings",
+      "description": "Generated uses do not change source-oriented warning accounting.",
+      "rules": [
+        "§3.1.12",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-026",
+      "category": "06_feature_intersections",
+      "title": "Case-split metadata uses real constructors",
+      "description": "Tooling can enumerate constructors from an accepted IR group without inspecting source order.",
+      "rules": [
+        "§34.2.4",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStageDumpHas BODY_RESOLVE /inductiveGroupCertificates/0/constructorResultApps"
+      ]
+    },
+    {
+      "id": "X-027",
+      "category": "06_feature_intersections",
+      "title": "No-confusion metadata coexists with IR certificate",
+      "description": "Ordinary data no-confusion facts are generated after joint group acceptance.",
+      "rules": [
+        "§30.2.6",
+        "§10.4.4.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateValid Code",
+        "assertStageDumpHas KCore /noConfusionMetadata"
+      ]
+    },
+    {
+      "id": "X-028",
+      "category": "06_feature_intersections",
+      "title": "Borrowed region escapes recursive result",
+      "description": "A recursive operation returning a type whose exposed closure captures a rigid region fails ordinary capture/externality checks.",
+      "rules": [
+        "§12.3",
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\""
+      ]
+    },
+    {
+      "id": "X-029",
+      "category": "06_feature_intersections",
+      "title": "Lazy field does not alter group formation",
+      "description": "Explicit suspension remains an external positive type former while recursive codes stay structurally visible elsewhere.",
+      "rules": [
+        "§11.2",
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStructuralChildEdge Delayed inner",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "X-030",
+      "category": "06_feature_intersections",
+      "title": "Ordinary effect interface name does not affect grouping",
+      "description": "Effect operation declarations and recursive-operation identities remain distinct semantic kinds.",
+      "rules": [
+        "§7",
+        "§9.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Code inductive-recursive",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "ART-001",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Term recursive group interface summary",
+      "description": "A total term SCC records exact body facets and termination evidence.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup even",
+        "assertDeclarationGroupFacets even even/body,odd/body",
+        "assertStageDumpHas KCore /declarationGroups"
+      ]
+    },
+    {
+      "id": "ART-002",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Inductive group interface summary",
+      "description": "Even a nonrecursive ordinary data family has a certified inductive group.",
+      "rules": [
+        "§30.2.0B",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationGroupClass Color inductive",
+        "assertInterfaceContainsDeclarationGroup Color",
+        "assertInductiveGroupCertificateValid Color"
+      ]
+    },
+    {
+      "id": "ART-003",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Induction-induction interface summary",
+      "description": "All jointly formed family heads and positivity signatures survive interface serialization.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsDeclarationGroup Ctx",
+        "assertInductiveGroupCertificateValid Ctx",
+        "assertStageDumpHas KCore /inductiveGroupCertificates/0/parameterPositivity"
+      ]
+    },
+    {
+      "id": "ART-004",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Induction-recursion interface equations",
+      "description": "Every constructor equation needed downstream is retained.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInterfaceContainsRecursiveOperationEquation decode NatCode",
+        "assertInterfaceContainsRecursiveOperationEquation decode PiCode"
+      ]
+    },
+    {
+      "id": "ART-005",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Facet edge serialization",
+      "description": "KCore records typed internal dependency edges rather than declaration adjacency.",
+      "rules": [
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertDeclarationDependencyEdge Code/formation decode/body constructor-telescope",
+        "assertDeclarationDependencyEdge decode/body Code/formation body",
+        "assertStageDumpHas KCore /declarationGroups/0/dependencyEdges"
+      ]
+    },
+    {
+      "id": "ART-006",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Header stratum serialization",
+      "description": "Header strata contain facet identities in canonical order.",
+      "rules": [
+        "§9.5.3",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertHeaderStratum Code 0",
+        "assertHeaderStratum decode 1",
+        "assertStageDumpHas KCore /declarationGroups/0/headerStrata"
+      ]
+    },
+    {
+      "id": "ART-007",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "KCore mutation rejects facet identity",
+      "description": "The standard certificate mutation set changes member-facet identity and must fail independent verification.",
+      "rules": [
+        "§30.2.0B",
+        "§T.5.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateMutationsReject Code"
+      ]
+    },
+    {
+      "id": "ART-008",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "KCore mutation rejects operation equation",
+      "description": "Changing a recursive-operation equation invalidates the certificate.",
+      "rules": [
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateMutationsReject decode"
+      ]
+    },
+    {
+      "id": "ART-009",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "KCore mutation rejects nominal closure",
+      "description": "Changing the nominal-signature closure hash or schema certificate is detected.",
+      "rules": [
+        "§10.4.3",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertInductiveGroupCertificateMutationsReject Ctx",
+        "assertSchemaCertificateValid Ctx"
+      ]
+    },
+    {
+      "id": "ART-010",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "No parameter/index fields in artifacts",
+      "description": "KFrontIR, interface, and KCore expose one ordered family telescope.",
+      "rules": [
+        "§10.1.3",
+        "§30.2.0B",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoParameterIndexPartition ICode",
+        "assertStageDumpHas KCore /inductiveGroupCertificates/0/familyArgumentTelescopes"
+      ]
+    },
+    {
+      "id": "ART-011",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Canonical KCoreText order ignores source order",
+      "description": "Canonical serialization orders members and edges by semantic identity.",
+      "rules": [
+        "§30.2.0A",
+        "§30.2.0B"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "canonicalDumps",
+        "assertStageDumpRoundTrips KCore"
+      ]
+    },
+    {
+      "id": "ART-012",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Interface-private operation is not name-resolvable downstream",
+      "description": "Private semantic content is retained without exporting its source spelling.",
+      "rules": [
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "lib.kp",
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertType main.nat Nat"
+      ]
+    },
+    {
+      "id": "ART-013",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Semantic hash includes recursive equations",
+      "description": "Changing a visible recursive operation equation is an interface-semantic change.",
+      "rules": [
+        "§33.1.3",
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStageDumpHas KCore /inductiveGroupCertificates/0/operationEquations"
+      ]
+    },
+    {
+      "id": "ART-014",
+      "category": "07_interfaces_kcore_hashes",
+      "title": "Source origins excluded from group identity",
+      "description": "Group source maps are presentation data, while member facets and edges are semantic.",
+      "rules": [
+        "§34.1.9"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertStageDumpHas BODY_RESOLVE /declarationGroups/0/memberFacets",
+        "assertStageDumpHas BODY_RESOLVE /declarationGroups/0/dependencyEdges"
+      ]
+    },
+    {
+      "id": "INC-001",
+      "category": "08_incremental_and_permutation",
+      "title": "Term declaration permutation",
+      "description": "Reordering one recursive SCC preserves declaration, group, and interface semantic identity.",
+      "rules": [
+        "§9.5.8",
+        "§15.16",
+        "§33.1.3",
+        "§T.7"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-002",
+      "category": "08_incremental_and_permutation",
+      "title": "Induction-recursion declaration permutation",
+      "description": "Moving the recursive operation before the data declaration preserves the group certificate.",
+      "rules": [
+        "§9.5.8",
+        "§10.4.4.7",
+        "§T.7"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-003",
+      "category": "08_incremental_and_permutation",
+      "title": "Acyclic bodies merge into recursive SCC",
+      "description": "Adding one reverse body dependency invalidates and recomputes only the affected body groups.",
+      "rules": [
+        "§9.5.4",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-004",
+      "category": "08_incremental_and_permutation",
+      "title": "Recursive SCC splits after edge removal",
+      "description": "Removing one reverse edge splits a term SCC and changes its group identity.",
+      "rules": [
+        "§9.5.4",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-005",
+      "category": "08_incremental_and_permutation",
+      "title": "Ordinary data becomes inductive-recursive",
+      "description": "Adding a constructor field whose type uses the decoder merges formation and operation body facets.",
+      "rules": [
+        "§9.5.2",
+        "§10.4.4",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-006",
+      "category": "08_incremental_and_permutation",
+      "title": "Inductive-recursive group becomes ordinary inductive",
+      "description": "Removing the formation edge splits the recursive operation from the data certificate.",
+      "rules": [
+        "§9.5.4",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-007",
+      "category": "08_incremental_and_permutation",
+      "title": "Externality regression and repair",
+      "description": "Changing one recursive equation to expose the current group invalidates the certificate, then repairing it restores acceptance.",
+      "rules": [
+        "§10.4.4.6",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest",
+        "step2/main.kp",
+        "step2/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-008",
+      "category": "08_incremental_and_permutation",
+      "title": "Positivity regression and repair",
+      "description": "One negative cross-family occurrence invalidates the joint certificate without poisoning later repaired snapshots.",
+      "rules": [
+        "§10.4.2",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest",
+        "step2/main.kp",
+        "step2/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-009",
+      "category": "08_incremental_and_permutation",
+      "title": "Header cycle introduced and removed",
+      "description": "Header strata are recomputed after an alias edit.",
+      "rules": [
+        "§9.5.3",
+        "§34.1.1"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/main.kp",
+        "step0/suite.ktest",
+        "step1/main.kp",
+        "step1/suite.ktest",
+        "step2/main.kp",
+        "step2/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-010",
+      "category": "08_incremental_and_permutation",
+      "title": "Private operation equation changes interface identity",
+      "description": "Interface-reachable private semantic content participates in the providing module's interface hash.",
+      "rules": [
+        "§10.4.4.9",
+        "§34.1.9"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/lib.kp",
+        "step0/suite.ktest",
+        "step1/lib.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-011",
+      "category": "08_incremental_and_permutation",
+      "title": "Unrelated module reuse",
+      "description": "Changing one inductive-recursive group does not invalidate an unrelated module.",
+      "rules": [
+        "§34.1.1",
+        "§34.2.13"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/lib.kp",
+        "step0/other.kp",
+        "step0/suite.ktest",
+        "step1/lib.kp",
+        "step1/other.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "INC-012",
+      "category": "08_incremental_and_permutation",
+      "title": "Fragment movement preserves group",
+      "description": "Moving a declaration between selected fragments of the same script module preserves semantic group identity.",
+      "rules": [
+        "§36.12.1",
+        "§T.7"
+      ],
+      "incremental": true,
+      "files": [
+        "incremental.ktest",
+        "step0/a.kp",
+        "step0/b.kp",
+        "step0/suite.ktest",
+        "step1/a.kp",
+        "step1/b.kp",
+        "step1/suite.ktest"
+      ],
+      "directives": []
+    },
+    {
+      "id": "DIAG-001",
+      "category": "09_diagnostics_recovery",
+      "title": "Header-cycle payload lists facets and edges",
+      "description": "Machine-readable diagnostics expose the complete cyclic header slice.",
+      "rules": [
+        "§3.2.11A",
+        "§9.5.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DECLARATION_HEADER_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /reason \"header-cycle\"",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /members/0/kind \"type\"",
+        "assertDiagnosticPayload error E_DECLARATION_HEADER_CYCLE /dependencyEdges/0/role \"header\"",
+        "assertDiagnosticRelated error E_DECLARATION_HEADER_CYCLE declaration-site"
+      ]
+    },
+    {
+      "id": "DIAG-002",
+      "category": "09_diagnostics_recovery",
+      "title": "Strict value-cycle payload",
+      "description": "The root record identifies the exact body-facet cycle.",
+      "rules": [
+        "§3.2.11A",
+        "§9.5.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\"",
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /memberFacets/0/kind \"body\"",
+        "assertDiagnosticRelated error E_RECURSIVE_VALUE_CYCLE definition-site"
+      ]
+    },
+    {
+      "id": "DIAG-003",
+      "category": "09_diagnostics_recovery",
+      "title": "Positivity payload includes polarity path",
+      "description": "A cross-family negative occurrence records its structural path.",
+      "rules": [
+        "§3.2.11A",
+        "§10.4.2"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
+        "assertDiagnosticFamily error kappa.data.strict-positivity",
+        "assertDiagnosticPayload error E_DATA_STRICT_POSITIVITY /polarityPath/0 \"function-domain\"",
+        "assertDiagnosticRelated error E_DATA_STRICT_POSITIVITY constructor-declaration-site"
+      ]
+    },
+    {
+      "id": "DIAG-004",
+      "category": "09_diagnostics_recovery",
+      "title": "IR unavailable-subject payload",
+      "description": "The diagnostic identifies the operation, supplied subject, and available subjects.",
+      "rules": [
+        "§3.2.11A",
+        "§10.4.4.3"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\"",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /operation \"decode\"",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /suppliedSubject \"NatCode\""
+      ]
+    },
+    {
+      "id": "DIAG-005",
+      "category": "09_diagnostics_recovery",
+      "title": "IR externality payload",
+      "description": "The diagnostic records the exposed current-group occurrence and normalization path.",
+      "rules": [
+        "§3.2.11A",
+        "§10.4.4.6"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\"",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /operation \"decode\"",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /transparentAliases/0 \"Hidden\""
+      ]
+    },
+    {
+      "id": "DIAG-006",
+      "category": "09_diagnostics_recovery",
+      "title": "IR root suppresses lower termination error",
+      "description": "A structural failure is reported as induction-recursion with the raw termination failure suppressed.",
+      "rules": [
+        "§3.1.10",
+        "§3.2.11A"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\"",
+        "assertSuppressedDiagnostic E_INDUCTIVE_RECURSIVE_INVALID kappa.termination.failure"
+      ]
+    },
+    {
+      "id": "DIAG-007",
+      "category": "09_diagnostics_recovery",
+      "title": "Universe error remains primary",
+      "description": "An independent constructor-size error is not replaced by a generic group error.",
+      "rules": [
+        "§10.4",
+        "§3.1.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE",
+        "assertDiagnosticFamily error kappa.universe.constructor-size"
+      ]
+    },
+    {
+      "id": "DIAG-008",
+      "category": "09_diagnostics_recovery",
+      "title": "Generated dependency provenance",
+      "description": "A generated edge that creates an invalid cycle points primarily at the generating source construct.",
+      "rules": [
+        "§3.1.5A",
+        "§9.5.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "requires capability generatedDeclarationTests",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason \"generated-dependency-cycle\"",
+        "assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED generated-site",
+        "assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED macro-invocation-site"
+      ]
+    },
+    {
+      "id": "DIAG-009",
+      "category": "09_diagnostics_recovery",
+      "title": "Incomplete recursive operation body",
+      "description": "Recovery preserves the group header and reports the missing expression rather than an unresolved operation name.",
+      "rules": [
+        "§3.1.14A",
+        "§9.5.7"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECOVERY_MISSING_NODE",
+        "assertSuppressedDiagnostic E_RECOVERY_MISSING_NODE E_INDUCTIVE_RECURSIVE_INVALID"
+      ]
+    },
+    {
+      "id": "DIAG-010",
+      "category": "09_diagnostics_recovery",
+      "title": "Incomplete constructor telescope",
+      "description": "Recovery anchors at the missing field type while preserving neighboring group shapes.",
+      "rules": [
+        "§3.1.14A",
+        "§10.4.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECOVERY_MISSING_NODE"
+      ]
+    },
+    {
+      "id": "DIAG-011",
+      "category": "09_diagnostics_recovery",
+      "title": "No unresolved-name cascade from reverse order",
+      "description": "A malformed reversed IR group reports the actual IR obligation, not that Code or decode is unknown.",
+      "rules": [
+        "§9.5.7",
+        "§15.16"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\""
+      ]
+    },
+    {
+      "id": "DIAG-012",
+      "category": "09_diagnostics_recovery",
+      "title": "Diagnostic permutation stability",
+      "description": "The valid reversed group emits no order-dependent diagnostics.",
+      "rules": [
+        "§9.5.8",
+        "§3.1.10"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertNoErrors",
+        "assertNoWarnings",
+        "assertInductiveGroupCertificateValid Code"
+      ]
+    },
+    {
+      "id": "DIAG-013",
+      "category": "09_diagnostics_recovery",
+      "title": "Unsupported mixed cycle includes attempted classes",
+      "description": "A genuinely unsupported staged cycle records the classifications attempted.",
+      "rules": [
+        "§3.2.11A",
+        "§9.5.4"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED",
+        "assertDiagnosticFamily error kappa.declaration.recursive-group",
+        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason \"unsupported-mixed-cycle\"",
+        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /attemptedClassifications/0 \"term-recursive\""
+      ]
+    },
+    {
+      "id": "DIAG-014",
+      "category": "09_diagnostics_recovery",
+      "title": "Missing recursive signature diagnostic offers inferred shape",
+      "description": "When available, the missing-signature record carries an insertable inferred signature.",
+      "rules": [
+        "§3.2.3",
+        "§9.5.5"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
+        "assertDiagnosticFamily error kappa.type.missing-signature",
+        "assertDiagnosticPayload error E_MISSING_EXPLICIT_SIGNATURE /inferredSignature \"Nat -> Nat\""
+      ]
+    },
+    {
+      "id": "IR-037",
+      "category": "04_inductive_recursive",
+      "title": "Non-exhaustive recursive operation",
+      "description": "A recursive operation used during formation must define an equation for every reachable constructor.",
+      "rules": [
+        "§10.4.4.2",
+        "§10.4.4.8"
+      ],
+      "incremental": false,
+      "files": [
+        "main.kp"
+      ],
+      "directives": [
+        "mode check",
+        "scriptMode",
+        "assertErrorCount 1",
+        "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
+        "assertDiagnosticFamily error kappa.data.inductive-recursion",
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-non-exhaustive\"",
+        "assertSuppressedDiagnostic E_INDUCTIVE_RECURSIVE_INVALID kappa.pattern.non-exhaustive"
+      ]
+    }
+  ]
+}

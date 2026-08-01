@@ -1,0 +1,8 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass even term-recursive
+--! assertDeclarationGroupMembers even even,odd
+--! assertDeclarationGroupFacets even even/body,odd/body
+--! assertTotal even
+--! assertTotal odd

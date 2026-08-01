@@ -1,0 +1,5 @@
+count : Nat -> Nat
+let count n decreases structural n =
+    match n
+    case Zero -> Zero
+    case Succ k -> count k

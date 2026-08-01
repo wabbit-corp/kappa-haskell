@@ -1,0 +1,8 @@
+test : Nat
+let test =
+    block
+        let x = y
+        let y = Zero
+        x
+
+-- STATUS(f1e4161b): PASS

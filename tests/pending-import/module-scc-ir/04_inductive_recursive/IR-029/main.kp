@@ -1,0 +1,11 @@
+data SmallCode : Type0 =
+    TypeCode (A : Type1)
+    Use (inner : SmallCode) (value : decode inner)
+
+decode : SmallCode -> Type0
+let decode code decreases structural code =
+    match code
+    case TypeCode A -> Nat
+    case Use inner value -> decode inner
+
+-- STATUS(f1e4161b): FAIL — E_DATA_CONSTRUCTOR_FIELD_UNIVERSE

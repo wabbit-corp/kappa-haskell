@@ -1,0 +1,15 @@
+data StepCode (n : Nat) : Type =
+    BaseCode : StepCode Zero
+    NextCode
+        (n : Nat)
+        (inner : StepCode n)
+        (value : StepEl n inner) :
+        StepCode (Succ n)
+
+StepEl : (n : Nat) -> StepCode n -> Type
+let StepEl n code decreases structural code =
+    match code
+    case BaseCode -> Unit
+    case NextCode m inner value -> List (StepEl m inner)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStructuralChildEdge' is not defined by Appendix T (§T.3); line 5: unknown directive '

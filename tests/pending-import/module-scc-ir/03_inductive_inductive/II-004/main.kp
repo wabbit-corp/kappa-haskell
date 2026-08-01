@@ -1,0 +1,13 @@
+data Red : Type =
+    R0
+    RS (green : Green)
+
+data Green : Type =
+    G0
+    GS (blue : Blue)
+
+data Blue : Type =
+    B0
+    BS (red : Red)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupMembers' is not defined by Appendix T (§T.3); line 5: unknown directi

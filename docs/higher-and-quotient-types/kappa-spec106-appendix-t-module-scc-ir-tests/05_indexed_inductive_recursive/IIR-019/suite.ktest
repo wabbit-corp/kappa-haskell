@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertInterfaceContainsDeclarationGroup ICode
+--! assertInterfaceContainsRecursiveOperationEquation El Box

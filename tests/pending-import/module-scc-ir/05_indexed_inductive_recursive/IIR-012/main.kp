@@ -1,0 +1,24 @@
+data ICode (tag : Bool) : Type =
+    BoolCode : ICode True
+    NatCode  : ICode False
+    Box
+        (inner : ICode tag)
+        (value : El tag inner) :
+        ICode tag
+
+El : (tag : Bool) -> ICode tag -> Type
+let El tag code decreases structural code =
+    match code
+    case BoolCode ->
+        Bool
+    case NatCode ->
+        Nat
+    case Box inner value ->
+        El tag inner
+onlyBool : ICode True -> Bool
+let onlyBool code =
+    match code
+    case BoolCode -> True
+    case Box inner value -> True
+
+-- STATUS(f1e4161b): FAIL — E_EXPECTED_SYNTAX_TOKEN

@@ -1,0 +1,4 @@
+data A : Type =
+    MkA (f : B -> Nat)
+data B : Type =
+    MkB (a : A)

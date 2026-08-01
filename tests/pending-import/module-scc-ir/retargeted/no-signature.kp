@@ -1,0 +1,10 @@
+-- Retargeted from tests/conformance/recursion/no-signature.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- E_RECURSION_REQUIRES_SIGNATURE no longer exists; unsigned computational members of a
+-- cyclic SCC are rejected with E_MISSING_EXPLICIT_SIGNATURE (family
+-- kappa.type.missing-signature, §9.5.5, §3.2.3), payload carrying the complete
+-- recursive SCC per §3.2.11A.
+--! assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE
+
+let loopy n = loopy n
+
+-- STATUS(f1e4161b): PASS

@@ -1,0 +1,75 @@
+-- Retargeted from tests/conformance/spec-coverage/declarations/RACKET-letrec-mutual-recursion-toplevel.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Comment-only retarget: §9.2/§9.5 no longer make signature position an enabling
+-- condition for recursion; the program and all directives are unchanged.
+--
+-- Source: Racket guide let.scrbl (named let, letrec),
+--         pkgs/racket-test-core/tests/racket/letrec.rktl
+-- Spec: §9.2/§9.5.5 (every computational member of a recursive SCC MUST have a
+--       complete explicit signature — separate or inline, occurring before or
+--       after its definition; source position never enables or disables
+--       recursion), §15 (totality), §10.4 (mutual data)
+--
+-- Pins Racket's letrec-style semantics at the Kappa top level: a pair of
+-- functions may each call the other, provided every member of the mutual group
+-- has a complete explicit signature (§9.2, §9.5); where the signatures appear
+-- in the source is irrelevant. Also pins mutual recursion over a mutually
+-- recursive data family.
+
+--! mode check
+
+data Peano : Type =
+    PZero
+    PSucc Peano
+
+-- POSITIVE: classic even/odd mutual recursion (this file happens to place the
+-- separate signatures before both bodies; that placement is not required).
+isEven : Peano -> Bool
+isOdd : Peano -> Bool
+
+let isEven n =
+    match n
+    case PZero   -> True
+    case PSucc m -> isOdd m
+
+let isOdd n =
+    match n
+    case PZero   -> False
+    case PSucc m -> isEven m
+
+evenTwo : Bool
+let evenTwo = isEven (PSucc (PSucc PZero))
+
+oddTwo : Bool
+let oddTwo = isOdd (PSucc (PSucc PZero))
+
+-- POSITIVE: mutually recursive processors of a mutually recursive data family.
+data Tree (0 a : Type) : Type =
+    Leaf
+    Node a (Forest a)
+
+data Forest (0 a : Type) : Type =
+    FNil
+    FCons (Tree a) (Forest a)
+
+countTree : Tree a -> Int
+countForest : Forest a -> Int
+
+let countTree t =
+    match t
+    case Leaf      -> 0
+    case Node _ fs -> 1 + countForest fs
+
+let countForest f =
+    match f
+    case FNil       -> 0
+    case FCons t fs -> countTree t + countForest fs
+
+counted : Int
+let counted = countTree (Node 7 (FCons Leaf FNil))
+
+--! assertNoErrors
+--! assertEval evenTwo True
+--! assertEval oddTwo False
+--! assertEval counted 1
+
+-- STATUS(f1e4161b): PASS

@@ -1,0 +1,9 @@
+opaque data Code : Type =
+    NatCode
+    ListCode (element : Code) (sample : decode element)
+
+private decode : Code -> Type
+private let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case ListCode element sample -> List (decode element)

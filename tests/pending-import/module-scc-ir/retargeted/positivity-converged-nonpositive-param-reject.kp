@@ -1,0 +1,18 @@
+-- Retargeted from tests/conformance/data_types/positivity-converged-nonpositive-param-reject.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- E_DATA_NOT_STRICTLY_POSITIVE no longer exists. The rejection outcome is unchanged.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4.2 final group judgment: after greatest-fixed-point parameter
+-- signatures converge, Contra's argument 'a' is non-positive ('a -> Integer'
+-- places it left of an arrow), so the recursive occurrence of Bad in
+-- 'Contra Bad' is not strictly positive and the group is rejected.
+@PrivateByDefault module main
+
+data Contra (a : Type) : Type =
+    MkContra (a -> Integer)
+
+data Bad : Type =
+    MkBad (Contra Bad)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

@@ -1,0 +1,4 @@
+a : Nat
+let a = b
+b : Nat
+let b = a

@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertRecursiveSchemaEdge UEl UEl identity
+--! assertInductiveGroupCertificateValid UCode

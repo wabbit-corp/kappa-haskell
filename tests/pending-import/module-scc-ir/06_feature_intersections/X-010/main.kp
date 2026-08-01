@@ -1,0 +1,22 @@
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)
+type Packed =
+    (code : Code,
+     value : decode code)
+
+natPacked : Packed
+let natPacked =
+    (code = NatCode, value = Zero)
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

@@ -1,0 +1,57 @@
+-- Retargeted from tests/conformance/imported-anon/BQN-use-before-define-let-binding.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Comment-only retarget: §7.1A gives top-level declarations module-wide scope, so
+-- top-level use-before-a-later-definition now resolves; the negatives here use names
+-- with no declaration anywhere, so all directives are unchanged.
+--
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: BQN-30 (try.html predicate-guard reports `s is undefined`
+--   for `{ (1 = 2) ? 3 }`; the inner read of an implicit subject occurs
+--   before its definition).
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- A read of a name with no declaration anywhere in the effective module
+-- must produce kappa.name.unresolved, not an internal-compiler failure or
+-- undefined-symbol leak. Top-level declarations have module-wide scope
+-- (§7.1A): a top-level use before a LATER top-level definition RESOLVES,
+-- so sequential use-before-define errors persist only in local scopes
+-- (§9.3.1).
+
+--! mode check
+
+-- POSITIVE: a normal forward-reading let where the binding precedes its use.
+n : Nat
+let n = 5
+
+useN : Nat
+let useN = n + 1
+
+-- POSITIVE: a top-level forward reference — an earlier top-level definition
+-- may refer to a later top-level declaration of the same effective module
+-- (§7.1A); this must NOT be an unresolved name.
+usesLater : Nat
+let usesLater = definedLater + 1
+
+definedLater : Nat
+let definedLater = 2
+
+-- NEGATIVE: `result` is never declared anywhere in this module — no
+-- signature, no definition, no binder of any kind.
+badRead : Nat
+let badRead = result + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: function body reads a parameter spelled differently than the
+-- declared parameter; the misspelling has no binder in scope.
+mistypedParam : Nat -> Nat
+let mistypedParam x = y + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2
+
+-- STATUS(f1e4161b): PASS

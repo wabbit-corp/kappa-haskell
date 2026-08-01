@@ -1,0 +1,8 @@
+data Code : Type =
+    NatCode
+    Box (inner : Code) (value : decode inner)
+
+let decode code =
+    match code
+    case NatCode -> Nat
+    case Box inner value -> decode inner

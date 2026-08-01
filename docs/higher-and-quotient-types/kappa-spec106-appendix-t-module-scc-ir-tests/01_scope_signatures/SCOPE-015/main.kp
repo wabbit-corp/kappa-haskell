@@ -1,0 +1,7 @@
+left : Nat
+let left =
+    right
+
+right : Nat
+let right =
+    left

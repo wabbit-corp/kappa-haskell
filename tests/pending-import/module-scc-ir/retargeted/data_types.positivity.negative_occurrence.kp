@@ -1,0 +1,36 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/data_types.positivity.negative_occurrence.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use family kappa.data.strict-positivity / E_DATA_STRICT_POSITIVITY (§10.4.2);
+-- both rejections stand: D occurs in a function domain, and the variable former f is not admissible.
+
+-- Source issues: Idris2 #1988, Idris2 #1771
+-- Spec: §10.4.2 (strict positivity).
+-- A data constructor whose argument type contains the data type being defined
+-- in a strictly-negative position (i.e., to the left of a function arrow that
+-- is inside the constructor argument) is not strictly positive and must be
+-- rejected by the positivity checker.
+-- Accepting such types can lead to non-termination and proofs of False.
+
+module test
+
+-- Rejected: D appears in negative position inside the constructor argument.
+-- `D -> Type` has `D` to the left of `->`, so `Abs : (D -> Type) -> D` is
+-- non-strictly-positive and must be rejected.
+data D : Type = --!! E_DATA_STRICT_POSITIVITY
+    Abs : (D -> Type) -> D
+
+--! mode check
+--! assertErrorCount 2
+
+-- Rejected: Fix defined via a type parameter that appears negatively.
+-- `f (Fix f)` may expand to a type that has `Fix f` in a negative position,
+-- depending on `f`. The checker must reject this as non-strictly-positive
+-- without inspecting `f`'s definition.
+data Fix (f : Type -> Type) : Type = --!! E_DATA_STRICT_POSITIVITY
+    MkFix : f (Fix f) -> Fix f
+
+-- Accepted: a strictly-positive recursive type is fine.
+data Nat2 : Type =
+    Zero2 : Nat2
+    Succ2 : Nat2 -> Nat2
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

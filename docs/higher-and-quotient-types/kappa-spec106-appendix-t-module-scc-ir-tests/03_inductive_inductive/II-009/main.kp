@@ -1,0 +1,7 @@
+type Consumer = Right -> Nat
+
+data Left : Type =
+    MkLeft (consume : Consumer)
+
+data Right : Type =
+    MkRight (left : Left)

@@ -1,0 +1,13 @@
+module lib
+
+data Code : Type =
+    NatCode
+    ListCode (inner : Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case ListCode inner -> List (decode inner)
+
+-- STATUS(f1e4161b): FAIL — E_TYPE_EQUALITY_MISMATCH

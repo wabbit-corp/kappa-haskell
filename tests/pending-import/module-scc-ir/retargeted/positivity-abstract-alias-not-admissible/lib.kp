@@ -1,0 +1,7 @@
+module lib
+
+-- §10.3: an abstract type definition (no RHS). Its interface carries no
+-- parameter-positivity signature.
+type Hidden (a : Type)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

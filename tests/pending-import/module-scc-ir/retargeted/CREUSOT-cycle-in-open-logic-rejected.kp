@@ -1,0 +1,35 @@
+-- Retargeted from tests/conformance/spec-coverage/proofs-deriving-totality/CREUSOT-cycle-in-open-logic-rejected.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- The cyclic body SCC {f, g} contains the strict non-function value initializer
+-- 'let f = g True', so the group is now rejected at group admissibility with family
+-- kappa.declaration.recursive-group / E_RECURSIVE_VALUE_CYCLE (§9.5.6, §3.2.11A), before
+-- termination checking — no kappa.termination.failure diagnostic is emitted (§15.16).
+-- Source issues: CREUSOT-cycle
+-- Source tests: creusot should_fail/cycle.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/cycle.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: §9.5.6 (a cyclic body SCC containing a non-function strict value
+--       initializer is rejected with E_RECURSIVE_VALUE_CYCLE), §3.2.11A
+--       (family kappa.declaration.recursive-group, reason
+--       strict-value-cycle, portable alias E_RECURSIVE_VALUE_CYCLE),
+--       §15.16 (a rejected group produces exactly one group-level root
+--       diagnostic, no cascades)
+-- Pins: 'f : Unit; let f = g True' is a non-function strict value
+-- initializer inside the cyclic body SCC {f, g}. The group MUST be
+-- rejected with a single group-level root diagnostic in family
+-- kappa.declaration.recursive-group (reason strict-value-cycle, portable
+-- alias E_RECURSIVE_VALUE_CYCLE) whose payload lists SCC members f and
+-- g. The spec does not pin which member anchors the diagnostic.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: strict value cycle — f is a non-function strict value
+-- initializer in the cyclic SCC {f, g}.
+f : Unit
+g : Bool -> Unit
+
+let f = g True
+let g x = if x then f else f
+
+--! assertDiagnosticFamily error kappa.declaration.recursive-group
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

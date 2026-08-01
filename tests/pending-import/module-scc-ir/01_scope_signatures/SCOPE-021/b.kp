@@ -1,0 +1,5 @@
+module demo
+
+later : Nat -> Nat
+let later n =
+    Succ n

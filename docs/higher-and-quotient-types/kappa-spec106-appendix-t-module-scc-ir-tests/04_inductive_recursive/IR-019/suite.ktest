@@ -1,0 +1,10 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers Code Code,decodeA,decodeB
+--! assertPhaseConstraint decodeA decodeB
+--! assertHiddenPhase decodeA 1
+--! assertHiddenPhase decodeB 0
+--! assertRecursiveOperation decodeA subjects 0
+--! assertRecursiveOperation decodeB subjects 0
+--! assertInductiveGroupCertificateValid Code

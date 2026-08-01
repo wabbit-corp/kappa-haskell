@@ -1,0 +1,3 @@
+--! assertStepSemanticHashEquals 0 1 Code
+--! assertStepDeclarationGroupEquivalent 0 1 Code
+--! assertStepInterfaceHashEquals 0 1 main

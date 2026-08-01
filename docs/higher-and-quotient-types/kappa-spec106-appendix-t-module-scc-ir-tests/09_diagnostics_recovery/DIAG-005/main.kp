@@ -1,0 +1,9 @@
+type Hidden = Code -> Nat
+data Code : Type =
+    NatCode
+    Bad (inner : Code) (sample : decode inner)
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Hidden
+    case Bad inner sample -> decode inner

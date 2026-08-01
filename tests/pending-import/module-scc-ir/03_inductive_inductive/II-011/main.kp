@@ -1,0 +1,7 @@
+data Contravariant (0 a : Type) : Type =
+    Contra (consume : a -> Nat)
+
+data Wrapper : Type =
+    Wrap (value : Contravariant Nat)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3); line 5: unknown directive

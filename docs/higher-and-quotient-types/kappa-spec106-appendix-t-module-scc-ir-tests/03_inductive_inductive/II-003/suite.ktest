@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers Ctx Ctx,Ty
+--! assertDeclarationGroupFeature Ctx inductive-inductive
+--! assertHeaderStratum Ctx 0
+--! assertHeaderStratum Ty 1

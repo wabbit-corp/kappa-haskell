@@ -1,0 +1,7 @@
+first : Nat -> Nat
+let first n =
+    second n
+
+second : Nat -> Nat
+let second n =
+    Succ n

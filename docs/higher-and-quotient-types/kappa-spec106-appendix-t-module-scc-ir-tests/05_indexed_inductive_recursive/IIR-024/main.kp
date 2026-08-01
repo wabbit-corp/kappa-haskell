@@ -1,0 +1,14 @@
+data Code (tag : Bool) : Type =
+    Base : Code tag
+    Higher
+        (family : (other : Bool) -> Code other)
+        (sample : El family) :
+        Code tag
+
+El : ((other : Bool) -> Code other) -> Type
+let El family =
+    match family True
+    case Base ->
+        Nat
+    case Higher next sample ->
+        El next

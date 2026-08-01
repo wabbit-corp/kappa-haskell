@@ -1,0 +1,15 @@
+data PairCode (tag : Bool) : Type =
+    BoolCode : PairCode True
+    NatCode : PairCode False
+    Pair
+        (left : PairCode tag)
+        (right : PairCode tag)
+        (sample : PairEl tag left right) :
+        PairCode tag
+
+PairEl : (tag : Bool) -> PairCode tag -> PairCode tag -> Type
+let PairEl tag left right decreases structural (left, right) =
+    match left
+    case BoolCode -> Bool
+    case NatCode -> Nat
+    case Pair l r sample -> PairEl tag l r

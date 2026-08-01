@@ -1,0 +1,9 @@
+decode : Code -> Type
+let decode code =
+    decode code
+
+data Code : Type =
+    NatCode
+    Box (inner : Code) (sample : decode inner)
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

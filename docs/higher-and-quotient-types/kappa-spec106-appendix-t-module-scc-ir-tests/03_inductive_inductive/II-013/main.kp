@@ -1,0 +1,7 @@
+data WrapA (0 a : Type) : Type =
+    ALeaf (value : a)
+    ANext (other : WrapB a)
+
+data WrapB (0 a : Type) : Type =
+    BLeaf (value : a)
+    BNext (other : WrapA a)

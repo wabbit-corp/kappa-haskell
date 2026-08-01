@@ -1,0 +1,9 @@
+data Code (parametric 0 a : Type) : Type =
+    ValueCode
+    ListCode (inner : Code a) (sample : decode a inner)
+
+decode : (parametric 0 a : Type) -> Code a -> Type
+let decode a code decreases structural code =
+    match code
+    case ValueCode -> a
+    case ListCode inner sample -> List (decode a inner)

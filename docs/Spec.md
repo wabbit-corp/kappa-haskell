@@ -867,6 +867,11 @@ E_OPERATOR_ROLE_UNBOUND
 
 E_MISSING_EXPLICIT_SIGNATURE
 I_INFERRED_SIGNATURE_AVAILABLE
+E_DECLARATION_HEADER_CYCLE
+E_RECURSIVE_VALUE_CYCLE
+E_RECURSIVE_GROUP_UNSUPPORTED
+E_DATA_STRICT_POSITIVITY
+E_INDUCTIVE_RECURSIVE_INVALID
 
 E_CONSTRUCTOR_ARITY_MISMATCH
 E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
@@ -1082,6 +1087,14 @@ Meanings:
 * `E_MISSING_EXPLICIT_SIGNATURE` is emitted when a declaration requires an explicit signature and none is available.
 * `I_INFERRED_SIGNATURE_AVAILABLE` MAY be emitted as an informational diagnostic carrying an inferred signature that
   tooling may insert.
+* `E_DECLARATION_HEADER_CYCLE` is emitted when a cyclic declaration-header dependency has no admitted joint header
+  stratification under §§9.5 and 10.4.4.
+* `E_RECURSIVE_VALUE_CYCLE` is emitted when a strict top-level value or pattern initializer belongs to a recursive SCC
+  without standardized guarded or productive semantics.
+* `E_RECURSIVE_GROUP_UNSUPPORTED` is emitted when a semantic declaration SCC fits none of the recursive group classes
+  admitted by §9.5.
+* `E_DATA_STRICT_POSITIVITY` is emitted when a singleton or jointly checked data group fails §10.4.2.
+* `E_INDUCTIVE_RECURSIVE_INVALID` is emitted when a candidate ordinary inductive-recursive group fails §10.4.4.
 * `E_CONSTRUCTOR_ARITY_MISMATCH` is emitted when a constructor application supplies too few, too many, duplicated, or
   otherwise malformed constructor arguments after constructor identity is known.
 * `E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH` is emitted for the analogous malformed constructor pattern.
@@ -1574,6 +1587,10 @@ The following kinds of information SHOULD be structured in payloads rather than 
 * static footprint;
 * dependency path;
 * recursive SCC;
+* declaration-group classification and features;
+* header strata and dependency-edge roles;
+* positivity path and parameter-positivity signatures;
+* inductive-recursive operation, selected subject, and structural-child derivation;
 * recursive call edge;
 * termination strategy;
 * macro expansion stack;
@@ -1712,6 +1729,10 @@ capture
 effect-row
 record-reconstruction
 pattern-coverage
+declaration-group
+strict-positivity
+induction-recursion
+schema-action
 termination
 modality
 macro-expansion
@@ -1734,6 +1755,10 @@ imported-interface
 trait-instance-search
 borrow-introduction
 projection-elimination
+declaration-group-formation
+positivity-checking
+induction-recursion-checking
+schema-action-checking
 termination-checking
 bridge-boundary
 ```
@@ -2045,6 +2070,8 @@ The following failures are non-deferrable hard errors in ordinary compilation:
 * inactive feature gate for a construct whose semantic consequences would affect typing, effects, ownership, totality,
   ABI, or backend lowering;
 * failed totality certification for a transparent definition that would otherwise be conversion-reducible;
+* failed header stratification, strict positivity, induction-recursion, or inductive-group certificate verification
+  for a declaration group whose members would otherwise participate in typing or definitional equality;
 * use of `assertReducible` when the selected build mode does not permit it;
 * unsatisfied positive lower-bound obligations;
 * linear-use violations that would duplicate, drop, or fabricate owned resources;
@@ -3888,7 +3915,7 @@ Used when the termination checker rejects a recursive definition or SCC.
 Payload MUST include:
 
 * recursive SCC members;
-* source order and hidden phase order when relevant;
+* phase-constraint edges and the canonical hidden phase assignment when relevant;
 * recursive call sites considered;
 * attempted strategies;
 * selected structural parameters or visible measures;
@@ -3896,6 +3923,127 @@ Payload MUST include:
 * size-change matrices and failing cycles when available;
 * implementation limit status when failure was caused by a limit;
 * synthesized candidate `decreases` clause when available.
+
+<!-- compiler.kfrontir.standard_diagnostic_families.recursive_declaration_groups -->
+#### 3.2.11A Recursive declaration-group and inductive-group diagnostics
+
+Family:
+
+```text
+kappa.declaration.recursive-group
+```
+
+Used when a module-wide declaration SCC cannot be admitted under §9.5.
+
+Standard reason values include:
+
+```text
+header-cycle
+missing-explicit-signature
+strict-value-cycle
+recursive-pattern-binding
+unsupported-mixed-cycle
+generated-dependency-cycle
+```
+
+Payload MUST include, when applicable:
+
+* the declaration-group identity and attempted classification;
+* every member by stable declaration identity and declaration kind;
+* every participating declaration facet and its facet kind;
+* every dependency edge participating in the failing cycle, including its source facet, target facet, and edge role;
+* source and target origins for each relevant edge;
+* header strata already established;
+* declarations lacking complete explicit signatures;
+* whether the dependency was source-written, generated, normalization-exposed, or imported-interface-derived;
+* the first group-admissibility rule that failed; and
+* the stable reason value.
+
+`header-cycle` MUST expose portable alias `E_DECLARATION_HEADER_CYCLE`.
+
+`strict-value-cycle` and `recursive-pattern-binding` MUST expose portable alias `E_RECURSIVE_VALUE_CYCLE`.
+
+`unsupported-mixed-cycle` and `generated-dependency-cycle` MUST expose portable alias
+`E_RECURSIVE_GROUP_UNSUPPORTED`.
+
+When the only failure is a missing explicit signature, the diagnostic continues to use family
+`kappa.type.missing-signature` and portable alias `E_MISSING_EXPLICIT_SIGNATURE`; its payload additionally includes the
+complete recursive SCC.
+
+Family:
+
+```text
+kappa.data.strict-positivity
+```
+
+Used when a singleton or jointly checked inductive data group fails §10.4.2.
+
+Payload MUST include:
+
+* the inductive-group identity and every data-family member;
+* the constructor and constructor-local component containing the rejected occurrence;
+* the recursive family head reached by the occurrence;
+* the polarity path from the constructor component to the occurrence;
+* transparent aliases unfolded along that path;
+* recorded or tentative parameter-positivity signatures consulted;
+* the converged parameter-positivity signatures of the current group;
+* the source origins of the constructor, occurrence, and any alias that concealed it; and
+* whether the rejected occurrence was direct, through a function domain, through a non-positive nominal argument, or
+  through an uncertified recursive-operation result.
+
+This family MUST expose portable alias `E_DATA_STRICT_POSITIVITY`.
+
+Family:
+
+```text
+kappa.data.inductive-recursion
+```
+
+Used when a candidate ordinary inductive-recursive group fails §10.4.4.
+
+Standard reason values include:
+
+```text
+recursive-operation-missing-signature
+recursive-operation-not-transparent
+recursive-operation-not-static
+recursive-operation-not-pure
+recursive-operation-not-total
+recursive-operation-not-conversion-reducible
+recursive-operation-non-exhaustive
+recursive-operation-not-structural
+recursive-operation-unsafe-assertion
+recursive-operation-result-not-external
+recursive-operation-result-depends-on-subject
+operation-application-not-saturated
+operation-application-subject-unavailable
+operation-application-forward-field
+pointwise-child-domain-not-external
+recursive-child-not-smaller
+sort-header-cycle
+operation-header-cycle
+joint-eliminator-invalid
+joint-computation-rule-invalid
+nominal-action-certificate-invalid
+```
+
+Payload MUST include, when applicable:
+
+* the inductive-group identity, classification, and features;
+* every data family and recursive operation in the group;
+* the complete ordered family-argument telescope of every family;
+* the header dependency graph and inferred header strata;
+* the selected structural subject or structural tuple of every recursive operation;
+* every recursive-operation application occurring in a family header, constructor telescope, or constructor result;
+* every direct and pointwise structural-child derivation used;
+* every recursive operation call and its decrease derivation;
+* the externality-check result for each recursive operation;
+* the first failed rule and stable reason value;
+* relevant source and synthetic origins; and
+* any lower-level universe, positivity, termination, quantity, phase, or normalization obligation suppressed beneath
+  this root diagnostic.
+
+This family MUST expose portable alias `E_INDUCTIVE_RECURSIVE_INVALID`.
 
 <!-- compiler.kfrontir.standard_diagnostic_families.macro_elaboration -->
 #### 3.2.12 Macro and elaboration-time diagnostics
@@ -6956,6 +7104,9 @@ The implementation SHOULD emit `W_UNICODE_VISUAL_ALIAS_REFERENCE` and offer a so
 Binding-group formation:
 
 * Within one lexical scope, a source name key may contribute at most one ordinary declaration of a given kind.
+* A permitted top-level separate signature and matching definition under §9.2 are two source items for one term
+  declaration identity, not two competing `term` declarations. Pairing is determined over the complete effective module
+  and is independent of their source order.
 * Distinct kinds with the same source name key may coexist in one binding group.
 * A `data` declaration may additionally contribute the same-name constructor facet described in §7.2.
 * Within one lexical scope, two declarations of the same declaration kind whose `strictNameKey` values are equal are
@@ -7052,6 +7203,63 @@ let C = trait Eq
 let T = type Person      -- type constructor, not Person.Person
 let L = effectLabel state
 ```
+
+<!-- modules.names.module_wide_top_level_scope -->
+### 7.1A Module-wide scope of top-level declarations
+
+For one effective module, top-level declaration shapes are collected into one module-wide declaration scope before
+top-level declaration bodies are checked.
+
+The following named shapes are visible throughout every selected source fragment of the same effective module,
+independently of textual declaration order:
+
+* top-level term signatures and simple-name term definitions;
+* names introduced by top-level irrefutable pattern definitions, subject to §9.1;
+* `data` families and their constructors;
+* `type` declarations and transparent or opaque aliases;
+* `trait` declarations and their declared members;
+* effect interfaces, effect labels, and declared operations;
+* projection and active-pattern declarations;
+* named declarations generated by accepted `derive`, macro, splice, or other declaration-generating forms;
+* top-level instance heads, which participate in module-wide dependency and coherence analysis even though they are not
+  ordinary unqualified lexical names; and
+* `expect` declarations.
+
+Module-wide visibility publishes declaration shapes and provisionally checked headers. It does not assume that a
+declaration body, recursive group, constructor telescope, instance, generated declaration, or certificate is valid.
+If the declaration group that owns a provisional shape is rejected, that shape is not part of an accepted program or
+interface.
+
+The following remain source-location-sensitive and are not made retroactive by this section:
+
+* each source fragment's imports, aliases, `unhide`, and `clarify` environment;
+* each operator occurrence's effective fixity environment;
+* local declarations inside `block`, `do`, `let ... in`, lambdas, handlers, comprehensions, or other lexical blocks;
+* constructor order within one `data` declaration;
+* binder, constructor-field, record-field, default-expression, pattern, branch, and runtime evaluation order; and
+* any source form that another section explicitly defines as applying from its declaration point onward.
+
+Consequences:
+
+* an earlier top-level declaration may refer to a later top-level declaration of the same effective module;
+* declarations in distinct selected fragments of one effective module may refer to each other;
+* a later import does not make an imported spelling directly available at an earlier reference site;
+* an import in one fragment does not place its imported spellings in another fragment's lexical import scope;
+* a later fixity declaration does not retroactively regroup an earlier operator occurrence; and
+* local declaration scopes remain sequential under §9.3.1.
+
+A top-level reference is resolved using both:
+
+1. the complete module-wide declaration-shape scope of the effective module; and
+2. the import, fixity, visibility, opacity, feature-gate, and unsafe/debug environment effective at the reference's own
+   source location.
+
+A module-local declaration may therefore expose an elaborated header that was itself checked using imports local to its
+own fragment. Referring to that declaration uses the elaborated semantic header; it does not import the header's source
+spellings into the referring fragment.
+
+Duplicate-declaration and same-name binding-group checks are performed over the complete effective module. No
+declaration wins merely by appearing first.
 
 <!-- modules.names.same_spelling_data_families_static_members -->
 ### 7.2 Same-spelling data families and static members
@@ -8322,8 +8530,9 @@ Modifier rules:
    Outside trait bodies and other explicitly signature-like contexts, a top-level term signature declaration is a
    header, not a standalone declaration of a value.
 
-   A non-`expect` top-level term signature declaration MUST be satisfied by exactly one matching top-level definition in
-   the same source file. If no matching definition exists in that file, compilation fails.
+   A non-`expect` top-level term signature declaration MUST be paired with exactly one matching top-level definition in
+   the same effective module under §9.2. The definition may occur before or after the signature and may be contributed
+   by another selected fragment of that module.
 
    Standalone definitionless top-level items MUST use `expect term`, or some future explicitly unsafe/postulate form if
    the language later standardizes one.
@@ -8379,8 +8588,9 @@ Modifier rules:
 
    Top-level restriction:
 
-   A top-level pattern binding is never treated as recursive and does not participate in the "preceding signature
-   enables recursion" rule.
+   Names bound by a top-level pattern participate in module-wide scope under §7.1A. If the pattern initializer belongs
+   to a cyclic body-facet checking SCC, the group is rejected as a strict recursive value cycle under §9.5.6. Kappa v1 does not
+   assign implicit lazy or black-hole semantics to recursive pattern bindings.
 
    Modifiers:
 
@@ -8704,7 +8914,7 @@ Implementations must reject any `let pat = expr` binding whose `pat` is not irre
 of `expr`.
 
 <!-- declarations.signatures -->
-### 9.2 Top-level signatures + definitions
+### 9.2 Top-level signatures and definitions
 
 Common forms:
 
@@ -8713,38 +8923,66 @@ let foo (x : Int) : Int = x + 1
 
 foo : Int -> Int
 let foo x = x + 1
+
+let bar x = x + 1
+bar : Int -> Int
 ```
+
+A separate top-level signature and its matching definition may occur in either textual order and in any selected source
+fragment of the same effective module.
 
 Rules:
 
-* Every exported top-level `let` definition MUST have an explicit top-level signature.
-* For purposes of this rule, export status is determined after applying `@PrivateByDefault`, `public`, and `private`.
-* A top-level `let` definition has an explicit top-level signature iff either:
-  * it is preceded by a separate signature declaration `name : T`, or
-  * every binder in the definition has an explicit type annotation and the definition has an explicit result-type
-    annotation.
-* Parameter-type annotations without an explicit result type, or an explicit result type with one or more untyped
-  binders, do not satisfy this rule.
-* A top-level non-exported, non-recursive definition MAY omit its signature and rely on inference.
-* A top-level simple value may omit its type when the previous rule permits inference.
-* Recursive and mutually recursive groups remain governed by §15: each member of such a group MUST have a preceding
-  separate top-level signature declaration.
-* The language does not designate the separate-signature form as canonical for non-recursive definitions; inline
-  annotations remain equally standard when they satisfy the explicit-signature rule above.
+* Every exported top-level `let` definition MUST have a complete explicit top-level signature.
+* Every computational declaration belonging to a recursive declaration SCC MUST have a complete explicit top-level
+  signature.
+* For purposes of the export rule, export status is determined after applying `@PrivateByDefault`, `public`, and
+  `private`.
+* A top-level definition has a complete explicit top-level signature iff one of the following holds:
+  * exactly one separate signature declaration `name : T` is paired with the definition under the module-wide pairing
+    rule below;
+  * a simple-name value definition has the form `let name : T = expr`;
+  * a top-level pattern definition has the form `let pat : T = expr`, where `T` annotates the complete matched value;
+    or
+  * a named function definition explicitly annotates every binder and explicitly annotates its result type.
+* Parameter annotations without an explicit result type, or an explicit result type with one or more untyped binders,
+  are not complete explicit signatures.
+* A top-level non-exported computational definition outside every recursive SCC MAY omit its signature and rely on
+  ordinary declaration inference.
+* An omitted signature may be inferred only after the compiler has established that the declaration is not cyclic in
+  the final semantic dependency graph of §9.5.
+* A declaration that becomes cyclic after generated syntax, transparent normalization, overload resolution, or
+  elaboration exposes an additional dependency is reclassified before acceptance. If its signature was omitted, it is
+  rejected with `E_MISSING_EXPLICIT_SIGNATURE`; an inferred provisional type does not retroactively become a recursive
+  signature.
+* Inline and separate signatures have equal status for recursion. Source position does not enable or disable recursion.
 
-Additional rules:
+Module-wide signature pairing:
 
-* For a top-level simple-name value binding of the form `let name : T = expr`, the annotation `: T` itself counts as an
-  explicit top-level signature and satisfies this section.
-* A separate top-level signature declaration `name : T` is satisfied only by a matching top-level definition in the
-  same source file. A definition in another fragment of the same effective module does not satisfy it; use `expect`
-  when cross-file module composition requires an externally supplied declaration.
-* The alternative "every binder in the definition has an explicit type annotation and the definition has an explicit
-  result-type annotation" applies only to named function-definition forms.
-* A top-level pattern binding whose binder is not a single simple name MUST NOT be exported.
-* Consequently, the explicit-signature requirement of this section applies only to exported top-level `let` definitions
-  whose binder is a single simple name.
+* A non-`expect` separate top-level term signature is a header for exactly one matching simple-name definition in the
+  same effective module.
+* The matching definition may be in the same selected fragment or another selected fragment.
+* An ordinary signature is satisfied only by a source definition in that effective module. A backend intrinsic,
+  imported implementation artifact, or dynamically selected provider satisfies an `expect` declaration, not an
+  ordinary signature.
+* At most one separate signature and at most one source definition may participate in one pairing.
+* If a definition has both a separate signature and a complete inline signature, the two signatures MUST be
+  definitionally equal after elaboration.
+* Explicit `public`, `private`, or `opaque` modifiers written on the paired signature and definition must agree. A
+  modifier written on only one half applies to the paired declaration as a whole.
+* The signature is elaborated in the import and feature environment of its own source origin. Its checked semantic
+  header is then used to check the paired definition without importing the signature fragment's lexical spellings into
+  the definition fragment.
+* A separate signature with no selected matching definition is rejected. A second matching definition is a duplicate
+  declaration, not an overload selected by source order.
 
+Patterns and strict values:
+
+* A top-level pattern binding whose binder is not one simple name MUST NOT be exported.
+* A cyclic SCC containing a strict non-function value initializer is rejected under §9.5 unless another standardized
+  rule supplies guarded or productive recursive-value semantics.
+* A simple-name definition whose right-hand side is a lambda continues to be treated as a named function body under
+  §9.1 and may therefore participate in ordinary function recursion.
 <!-- declarations.let_in -->
 ### 9.3 `let ... in` expression
 
@@ -9137,7 +9375,8 @@ Rules:
   eliminators or trait operations exported for that type.
 
 A non-`expect` top-level definitionless term signature is not an external requirement. Outside trait bodies and other
-signature-like contexts, it must be satisfied by a matching definition in the same source file as specified by §9.1.
+signature-like contexts, it must be paired with a matching source definition in the same effective module as specified
+by §§9.1-9.2.
 
 Implementations may support selecting module fragments by target or other build conditions. For module-identity
 purposes, fragment suffixes are ignored exactly as specified in §8.1. Thus files such as `main.kp` and `main.win32.kp`
@@ -9145,6 +9384,287 @@ are fragments of the same module `main`. In such systems, `expect` declarations 
 definitions in the selected companion fragments.
 
 ---
+
+<!-- declarations.module_dependency_groups -->
+### 9.5 Module-wide declaration dependencies and semantic checking groups
+
+Kappa has no `let rec` declaration form and no `mutual` declaration block.
+
+Top-level recursive grouping is inferred from semantic dependencies over the complete effective module. Source
+adjacency, source-file order, fragment order, and the position of a separate signature do not create or break a
+recursive group.
+
+A declaration is not treated as one indivisible dependency vertex. Headers, constructor formation, computational
+bodies, defaults, and certificates become available at different semantic stages. Conflating those stages would create
+false cycles, such as rejecting a constructor default merely because the default calls a function that consumes the
+already formed data type. Kappa therefore defines grouping over declaration **facets**.
+
+<!-- declarations.module_dependency_groups.facets -->
+#### 9.5.1 Declaration facets
+
+Every top-level declaration has one or more typed semantic facets.
+
+```text
+DeclarationFacetKind ::=
+    shape
+  | header
+  | formation
+  | body
+  | default-body
+  | certificate
+  | interface
+```
+
+At minimum:
+
+* a paired term signature and definition contribute one declaration identity with `shape`, `header`, and `body` facets;
+* a top-level irrefutable-pattern initializer contributes `shape`, `header`, and `body` facets;
+* a data family contributes `shape`, `header`, `formation`, `certificate`, and `interface` facets;
+* each constructor default contributes a `default-body` subfacet owned by its constructor and data declaration;
+* a type alias contributes `shape`, `header`, and, when transparent, `body` facets;
+* a trait or effect interface contributes `shape`, `header`, `formation`, default-member `body` subfacets, and
+  `interface` facets as applicable;
+* a projection, active pattern, instance, and ordinary named generated declaration contributes the facets required by
+  its ordinary checking rules;
+* an `expect` declaration contributes `shape`, `header`, and satisfaction facets represented using the closest
+  applicable kinds above; and
+* derive, macro, splice, compiler generation, and interface loading contribute typed synthetic facets with provenance.
+
+An implementation MAY subdivide these kinds further. It MUST preserve the same dependency, grouping, acceptance,
+certificate, diagnostic, and interface results.
+
+The **principal facet** of a computational declaration is its `body` facet. The principal facet of a data family or
+other nominal declaration is its `formation` facet. Tooling that asks for “the recursive group of declaration `d`”
+means the nontrivial checking group containing `d`'s principal facet, or the singleton acyclic principal-facet group
+when no such nontrivial group exists.
+
+<!-- declarations.module_dependency_groups.dependency_edges -->
+#### 9.5.2 Semantic dependency edges
+
+A facet `A` has a dependency edge to facet `B` iff checking, elaborating, normalizing, certifying, or publishing `A`
+requires a semantic fact owned by `B`.
+
+Every edge records at least:
+
+```text
+DeclarationDependencyEdge =
+    (source       : DeclarationFacetId,
+     target       : DeclarationFacetId,
+     roles        : Set DeclarationDependencyRole,
+     origin       : Origin,
+     provenance   : Option ProvenanceId)
+```
+
+Standard roles include:
+
+```text
+shape
+header
+family-header
+constructor-telescope
+constructor-result
+body
+transparent-normalization
+recursive-call
+instance
+default-body
+generated
+certificate
+interface
+```
+
+Dependencies are semantic. They are determined after resolution and include dependencies exposed by:
+
+* transparent alias and definition unfolding;
+* inserted implicit arguments and selected instances;
+* associated-member normalization;
+* constructor-result elaboration;
+* macro, splice, and derive expansion;
+* generated helpers;
+* exported transparent equations; and
+* interface-reachable private semantic content.
+
+Raw spelling, capitalization, source adjacency, allocation order, and textual search are not dependency edges.
+
+A dependency on an earlier-stage facet does not create a cycle merely because a later-stage facet of the same
+declaration depends back on the caller. In particular:
+
+* a function body that consumes an already formed data family depends on the family's `formation` facet, not on every
+  constructor default body;
+* a constructor default that calls that function contributes a `default-body -> function body` edge;
+* those edges do not make the data family's `formation` facet induction-recursive unless a family header,
+  constructor-local binder type, or constructor result itself depends on the function body;
+* a runtime-only default cycle is checked by the ordinary computational recursion rules after data formation.
+
+<!-- declarations.module_dependency_groups.header_strata -->
+#### 9.5.3 Header graph and strata
+
+Before bodies or constructor formation are accepted, the compiler forms a header-dependency graph from `header` facets.
+
+Header components include:
+
+* data-family heads and complete ordered family-argument telescopes;
+* term signatures;
+* type-alias classifiers;
+* trait and effect-interface heads and member signatures;
+* constructor result family heads needed to identify the owning family;
+* declaration-universe telescopes and constraints;
+* quantities, observation modes, access modes, erasedness, and explicitness known from headers; and
+* local nominal identities required by a declaration header.
+
+The header graph MUST be acyclic after transparent acyclic header aliases are expanded. Its topological layers are the
+group's **header strata**.
+
+Independent facets in one stratum are ordered canonically only for serialization and diagnostics. That canonical order
+has no typing meaning.
+
+A cycle in classifiers, binder types, declaration-universe schemas, or recursive-operation signatures that is not
+broken by an earlier header stratum is rejected with `E_DECLARATION_HEADER_CYCLE`.
+
+Inductive-inductive definitions do not require a cyclic header graph. Their sort headers are stratified, while
+constructor-formation dependencies may point back from an earlier sort to a later sort under §10.4.4.
+
+<!-- declarations.module_dependency_groups.checking_sccs -->
+#### 9.5.4 Checking SCCs and declaration-group projection
+
+After dependency discovery reaches a semantic fixed point, the compiler computes strongly connected components of the
+facet graph.
+
+A nontrivial SCC, or a singleton facet with a self-edge, is a **semantic checking group**. For diagnostics, interfaces,
+KCore, hashes, and tooling, it is projected to a **declaration group** containing:
+
+* every participating declaration identity;
+* every participating facet identity;
+* every internal dependency edge;
+* all completed prerequisite header strata; and
+* its classification and descriptive features.
+
+A declaration may have facets in more than one checking group. This does not make grouping ambiguous: principal-facet
+queries use §9.5.1, while stage dumps and interfaces retain the exact facet membership of every group.
+
+Each principal-facet declaration group is classified as one of:
+
+```text
+acyclic
+term-recursive
+inductive
+inductive-recursive
+unsupported
+```
+
+An `acyclic` group is a singleton non-data principal facet with no self-dependency.
+
+A `term-recursive` group contains no data-family `formation` facet and contains at least one computational recursive
+edge.
+
+An `inductive` group contains one or more data-family `formation` facets and no recursive-operation `body` facet
+required by a family header, constructor telescope, or constructor result. A nonrecursive enumeration is still
+classified `inductive`; the classification records its declaration semantics, not merely whether its graph-theoretic
+singleton has a self-edge.
+
+An `inductive-recursive` group satisfies §10.4.4 and contains one or more data-family `formation` facets together with
+one or more recursive-operation `body` facets.
+
+A group additionally records zero or more descriptive features:
+
+```text
+mutually-inductive
+inductive-inductive
+family-indexed
+generated
+```
+
+`family-indexed` means that a data family has a nonempty uniform family-argument telescope or a constructor result
+refines such arguments. It does not introduce a parameter/index partition.
+
+A cycle involving aliases, traits, instances, effects, projections, defaults, or generated declarations is accepted
+when its facet-level schedule and every declaration-specific rule admit it. A cycle is not rejected merely because its
+declaration-level projection mixes kinds. If no admitted staged or joint rule exists, the responsible checking group is
+`unsupported` and is rejected with `E_RECURSIVE_GROUP_UNSUPPORTED` or a more specific diagnostic.
+Unless another section explicitly names a different facet, the phrases **declaration SCC**, **recursive declaration
+SCC**, and **semantic SCC** elsewhere in this specification denote the projected declaration group containing the
+relevant declaration's principal facet. Certificate and stage-dump formats retain exact facet membership even when
+source-facing prose uses the shorter phrase.
+
+<!-- declarations.module_dependency_groups.recursive_signatures -->
+#### 9.5.5 Recursive computational signatures
+
+Every computational declaration whose `body` facet belongs to a cyclic checking SCC requires a complete explicit
+signature under §9.2.
+
+The compiler MUST NOT infer the signature of one cyclic member by selecting an arbitrary source-order starting point.
+If omitted-signature inference encounters or later discovers a body cycle, every unsigned computational member of that
+cycle is rejected with `E_MISSING_EXPLICIT_SIGNATURE`.
+
+Data-family headers, constructor headers, trait member signatures, and other declaration forms that are intrinsically
+header-bearing satisfy their applicable header requirements through their ordinary syntax.
+
+<!-- declarations.module_dependency_groups.strict_value_cycles -->
+#### 9.5.6 Strict value cycles
+
+Module-wide scope permits a reference to a later strict value, but it does not introduce implicit lazy or black-hole
+semantics.
+
+A cyclic body-facet SCC containing any of the following is rejected with `E_RECURSIVE_VALUE_CYCLE` unless another
+standardized feature supplies guarded or productive semantics:
+
+* a non-function simple value initializer;
+* an irrefutable-pattern initializer;
+* a constructor default whose runtime evaluation would require the value currently being initialized; or
+* a generated strict value with the same dependency shape.
+
+A lambda right-hand side treated as a named function body under §9.1 is a computational function member, not a strict
+value initializer.
+
+Explicit `Thunk`, `Need`, `lazy data`, or future coinductive constructs remain governed by their own productivity and
+forcing rules. Merely wrapping a cycle in a type whose name sounds lazy is not evidence.
+
+<!-- declarations.module_dependency_groups.joint_checking -->
+#### 9.5.7 Joint checking and atomic publication
+
+Before checking one checking SCC, the implementation provisionally publishes every prerequisite facet admitted by
+completed header strata and earlier acyclic stages.
+
+One checking SCC is accepted atomically. An earlier accepted facet may be used as a prerequisite without forcing all
+later facets of its declaration into the same SCC.
+
+The implementation MUST NOT:
+
+* accept only a source-order prefix of a checking SCC;
+* publish constructors, reduction equations, instances, positivity signatures, or certificates from a rejected
+  formation or certificate SCC;
+* use a failed facet as a valid assumption for declarations outside its checking SCC;
+* treat a not-yet-checked default or ordinary body as required merely to use an already accepted family head; or
+* report an unresolved-name cascade caused solely by checking from an incomplete source-order environment.
+
+Generated syntax that introduces, removes, or retargets a semantic dependency causes the affected SCCs and declaration
+group projections to be recomputed before final acceptance.
+
+<!-- declarations.module_dependency_groups.source_order_invariance -->
+#### 9.5.8 Source-order invariance
+
+For fixed source text modulo permutation of declaration-bearing top-level items, accepted/rejected status and semantic
+results MUST be invariant whenever the permutation preserves:
+
+* every reference site's effective import and visibility environment;
+* every operator occurrence's effective fixity environment;
+* constructor order inside each data declaration;
+* binder, field, default, pattern, branch, and runtime expression order; and
+* every other source-order-sensitive form explicitly named by this specification.
+
+For such a permutation, the following remain equivalent:
+
+* resolved declaration and facet identities;
+* header strata;
+* checking-SCC and projected declaration-group membership, class, and features;
+* inferred and explicit types;
+* universe solutions and recursive-schema edges;
+* positivity, induction-recursion, and termination certificates;
+* definitional equality;
+* instance selection and coherence;
+* interface identity and semantic hashes, except for presentation-only source maps;
+* canonical KCore and KBackendIR modulo permitted stable identity renumbering; and
+* diagnostics except for source ranges and presentation ordering.
 
 <!-- data_types -->
 ## 10. Algebraic Data Types and Type Aliases
@@ -9870,12 +10390,33 @@ let f (parametric 0 A : Type) (x : A) : A =
 <!-- data_types.well_formedness -->
 ### 10.4 Well-formedness of `data` declarations
 
-Every `data` declaration MUST satisfy the constructor universe-size rule (§10.4.1) and strict positivity (§10.4.2).
-Constructor universe-size checking is performed first: a declaration that fails it is rejected without a positivity
-report.
+Every singleton or jointly checked ordinary inductive group MUST satisfy:
+
+1. the joint family-header and constructor universe rules of §10.4.1;
+2. strict positivity and the parameter-positivity fixed point of §10.4.2;
+3. nominal signature closure and cumulative-action certification under §10.4.3; and
+4. when the group contains recursively defined operations used by family headers, constructor telescopes, or
+   constructor results, the induction-recursion rules of §10.4.4.
+
+Constructor universe-size failures that are independent of induction-recursion are reported before positivity failures.
+When universe formation, positivity, recursive-operation admissibility, and operation equations are mutually dependent,
+the compiler solves the joint group obligation to a semantic fixed point and reports the most specific failed rule.
+Source declaration order is never a tie-breaker.
 
 <!-- data_types.constructor_universe_size -->
 #### 10.4.1 Constructor universe-size rule
+
+For a mutually inductive or inductive-recursive group, all family headers are elaborated from the header strata of
+§9.5.3 before any constructor telescope is accepted. Universe constraints from every family, constructor, recursive
+operation signature, and IR-admissible operation application are solved jointly.
+
+A constructor result may apply any current-group family to a complete ordered sequence of uniform family arguments.
+Those arguments are checked against that family's ordinary telescope. No prefix is treated specially as parameters and
+no suffix is treated specially as indices.
+
+A recursive-operation application admitted by §10.4.4 is classified by its checked result type and contributes the same
+universe obligations as any other expression of that result type. Induction-recursion does not exempt family headers or
+constructor-local binders from universe-size checking.
 
 A `data` declaration whose fully elaborated instance result classifier is:
 
@@ -10085,172 +10626,137 @@ annotation, the data result universe, and the failed level constraint.
 <!-- data_types.strict_positivity -->
 #### 10.4.2 Strict positivity
 
-Every `data` declaration MUST satisfy strict positivity.
+Every singleton or jointly checked inductive data group MUST satisfy strict positivity.
 
 Definitions:
 
-* Every previously accepted `data` type, and every built-in type constructor treated as strictly positive, carries a
-  **parameter-positivity signature** marking each parameter as either positive or non-positive for later
-  strict-positivity checking.
+* Every accepted data family, and every built-in type constructor treated as strictly positive, carries a
+  **parameter-positivity signature** marking each uniform family argument as either `positive` or `non-positive` for
+  later strict-positivity checking.
 
-* Positivity checking unfolds all transparent local type aliases before reasoning about occurrences. Imported
-  transparent aliases are unfolded as well when their bodies are available in the imported interface. If an imported
-  transparent alias's body is not available, it is not admissible for positivity reasoning.
+* During checking of a current group `G`, every data-family head introduced by `G` is a recursive head. A recursive
+  occurrence means an occurrence of any current-group family head in any constructor-local binder type of any group
+  member.
 
-* A type former `F` is **admissible** in a strictly positive position iff `F` is one of:
-  * a previously defined `data` type that has been accepted as strictly positive and whose parameter-positivity
-    signature is known,
-  * a built-in type constructor declared as strictly positive together with its parameter-positivity signature (such as
-    `List`, `Option`, or `Array`), or
-  * an imported opaque or otherwise abstract type constructor whose interface explicitly carries a parameter-positivity
-    signature, or
-  * a function type whose domain does not mention the recursive type being checked.
+* Positivity checking unfolds all transparent acyclic type aliases before reasoning about occurrences. Imported
+  transparent aliases are unfolded when their bodies are available in the imported interface. An unavailable opaque
+  alias body does not count as positivity evidence.
 
-* An imported opaque or abstract type constructor whose interface does not carry a parameter-positivity signature is not
-  admissible for positivity reasoning. Such a constructor may still be used in ordinary types, but it MUST NOT be
-  treated as preserving positivity during strict-positivity checking.
+* A type former `F` is admissible in a strictly positive position iff `F` is one of:
+  * an accepted external data family whose parameter-positivity signature is known;
+  * a built-in strictly positive type constructor with a recorded signature;
+  * an imported opaque or abstract type constructor whose interface carries a verified parameter-positivity signature;
+  * a current-group data-family head, using the current tentative or converged group signature as specified below; or
+  * a function type whose domain contains no current-group recursive head.
 
-* An occurrence of the type being defined `T` is in a **strictly positive** position in a constructor argument type if:
-  * it is the argument type itself (possibly with family arguments), or
-  * the argument type is `X -> U` where `T` does not occur in `X` and `T` occurs strictly positively in `U`, or
-  * the argument type is a dependent function `(x : X) -> U` with the same condition and `T` does not occur in `X`, or
-  * the argument type is an application `F A1 ... An` where `F` is admissible in a strictly positive position and `T`
-    occurs strictly positively only in those `Ai` whose corresponding parameter of `F` is marked positive in `F`'s
-    parameter-positivity signature.
+* An imported opaque or abstract type constructor without a verified parameter-positivity signature is not admissible
+  for positivity reasoning.
 
-* A `data` declaration is **strictly positive** iff every occurrence of the defined type constructor in every
-  constructor's argument types is in a strictly positive position.
+* An occurrence of a current-group family head is strictly positive in a constructor-local binder type iff:
+  * it is the binder type itself, possibly fully applied to uniform family arguments;
+  * it occurs in the codomain of a function or dependent function whose domain contains no current-group family head;
+  * it occurs inside an argument marked `positive` by the applied external or current-group type former's applicable
+    parameter-positivity signature; or
+  * it occurs only inside the certified external result of a fully saturated recursive-operation application admitted
+    by §10.4.4.
 
-* Parameter-positivity signatures are computed for each accepted `data`
-  declaration or mutually recursive `data` group before the signatures are
-  recorded in the module interface.
+* The recursive-operation exception applies only after §10.4.4 has established that the operation result and every
+  defining equation are external to the inductive group. It does not make an unsaturated operation, an opaque
+  operation, an unsafe operation, or an arbitrary transparent function application positive.
 
-  The signature lattice is ordered pointwise by:
+* Current-group family occurrences in the arguments supplied to a recursive operation are not hidden by the operation
+  application. Their admissibility is governed by the available-subject and structural-child rules of §10.4.4.
+
+* Constructor result applications of current-group families are result constraints rather than constructor payload
+  occurrences. Their complete family arguments are still checked for ordinary well-formedness, universe correctness,
+  and GADT refinement.
+
+A group is strictly positive iff every recursive occurrence in every constructor-local binder type is strictly
+positive by these rules.
+
+Parameter-positivity signatures:
+
+* The lattice is ordered pointwise by:
 
   ```text
   non-positive < positive
   ```
 
-  A parameter marked `positive` may be used by later strict-positivity
-  checks as preserving strictly positive occurrences through that argument.
-  A parameter marked `non-positive` is not an error by itself; it means that
-  later strict-positivity checks must not rely on that argument position to
-  preserve positivity.
+* A `positive` argument may preserve a tracked recursive occurrence for later declarations.
+  `non-positive` is not itself rejection; it prevents later checks from relying on that argument position.
 
-* For a singleton `data` declaration or a mutually recursive group of
-  `data` declarations, implementations MUST compute parameter-positivity
-  signatures as the greatest fixed point of the group signature
-  recomputation operator.
+* For a singleton or mutually inductive group, signatures are the greatest fixed point of group recomputation.
 
-  Let `G` be the group being checked.
+  Let `Σ` assign one tentative signature to every current-group family.
 
-  Let `Σ` assign a tentative parameter-positivity signature to every type
-  constructor declared in `G`.
+  Given `Σ`, `recompute(Σ)` marks a uniform family argument `pi` of family `F` as `positive` iff every occurrence of
+  `pi` in every constructor-local binder type of `F` occurs positively under the structural rules above, using `Σ` for
+  current-group family applications and recorded signatures for external applications.
 
-  Given `Σ`, `recompute(Σ)` assigns a new signature to each group member
-  `F`. A parameter `pi` of `F` is marked `positive` in `recompute(Σ)` iff
-  every occurrence of `pi` in every constructor argument type of `F` occurs
-  in a positive parameter position under the structural positivity rules
-  below.
-
-  For this signature recomputation only, occurrence-positivity for a
-  parameter `pi` is the same structural judgment as strict positivity for a
-  recursive type occurrence, except that the tracked atom is the parameter
-  `pi` rather than a recursive type constructor head.
-
-  In particular:
-
-  * an occurrence of `pi` as the argument type itself is positive;
-  * in a function type `X -> U`, or dependent function type
-    `(x : X) -> U`, `pi` must not occur in `X`, and every occurrence of
-    `pi` in `U` must be positive;
-  * in an application `H A1 ... An`, every occurrence of `pi` inside `Aj`
-    is positive only when the `j`th parameter of `H` is marked `positive`
-    in the applicable signature;
-  * if the `j`th parameter of `H` is marked `non-positive`, then `pi` must
-    be absent from `Aj` for `pi` to remain positive;
-  * applications of type constructors outside `G` use their already recorded
-    parameter-positivity signatures;
-  * applications of type constructors inside `G` use the tentative
-    signatures supplied by `Σ`.
-
-  If `pi` does not occur in the constructor argument types of `F`, it is
-  positive vacuously.
-
-  The fixed-point iteration is:
+  The iteration is:
 
   ```text
-  Σ0     = every parameter of every type constructor in G is positive
+  Σ0     = every uniform family argument of every family in G is positive
   Σk+1   = recompute(Σk)
   ```
 
-  Iteration continues until `Σk+1 = Σk`.
+  Iteration continues to the first fixed point.
 
-  Because `recompute` is monotone in the pointwise order above and the
-  iteration starts at the top element, the resulting stable signature is the
-  greatest fixed point. A conforming implementation MAY use any equivalent
-  algorithm, but it MUST produce the same signatures as this greatest-fixed-
-  point computation. It MUST NOT compute the least fixed point obtained by
-  starting from all parameters `non-positive`.
+* For parameter-signature recomputation, a family argument occurring in a recursive-operation application is
+  conservatively `non-positive` unless the verified inductive-group certificate carries a standardized monotonicity
+  action for that operation argument. Portable v1 does not require inference of such an action.
 
-* After the group signatures converge, the implementation checks the
-  strict-positivity rejection judgment for the group using the converged
-  signatures.
+* Implementations MAY use constraint solving or another equivalent algorithm, but MUST produce the same greatest fixed
+  point. Starting from all arguments `non-positive` and computing a least fixed point is not equivalent.
 
-  For this final rejection judgment:
+After convergence, the final rejection judgment uses the converged signatures. A final `non-positive` argument is not
+itself a rejection. The group is rejected only when some current-group family occurrence is not strictly positive.
 
-  * a recursive occurrence means an occurrence of any type constructor
-    declared by the group `G` in any constructor argument type of any member
-    of `G`;
-  * applications of type constructors declared by `G` use the converged
-    signatures of `G`;
-  * applications of type constructors outside `G` use their recorded
-    signatures;
-  * a final `non-positive` parameter in a converged signature is not itself
-    a rejection condition;
-  * the group is rejected iff some recursive occurrence is not in a strictly
-    positive position.
+When accepted, every converged parameter-positivity signature is recorded in the nominal signature closure, module
+interface, KCore group certificate, and later positivity queries.
 
-  When the group is accepted, the converged parameter-positivity signatures
-  of all members of `G` are recorded and used by later strict-positivity
-  checks. Later checks MUST consult those recorded signatures rather than
-  treating all parameters of an accepted data type as positive.
-
-Implementations MUST reject non-strictly-positive `data` declarations.
+A failed final judgment uses diagnostic family `kappa.data.strict-positivity` and portable alias
+`E_DATA_STRICT_POSITIVITY`.
 
 Consequences:
 
-* `data Tree a = Leaf | Branch (Tree a) a (Tree a)` records parameter
-  `a` as positive.
-* `data Rose a = Node a (List (Rose a))` records parameter `a` as
-  positive, assuming `List`'s element parameter is recorded as positive.
-* `data Rose a = Node a ((Rose a -> a) -> Rose a)` is rejected by the
-  final strict-positivity judgment, not merely because its parameter
-  signature becomes non-positive.
-* Starting the group-signature iteration from all parameters
-  `non-positive` is not an equivalent implementation strategy.
+* `data Tree a = Leaf | Branch (Tree a) a (Tree a)` records `a` as positive.
+* `data Rose a = Node a (List (Rose a))` records `a` as positive when `List` records its element argument as positive.
+* `data Rose a = Node a ((Rose a -> a) -> Rose a)` is rejected.
+* A negative occurrence hidden by a recursive operation whose equation returns a type containing the current group is
+  rejected by §10.4.4 rather than accepted as an opaque atom.
+* Source order among mutually checked data declarations does not affect the fixed point.
 
 Examples rejected:
 
 ```kappa
-data Bad = MkBad (Bad -> Bad)           -- Bad in negative position
-data Rose a = Node a ((Rose a -> a) -> Rose a)   -- negative occurrence
+data Bad : Type =
+    MkBad (run : Bad -> Bad)
+
+data Left : Type =
+    MkLeft (f : Right -> Nat)
+
+data Right : Type =
+    MkRight (f : Left -> Nat)
 ```
 
 Examples accepted:
 
 ```kappa
-data Tree a = Leaf | Branch (Tree a) a (Tree a)
-data Rose a = Node a (List (Rose a))
-```
+data Tree a : Type =
+    Leaf
+    Branch (left : Tree a) (value : a) (right : Tree a)
 
+data Rose a : Type =
+    Node (value : a) (children : List (Rose a))
+```
 <!-- data_types.nominal_signature_variance -->
 #### 10.4.3 Nominal signature closure and cumulative-action certification
 
-After constructor universe-size checking and positivity checking succeed, every nominal declaration is elaborated to a
-normalized **nominal signature closure**.
+After joint constructor universe-size checking, positivity checking, and any required induction-recursion checking
+succeed, every singleton or jointly checked nominal group is elaborated to a normalized **nominal signature closure**.
 
-For ordinary `data`, the closure contains at least:
+For an ordinary data or inductive-recursive group, the closure contains at least:
 
 ```text
 * the nominal family head and complete term telescope;
@@ -10258,6 +10764,8 @@ For ordinary `data`, the closure contains at least:
 * every point constructor telescope and result;
 * generated projections, recursors, inductors, and eliminators that are part of source or interface semantics;
 * every definitional or propositional computation rule generated for those eliminators;
+* every recursive operation, recursive equation, structural-child derivation, and externality certificate contributed
+  by §10.4.4;
 * observation modes, quantities, access modes, and explicitness of all binders and fields;
 * the runtime representation summary required to establish representation-identity lifting.
 ```
@@ -10342,7 +10850,7 @@ The result classifier of the nominal family alone does not constrain the role. A
 ##### 10.4.3.2 Deterministic role inference
 
 Universe-role inference is performed after principal universe inference, constructor-size checking, positivity checking,
-and normalization of the nominal signature closure.
+required induction-recursion checking, and normalization of the nominal signature closure.
 
 The role lattice is pointwise:
 
@@ -10406,16 +10914,19 @@ A parametric field is not automatically universe-irrelevant.
 An erased field is not automatically universe-irrelevant.
 A universe-irrelevant parameter is not automatically erased or parametric.
 
-The normative check order for ordinary data is:
+The normative check order for ordinary singleton or grouped data is:
 
 ```text
-1. ordinary elaboration and principal universe inference;
-2. constructor universe-size checking;
-3. strict positivity and parameter-positivity fixed point;
-4. nominal signature closure construction;
-5. universe-role fixed point;
-6. nominal-signature action certificate verification;
-7. generated eliminator and computation-rule verification.
+1. module-wide declaration dependency discovery and header stratification;
+2. ordinary elaboration and principal universe inference;
+3. recursive-operation admissibility and externality when §10.4.4 applies;
+4. constructor universe-size checking;
+5. strict positivity and the parameter-positivity fixed point;
+6. recursive-operation equation, structural-child, and joint-eliminator verification;
+7. nominal signature closure construction;
+8. universe-role fixed point;
+9. nominal-signature action certificate verification;
+10. generated eliminator and computation-rule verification.
 ```
 
 <!-- data_types.nominal_signature_variance.level_monotonicity -->
@@ -10580,11 +11091,365 @@ TypeAtMost.{u}          covariant u
 For equality, `u` classifies fully supplied parametric family arguments and endpoints; it is not stored as a
 constructor-local code witness.
 
+<!-- data_types.ordinary_inductive_recursive_groups -->
+#### 10.4.4 Ordinary inductive-inductive and inductive-recursive groups
+
+This subsection standardizes ordinary inductive-inductive, inductive-recursive, and family-indexed
+inductive-recursive definitions for Kappa v1.
+
+No new block syntax is introduced. Groups are discovered from module-wide semantic facet checking SCCs and their
+declaration-group projections under §9.5.
+
+An **ordinary inductive group** contains one or more ordinary data families.
+
+An **ordinary inductive-recursive group** additionally contains one or more ordinary named transparent functions,
+called **recursive operations**, whose applications occur in a family header, constructor-local binder type, or
+constructor result of that same group and whose defining equations recurse over group values.
+
+The term **indexed induction-recursion** is descriptive only. It applies when one or more group families have nonempty
+uniform family-argument telescopes or constructor results refine those arguments. Kappa does not introduce or infer a
+parameter/index partition.
+
+<!-- data_types.ordinary_inductive_recursive_groups.header_stratification -->
+##### 10.4.4.1 Sort and operation header stratification
+
+The group header graph of §9.5.3 must be acyclic.
+
+For data families, the graph records dependencies among:
+
+* complete ordered uniform family-argument telescopes;
+* result classifiers;
+* declaration-universe telescopes and constraints; and
+* family heads referenced by those components.
+
+This permits an inferred sort order such as:
+
+```kappa
+data Ctx : Type =
+    Empty
+    Extend (ctx : Ctx) (ty : Ty ctx)
+
+data Ty (ctx : Ctx) : Type =
+    Base
+```
+
+because the sort header of `Ty` depends on the already stratifiable sort header of `Ctx`, while the constructor
+`Extend` creates the inductive dependency back to `Ty`.
+
+The source order of `Ctx` and `Ty` is irrelevant. The inferred header strata, not textual order, justify the group.
+
+A cycle among sort headers themselves is rejected with `E_DECLARATION_HEADER_CYCLE`.
+
+Every recursive operation must have a complete explicit signature. Operation signatures are stratified after every
+data-family header they mention and before constructor components that use the operation.
+
+A cycle among recursive-operation signatures, or between an operation signature and a family header, is rejected unless
+the cycle disappears after ordinary transparent acyclic normalization.
+
+<!-- data_types.ordinary_inductive_recursive_groups.recursive_operations -->
+##### 10.4.4.2 Recursive operations
+
+A term definition is a recursive operation of group `G` only when all of the following hold:
+
+* its body facet belongs to the same inductive-recursive checking SCC as the formation facets of the data families of
+  `G`;
+* it has a complete explicit signature under §9.2;
+* it is transparent and is not marked `opaque`;
+* every occurrence required during type formation is phase-correct and statically evaluable under §11.1.6;
+* it is pure;
+* it has a nonempty selected structural subject tuple;
+* every selected subject is an explicit binder whose type is a fully saturated application of a data family in `G`;
+* its result type is external to `G` under §10.4.4.6;
+* its result type may depend on preceding external binders and on the complete uniform family arguments of its selected
+  subjects, but not on the concrete selected subject terms themselves;
+* every recursive call to a group recursive operation is accepted by the group structural relation of
+  §10.4.4.5 and the termination rules of Chapter 15; and
+* its defining equations are total, exhaustive, conversion-reducible, and accepted without unsafe termination or
+  reducibility assertions.
+
+The structural subject tuple is selected by an explicit `decreases structural ...` clause or, when unique, by the
+ordinary structural-target inference of §15.2.
+
+General well-founded measures, arbitrary user relations, external termination oracles, `assertTerminates`, legacy
+`assertTotal`, `assertReducible`, and `unsafeAssertProof` do not justify a recursive operation used to form its own
+inductive group.
+
+A recursive operation may have additional ordinary, implicit, erased, quantity-annotated, observation-mode,
+declaration-universe, row, region, or evidence binders, provided their ordinary rules are satisfied.
+
+<!-- data_types.ordinary_inductive_recursive_groups.ir_contexts -->
+##### 10.4.4.3 IR contexts and available subjects
+
+Checking one family header or constructor telescope maintains an **IR context**.
+
+An IR context contains:
+
+* group-valued binders available from an earlier header stratum;
+* earlier constructor-local binders whose types are current-group family applications;
+* structural projections from earlier tuple or closed-record fields that definitionally expose a current-group value;
+* pointwise children contributed by earlier positive function-valued recursive fields; and
+* the recursive-operation results associated with those subjects.
+
+A recursive-operation application in a family header, constructor-local binder type, or constructor result is
+**IR-admissible** iff:
+
+1. the operation is fully saturated through its declared result type, including all required explicit and implicit
+   arguments;
+2. each selected structural subject normalizes to an available subject in the current IR context;
+3. no selected subject is introduced by the current or a later constructor binder;
+4. the application is phase-correct and pure;
+5. the operation's externality certificate is valid; and
+6. every required declaration-universe instantiation satisfies the recursive-schema rules of §11.1.2.3A.
+
+An arbitrary expression producing a group value is not an available subject merely because its result type has a
+current-group family head.
+
+In particular, an operation application is not admitted when its subject is:
+
+* a newly constructed current-group value;
+* the result of an opaque or uncertified helper;
+* an effectful computation;
+* a value stored behind an abstract container without a certified structural projection; or
+* a later constructor field.
+
+Partial application or first-class storage of a recursive operation in a constructor type receives no IR privilege.
+
+<!-- data_types.ordinary_inductive_recursive_groups.pointwise_children -->
+##### 10.4.4.4 Positive recursive fields and pointwise children
+
+A direct recursive field is an earlier constructor-local binder whose type is a fully saturated current-group family
+application.
+
+A function-valued recursive field has normalized type:
+
+```text
+(y1 : Y1) -> ... -> (yn : Yn) -> D args
+```
+
+where:
+
+* `D` is a family in the current group;
+* no current-group family head occurs in any domain `Yi`;
+* each recursive-operation application in a domain `Yi` is already IR-admissible using subjects available before this
+  field; and
+* the occurrence of `D args` is strictly positive under §10.4.2.
+
+For every well-typed argument tuple `e1 ... en`, the value:
+
+```text
+field e1 ... en
+```
+
+is a **pointwise structural child** of the constructor value.
+
+Nested function-valued fields contribute pointwise children at full application only. A partial application of the field
+is not itself a group-valued child.
+
+Tuple and closed-record projections contribute structural children only when their component type is a current-group
+family application and the projection is definitionally transparent.
+
+An external nominal container may contribute children only when its verified interface supplies a standardized
+structural-child certificate. Parameter positivity alone is insufficient because positivity does not provide an
+eliminator or projection.
+
+<!-- data_types.ordinary_inductive_recursive_groups.structural_relation -->
+##### 10.4.4.5 Group structural relation and recursive calls
+
+For an inductive group `G`, the relation `<ₛ,G` is the least transitive relation containing:
+
+1. every direct recursive field of a matched current-group constructor;
+2. every pointwise structural child of a matched function-valued recursive field;
+3. every certified tuple, closed-record, or external-container structural child;
+4. mutually inductive children whose family head differs from the matched parent's family head; and
+5. the same-constructor congruence rule of §15.3.
+
+Family arguments need not remain definitionally equal across a structural edge. The child's full family application is
+the one declared by the constructor field or pointwise field codomain, and its ordinary typing and GADT refinements must
+hold.
+
+Every recursive call between recursive operations of `G` must strictly decrease the selected structural tuple under the
+lexicographic lifting of `<ₛ,G`, except that a same-subject edge may be discharged by the source-order-independent
+hidden-phase rule of §15.10.
+
+When an operation matches a constructor, its branch receives the direct and pointwise recursive-result hypotheses
+implied by the group certificate. An implementation may represent those hypotheses as generated local functions,
+eliminator arguments, or equivalent KCore evidence, but must retain their constructor and source origins.
+
+For a function-valued recursive field:
+
+```text
+h : (y : Y) -> D args
+```
+
+the generated induction information has schematic shape:
+
+```text
+(y : Y) -> P (h y)
+```
+
+for every required group motive `P`, and recursive operations may call themselves on `h y`.
+
+<!-- data_types.ordinary_inductive_recursive_groups.externality -->
+##### 10.4.4.6 Externality of recursive-operation results
+
+A recursive operation result is **external to group `G`** iff both its declared result type and every reachable defining
+equation are `G`-external.
+
+The declared result type is `G`-external when, after transparent external normalization:
+
+* it contains no family head or constructor introduced by `G`;
+* it contains no recursive operation of `G`;
+* it contains no closure, package, row entry, associated member, or exposed field whose type contains a family head of
+  `G`; and
+* it does not depend on a concrete selected structural subject term.
+
+An equation right-hand side is `G`-external when, after unfolding transparent definitions outside `G` and treating
+recursive calls to certified operations of `G` as external recursive-result atoms, it does not:
+
+* return or construct a current-group value;
+* reify a current-group family or constructor as an ordinary static object;
+* construct a `Type`, row, label, package, or proof result whose exposed semantic content mentions `G`;
+* hide a current-group occurrence behind a transparent alias, associated member, erased field, or closure; or
+* use an unsafe proof or unsafe reducibility assertion to conceal such an occurrence.
+
+Pattern scrutinees, constructor patterns, selected structural subjects, and erased branch refinements used only to
+justify a recursive call are permitted inside an operation body.
+
+Externality is semantic. Opacity, an unsolved associated member, or a missing interface body is not evidence of
+externality.
+
+This rule prevents a recursive operation from hiding a negative occurrence. For example, an operation returning a type
+code equivalent to `Code -> Nat` is not external to a group defining `Code`, even if the constructor mentions only the
+apparently opaque application `decode c`.
+
+<!-- data_types.ordinary_inductive_recursive_groups.joint_checking -->
+##### 10.4.4.7 Joint checking algorithm
+
+A conforming implementation behaves as if it checks a candidate group in this order:
+
+1. collect every declaration shape and semantic dependency edge;
+2. infer and check header strata;
+3. solve joint declaration-universe and ordinary header constraints;
+4. identify candidate recursive operations and their structural subjects;
+5. identify direct and pointwise structural-child positions;
+6. check recursive-operation saturation and available-subject obligations in family headers, constructor telescopes,
+   and constructor results;
+7. check recursive-operation result externality and structurally recursive equations;
+8. check constructor universe-size obligations;
+9. compute the joint parameter-positivity greatest fixed point and final strict-positivity judgment;
+10. recheck all operation equations, branch refinements, quantities, captures, erasure obligations, and hidden phases
+    against the accepted group;
+11. generate and verify the joint eliminators and computation rules;
+12. construct the normalized nominal signature closure;
+13. infer universe roles and verify the nominal-signature action certificate under §10.4.3; and
+14. atomically publish the families, constructors, operations, equations, positivity signatures, eliminator metadata,
+    group certificate, and interface content.
+
+An implementation may interleave these steps or solve them as one fixed point, but it must produce the same judgments
+and may not use source order as a semantic choice.
+
+An independently failing constructor universe-size obligation remains a
+`kappa.universe.constructor-size` diagnostic. A direct negative recursive occurrence remains a
+`kappa.data.strict-positivity` diagnostic. Failures specific to recursive operations use
+`kappa.data.inductive-recursion`.
+
+<!-- data_types.ordinary_inductive_recursive_groups.elimination -->
+##### 10.4.4.8 Elimination and definitional computation
+
+An accepted group generates one joint elimination scheme.
+
+For every direct recursive field, the scheme supplies the corresponding induction hypothesis.
+
+For every function-valued recursive field, the scheme supplies pointwise induction hypotheses.
+
+For every recursive operation, the scheme records one checked defining equation for each reachable constructor branch.
+Applying a transparent recursive operation to a constructor-headed selected subject reduces by that equation for
+definitional equality.
+
+For example:
+
+```kappa
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)
+```
+
+generates definitional equations equivalent to:
+
+```text
+decode NatCode
+    ≡ Nat
+
+decode (PiCode domain codomain)
+    ≡ (x : decode domain) -> decode (codomain x)
+```
+
+The operation equations are part of the group's nominal signature closure and semantic identity.
+
+<!-- data_types.ordinary_inductive_recursive_groups.interfaces -->
+##### 10.4.4.9 Visibility, opacity, interfaces, and roles
+
+A recursive operation may be source-private. If an exported family header, constructor signature, transparent equation,
+or generated eliminator requires it, the interface artifact retains the operation's semantic identity, checked
+signature, defining equations, externality result, and group membership as interface-reachable private semantic
+content. This does not make the operation name importable.
+
+An `opaque data` declaration hides constructors as usual. It does not remove the defining module's obligation to check
+or serialize the inductive-group certificate.
+
+A recursive operation itself must be transparent inside the group and may not carry `opaque`.
+
+The nominal signature closure contains standardized clause kinds:
+
+```text
+sort-declaration
+point-constructor
+recursive-operation
+recursive-equation
+eliminator
+computation-rule
+```
+
+Universe-role inference is joint across all family heads in the group. Every recursive operation and recursive equation
+must commute with any certified schema action. If no valid non-invariant action can be independently verified, the
+affected declaration-universe parameters are `invariant`.
+
+<!-- data_types.ordinary_inductive_recursive_groups.diagnostics -->
+##### 10.4.4.10 Diagnostics
+
+A failed rule specific to this subsection uses family:
+
+```text
+kappa.data.inductive-recursion
+```
+
+and portable alias:
+
+```text
+E_INDUCTIVE_RECURSIVE_INVALID
+```
+
+The payload uses the reason values defined in §3.2.11A and includes the complete group rather than reporting an
+incomplete-environment cascade.
+
 <!-- data_types.future_nominal_signatures -->
 ### 10.5 Required nominal-signature contract for future inductive extensions
 
-Any future feature that introduces one or more mutually defined nominal families and wants declaration-universe
-cumulativity MUST elaborate to a checked nominal signature block.
+Ordinary inductive-inductive and inductive-recursive groups are standardized by §10.4.4 and already elaborate to checked
+nominal signature blocks.
+
+Any future higher, quotient, coinductive, or otherwise extension-defined nominal family feature that wants
+declaration-universe cumulativity MUST satisfy the stronger checked nominal-signature contract in this section.
 
 This requirement applies at least to future:
 
@@ -12111,6 +12976,13 @@ Every accepted cycle must still contain an ordinary or static strict decrease un
 Kappa v1 does not admit an upward recursive declaration-schema call even when another runtime argument decreases.
 A future explicit polymorphic-recursion extension may do so only with complete signatures, explicit schema arguments,
 and a separately checked well-founded measure. It is not inferred from ordinary `.{u}` syntax.
+For an inductive-recursive declaration group, the recursive SCC includes every data family and recursive operation in
+the group. Family headers, operation signatures, constructor applications, operation equations, and generated
+eliminators share the jointly checked declaration-universe environment recorded by the group certificate.
+
+A recursive operation call at a non-identity declaration-universe instance is subject to the same explicit-instantiation
+and pointwise `<=` rules as any other recursive SCC edge. A constructor type does not obtain an implicit upward schema
+instantiation merely because the operation result is used as a universe code.
 
 <!-- types.universes.parametric_observation -->
 ##### 11.1.2.3B Parametric kinds and observation mode
@@ -19919,8 +20791,8 @@ Conformance for recursion is defined by:
    termination argument MUST be well-founded.
 
 2. **Minimum acceptance.**
-   A conforming implementation MUST accept the recursive definitions and SCCs required by §§15.3, 15.4, 15.10, and
-   15.11.
+   A conforming implementation MUST accept the recursive definitions and checking SCCs required by §§15.3, 15.4,
+   15.10, and 15.11, and every ordinary inductive-recursive group satisfying §10.4.4.
 
 The internal search strategy by which an implementation discovers a termination argument is NOT part of portable v1
 semantics, except where that strategy is surfaced through diagnostics or tooling (§3.1 and §34.2.4).
@@ -19928,21 +20800,31 @@ semantics, except where that strategy is surfaced through diagnostics or tooling
 <!-- declarations.totality.structural_descent -->
 ### 15.3 Structural descent
 
-For portable v1, the structural-smaller relation `<ₛ` is the least transitive relation generated by:
+For a singleton ordinary inductive family, the structural-smaller relation `<ₛ` is the least transitive relation
+generated by:
 
-1. if pattern matching on a value `v` binds a constructor argument `u`, then `u <ₛ v`;
-2. if `u <ₛ v`, then `C (..., u, ...) <ₛ C (..., v, ...)` provided:
+1. if matching a constructor of value `v` binds a direct recursive field `u`, then `u <ₛ v`;
+2. if matching binds a tuple or closed-record field whose transparent projection `p` has the same inductive family head,
+   then `p <ₛ v`;
+3. if `u <ₛ v`, then `C (..., u, ...) <ₛ C (..., v, ...)` provided:
    * the same constructor `C` is used on both sides;
    * corresponding non-distinguished arguments are definitionally equal; and
-   * the enclosing terms have the same type.
+   * both enclosing terms are well typed at definitionally equal types.
 
-A structural parameter MUST be an explicit parameter of inductive type, or of a type belonging to a mutually inductive
-family.
+For a mutually inductive, inductive-inductive, or inductive-recursive group `G`, structural descent uses `<ₛ,G` from
+§10.4.4.5. It includes direct cross-family children, pointwise children of positive function-valued recursive fields,
+and any external-container children justified by a verified structural-child certificate.
+
+A structural parameter MUST be an explicit parameter whose type is a fully saturated application of an inductive family
+in the current recursive group. Kappa does not distinguish parameter and index positions within that family
+application.
 
 A recursive definition or recursive SCC is accepted by structural recursion iff, after elaboration of pattern matching,
-transparent local alias expansion, and transparent projection reduction rooted in the structural parameter(s), every
-recursive call strictly decreases the chosen structural parameter tuple under the lexicographic lifting of `<ₛ`.
+transparent local alias expansion, transparent projection reduction rooted in the selected structural parameters, and
+application of certified pointwise-child rules, every recursive call strictly decreases the selected structural tuple
+under the lexicographic lifting of the applicable structural relation.
 
+Every structural-child edge used for certification is recorded in the termination or inductive-group certificate.
 <!-- declarations.totality.portable_well_founded_measures -->
 ### 15.4 Portable well-founded measures
 
@@ -19986,7 +20868,7 @@ written:
 * structural-parameter inference;
 * semantic structural descent after simplification of transparent local aliases and transparent projections;
 * inference of `Nat`-valued or lexicographic `Nat`-tuple measures;
-* the canonical hidden-phase scheme of §15.10 for mutually recursive SCCs;
+* the call-graph-derived hidden-phase scheme of §15.10 for mutually recursive SCCs;
 * size-change termination over the SCC call graph;
 * synthesis of linear-lexicographic combinations of primitive `Nat`-valued measures;
 * synthesis or checking of polynomial ranking functions over the permitted measure types; and
@@ -20450,27 +21332,64 @@ Definitions certified through an external solver boundary are not conversion-red
 <!-- declarations.totality.hidden_phase_components -->
 ### 15.10 Hidden phase components
 
-A mutually recursive SCC may use a hidden phase component as the final component of its effective lexicographic
-measure.
+A mutually recursive computational SCC may use a hidden finite phase as the final component of its effective
+lexicographic measure.
 
-For portable v1, the hidden phase component is canonical:
+Hidden phases are derived from recursive-call obligations. They are never derived from source order, source paths,
+declaration spellings, allocation order, or semantic-object numbering.
 
-* let the SCC members be ordered by deterministic source-origin order:
-  * first by normalized source path,
-  * then by increasing source start offset within that file;
-* if the SCC has size `n`, the phase of the `i`th member in that order is `n - 1 - i`.
+For each recursive call from caller `f` to callee `g`, compare the callee's visible measure with the caller's visible
+measure under the selected termination relation.
 
-The effective measure of a recursive definition in that SCC is its visible measure, with the hidden phase appended as
-the final component.
+The edge is classified as:
 
-Consequences:
+```text
+visibly-strict
+visibly-nonincreasing
+unproved
+```
 
-* a recursive call may preserve every earlier visible measure component only if it targets a callee with strictly
-  smaller phase;
-* because phase is finite, every recursive cycle must strictly decrease an earlier visible measure component at least
-  once;
-* the hidden phase component is not written in source code and does not appear in user-visible types.
+* `visibly-strict` means the checker proves a strict visible decrease.
+* `visibly-nonincreasing` means the checker proves nonincrease but does not use a strict visible decrease for that edge.
+* `unproved` means the checker cannot prove even visible nonincrease.
 
+An `unproved` edge cannot be repaired by a hidden phase.
+
+Construct the **phase-constraint graph** with one directed edge:
+
+```text
+f -> g
+```
+
+for every `visibly-nonincreasing` recursive call from `f` to `g`.
+
+The hidden-phase scheme applies iff the phase-constraint graph is acyclic.
+
+The canonical phase assignment is:
+
+```text
+phase(f) =
+    maximum number of phase-constraint edges on any path beginning at f
+```
+
+with phase `0` for a vertex with no outgoing phase-constraint edge.
+
+Thus every phase-constraint edge satisfies:
+
+```text
+phase(g) < phase(f)
+```
+
+The effective measure is the visible measure followed by `phase`.
+
+A visibly strict edge needs no phase decrease. A visibly nonincreasing edge is certified by its strict phase decrease.
+Because the phase-constraint graph is acyclic, every recursive call cycle contains a visible strict decrease.
+
+If the phase-constraint graph is cyclic, this scheme does not certify the SCC. Another sound termination strategy may
+still succeed, but the implementation MUST NOT break the cycle using declaration order.
+
+The phase-constraint graph and canonical assignment are recorded in the termination certificate and are invariant under
+permutation of top-level declarations. Hidden phases do not appear in source-level types.
 <!-- declarations.totality.explicit_decreases -->
 ### 15.11 Explicit `decreases`
 
@@ -20542,8 +21461,10 @@ If any call-site decrease goal remains unsolved, the recursive SCC is rejected w
 `kappa.termination.failure`.
 * `decreases sized x` is reserved for a future sized-type extension and is ill-formed in portable v1 unless an
   implementation explicitly enables that extension.
-* If any member of a recursive SCC has an explicit `decreases` clause, every member of that SCC MUST have one.
-* Within one recursive SCC, the explicit `decreases` clauses MUST all be of one kind:
+* If any computational member of a recursive SCC has an explicit `decreases` clause, every computational member of
+  that SCC MUST have one. Data families, constructors, aliases, and certificate records in a mixed
+  inductive-recursive SCC are not computational members for this rule.
+* Within one recursive computational SCC, the explicit `decreases` clauses MUST all be of one kind:
   * all `decreases e` clauses, with the same visible tuple arity; or
   * all `decreases structural ...` clauses, with the same structural tuple arity; or
   * all `decreases e by R` clauses, with definitionally equal measure types and relation types; or
@@ -20555,7 +21476,8 @@ If any call-site decrease goal remains unsolved, the recursive SCC is rejected w
   termination argument.
 * For a proof-directed SCC, `decreases e by R using proof` and `decreases e using proof` define the visible measure and
   supply the erased call-decrease proof obligations checked by the termination checker.
-* The only hidden component permitted by portable v1 semantics is the canonical hidden phase component of §15.10.
+* The only hidden component permitted by portable v1 semantics is the call-graph-derived hidden phase component of
+  §15.10.
 * If a `decreases` clause is present on a non-recursive definition, it has no effect.
 * `decreases` does not change runtime behavior. It constrains only the termination argument used by elaboration.
 
@@ -20565,8 +21487,9 @@ Minimum portable acceptance:
   * direct structural recursion on a pattern-bound subterm of one inductive parameter;
   * `Nat` countdowns where the recursive call uses a predecessor-equivalent argument in a branch where positivity is
     provable;
-  * mutually recursive definitions accepted by the canonical hidden-phase scheme together with one of the two preceding
-    cases.
+  * mutually recursive definitions accepted by the call-graph-derived hidden-phase scheme together with one of the two
+    preceding cases;
+  * recursive operations satisfying the structural and externality rules of §10.4.4.
 * With explicit `decreases`, a conforming implementation MUST accept any recursive definition or SCC satisfying
   §§15.3, 15.4, 15.10, and 15.11.
 
@@ -20706,51 +21629,51 @@ facts and then rejecting the recursive proof is not conforming.
 <!-- declarations.totality.recursive_group_elaboration_invariance -->
 ### 15.16 Recursive declaration-group elaboration invariance
 
-When a group of declarations is checked as one recursive strongly connected component, the group is elaborated from its
-semantic fixpoint, not from a source-order partial environment.
+Top-level recursive declaration groups are the declaration-level projections of semantic facet checking SCCs under
+§9.5. They are not delimited or enabled by source syntax.
+
+Before checking one body, formation, or certificate SCC, the implementation collects and provisionally publishes every
+admitted prerequisite facet, complete group header, and header stratum.
 
 This applies to:
 
 * mutually recursive term definitions;
-* mutually recursive local helpers;
-* mutually recursive type aliases, when admitted;
-* mutually recursive data declarations, when admitted;
-* mutually recursive trait/interface-style declarations, when admitted;
-* local recursive declaration groups inside `block` or `do`.
-
-Before checking any body in the group, the implementation MUST collect and publish the headers of every member of the
-same SCC into the group's internal checking environment.
+* mutually recursive local helpers under the unchanged local-signature rule;
+* mutually inductive and inductive-inductive data groups;
+* inductive-recursive groups and their family-indexed forms;
+* recursive transparent aliases only when another rule admits them;
+* admitted mutually dependent trait, effect, instance, projection, or generated declarations; and
+* implementation-generated recursive groups.
 
 Header information includes:
 
-* term signatures;
-* type constructor headers;
-* data constructor names and result heads;
-* trait headers and member declarations;
-* associated static member declarations;
-* effect operation declarations;
-* quantities and erasedness of binders known from signatures;
-* local nominal-scope tokens for scoped declarations.
+* complete term signatures;
+* data-family heads and ordered uniform family-argument telescopes;
+* constructor names, local telescopes, and result family heads;
+* recursive-operation signatures and selected structural subjects;
+* declaration-universe telescopes and constraints;
+* trait, associated-member, effect-interface, and operation headers;
+* quantities, observation modes, access modes, and erasedness known from headers; and
+* local nominal-scope identities where applicable.
 
 Consequences:
 
-* Reordering members within one semantic SCC MUST NOT change accepted/rejected status, except where the source language
-  explicitly defines source-order behavior.
-* A constructor declared by one member of a mutually recursive data group is visible while checking sibling signatures
-  in the same SCC.
-* A trait declared later in a mutually recursive trait group is visible while checking earlier member signatures in that
-  same SCC, when such a group is admitted.
-* Quantity and relevance checking inside the SCC uses the completed group environment rather than whatever subset of
-  headers happened to appear earlier in source order.
+* reordering top-level declarations does not change facet-SCC membership, projected declaration-group membership, or
+  acceptance;
+* a constructor from one mutually inductive family is visible while sibling family constructors and recursive
+  operations are checked;
+* quantity, relevance, universe, refinement, and termination checking use the completed group environment;
+* family refinements are derived from full constructor result applications, not a parameter/index split;
+* generated dependencies cause SCC recomputation before acceptance;
+* a rejected group produces one group-level root diagnostic rather than missing-name or incomplete-environment cascades;
+  and
+* every accepted group is published atomically.
 
-Diagnostics:
+Local declarations remain sequential under §9.3.1. Module-wide scope does not make a later local declaration visible
+earlier in its block.
 
-If the implementation rejects a recursive group because the group form itself is not admitted, the diagnostic MUST say
-so directly.
-
-It MUST NOT surface a downstream unification, missing-constructor, missing-trait, or linearity error caused only by
-checking one member against an incomplete source-order environment.
-
+`BODY_RESOLVE` and later stage dumps expose final checking-SCC membership, projected declaration-group membership,
+classification, features, member facets, header strata, dependency edges, and relevant certificates.
 <!-- declarations.totality.relationship_assertions -->
 ### 15.17 Relationship to termination assertion escapes
 
@@ -20776,15 +21699,24 @@ Rules:
 
 Recursion policy:
 
-There is no `let rec`.
+There is no `let rec` and no `mutual` declaration form.
 
-A top-level binding is permitted to be recursive only if it has a preceding top-level signature declaration.
+Every named top-level declaration participates in module-wide scope under §7.1A. Recursive top-level groups are inferred
+from semantic dependencies under §9.5.
 
-A mutually recursive top-level group is permitted only if every member of the group has a preceding top-level signature
-declaration.
+Every recursive computational member requires a complete explicit signature under §9.2. That signature may be inline
+or separate; a separate signature may occur before or after the definition and may be paired across selected fragments
+of the same effective module.
 
-An inline annotation on a recursive definition does not by itself introduce recursion; the recursive scope is determined
-from the preceding signature declarations.
+An inline complete annotation therefore enables recursive checking exactly as a separate signature does. Source
+position does not enable or disable recursion.
+
+Local recursion is unchanged: every recursively referenced local name requires a preceding local signature in the same
+block scope under §§9.3.1 and 15.14.
+
+`assertTerminates`, legacy `assertTotal`, `assertReducible`, and `unsafeAssertProof` MUST NOT satisfy any
+well-formedness, positivity, externality, structural-recursion, eliminator, or computation-rule obligation of an
+inductive-recursive group under §10.4.4.
 
 <!-- part.expressions_effects -->
 # Part IV. Expressions, Control Flow, and Effects
@@ -39271,6 +40203,8 @@ kcoreDecl ::=
   | arithmeticCertificateDecl
   | representationCertificateDecl
   | schemaCertificateDecl
+  | declarationGroupDecl
+  | inductiveGroupCertificateDecl
   | extensionDecl
   | genericDecl
 
@@ -39769,9 +40703,12 @@ Canonical KCoreText obeys all of the following:
 
 * braces, commas, colons, and semicolons are emitted exactly as prescribed;
 * indentation is two spaces but is semantically irrelevant;
-* declaration SCCs are ordered topologically by semantic dependency;
-* within one mutually recursive SCC, declarations are ordered lexicographically by authoritative stable identity, not
-  source spelling, allocation order, or hash-map iteration order;
+* semantic checking SCCs are ordered topologically by facet dependency;
+* every nontrivial SCC and every inductive or inductive-recursive group has one canonical `declaration-group` record;
+* within one checking SCC, member facets and projected declarations are ordered lexicographically by authoritative
+  stable identity, not
+  source spelling, source order, allocation order, or hash-map iteration order;
+* inductive-group certificates precede the first recursive-operation equation or joint eliminator that relies on them;
 * level-certificate declarations precede the first declaration that references them and are ordered by certificate
   stable identity when otherwise independent;
 * arithmetic-certificate declarations precede the first proof term that references them and are ordered by certificate
@@ -39849,6 +40786,171 @@ Parsing does not trust the input. Checkpoint verification is mandatory.
 Malformed syntax uses `E_KCORE_TEXT_INVALID`.
 
 A well-formed but unsupported schema version uses `E_KCORE_TEXT_UNSUPPORTED_VERSION`.
+
+<!-- compiler.kcore.declaration_groups -->
+#### 30.2.0B Recursive declaration groups and inductive-group certificates
+
+KCore represents every nontrivial semantic facet checking SCC and every inductive or inductive-recursive projected
+declaration group explicitly.
+
+```text
+CoreDeclarationGroup =
+    (identity             : DeclarationGroupId,
+     classification       : DeclarationGroupClassification,
+     features             : Set DeclarationGroupFeature,
+     members              : List DeclarationSymbolId,
+     memberFacets         : List DeclarationFacetId,
+     dependencyEdges      : List DeclarationDependencyEdge,
+     headerStrata         : List (List DeclarationFacetId),
+     totalitySummary      : Option GroupTotalitySummary,
+     inductiveCertificate : Option InductiveGroupCertificateId,
+     sourceOrigins        : List Origin)
+```
+
+```text
+DeclarationGroupClassification ::=
+    Acyclic
+  | TermRecursive
+  | Inductive
+  | InductiveRecursive
+```
+
+```text
+DeclarationGroupFeature ::=
+    MutuallyInductive
+  | InductiveInductive
+  | FamilyIndexed
+  | Generated
+```
+
+Presentation order is not part of `CoreDeclarationGroup` identity. `members`, edges, and independent members of one
+header stratum are canonicalized by stable semantic identity.
+
+An accepted inductive or inductive-recursive group carries an independently checkable certificate:
+
+```text
+InductiveGroupCertificate =
+    (identity                    : InductiveGroupCertificateId,
+     group                       : DeclarationGroupId,
+     dataFamilies                : List SemanticObjectId,
+     recursiveOperations         : List DeclarationSymbolId,
+     familyArgumentTelescopes    : List OrderedTelescope,
+     constructorTelescopes       : List OrderedTelescope,
+     constructorResultApps       : List FamilyApplication,
+     parameterPositivity         : List ParameterPositivitySignature,
+     recursiveFields             : List RecursiveFieldCertificate,
+     pointwiseChildren           : List PointwiseChildCertificate,
+     structuralChildEdges        : List StructuralChildEdge,
+     operationApplications       : List IROperationApplication,
+     operationExternality        : List OperationExternalityCertificate,
+     operationEquations          : List RecursiveOperationEquation,
+     structuralTargets           : List StructuralTargetSummary,
+     recursiveCallEdges          : List RecursiveCallSummary,
+     phaseConstraints            : List PhaseConstraintEdge,
+     hiddenPhaseAssignment       : List HiddenPhaseAssignment,
+     headerStrata                : List (List DeclarationFacetId),
+     universeConstraints         : DeclarationConstraintSummary,
+     nominalSignatureClosureHash : Digest,
+     schemaActionCertificate     : SchemaActionCertificateId,
+     jointEliminators            : List JointEliminatorCertificate,
+     checkerVersion              : Nat)
+```
+
+The KCore checker independently verifies at least:
+
+* declaration membership, exact facet membership, and typed facet-to-facet dependency edges;
+* acyclicity and correctness of header strata;
+* complete family telescopes and constructor-result applications;
+* constructor universe-size obligations;
+* the parameter-positivity greatest fixed point and final positivity judgment;
+* saturation and available-subject evidence for every recursive-operation application;
+* direct and pointwise structural-child derivations;
+* structural decrease and hidden-phase evidence for every recursive operation call;
+* externality of every recursive-operation result and equation;
+* totality and conversion-reducibility of recursive operations;
+* generated joint eliminators and computation rules;
+* the nominal signature closure and schema-action certificate; and
+* absence of unsafe assertion records used as formation evidence.
+
+A hand-authored KCoreText unit that supplies a malformed, stale, forged, or semantically mismatched group certificate is
+rejected with `E_KCORE_SCHEMA_CERTIFICATE_INVALID` when the failure is in the nominal action certificate, and with
+`E_INDUCTIVE_RECURSIVE_INVALID` or `E_CHECKPOINT_VERIFICATION_FAILED` for the corresponding group invariant.
+
+KCore does not serialize a parameter/index partition. `familyArgumentTelescopes` and `constructorResultApps` retain the
+complete ordered family arguments.
+
+Recursive-operation equations are ordinary checked conversion rules owned by the group certificate. They are available
+to definitional equality only when the operation is transparent, total-certified, conversion-reducible, and the
+inductive-group certificate is valid.
+
+KCoreText adds:
+
+```text
+declarationGroupRef ::=
+    '@group:' qualifiedName '#' stableId
+
+inductiveGroupCertificateRef ::=
+    '@inductive:' qualifiedName '#' stableId
+
+declarationGroupDecl ::=
+    'declaration-group' declarationGroupRef
+    '['
+        'classification' '=' declarationGroupClassification ','
+        'features' '=' '[' declarationGroupFeature (',' declarationGroupFeature)* ']' ','
+        'certificate' '=' (inductiveGroupCertificateRef | 'none')
+    ']'
+    '{'
+        'members' '=' '[' globalRef (',' globalRef)* ']' ';'
+        'memberFacets' '=' '[' declarationFacetRef (',' declarationFacetRef)* ']' ';'
+        'headerStrata' '=' '[' groupStratum (',' groupStratum)* ']' ';'
+        'edges' '=' '[' declarationDependencyEdge (',' declarationDependencyEdge)* ']' ';'
+    '}'
+
+declarationFacetRef ::=
+    globalRef '/' declarationFacetKind ['/' stableId]
+
+declarationFacetKind ::=
+    'shape'
+  | 'header'
+  | 'formation'
+  | 'body'
+  | 'default_body'
+  | 'certificate'
+  | 'interface'
+
+groupStratum ::=
+    '[' declarationFacetRef (',' declarationFacetRef)* ']'
+
+inductiveGroupCertificateDecl ::=
+    'inductive-group-certificate' inductiveGroupCertificateRef
+    'for' declarationGroupRef
+    '['
+        'checkerVersion' '=' integer ','
+        'signatureHash' '=' schemaSignatureBinding ','
+        'schemaCertificate' '=' schemaCertificateRef
+    ']'
+    '{'
+        namedValue*
+    '}'
+
+declarationGroupClassification ::=
+    'acyclic'
+  | 'term_recursive'
+  | 'inductive'
+  | 'inductive_recursive'
+
+declarationGroupFeature ::=
+    'mutually_inductive'
+  | 'inductive_inductive'
+  | 'family_indexed'
+  | 'generated'
+```
+
+The `namedValue` payload of an inductive-group certificate uses the closed schema corresponding to
+`InductiveGroupCertificate`. Unknown or missing fields in a supported certificate version are rejected.
+
+Canonical KCoreText emits a declaration-group record before the first member whose checking requires that group and
+emits its inductive-group certificate before the first recursive-operation equation or eliminator that relies on it.
 
 <!-- compiler.kcore.application_spines -->
 #### 30.2.1 Application spines and Pi telescopes
@@ -42106,6 +43208,10 @@ The reductions above are position-independent as specified by §31.1.2.
 * ι-reduction: reducing `match`, `if`, constructor-tag tests, and case-tree decisions on known constructors/literals.
   Knowledge may come either from the normalized scrutinee itself or from the active refinement context, as specified in
   §31.1.2.
+* inductive-recursive equation reduction: a fully applied transparent recursive operation whose selected structural
+  subject is constructor-headed reduces by the verified equation recorded in its valid inductive-group certificate.
+  Imported equation reduction uses interface-recorded semantic identity and certificate validity. An unsafe
+  termination or reducibility assertion does not create such a rule.
 * η-equality (definitional):
     * Functions: `f ≡ (\(x : A) -> f x)` when `x` is not free in `f`.
     * Records: a record is definitionally equal to a record reconstructed from its projections (field-wise η), up to
@@ -43381,6 +44487,9 @@ In particular:
 * `HardDigest` is the canonical SHA-256 digest of that `HardIdentity`, and
 * two definitions that fully normalize to the same canonical normal form MUST produce the same `HardIdentity` and the
   same `HardDigest`.
+* Permuting top-level declarations without changing the semantic facet graph, declaration-group certificates, or any
+  source-location-sensitive environment MUST NOT change Easy Hash, `HardIdentity`, or `HardDigest`. Canonical group
+  serialization orders member facets, dependency edges, header strata, and certificates by stable semantic identity.
 * In package mode, reproducibility claims are absolute with respect to macro execution.
 * In script mode, reproducibility claims are only relative to a fixed macro input transcript.
 
@@ -43648,6 +44757,18 @@ compilation unit unless the edit in fact changes every required upstream unit.
 Downstream ordinary compilation depends on imported module-interface units, not on imported implementation bodies,
 except where this specification explicitly permits otherwise (for example the unsafe/debug facilities of §4.3).
 
+The conceptual decomposition additionally includes:
+
+* effective-module declaration-shape units;
+* semantic declaration-facet dependency edge units;
+* header-stratification units;
+* semantic checking-SCC and projected declaration-group classification units; and
+* inductive-group certificate units.
+
+Adding, removing, or retargeting a semantic declaration-facet dependency invalidates checking-SCC classification and
+certificates for
+the affected connected component. It does not by itself invalidate unrelated declaration groups in the same module.
+
 <!-- compiler.pipeline.compiler_fingerprints -->
 #### 34.1.2 Compiler fingerprints
 
@@ -43713,6 +44834,27 @@ invalidate any result that depends on the affected interface surface.
 
 The semantic hashes of §33 remain normative for semantic identity, coherence, and related uses.
 They MUST NOT be assumed to be the sole or primary invalidation keys of a conforming implementation.
+
+The implementation additionally behaves as if it defines:
+
+* `DeclarationGroupFingerprint`:
+  determined by the stable semantic identities of the group members, exact member facets, typed facet-to-facet
+  dependency edges and roles, header strata,
+  group classification and features, recursive-operation signatures and equations, structural-child derivations,
+  positivity signatures, universe constraints, hidden phase constraints, and every certificate input owned by the
+  group.
+
+Source declaration order, source offsets, fragment presentation order, and worker scheduling are excluded from
+`DeclarationGroupFingerprint` except where another language rule makes that order semantic.
+
+`HeaderFingerprint` includes the declaration's module-wide shape, checked explicit header, header-dependency edges,
+complete ordered family telescope when applicable, and declaration-universe schema.
+
+`BodyFingerprint` includes semantic body-dependency edges exposed by elaboration and transparent normalization.
+
+`InterfaceFingerprint` includes every interface-visible declaration-group summary, inductive-group certificate,
+recursive-operation equation, and interface-reachable private semantic dependency required to check the exported
+surface.
 
 <!-- compiler.pipeline.compiler_observability -->
 #### 34.1.3 Compiler observability
@@ -43934,14 +45076,20 @@ For `KFrontIR.DECLARATION_SHAPES`:
 * every declaration occurrence is represented by a typed declaration symbol identity or an unresolved declaration node;
 * binding groups distinguish declaration kind;
 * generated names carry generated-name identity and provenance;
-* parser-only spelling is not used as declaration identity.
+* parser-only spelling is not used as declaration identity;
+* every selected fragment's top-level declaration shapes are present in the effective module scope;
+* duplicate binding groups are diagnosed independently of top-level declaration order; and
+* import and fixity environments remain attached to source locations rather than being globally hoisted.
 
 For `KFrontIR.HEADER_TYPES`:
 
 * exported or interface-visible binders have explicit binder metadata;
 * binder quantities, implicitness, receiver markers, and classifier information are present when required downstream;
 * header-level feature-gate decisions are recorded;
-* record dependency graphs and constructor parameter metadata are present where applicable.
+* record dependency graphs and constructor parameter metadata are present where applicable;
+* semantic header-dependency edges and header strata are explicit;
+* every data family records one complete ordered family-argument telescope; and
+* no parameter/index partition has been invented.
 
 For `KFrontIR.BODY_RESOLVE`:
 
@@ -43952,7 +45100,14 @@ For `KFrontIR.BODY_RESOLVE`:
   allocation order, hash-map iteration order, or worker scheduling;
 * branch-local boolean and constructor refinements are represented as explicit erased evidence or equivalent refined
   case contexts;
-* generated obligations carry provenance.
+* generated obligations carry provenance;
+* every final top-level semantic checking SCC and projected declaration group has a stable identity, exact member-facet
+  set, classification, declaration-member set, and typed dependency edges;
+* every recursive computational member has a complete explicit signature;
+* every inductive group has a final joint positivity result;
+* every inductive-recursive group has a valid certificate or one explicit failed obligation;
+* every recursive-operation call records its structural-child derivation; and
+* hidden phases, when present, are derived from recorded phase constraints rather than source order.
 
 For `KCore`:
 
@@ -43972,7 +45127,10 @@ For `KCore`:
 * every recursive schema edge is same-or-lower, and every non-identity edge is explicit;
 * schema reification has inserted no omitted explicit term-level argument;
 * selected `Monotone` evidence is verified before role-certificate checking; and
-* no lift semantic identity depends on proof-object allocation identity.
+* no lift semantic identity depends on proof-object allocation identity;
+* every accepted inductive-recursive group contains checked constructor metadata, recursive-operation equations,
+  externality evidence, structural-child evidence, and joint eliminator certificates; and
+* no unsafe assertion is recorded as the justification for an inductive-recursive formation obligation.
 
 For `KBackendIR`:
 
@@ -44096,6 +45254,8 @@ SemanticCertificateSummary =
      visibilityOpacityMetadata  : VisibilityOpacitySummary,
      transparentReductionFacts  : List TransparentReductionFact,
      terminationCertificates    : List TerminationCertificateSummary,
+     declarationGroups          : List DeclarationGroupSummary,
+     inductiveGroupCertificates : List InductiveGroupCertificateSummary,
      arithmeticCertificates     : List ArithmeticCertificateSummary,
      proofNormalizationProviders: List ProofNormalizationProviderArtifact,
      noConfusionMetadata        : List VisibleNoConfusionSummary,
@@ -44110,6 +45270,64 @@ SemanticCertificateSummary =
      featureGateProvenance      : List FeatureGateProvenance,
      unsafeDebugLedgerSummary   : Option UnsafeDebugAuditLedgerSummary)
 ```
+
+```text
+DeclarationGroupSummary =
+    (groupIdentity        : DeclarationGroupId,
+     classification       : DeclarationGroupClassification,
+     features             : Set DeclarationGroupFeature,
+     members              : List DeclarationSymbolId,
+     memberFacets         : List DeclarationFacetId,
+     dependencyEdges      : List DeclarationDependencyEdge,
+     headerStrata         : List (List DeclarationFacetId),
+     totalityStatus       : Option GroupTotalitySummary,
+     inductiveCertificate : Option InductiveGroupCertificateId)
+```
+
+```text
+InductiveGroupCertificateSummary =
+    (certificateIdentity        : InductiveGroupCertificateId,
+     groupIdentity              : DeclarationGroupId,
+     dataFamilies               : List SemanticObjectId,
+     recursiveOperations        : List DeclarationSymbolId,
+     familyArgumentTelescopes   : List OrderedTelescope,
+     constructorTelescopes       : List OrderedTelescope,
+     constructorResultApps      : List FamilyApplication,
+     parameterPositivity        : List ParameterPositivitySignature,
+     recursiveFields            : List RecursiveFieldCertificate,
+     pointwiseChildren          : List PointwiseChildCertificate,
+     structuralChildEdges       : List StructuralChildEdge,
+     operationApplications      : List IROperationApplication,
+     operationExternality       : List OperationExternalityCertificate,
+     operationEquations         : List RecursiveOperationEquation,
+     structuralTargets          : List StructuralTargetSummary,
+     recursiveCallEdges         : List RecursiveCallSummary,
+     phaseConstraints           : List PhaseConstraintEdge,
+     hiddenPhaseAssignment      : List HiddenPhaseAssignment,
+     headerStrata               : List (List DeclarationFacetId),
+     universeConstraints        : DeclarationConstraintSummary,
+     jointEliminators           : List JointEliminatorCertificate,
+     nominalSignatureClosureHash: Digest,
+     schemaActionCertificate    : SchemaActionCertificateId,
+     checkerVersion             : Nat)
+```
+
+Rules:
+
+* Every interface-visible semantic checking SCC with more than one facet or a self-cycle, and every interface-visible
+  projected declaration group
+  classified as `inductive` or `inductive-recursive`, has one `DeclarationGroupSummary`.
+* Every exported or interface-reachable group classified as `inductive` or `inductive-recursive` has one independently
+  verifiable `InductiveGroupCertificateSummary`.
+* A source-private recursive operation required by an exported family header, constructor type, transparent equation,
+  or eliminator is retained by semantic identity, signature, equation, and certificate participation without becoming
+  name-resolvable.
+* Downstream compilation can check visible constructor types, normalize visible recursive-operation applications, run
+  positivity and universe-role checks, generate case splits, and reconstruct joint eliminator metadata from the
+  interface alone.
+* Family argument telescopes are serialized as one ordered telescope. The interface MUST NOT manufacture separate
+  `parameters` and `indices` fields.
+* Source declaration order and presentation-only source maps are excluded from group and certificate identity.
 
 Arithmetic certificates and proof-normalization provider artifacts are imported only after their identities, versions,
 operation/law semantic identities, and checker compatibility have been validated. Downstream compilation does not trust a
@@ -44214,6 +45432,10 @@ A module interface artifact MUST record at least:
 * level-admissibility dependency summaries for term-level `TypeLevel` binders used in exported dependent types;
 * canonical level-evidence dependency sets excluding proof-object identity;
 * recursive SCC schema-instantiation policy and every non-identity recursive schema edge;
+* for every interface-visible declaration SCC with more than one member or a self-cycle, its canonical
+  `DeclarationGroupSummary`, and for every exported or interface-reachable inductive group, its
+  `InductiveGroupCertificateSummary`, including full ordered family telescopes, recursive-operation equations,
+  structural-child evidence, header strata, and nominal-action certificate identity;
 * selected `Monotone` goals and evidence dependencies used by exported role certificates;
 * all five `TypeLevel` solver and algebra version fields;
 * for every exported nominal declaration, its effective universe roles, explicit-role flags, saturation arity,
@@ -44326,31 +45548,30 @@ the elaboration of defaults for constructors that are not visible.
 Each recursive SCC that is accepted as total-certified MUST record a termination certificate or unsafe assertion record
 in the module interface artifact.
 
-Explicit recursive-group metadata:
+Semantic declaration-group metadata:
 
-A module interface artifact MUST record stable group-membership metadata for every explicit top-level mutual or
-recursive declaration group that is interface-visible.
+A module interface artifact MUST record stable group metadata for every interface-visible semantic checking SCC that
+has more than one facet or a self-cycle, and for every interface-visible projected declaration group classified as
+inductive or inductive-recursive.
 
-This requirement applies even when the group is:
-
-* partial;
-* unsafe;
-* not total-certified;
-* not conversion-reducible;
-* accepted only for runtime execution;
-* exported for documentation, auditing, browsing, or tooling.
+This requirement applies whether the group is total-certified, partial runtime code, generated, unsafe, opaque, or
+private-but-interface-reachable.
 
 The metadata MUST include:
 
-* the stable semantic object identity of each group member;
-* the source or synthetic origin of the group;
-* the group kind, such as explicit mutual block, recursive SCC, local-recursive export, generated recursive group, or
-  implementation-defined equivalent;
-* whether the group is total-certified;
-* whether the group is conversion-reducible;
-* any unsafe/debug assertion used to accept it.
+* stable semantic identities of all group members;
+* exact participating declaration facets and their facet kinds;
+* typed facet-to-facet dependency edges and edge roles;
+* header strata;
+* semantic group classification and features;
+* totality and conversion-reducibility status where applicable;
+* termination, positivity, universe, nominal-action, and inductive-group certificate identities;
+* every unsafe/debug assertion associated with a member, together with the rule preventing that assertion from
+  satisfying induction-recursion where applicable; and
+* source and synthetic origins as presentation metadata separate from semantic identity.
 
-Downstream tooling MUST NOT be required to reconstruct explicit source grouping by inspecting implementation bodies.
+Downstream tooling MUST NOT reconstruct group membership from source adjacency, source order, or implementation-body
+inspection.
 
 The certificate or unsafe assertion record contains at least:
 
@@ -44367,7 +45588,7 @@ The certificate or unsafe assertion record contains at least:
   * `AssertTerminatesUnverified`
   * `AssertReducibleUnverified`
 * the visible measure or structural target, if any;
-* any hidden phase assignment;
+* every hidden phase constraint and the canonical phase assignment derived from those constraints;
 * for each recursive call, the caller, callee, source origin, and decrease obligation;
 * whether the SCC is conversion-reducible;
 * a stable hash of any proof term or external certificate used;
@@ -44397,8 +45618,9 @@ binding-group entries that expose it.
 
 Interface identity noise exclusions:
 
-Source locations, rendered diagnostic text, generated resolved-name IDs, internal binder counters, hash-table insertion
-order, worker scheduling, cache insertion order, and non-semantic generated helper spellings MUST NOT affect the
+Source locations, top-level declaration presentation order, rendered diagnostic text, generated resolved-name IDs,
+internal binder counters, hash-table insertion order, worker scheduling, cache insertion order, and non-semantic
+generated helper spellings MUST NOT affect the
 semantic identity of a module interface artifact.
 
 Such details MAY appear in source maps, debug information, trace dumps, reproducer bundles, or diagnostic metadata, but
@@ -44658,18 +45880,25 @@ A conforming implementation MUST behave as if the following phases exist:
 * `RAW`: parser translation, source anchors, no semantic resolution.
 * `IMPORTS`: module header handling, implicit prelude insertion, import/export parsing, semantic dotted-form
   disambiguation, and fixity-environment setup.
-* `DECLARATION_SHAPES`: binding-group population, declaration-symbol creation, raw declaration headers, binder lists, local
-  nominal identities, and raw block-scope declaration structure.
-* `HEADER_TYPES`: explicit declaration-header types, supertypes, associated static members, effect-operation headers,
+* `DECLARATION_SHAPES`: module-wide binding-group population for every selected fragment of one effective module,
+  declaration-symbol creation, raw declaration headers, binder lists, local nominal identities, raw block-scope
+  declaration structure, and duplicate-declaration detection independent of top-level source order.
+* `HEADER_TYPES`: explicit declaration-header types, semantic header-dependency edges and strata, supertypes, associated
+  static members, effect-operation headers, complete ordered data-family telescopes, constructor result applications,
   record field quantities, record dependency graphs, and other header-level type information.
 * `STATUS`: visibility, opacity, export status, unsafe/debug gating, instance admissibility, and modifier legality.
-* `IMPLICIT_SIGNATURES`: inference of declaration result types or initializer types only for declarations whose omitted
-  signatures are required by the current query, interface materialization, or a dependent declaration body.
-* `BODY_RESOLVE`: phase checking, call resolution, type inference, implicit-argument insertion, execution of required
-  elaboration-time splices and hooks, recursive elaboration of generated syntax at its splice/hook site, quantity
-  checking, region checking, syntax-scope escape checking, flow facts, pattern reachability, handler typing,
-  body-local declaration resolution, and generation of any modality predicates required by an enabled modal/coeffect
-  extension.
+* `IMPLICIT_SIGNATURES`: inference of declaration result types or initializer types only for declarations whose body
+  facets are established to be outside every recursive semantic checking SCC and whose omitted signatures are required
+  by the current query, interface
+  materialization, or a dependent declaration body. Provisional inference is invalidated if final dependency discovery
+  later makes the declaration cyclic.
+* `BODY_RESOLVE`: phase checking, final semantic facet-dependency discovery, checking-SCC formation, declaration-group
+  projection and classification,
+  joint recursive-group elaboration, inductive-inductive and inductive-recursive checking, call resolution, type
+  inference, implicit-argument insertion, execution of required elaboration-time splices and hooks, recursive
+  elaboration of generated syntax at its splice/hook site, quantity checking, region checking, syntax-scope escape
+  checking, flow facts, pattern reachability, handler typing, body-local declaration resolution, termination and hidden
+  phase checking, and generation of any modality predicates required by an enabled modal/coeffect extension.
 * `MODAL_SOLVE`: solving of predicates emitted during `BODY_RESOLVE` by any enabled modal/coeffect extension of
   §12.2.8, together with attachment of solved evidence where required. This phase is a no-op when no such extension is
   in use.
@@ -44686,6 +45915,20 @@ In batch compilation, phases are typically executed sequentially over the whole 
 
 In tooling or incremental mode, phases MAY be executed lazily, per file, per declaration, or per query. A query MUST
 resolve only the minimum phase required to answer it.
+
+A query for one top-level declaration may force module-wide declaration-shape collection and the complete semantic
+checking SCC containing the queried facet. It need not force unrelated declaration facets or bodies.
+
+A query MUST NOT answer from a source-order prefix environment when the requested declaration facet belongs to, or may
+belong to, a recursive semantic checking SCC. The query either resolves the necessary group fixed point or returns a
+blocked or invalid
+result that identifies the unresolved group obligation.
+
+If delayed macro expansion, derive generation, implicit declaration generation, or transparent elaboration discovers a
+new top-level semantic facet dependency, the implementation recomputes the affected checking SCCs and projected group
+classification before publishing a
+`BODY_RESOLVE` result, interface artifact, KCore group, or semantic hash. A provisional grouping is not observable as a
+successful result.
 
 If a query is given an element directly and promises that element at phase `P`, clients may rely on that element being
 resolved to `P`. Any declaration reached indirectly through a symbol, type, scope, provider, or imported interface may
@@ -45548,6 +46791,39 @@ different-checkpoint
 The omission marker `implementation-private-but-verified` is permitted only when the verifier result for the same
 checkpoint records that the omitted fact was checked.
 
+For `HEADER_TYPES` and later, a stage dump MUST expose, when present:
+
+* semantic declaration-facet dependency edges with typed source/target facets and edge roles;
+* provisional or final checking-SCC and projected declaration-group identities;
+* exact member facets and projected declaration members;
+* checking-SCC classification and descriptive features;
+* header strata;
+* complete ordered data-family telescopes and constructor-result family applications;
+* tentative and final parameter-positivity signatures;
+* recursive fields and pointwise structural-child derivations;
+* recursive-operation identities, signatures, and selected structural subjects;
+* every IR-admissible operation application and available-subject proof;
+* operation-result externality status;
+* recursive-operation equations and recursive-call edges;
+* phase-constraint edges and canonical hidden phases; and
+* inductive-group and nominal-action certificate identities.
+
+The dump MUST NOT expose or infer a parameter/index partition unless a future language feature explicitly introduces
+one.
+
+For canonical JSON dumps, the standardized top-level keys for these records are:
+
+```text
+declarationDependencyEdges
+declarationGroups
+inductiveGroupCertificates
+```
+
+Within a declaration-group record, standardized keys include `classification`, `features`, `members`, `memberFacets`,
+`dependencyEdges`, and `headerStrata`. Within an inductive-group certificate record, standardized keys use the
+camel-cased conceptual field names of §30.2.0B. Implementations may expose additional fields but must not rename or
+omit these standardized keys when the corresponding fact is present and not redacted.
+
 <!-- compiler.kfrontir.whole_compilation_phase_order -->
 #### 34.2.13 Whole-compilation phase order
 
@@ -45566,11 +46842,19 @@ A conforming implementation MUST behave as if batch compilation proceeds as foll
    `IMPLICIT_SIGNATURES` required to materialize exported signatures, importable fixities, instance heads, and exported
    transparent definitional content.
 
-   For exported top-level `let` definitions, interface readiness MUST depend on the explicit signatures required by
-   §9.2, not on inferring missing exported types from bodies. Consequently, once imported interfaces and declaration
-   headers are available, an implementation SHOULD make declaration-body queries for distinct top-level definitions
-   independently schedulable whenever they are not part of the same explicit recursive group and share no other
-   recorded dependencies.
+   For exported top-level `let` definitions, interface readiness depends on the explicit signatures required by §9.2, not
+   on inferring missing exported types from bodies.
+
+   The implementation first collects declaration shapes from every selected fragment of the effective module, then checks
+   explicit headers and the header strata needed by the requested interface.
+
+   Distinct acyclic declaration facets and distinct semantic checking SCCs may be scheduled independently when their
+   recorded dependencies permit it. Facets in one checking SCC are checked in one joint group environment.
+
+   An exported inductive-recursive group is not interface-ready until its joint universe, saturation,
+   available-subject, externality, structural-recursion, positivity, eliminator, computation-rule, nominal-action, and
+   interface-certificate obligations have succeeded. Publishing only the data-family heads while deferring the recursive
+   operation certificate is insufficient.
 
    If an enabled modal/coeffect extension contributes interface-visible obligations, evidence, or classifications,
    interface readiness for the affected exports includes any required `MODAL_SOLVE` work for those exports.
@@ -48364,17 +49648,25 @@ The following rules apply to a fragment group:
 * An import declaration in one fragment does not place imported names in lexical scope for another fragment.
 * A local fixity declaration in one fragment does not affect parsing or expression grouping in another fragment.
 * Top-level declarations from all selected fragments contribute to the effective module's top-level declaration set.
-* Name resolution inside a fragment may resolve top-level declarations contributed by any selected fragment of the same
-  effective module, subject to the ordinary recursion, signature, visibility, opacity, and declaration-kind rules.
+* Name resolution inside a fragment may resolve module-wide top-level declaration shapes contributed by any selected
+  fragment of the same effective module under §§7.1A and 9.5. Each reference still uses the import, fixity, feature,
+  visibility, and opacity environment effective at its own source origin.
 * Export declarations from all selected fragments contribute to the effective module export surface.
 * Export conflicts are diagnosed after the effective export surface is assembled.
 * Unselected fragments contribute no declarations, imports, fixities, instances, exports, diagnostics, or source
   origins to the target, except as related origins in diagnostics about fragment selection itself.
 
-Top-level declaration order across fragments is not semantically observable.
+Top-level declaration order within or across selected fragments is not semantically observable, except for forms that
+this specification explicitly keeps source-location-sensitive, including imports, fixities, constructor order, binder
+and field telescopes, defaults, patterns, branches, and runtime expression order.
 
-A program is ill-formed if acceptance, typing, instance selection, implicit resolution, exported fixity, exported
-surface, or interface identity would depend on a source-order choice between two different fragment files.
+A program is ill-formed if acceptance, typing, instance selection, implicit resolution, checking-SCC or declaration-group
+classification, positivity,
+termination, exported surface, or interface identity would depend on a source-order choice between selected fragments.
+
+Semantic facet-SCC membership, projected declaration-group membership, header strata, positivity signatures,
+induction-recursion certificates, hidden phases, and interface identity MUST NOT depend on canonical fragment
+presentation order.
 
 For deterministic diagnostics, generated source maps, and presentation-only ordering, the canonical fragment order is:
 
@@ -48390,11 +49682,12 @@ If more than one selected fragment exports a top-level fixity declaration for th
 not definitionally identical in kind, precedence, and associativity, the effective module is rejected.
 
 If more than one selected fragment contributes the same top-level declaration spelling and declaration kind, the
-effective module is rejected unless the declarations form a permitted same-spelling data-family group under Chapter 8 or
-a single `expect` declaration is satisfied by exactly one selected definition under §9.4.
+effective module is rejected unless the declarations form a permitted same-spelling data-family group under Chapter 8,
+one ordinary signature is paired with exactly one definition under §9.2, or one `expect` declaration is satisfied by
+exactly one selected definition under §9.4.
 
-A separate top-level signature declaration still satisfies a definition only within the same source file, as specified
-by §9.2. Cross-fragment declaration requirements use `expect`.
+A separate top-level signature may pair with a definition in any selected fragment of the same effective module under
+§9.2. Requirements to be satisfied outside that effective module continue to use `expect`.
 
 <!-- build_system.targets_backends -->
 ### 36.13 Targets, backend profiles, and artifact families
@@ -54385,6 +55678,22 @@ Supported directives:
 assertType <name> <typeExpr>
 assertEval <name> <literal>
 assertTotal <name>
+assertDeclarationGroupClass <qualified-declaration> <acyclic|term-recursive|inductive|inductive-recursive>
+assertDeclarationGroupMembers <qualified-declaration> <qualified-name-list>
+assertDeclarationGroupFacets <qualified-declaration> <qualified-facet-list>
+assertDeclarationDependencyEdge <qualified-facet> <qualified-facet> <dependency-role>
+assertDeclarationGroupFeature <qualified-declaration> <mutually-inductive|inductive-inductive|family-indexed|generated>
+assertHeaderStratum <qualified-declaration> <integer>
+assertInductiveGroupCertificateValid <qualified-declaration>
+assertInductiveGroupCertificateMutationsReject <qualified-declaration>
+assertNoParameterIndexPartition <qualified-declaration>
+assertRecursiveOperation <qualified-declaration> subjects <integer-list>
+assertRecursiveOperationEquation <qualified-operation> <qualified-constructor>
+assertStructuralChildEdge <qualified-parent-constructor> <qualified-child-field>
+assertHiddenPhase <qualified-declaration> <integer>
+assertPhaseConstraint <qualified-caller> <qualified-callee>
+assertInterfaceContainsDeclarationGroup <qualified-declaration>
+assertInterfaceContainsRecursiveOperationEquation <qualified-operation> <qualified-constructor>
 assertDeclKinds <kindList>
 assertFileDeclKinds <path> <kindList>
 assertUniverseRole <qualified-declaration> <parameter-index> <invariant|covariant|irrelevant>
@@ -54426,7 +55735,16 @@ inference-class ::=
   | BlockedByUnselectedMetas
 
 relation ::= identity | lower-or-equal | strict-lower
+
+facet-kind ::=
+    shape | header | formation | body | default-body | certificate | interface
+
+dependency-role ::=
+    shape | header | family-header | constructor-telescope | constructor-result
+  | body | transparent-normalization | recursive-call | instance | default-body
+  | generated | certificate | interface
 ```
+
 
 where `kindList` is a comma-separated list of declaration kinds drawn from:
 
@@ -54470,6 +55788,56 @@ Rules for `assertTotal`:
   behind `allow_assert_terminates`. The directive spelling occurs only at the head of a `--!` directive line, never as
   a declaration modifier, and does not interact with the §4.2 unsafe configuration gates.
 
+Declaration-group assertions:
+
+* `assertDeclarationGroupClass d c` resolves `d`, selects the principal facet defined by §9.5.1, finds its final
+  projected declaration group, and compares the canonical classification.
+* `assertDeclarationGroupMembers d names` compares the complete canonical member set by semantic identity. The
+  comma-separated `qualified-name-list` is order-insensitive.
+* `assertDeclarationGroupFacets d facets` compares the exact canonical member-facet set of the group selected through
+  `d`. A `qualified-facet` has form `qualifiedName/facetKind`; an owned subfacet may append `/stableId`.
+* `assertDeclarationDependencyEdge source target role` succeeds iff the final facet graph contains the specified
+  directed semantic dependency edge with that role.
+* `assertDeclarationGroupFeature d f` checks one recorded descriptive feature.
+* `assertHeaderStratum d n` checks the zero-based header-stratum number of declaration `d`.
+* `assertInductiveGroupCertificateValid d` independently replays the final KCore inductive-group certificate containing
+  `d`.
+* `assertInductiveGroupCertificateMutationsReject d` requests the standard mutation set for the certificate containing
+  `d`. The set mutates at least:
+  * member-facet identity;
+  * one typed dependency edge;
+  * one header-stratum entry;
+  * one universe constraint or constructor-size result;
+  * one positivity result;
+  * one operation-saturation or available-subject witness when present;
+  * one static-phase, purity, transparency, totality, or conversion-reducibility status when present;
+  * one structural target, structural-child derivation, recursive-call edge, phase constraint, or hidden phase when
+    present;
+  * one externality result when present;
+  * one recursive-operation equation when present;
+  * one joint eliminator or computation-rule witness;
+  * the nominal-signature closure hash; and
+  * the schema-action certificate reference.
+  Every mutated certificate must be rejected by independent KCore verification.
+* `assertNoParameterIndexPartition d` succeeds iff the final KFrontIR, interface, and KCore representations of the
+  family containing `d` retain one ordered family telescope and contain no semantic parameter/index partition.
+* `assertRecursiveOperation d subjects indices` checks that `d` is a recursive operation and that its selected
+  structural subjects are the zero-based explicit-binder indices listed.
+* `assertRecursiveOperationEquation op ctor` checks that verified KCore contains a definitional recursive-operation
+  equation for operation `op` at constructor `ctor`.
+* `assertStructuralChildEdge ctor field` checks that the group certificate classifies field `field` of constructor
+  `ctor` as a direct or pointwise structural-child source.
+* `assertHiddenPhase d n` checks the canonical hidden phase recorded in the final termination certificate.
+* `assertPhaseConstraint caller callee` checks that the phase-constraint graph contains the directed edge
+  `caller -> callee`.
+* `assertInterfaceContainsDeclarationGroup d` checks that the module interface retains the declaration-group summary
+  containing `d`.
+* `assertInterfaceContainsRecursiveOperationEquation op ctor` checks interface-reachable private and public semantic
+  content, not source-level name visibility.
+
+These assertions compare semantic identities and canonical certificates. They do not infer grouping from source
+adjacency, declaration order, or rendered names.
+
 Rules for `assertDeclKinds`:
 
 * `assertDeclKinds` applies to the containing `.kp` file.
@@ -54484,7 +55852,7 @@ Rules for `assertFileDeclKinds`:
 
 In both declaration-kind assertions:
 
-* a separate signature and a following `let` definition count as two items;
+* a separate signature and its paired `let` definition count as two items regardless of their relative source order;
 * the optional module header does not count as a declaration kind;
 * imports, exports, and fixity declarations do count when present.
 
@@ -54567,6 +55935,8 @@ Supported directives:
 ```text
 assertStageDump <checkpoint> equals <path>
 assertStageDumpRoundTrips <checkpoint>
+assertStageDumpHas <checkpoint> <json-pointer>
+assertStageDumpJsonPointer <checkpoint> <json-pointer> <expected-json>
 assertKCoreParses <path>
 assertKCoreRoundTrips <path>
 assertKCoreRejects <path> <diagnostic-code>
@@ -54577,6 +55947,9 @@ assertKCoreSemanticHashEquals <path1> <path2>
 Rules:
 
 * `<checkpoint>` must name a valid compiler checkpoint under Chapter 34.
+* `assertStageDumpHas checkpoint pointer` requests the canonical JSON dump and succeeds iff RFC-6901 `pointer` exists.
+* `assertStageDumpJsonPointer checkpoint pointer expected-json` additionally requires the selected value to equal the
+  parsed JSON value in `expected-json`.
 * `<path>` is relative to the suite root and names the expected golden file.
 * The harness requests a stage dump for that checkpoint in the format determined as follows:
   * if `<path>` ends in `.json`, the requested format is JSON;
@@ -54731,6 +56104,12 @@ assertStepNoErrors <step>
 assertStepErrorCount <step> <n>
 assertStepWarningCount <step> <n>
 assertStepTraceCount <step> <event> <subject> <relop> <n>
+assertStepSemanticHashEquals <step-a> <step-b> <qualified-declaration-or-module>
+assertStepSemanticHashDiffers <step-a> <step-b> <qualified-declaration-or-module>
+assertStepInterfaceHashEquals <step-a> <step-b> <qualified-module>
+assertStepInterfaceHashDiffers <step-a> <step-b> <qualified-module>
+assertStepDeclarationGroupEquivalent <step-a> <step-b> <qualified-declaration>
+assertStepDeclarationGroupDiffers <step-a> <step-b> <qualified-declaration>
 ```
 
 Rules:
@@ -54738,8 +56117,17 @@ Rules:
 * `<step>` is a non-negative integer naming a step index.
 * `assertStepTraceCount` is evaluated against the pipeline trace produced for that step.
   It uses the same portable trace-count semantics as `assertTraceCount`.
-* The intended use of step-trace assertions is to test incremental reuse and invalidation behavior, for example reuse of
-  interfaces, KCore units, KBackendIR units, and target-lowering units.
+* `assertStepSemanticHashEquals a b d` resolves the same declaration or module identity `d` in steps `a` and `b` and
+  compares its canonical semantic hash after excluding the presentation-only facts excluded by Chapter 33.
+  `assertStepSemanticHashDiffers` is the inequality counterpart.
+* `assertStepInterfaceHashEquals a b m` compares the canonical module-interface semantic identity of module `m`.
+  `assertStepInterfaceHashDiffers` is the inequality counterpart.
+* `assertStepDeclarationGroupEquivalent a b d` compares the group selected through `d` in both steps, including
+  classification, features, exact member facets, typed internal dependency edges, header strata, totality summary, and
+  inductive-group certificate semantic identity. Source origins and presentation order are ignored.
+  `assertStepDeclarationGroupDiffers` succeeds iff at least one of those semantic fields differs.
+* The intended use of cross-step assertions is to test incremental reuse, invalidation, declaration permutation, and
+  order-independent group identity.
 
 Each step is interpreted as a complete source snapshot, not as a textual patch.
 
@@ -54839,6 +56227,56 @@ Build-plan fragment validation:
 * when an implementation exposes explicit extension tag admission, an admitted suffix is accepted and the admission and
   its provenance appear in the `ResolvedBuildPlan` and relevant query-key projection.
 
+Module-wide declaration scope and grouping:
+
+* a top-level reference may target a later declaration in the same effective module;
+* a complete separate signature may follow its definition;
+* inline and separate complete signatures enable recursion equally;
+* mutually recursive top-level functions are grouped by semantic dependency rather than declaration adjacency;
+* a recursive computational member without a complete explicit signature emits `E_MISSING_EXPLICIT_SIGNATURE`;
+* a cyclic strict value or pattern initializer emits `E_RECURSIVE_VALUE_CYCLE`;
+* an unsupported mixed declaration cycle emits `E_RECURSIVE_GROUP_UNSUPPORTED`;
+* a header dependency cycle emits `E_DECLARATION_HEADER_CYCLE`;
+* module-local imports and fixities remain source-location-sensitive;
+* declaration permutation that preserves source-location-sensitive environments preserves checking-SCC class,
+  projected group class, certificates, semantic hashes, and acceptance;
+* formation, body, default-body, and certificate facets remain distinct, so a constructor default calling a function
+  that consumes an already formed data type does not manufacture an inductive-recursive formation cycle;
+* stage dumps, interfaces, and KCore retain exact member facets and typed facet-to-facet dependency edges;
+* call-graph-derived hidden phases are invariant under declaration permutation.
+
+Ordinary inductive groups:
+
+* mutually inductive and inductive-inductive data families may be declared in any source order;
+* sort headers are stratified semantically and cyclic sort headers are rejected;
+* parameter-positivity signatures are computed jointly by the greatest fixed point;
+* cross-family negative occurrences emit `E_DATA_STRICT_POSITIVITY`;
+* full ordered uniform family-argument telescopes are retained without a parameter/index partition;
+* GADT constructor-result refinements work inside mutually inductive groups;
+* universe-size failures retain precedence when independent of positivity.
+
+Ordinary induction-recursion:
+
+* the canonical `Code`/`decode` universe example checks and its recursive-operation equations reduce definitionally;
+* reversing data-family and recursive-operation source order preserves the accepted group;
+* earlier direct recursive fields are available subjects in later constructor field types;
+* positive function-valued recursive fields contribute pointwise structural children;
+* operation applications on later fields, newly constructed values, opaque helpers, or unavailable container contents
+  are rejected;
+* recursive operations must be fully saturated, transparent, static, structurally recursive, total, and
+  conversion-reducible;
+* unsafe termination, unsafe reducibility, and unchecked proof assertions do not justify induction-recursion;
+* a recursive operation whose declared result or equation exposes the current inductive group is rejected;
+* multiple data families and multiple mutually recursive operations are checked in one group;
+* family-indexed induction-recursion uses complete family applications and constructor refinements;
+* private recursive operations required by exported constructor signatures remain in interface-reachable semantic
+  content without becoming name-resolvable;
+* interface and KCore round trips retain group membership, externality, structural-child evidence, operation equations,
+  and nominal action certificates;
+* generated declarations that add an induction-recursion edge cause SCC recomputation with faithful provenance;
+* incremental edits that merge or split semantic checking SCCs invalidate only affected groups and downstream
+  artifacts.
+
 Diagnostic structure:
 
 * expected/actual mismatch payloads expose structured expected and actual facts;
@@ -54867,7 +56305,7 @@ Tooling and protocol:
 Interface and backend:
 
 * interface identity ignores source locations and generated internal IDs;
-* explicit recursive group metadata appears in interface artifacts even for non-total groups;
+* semantic declaration-group metadata appears in interface artifacts for every interface-visible nontrivial SCC, including non-total groups;
 * module casing is preserved consistently through generated artifacts;
 * backend-generated temporaries are fresh under target collision rules;
 * wrapper specialization preserves behavior and does not introduce recursive loops.

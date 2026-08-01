@@ -1,0 +1,4 @@
+--! mode check
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved

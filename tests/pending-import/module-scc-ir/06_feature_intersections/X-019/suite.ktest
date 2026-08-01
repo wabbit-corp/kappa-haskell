@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertUniverseRole Code 0 invariant
+--! assertSchemaCertificateValid Code

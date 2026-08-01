@@ -1,0 +1,18 @@
+-- Retargeted from tests/conformance/data_types/positivity-mutual-reject.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Strict-positivity failures now use family kappa.data.strict-positivity with portable alias
+-- E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A); the rejection itself is unchanged.
+--! mode check
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+-- §10.4 mutually recursive group: the group type 'B' occurs in the
+-- domain of a function type inside a constructor argument of 'A' (a
+-- negative occurrence). After the group fixed point, a group type
+-- still occurs non-strictly-positively, so the group MUST be rejected.
+@PrivateByDefault module main
+
+data A : Type =
+    MkA (B -> Int)
+
+data B : Type =
+    MkB A
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

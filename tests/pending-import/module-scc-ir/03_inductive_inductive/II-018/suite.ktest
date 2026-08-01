@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupFeature HiddenA mutually-inductive
+--! assertInductiveGroupCertificateValid HiddenA

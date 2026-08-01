@@ -1,0 +1,7 @@
+caller : Nat -> Nat
+let caller n =
+    callee n
+
+callee : Nat -> Nat
+let callee n =
+    n

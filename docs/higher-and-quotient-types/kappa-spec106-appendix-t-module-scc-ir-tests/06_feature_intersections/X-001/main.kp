@@ -1,0 +1,23 @@
+data Code : Type =
+    NatCode
+    PiCode
+        (domain : Code)
+        (codomain : decode domain -> Code)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode ->
+        Nat
+    case PiCode domain codomain ->
+        (x : decode domain) -> decode (codomain x)
+trait Default (0 a : Type) =
+    default : a
+
+instance Default (decode NatCode) =
+    let default =
+        Zero
+
+useDefault : decode NatCode
+let useDefault =
+    default

@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Code inductive-recursive
+--! assertInductiveGroupCertificateValid Code

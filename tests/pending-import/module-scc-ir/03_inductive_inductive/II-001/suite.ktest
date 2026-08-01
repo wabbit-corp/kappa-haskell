@@ -1,0 +1,7 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass EvenTree inductive
+--! assertDeclarationGroupMembers EvenTree EvenTree,OddTree
+--! assertDeclarationGroupFeature EvenTree mutually-inductive
+--! assertInductiveGroupCertificateValid EvenTree

@@ -1,0 +1,4 @@
+--! assertStepNoErrors 0
+--! assertStepNoErrors 1
+--! assertStepSemanticHashEquals 0 1 even
+--! assertStepDeclarationGroupEquivalent 0 1 even

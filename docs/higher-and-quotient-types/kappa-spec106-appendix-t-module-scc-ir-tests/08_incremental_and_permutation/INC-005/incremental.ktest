@@ -1,0 +1,4 @@
+--! assertStepNoErrors 0
+--! assertStepNoErrors 1
+--! assertStepDeclarationGroupDiffers 0 1 Code
+--! assertStepSemanticHashDiffers 0 1 Code

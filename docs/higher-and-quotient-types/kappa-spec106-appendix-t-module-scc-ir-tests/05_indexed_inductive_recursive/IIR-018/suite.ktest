@@ -1,0 +1,6 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertSchemaCertificateValid UCode
+--! assertInterfaceContainsUniverseRoles UCode invariant
+--! assertInductiveGroupCertificateMutationsReject UCode

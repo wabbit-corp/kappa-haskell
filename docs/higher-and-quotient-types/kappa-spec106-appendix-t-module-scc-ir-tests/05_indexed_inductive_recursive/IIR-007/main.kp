@@ -1,0 +1,14 @@
+data ImpCode (@tag : Bool) : Type =
+    ImpBool : ImpCode @True
+    ImpNat  : ImpCode @False
+    ImpBox
+        (inner : ImpCode @tag)
+        (value : ImpEl @tag inner) :
+        ImpCode @tag
+
+ImpEl : (@tag : Bool) -> ImpCode @tag -> Type
+let ImpEl tag code decreases structural code =
+    match code
+    case ImpBool -> Bool
+    case ImpNat -> Nat
+    case ImpBox inner value -> ImpEl @tag inner

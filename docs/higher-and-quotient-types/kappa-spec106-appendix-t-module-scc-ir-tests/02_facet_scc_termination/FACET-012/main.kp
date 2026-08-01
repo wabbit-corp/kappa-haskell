@@ -1,0 +1,9 @@
+start : Nat -> Bool
+let start n =
+    finish n
+
+finish : Nat -> Bool
+let finish n =
+    match n
+    case Zero -> True
+    case Succ k -> start k

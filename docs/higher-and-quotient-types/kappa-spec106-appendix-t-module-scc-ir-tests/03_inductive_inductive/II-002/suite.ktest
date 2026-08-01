@@ -1,0 +1,11 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupClass Ctx inductive
+--! assertDeclarationGroupMembers Ctx Ctx,Ty
+--! assertDeclarationGroupFeature Ctx inductive-inductive
+--! assertDeclarationGroupFeature Ty family-indexed
+--! assertHeaderStratum Ctx 0
+--! assertHeaderStratum Ty 1
+--! assertNoParameterIndexPartition Ty
+--! assertInductiveGroupCertificateValid Ctx

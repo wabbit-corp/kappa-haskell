@@ -1,0 +1,7 @@
+module main
+
+import lib
+
+value : lib.natType
+let value =
+    Zero

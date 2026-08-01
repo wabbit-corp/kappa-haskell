@@ -1,0 +1,5 @@
+module demo
+
+identity : Nat -> Nat
+
+-- STATUS(f1e4161b): PASS

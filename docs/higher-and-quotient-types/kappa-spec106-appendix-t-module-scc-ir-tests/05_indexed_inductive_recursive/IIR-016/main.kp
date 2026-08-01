@@ -1,0 +1,9 @@
+data UCode.{u} : Type u =
+    BaseU (A : Type u)
+    NestU (inner : UCode.{u}) (sample : UEl.{u} inner)
+
+UEl.{u} : UCode.{u} -> Type u
+let UEl code decreases structural code =
+    match code
+    case BaseU A -> A
+    case NestU inner sample -> UEl.{succ u} inner

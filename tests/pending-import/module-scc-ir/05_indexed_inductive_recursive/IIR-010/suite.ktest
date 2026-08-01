@@ -1,0 +1,9 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertDeclarationGroupMembers Ctx Ctx,Ty,ElTy
+--! assertDeclarationGroupFeature Ctx inductive-inductive
+--! assertDeclarationGroupFeature Ty family-indexed
+--! assertRecursiveOperation ElTy subjects 1
+--! assertNoParameterIndexPartition Ty
+--! assertInductiveGroupCertificateValid Ctx

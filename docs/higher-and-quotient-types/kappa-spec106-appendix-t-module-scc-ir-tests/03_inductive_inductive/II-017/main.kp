@@ -1,0 +1,6 @@
+data Left (parametric 0 a : Type) : Type =
+    LValue (value : a)
+    LNext (right : Right a)
+
+data Right (parametric 0 a : Type) : Type =
+    RNext (left : Left a)

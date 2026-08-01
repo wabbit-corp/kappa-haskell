@@ -1,0 +1,5 @@
+--! mode check
+--! scriptMode
+--! assertNoErrors
+--! assertStructuralChildEdge PiCode codomain
+--! assertRecursiveOperationEquation decode PiCode

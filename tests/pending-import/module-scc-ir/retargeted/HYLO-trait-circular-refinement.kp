@@ -1,0 +1,65 @@
+-- Retargeted from tests/conformance/spec-coverage/traits-instances/HYLO-trait-circular-refinement.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Refinement-cycle rejections are now one graph-level diagnostic per SCC, realized as
+-- E_DECLARATION_HEADER_CYCLE / family header-cycle (§14.1.5, §9.5.3); unresolved-name
+-- cascades from source-order checking are forbidden (§7.1A, §9.5.7).
+
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo
+--                   (diagnostic: "circular trait refinement")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §14.1.4 (supertraits), §14.1.5 (trait refinement graph cycles),
+--       §9.5.3 (header graph; E_DECLARATION_HEADER_CYCLE), §9.5.7 (no
+--       unresolved-name cascades), §7.1A (module-wide scope)
+-- Pins: a linear supertrait chain is well-formed; a cyclic refinement graph
+-- (self-refinement T => T, mutual A => B => C => A) must be rejected — §14.1.5
+-- requires each strongly connected component to be rejected as ONE graph-level
+-- error naming every trait application and every edge in the cycle: one
+-- diagnostic naming SelfRefined, and one naming the CycleA/CycleB/CycleC SCC,
+-- realized as E_DECLARATION_HEADER_CYCLE / family header-cycle per §9.5.3.
+-- Trait forward references are legal module-wide (§7.1A), and §9.5.7 forbids
+-- reporting an unresolved-name cascade caused solely by checking from an
+-- incomplete source-order environment — the back-edges of a cycle must NOT
+-- surface as unresolved trait names. assertErrorCount 2 pins one root
+-- diagnostic per rejected SCC, with the positive declarations error-free.
+
+--! mode check
+
+module main
+
+-- POSITIVE: linear, non-circular trait hierarchy.
+trait Base (a : Type) =
+    base : a -> Int
+
+trait Base a => Extended (a : Type) =
+    extra : a -> String
+
+data Value : Type =
+    MkValue Int
+
+instance Base Value =
+    let base v = match v case MkValue n -> n
+
+instance Extended Value =
+    let extra v = match v case MkValue n -> stringAppend "v" (showInt n)
+
+useExtended : Int
+let useExtended = base (MkValue 7)
+
+-- NEGATIVE: direct self-refinement — T refines T.
+trait SelfRefined a => SelfRefined (a : Type) =
+    foo : a -> Int
+
+-- NEGATIVE: mutual refinement cycle A => B => C => A.
+trait CycleB a => CycleA (a : Type) =
+    methodA : a -> Int
+
+trait CycleC a => CycleB (a : Type) =
+    methodB : a -> Int
+
+trait CycleA a => CycleC (a : Type) =
+    methodC : a -> Int
+
+--! assertDiagnosticMatch SelfRefined
+--! assertDiagnosticMatch CycleB|CycleC|CycleA
+--! assertErrorCount 2
+
+-- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

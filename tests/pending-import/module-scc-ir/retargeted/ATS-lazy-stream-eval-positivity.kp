@@ -1,0 +1,30 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/ATS-lazy-stream-eval-positivity.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
+-- Positivity failures now use the standardized family kappa.data.strict-positivity
+-- / E_DATA_STRICT_POSITIVITY (§10.4.2, §3.2.11A); the old corpus code is gone.
+--
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/sieve.dats
+--         ($lazy(cons(x0, sieve(filter(xs, x0)))), $eval(xs))
+-- Spec: §10.4.2 (strict positivity: a type former is admissible in a
+--       strictly positive position only if it carries a
+--       parameter-positivity signature; `Thunk` (§11.2) is given none),
+--       §11.2 (suspension types).
+-- ATS3's `strm(a)` lazy stream stores its tail as a suspension. The
+-- direct Kappa transliteration - a data type recursive under Thunk -
+-- violates strict positivity, because Thunk carries no
+-- parameter-positivity signature and so must not be treated as
+-- preserving positivity. Pinned with the standardized family
+-- kappa.data.strict-positivity via its portable alias
+-- E_DATA_STRICT_POSITIVITY (§3.2.11A).
+
+--! mode check
+
+module main
+
+data Stream (0 a : Type) : Type =           --!! E_DATA_STRICT_POSITIVITY
+    SEmpty : Stream a
+    SCons  : (shead : a) -> (stail : Thunk (Stream a)) -> Stream a
+
+--! assertDiagnostic error E_DATA_STRICT_POSITIVITY
+--! assertErrorCount 1
+
+-- STATUS(f1e4161b): HARNESS-ERROR — harness errors

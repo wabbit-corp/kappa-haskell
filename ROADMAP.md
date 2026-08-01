@@ -1073,6 +1073,57 @@ runner's 30-second execution budget before program-specific work becomes
 material. Keep the 30-second default visible as the regression target; use a
 bounded per-run override only while diagnosing prelude/checker startup cost.
 
+## Track: Module-wide declaration SCCs / induction-recursion ([`MODULE-SCC-INDUCTION-RECURSION-PLAN.md`](docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md))
+
+**Specification applied 2026-08-01; implementation pending.**
+`docs/Spec.md` now makes top-level declaration order non-semantic (§7.1A),
+pairs separate signatures with definitions in either order and across
+fragments (§9.2, §36.12), infers recursive groups from typed declaration
+facets with header strata and checking SCCs (§9.5), admits ordinary
+inductive-inductive and inductive-recursive groups (§10.4.4), derives hidden
+phases from the call graph instead of source order (§15.10), and adds KCore
+declaration-group records, inductive-group certificates, permutation-invariant
+hashes, group-fingerprinted invalidation, and a large Appendix T assertion
+surface.
+
+The exact 190-suite contract is staged under
+`tests/pending-import/module-scc-ir/` (validated by
+`scripts/validate_module_scc_ir_contract.py`); the 2026-08-01 `f1e4161b`
+baseline is recorded per-suite in `-- STATUS` lines. Conformance fixtures the
+revision invalidates are rewritten and staged under
+`tests/pending-import/module-scc-ir/retargeted/`.
+
+- [ ] **MSI-0 - contract freeze + harness observability.** New Appendix T
+  directives typed and routed through public queries; three new diagnostic
+  families registered; unknown capabilities report `Unsupported`.
+- [ ] **MSI-1 - module-wide shapes + signature pairing.** §7.1A scope,
+  order/fragment-free pairing, inline-signature recursion.
+- [ ] **MSI-2 - facet graph, header strata, checking SCCs.** Group
+  classification, strict value cycles, group root diagnostics, atomic
+  publication.
+- [ ] **MSI-3 - joint inductive groups + positivity.** Any-order mutual and
+  inductive-inductive data; group GFP positivity;
+  `E_DATA_STRICT_POSITIVITY`.
+- [ ] **MSI-4 - induction-recursion.** Recursive operations, IR
+  admissibility, externality, joint eliminators, definitional equations
+  (`Code`/`decode`).
+- [ ] **MSI-5 - termination reforms.** Group structural relation;
+  call-graph-derived hidden phases; computational-member `decreases` rules.
+- [ ] **MSI-6 - KCore/interfaces/hashes.** Declaration-group records,
+  inductive-group certificates + mutation rejection, permutation-invariant
+  identity.
+- [ ] **MSI-7 - incremental + scheduling.** `DeclarationGroupFingerprint`
+  invalidation, SCC recomputation on generated syntax, no prefix-environment
+  answers.
+- [ ] **MSI-8 - promotion + adversarial closeout.** Promote the exact 190
+  suites, return retargeted fixtures, permutation fuzzing, forged-certificate
+  probes.
+
+**Planned ordering:** MSI-1 -> MSI-2 -> {MSI-3, MSI-5} -> MSI-4 -> MSI-6 ->
+MSI-7 -> MSI-8, with MSI-0 first for observability. This revision is the
+prerequisite for the future higher/quotient/coinductive nominal features
+reserved by §10.5; it deliberately does not deliver them.
+
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
 [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) is the DETAILED single source of truth

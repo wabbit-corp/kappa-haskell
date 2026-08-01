@@ -1,0 +1,8 @@
+let countDown (n : Nat) : Nat decreases structural n =
+    match n
+    case Zero ->
+        Zero
+    case Succ k ->
+        countDown k
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertDeclarationGroupClass' is not defined by Appendix T (§T.3))

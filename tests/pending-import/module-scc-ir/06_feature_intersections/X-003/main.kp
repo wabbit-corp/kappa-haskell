@@ -1,0 +1,13 @@
+data Code : Type =
+    NatCode
+    Tagged
+        (@0 inner : Code)
+        (value : decode inner)
+
+decode : Code -> Type
+let decode code decreases structural code =
+    match code
+    case NatCode -> Nat
+    case Tagged inner value -> decode inner
+
+-- STATUS(f1e4161b): HARNESS-ERROR — unknown directive 'assertStructuralChildEdge' is not defined by Appendix T (§T.3); line 5: unknown directive '
