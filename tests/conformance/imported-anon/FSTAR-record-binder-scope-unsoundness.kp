@@ -1,0 +1,26 @@
+-- Source issue: FSTAR-1908
+-- Spec: types.records.formation
+-- A record field refinement that references another field in its predicate
+-- must be typechecked in the record telescope's scope: the referenced field must be
+-- the record field, not a coincidentally named outer binding.
+
+--! mode check
+
+-- POSITIVE TEST: well-typed record with cross-field refinement. Kappa's
+-- portable refinement spelling is `Refined A predicate`.
+-- The predicate refers to the earlier field `size` of the same record.
+type BoundedInt : Type =
+    (size : Nat, value : Refined Nat (\x -> (x < size) = True))
+
+mk_bounded :
+    (s : Nat) -> Refined Nat (\x -> (x < s) = True) -> BoundedInt
+let mk_bounded s v = (size = s, value = v)
+
+
+-- NEGATIVE TEST: refinement references a name that is not in scope.
+type BadRef : Type =
+    (m : Nat, n : Refined Nat (\x -> (x < outer_undef) = True)) --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- STATUS(58b5b0fe): PASS

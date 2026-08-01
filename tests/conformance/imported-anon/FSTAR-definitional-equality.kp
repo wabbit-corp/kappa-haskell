@@ -1,0 +1,42 @@
+-- Source issue: FSTAR-101
+-- Spec: core_semantics.definitional_equality
+-- Two type expressions that are syntactically identical and share the same
+-- free variables must be definitionally equal. The checker must not reject
+-- an ascription whose expected and actual type print identically.
+
+--! mode check
+
+-- A trivially-true predicate type (Any a x holds for every x : a).
+type Any (a : Type) : a -> Type = \_ -> Unit
+
+-- Same predicate, with a different binder spelling. Unfolding and alpha
+-- conversion must make Any a and AlsoAny a definitionally equal.
+type AlsoAny (a : Type) : a -> Type = \value -> Unit
+
+-- A nominal type constructor parameterized by predicates.
+data T (0 a : Type) (0 p : a -> Type) : Type = MkT
+
+-- Add another transparent layer so equality is checked beneath both a type
+-- alias and the nominal T application.
+type WrappedT (0 a : Type) : Type = T a (Any a)
+
+-- A structural node type that uses T with the Any predicate. A record keeps
+-- the test focused on projection equality rather than inductive positivity.
+type Node (0 a : Type) : Type =
+    (field : WrappedT a,)
+
+mk_node : forall (a : Type). T a (Any a) -> Node a
+let mk_node field = (field = field,)
+
+-- Projection exposes WrappedT a, while the result is spelled with AlsoAny.
+-- The checker must unfold both aliases and recognize the alpha-equivalent
+-- predicates beneath T.
+get_field : forall (a : Type). Node a -> T a (AlsoAny a)
+let get_field n = n.field
+
+round_trip : forall (a : Type). T a (Any a) -> T a (AlsoAny a)
+let round_trip field = get_field (mk_node field)
+
+--! assertNoErrors
+
+-- STATUS(58b5b0fe): PASS

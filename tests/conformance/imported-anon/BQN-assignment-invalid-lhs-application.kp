@@ -4,8 +4,8 @@
 --       expressions.application — an applied function is not a pattern.
 -- An expression of the form `(F x) ← e` is not a valid binding LHS:
 -- function application is not a pattern. See SA-BQN-04 for the spec gap
--- on a stable invalid-LHS diagnostic family; in the meantime we assert
--- at least one error.
+-- on invalid binding patterns; the portable diagnostic is
+-- E_REFUTABLE_LET_PATTERN.
 
 --! mode check
 
@@ -21,6 +21,9 @@ let answer = square 4
 -- reject the analog. The Kappa pattern grammar
 -- (expressions.patterns.forms) does not admit applied functions in
 -- pattern-head position, so the parser/elaborator rejects this.
-let (square x) = 16
+let (square x) = 16  --!! E_REFUTABLE_LET_PATTERN
 
---! assertErrorCount 1
+-- The application-shaped LHS is necessarily refutable, so the normative
+-- diagnostic is sufficient; recovery may also diagnose its unbound `x`.
+
+-- STATUS(58b5b0fe): PASS

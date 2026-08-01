@@ -3729,6 +3729,26 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   stated. Until then, those assertions belong in diagnostic-quality suites
   rather than mandatory language conformance.
 
+- **§3.1.2/§3.1.12: ordinary unused-binding warnings have no triggering rule or
+  portable identity.**
+  §3.1.2 mentions `W_UNUSED_BINDING` only as an illustrative spelling, and
+  §3.1.12 explains how an implementation must avoid generated-code pollution
+  when it chooses to emit source-oriented warnings. Neither section requires an
+  unused warning for ordinary parameters, lambda binders, or local `let`
+  bindings, and §3.2 standardizes only the narrower `W_VAR_NEVER_READ` rule for
+  mutable `var` bindings. We need to decide exactly which ordinary binders warn:
+  top-level and local declarations, function and lambda parameters, pattern
+  binders, erased or type-only uses, generated uses, and unreachable uses all
+  need explicit treatment. The rule must also say that intentional discard
+  spellings such as `_` do not warn, decide whether `_name` is a discard, define
+  aggregation and source anchors, and assign a portable code/family (possibly
+  `W_UNUSED_BINDING`).
+  `tests/pending-import/we-reject-positive/RZK-unused-variable-report.kp` now
+  marks three proposed warning sites, while
+  `tests/pending-import/dx-issues/unused-omega-local-binding-warning.kp` records
+  the current silent implementation behavior. Keep both outside mandatory
+  conformance until the triggering boundary and diagnostic identity are fixed.
+
 - **Consolidated effect/borrow/bridge analysis.**
   [SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md](SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md)
   records the full clause-by-clause analysis, affected test inventory,

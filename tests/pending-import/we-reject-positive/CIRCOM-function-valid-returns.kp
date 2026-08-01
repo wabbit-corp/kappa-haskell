@@ -10,16 +10,19 @@
 --! mode check
 
 -- POSITIVE: simple function with a single return.
-let nbits (a : Int) : Int =
+nbits : Int -> Int
+let nbits a =
     let r : Int = 0
     r
 
 -- POSITIVE: function with if-then-else, both branches return.
-let maxVal (a b : Int) : Int =
+maxVal : Int -> Int -> Int
+let maxVal a b =
     if a > b then a else b
 
 -- POSITIVE: function with multiple return paths via nested if-else.
-let classify (n : Int) : Int =
+classify : Int -> Int
+let classify n =
     if n < 0 then
         0
     else if n == 0 then
@@ -27,11 +30,14 @@ let classify (n : Int) : Int =
     else
         2
 
--- POSITIVE: recursive function with return in all paths.
-let power (base exp : Int) : Int =
-    if exp == 0 then
-        1
-    else
-        base * power base (exp - 1)
+-- POSITIVE: recursive function with return in every structurally selected
+-- branch. Using Nat for the exponent makes the descent explicit and total.
+power : Int -> Nat -> Int
+let power base exp =
+    match exp
+      case Nat.Zero -> 1
+      case Nat.Succ smaller -> base * power base smaller
 
 --! assertNoErrors
+
+-- STATUS(58b5b0fe): PASS

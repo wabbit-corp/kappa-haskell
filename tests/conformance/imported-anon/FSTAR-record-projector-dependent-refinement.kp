@@ -1,0 +1,30 @@
+-- Source issue: FSTAR-1276
+-- Spec: types.records.values
+-- A record projector for a field whose type mentions an earlier field
+-- must typecheck: the projected value must satisfy the refinement that
+-- refers to the co-projected earlier field.
+
+--! mode check
+
+-- A genuinely dependent baseline: the value field is indexed by the earlier
+-- index field through the type-family parameter.
+type Container (0 P : Nat -> Type0) : Type =
+    (index : Nat, value : P index)
+
+get_value :
+    forall (P : Nat -> Type0). (c : Container P) -> P c.index
+let get_value c = c.value
+
+-- A second constrained record: the second field is a portable Kappa
+-- refinement involving the first.
+type SizedVec (0 A : Type0) : Type =
+    (size : Nat, vec : Refined Nat (\n -> n = size))
+
+-- Projecting `vec` must yield a value whose type mentions `size` from the record.
+get_vec_len :
+    forall (A : Type0). (sv : SizedVec A) -> Refined Nat (\n -> n = sv.size)
+let get_vec_len sv = sv.vec
+
+--! assertNoErrors
+
+-- STATUS(58b5b0fe): PASS

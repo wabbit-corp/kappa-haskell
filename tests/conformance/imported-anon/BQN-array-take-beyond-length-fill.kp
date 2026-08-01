@@ -4,7 +4,7 @@
 --   the fill element).
 -- Spec: expressions.match, modules.prelude.contents.
 -- Take is a partial primitive: with a length larger than the source it
--- must produce a defined output, not an error. Kappa's portable analog
+-- must produce a defined output, not an error. Kappa's portable analogue
 -- uses a default-filled `take` helper on List a, defined recursively.
 
 --! mode check
@@ -13,11 +13,11 @@
 takeWithFill : forall a. a -> Nat -> List a -> List a
 let takeWithFill fill n xs =
     match n
-      case 0 -> Nil
-      case _ ->
+      case Nat.Zero -> Nil
+      case Nat.Succ smaller ->
           match xs
-            case Nil      -> fill :: (takeWithFill fill (n - 1) Nil)
-            case h :: t   -> h    :: (takeWithFill fill (n - 1) t)
+            case Nil    -> fill :: takeWithFill fill smaller Nil
+            case h :: t -> h :: takeWithFill fill smaller t
 
 -- POSITIVE: take 5 from `[0, 1, 2]` with fill 0 yields `[0, 1, 2, 0, 0]`.
 short : List Nat
@@ -36,3 +36,5 @@ let emptied = takeWithFill 99 0 short
 
 --! assertNoErrors
 --! assertType takeWithFill (forall a. a -> Nat -> List a -> List a)
+
+-- STATUS(58b5b0fe): PASS

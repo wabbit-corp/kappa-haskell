@@ -19,37 +19,38 @@ ignoreArg : Nat -> Nat
 let ignoreArg _ = 42
 
 -- POSITIVE: a higher-order function where a closure argument is partially used.
-applyFst : forall (a b : Type) -> (a -> b) -> a -> b -> b
+applyFst : forall (a b : Type). (a -> b) -> a -> b -> b
 let applyFst f x _ = f x
 
 -- POSITIVE: a let binding where the bound name is used.
 usedLet : Nat
 let usedLet =
-    let v = 10
+    let v : Nat = 10
     v + v
 
 -- POSITIVE: function parameters matching a constructor — unused projections
 -- are explicitly wildcarded.
 usedPair : (Nat, Bool) -> Nat
-let usedPair (n, _) = n
+let usedPair pair = match pair case (n, _) -> n
 
 -- These definitions have genuinely unused variables. They should produce
 -- a warning rather than an error or an internal compiler error.
 
 -- WARNING expected: parameter `extraParam` is declared but never used.
 withUnusedParam : Nat -> Nat -> Nat
-let withUnusedParam n extraParam = n
+let withUnusedParam n extraParam = n  --!! W_UNUSED_BINDING
 
 -- WARNING expected: let-bound variable `unused` is never referenced.
 withUnusedLet : Nat
 let withUnusedLet =
-    let unused : Bool = True
+    let unused : Bool = True  --!! W_UNUSED_BINDING
     let result : Nat  = 5
     result
 
--- WARNING expected: lambda captures a variable it never uses.
+-- WARNING expected: the named lambda parameter is never used. In contrast,
+-- an explicit `_` discard should not warn.
 withUnusedCapture : Nat -> Nat -> Nat
-let withUnusedCapture = \ _ n -> n
+let withUnusedCapture = \ unusedCapture n -> n  --!! W_UNUSED_BINDING
 
 -- POSITIVE: after warning-producing definitions, the program continues.
 finalResult : Nat
@@ -57,3 +58,6 @@ let finalResult = addOne (withUnusedParam 3 0)
 
 -- No errors should be produced; warnings are acceptable.
 --! assertNoErrors
+--! assertWarningCount 3
+
+-- STATUS: SPEC-ISSUE — W_UNUSED_BINDING is only an illustrative code in §3.1.2; the Spec does not yet define which ordinary unused binders must warn.

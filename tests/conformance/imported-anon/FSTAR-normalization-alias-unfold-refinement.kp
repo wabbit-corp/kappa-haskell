@@ -1,0 +1,36 @@
+-- Source issues: FSTAR-542, FSTAR-606
+-- Spec: core_semantics.definitional_equality.refinement_aware_normalization
+-- Unfolding a type alias containing a refinement must preserve the refinement.
+
+--! mode check
+
+-- Kappa spells a subset refinement as the portable `Refined` type.
+-- This pair's second component exceeds its first.
+type PosPair : Type =
+    (x : Int, y : Refined Int (\n -> (n > x) = True))
+
+-- Construction must also unfold the record alias and substitute the supplied first
+-- field into the second field's refinement.
+mk_pos_pair :
+    (x : Int) -> Refined Int (\n -> (n > x) = True) -> PosPair
+let mk_pos_pair x y = (x = x, y = y)
+
+-- Using the alias in a function: the refinement must be visible after unfolding.
+fst_pair : PosPair -> Int
+let fst_pair p = p.x
+
+-- The refinement must be accessible after alias expansion.
+snd_positive : (p : PosPair) -> Refined Int (\n -> (n > p.x) = True)
+let snd_positive p = p.y
+
+-- Exercise construction followed by dependent projection. The result type
+-- must normalize through PosPair and reduce the freshly constructed x field.
+snd_round_trip :
+    (x : Int) ->
+    (y : Refined Int (\n -> (n > x) = True)) ->
+    Refined Int (\n -> (n > x) = True)
+let snd_round_trip x y = snd_positive (mk_pos_pair x y)
+
+--! assertNoErrors
+
+-- STATUS(58b5b0fe): PASS
