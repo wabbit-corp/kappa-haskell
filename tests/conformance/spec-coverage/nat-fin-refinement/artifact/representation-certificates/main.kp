@@ -19,8 +19,8 @@ let sampleRefined =
 -- Closed enum and finite product per the pseudotests procedure: both
 -- receive required structural ordinal certificates (Spec 30.2.7B —
 -- nullary-constructor enums and mixed-radix finite products), and the
--- enum's constructor mapping feeds the MUTATION.md constructor-mapping
--- mutation step.
+-- enum's constructor mapping feeds the executable constructor-mapping
+-- certificate mutation.
 data Compass : Type =
     North
     East
@@ -51,3 +51,4 @@ let sampleCompassStep =
 --! assertOrdinalRepresentation 20 for CompassStep
 --! assertExactNaturalRepresentation for Nat
 --! assertRefinementRepresentation Nat for NatBetween 2 30
+--! assertRepresentationCertificateMutationsReject

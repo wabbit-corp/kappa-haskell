@@ -4,16 +4,16 @@ module main
 -- now runs evaluation on a large-stack worker thread so that legitimate deep
 -- recursion does not overflow the default stack. Depth 8000 comfortably exceeds
 -- the default thread stack budget but stays well under the recursion guard.
-countdown : Int -> Int
+countdown : Nat -> Nat
 let countdown n =
     match n
-      case 0 -> 0
-      case _ -> countdown (n - 1)
+      case Nat.Zero -> Nat.Zero
+      case Nat.Succ predecessor -> countdown predecessor
 
-result : Int
+result : Nat
 let result = countdown 8000
 
 --! mode check
 --! assertNoErrors
---! assertType result Int
+--! assertType result Nat
 --! assertEval result 0

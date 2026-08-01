@@ -25,8 +25,9 @@ badLit : Color
 let badLit = 42 --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
 
 -- POSITIVE: recursion with a preceding signature declaration.
-looping : Int -> Int
-let looping x = looping x
+looping : Nat -> Nat
+let looping x =
+    if x == 0 then 0 else looping (x - 1)
 
 -- NEGATIVE: recursive definition without any preceding signature.
 let loop x = loop x --!! E_MISSING_EXPLICIT_SIGNATURE

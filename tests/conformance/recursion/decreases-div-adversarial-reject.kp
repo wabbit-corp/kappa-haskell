@@ -1,12 +1,14 @@
 -- §15.11: adversarial lookalikes must not be certified as decreasing.
---! assertWarningCount 8
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 8
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 data Box : Type = Box Int
 
 boxValue : Box -> Int
 let boxValue b = match b case Box x -> x
+
+derive IsSet Box
 
 instance Eq Box =
     let (==) x y = eqInt (boxValue x) (boxValue y)

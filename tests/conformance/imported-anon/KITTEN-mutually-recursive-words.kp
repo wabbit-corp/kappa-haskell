@@ -14,11 +14,11 @@ module test
 --! mode check
 
 -- POSITIVE: a mutually-recursive pair defined in either order.
-isEven : Int -> Bool
+isEven : Nat -> Bool
 let isEven n =
     if n == 0 then True else isOdd (n - 1)
 
-isOdd : Int -> Bool
+isOdd : Nat -> Bool
 let isOdd n =
     if n == 0 then False else isEven (n - 1)
 

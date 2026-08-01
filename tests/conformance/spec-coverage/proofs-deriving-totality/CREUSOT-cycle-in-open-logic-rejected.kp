@@ -19,7 +19,7 @@ f : Unit
 g : Bool -> Unit
 
 let f = g True
-let g x = if x then f else f                 --!! W_TERMINATION_UNVERIFIED
+let g x = if x then f else f                 --!! E_TERMINATION_UNVERIFIED
 
---! assertDiagnosticFamily warning kappa.termination.failure
+--! assertDiagnosticFamily error kappa.termination.failure
 -- STATUS(a0497523): PASS

@@ -338,14 +338,20 @@ rExpect env = \case
   ExpectTrait n bs k -> ExpectTrait n <$> mapM (rBinder env) bs <*> mapM (rExpr env) k
 
 rLetDef :: FixityEnv -> LetDef -> RW LetDef
-rLetDef env (LetDef n imp p brw bs ty dec body) =
+rLetDef env (LetDef n imp p candidate brw bs ty dec body) =
   LetDef n imp
     <$> mapM (rPattern env) p
+    <*> mapM rCandidate candidate
     <*> pure brw
     <*> mapM (rBinder env) bs
     <*> mapM (rExpr env) ty
     <*> mapM (rDecreases env) dec
     <*> rExpr env body
+  where
+    rCandidate (ConstructorPatternCandidate pattern' rhs) =
+      ConstructorPatternCandidate
+        <$> rPattern env pattern'
+        <*> rExpr env rhs
 
 rDecreases :: FixityEnv -> Decreases -> RW Decreases
 rDecreases env = \case

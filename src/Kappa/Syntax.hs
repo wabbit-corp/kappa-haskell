@@ -70,6 +70,7 @@ module Kappa.Syntax
   , DeclMods (..)
   , noMods
   , LetDef (..)
+  , ConstructorPatternCandidate (..)
   , Decreases (..)
   , DataDecl (..)
   , CtorDecl (..)
@@ -540,11 +541,21 @@ data LetDef = LetDef
   { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
   , ldImplicit :: !Bool -- ^ @let (\@q x : T) = e@ implicit local (§9.3)
   , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
+  , ldConstructorPatternCandidate :: !(Maybe ConstructorPatternCandidate)
+  -- ^ Ambiguous @let C p... = rhs@ reading retained until the checker proves
+  -- that @C@ resolves to a constructor identity. The ordinary named reading
+  -- remains authoritative in the other 'LetDef' fields.
   , ldPrefix :: !BinderPrefix -- ^ @let 1 pat = e@ / @let & pat = e@ prefix (§12.2, §12.3.1)
   , ldBinders :: ![Binder]
   , ldResultType :: !(Maybe Expr)
   , ldDecreases :: !(Maybe Decreases)
   , ldBody :: !Expr
+  }
+  deriving stock (Show, Data)
+
+data ConstructorPatternCandidate = ConstructorPatternCandidate
+  { cpcPattern :: !Pattern
+  , cpcBody :: !Expr
   }
   deriving stock (Show, Data)
 

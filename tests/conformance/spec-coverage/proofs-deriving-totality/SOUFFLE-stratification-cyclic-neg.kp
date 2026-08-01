@@ -7,8 +7,7 @@
 -- Souffle rejects negation cycles (no stratification). The Kappa analogue
 -- pinned here: mutual recursion through `not` with no decreasing argument
 -- has no well-founded order, so the SCC fails termination checking and gets
--- a kappa.termination.failure diagnostic (surfaced at warning severity for
--- runtime-only definitions, matching the existing §3.2.11 coverage); the
+-- a kappa.termination.failure diagnostic; the
 -- structurally decreasing even/odd SCC is accepted silently.
 
 --! mode check
@@ -42,17 +41,16 @@ let countdown n =
 -- NEGATIVE: mutual recursion through negation with no decrease — the
 -- stratification-cycle analogue (b :- !c, c :- !b).
 positiveFn : PNat -> Bool
-let positiveFn n = not (negativeFn n)    --!! W_TERMINATION_UNVERIFIED
+let positiveFn n = not (negativeFn n)    --!! E_TERMINATION_UNVERIFIED
 
 negativeFn : PNat -> Bool
-let negativeFn n = not (positiveFn n)    --!! W_TERMINATION_UNVERIFIED
+let negativeFn n = not (positiveFn n)    --!! E_TERMINATION_UNVERIFIED
 
 -- NEGATIVE: self-negating loop (a(X) :- a(X), !a(X) analogue).
 selfNeg : PNat -> Bool
-let selfNeg n = selfNeg n && not (selfNeg n)    --!! W_TERMINATION_UNVERIFIED
+let selfNeg n = selfNeg n && not (selfNeg n)    --!! E_TERMINATION_UNVERIFIED
 
---! assertNoErrors
---! assertWarningCount 3
---! assertDiagnosticFamily warning kappa.termination.failure
+--! assertErrorCount 4
+--! assertDiagnosticFamily error kappa.termination.failure
 
 -- STATUS(a0497523): PASS

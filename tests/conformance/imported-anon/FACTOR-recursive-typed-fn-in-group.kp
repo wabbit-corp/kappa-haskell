@@ -33,16 +33,16 @@ let find t k =
 
 -- POSITIVE: a mutually-recursive group with two typed functions; both
 -- can name each other within the same group.
-isEven : Int -> Bool
+isEven : Nat -> Bool
 let isEven n =
     if n == 0 then True
     else isOdd (n - 1)
 
-isOdd : Int -> Bool
+isOdd : Nat -> Bool
 let isOdd n =
     if n == 0 then False
     else isEven (n - 1)
 
 --! assertNoErrors
---! assertType isEven Int -> Bool
---! assertType isOdd  Int -> Bool
+--! assertType isEven Nat -> Bool
+--! assertType isOdd  Nat -> Bool

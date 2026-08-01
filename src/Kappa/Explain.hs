@@ -508,6 +508,8 @@ registry =
       "A deferred action returns, breaks, or continues out of itself; abrupt control flow may not escape a 'defer' (§18.7)."
   , ent "E_DO_EMPTY" (Just "kappa-hs.do.empty")
       "A do block has no items or does not end with an expression item (§18.2)."
+  , ent "W_DO_ITEM_UNREACHABLE" (Just "kappa.do.unreachable-item")
+      "A maximal run of user-written do items is unreachable because an earlier item completes abruptly (§18.2.4)."
   , -- Effects and handlers (§18.1)
     ent "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row-mismatch")
       "The handled computation's effect row does not contain the label being handled (§18.1.21)."
@@ -762,6 +764,8 @@ registry =
       "A compiler-generated constructor application supplies an argument spine inconsistent with the declared constructor interface."
   , ent "E_INTERNAL_CONSTRUCTOR_INTERFACE" (Just "kappa.internal.compiler")
       "A compiler-generated constructor occurrence has no declared constructor interface."
+  , ent "E_INTERNAL_CONSTRUCTOR_TELESCOPE" (Just "kappa.internal.compiler")
+      "A compiler-generated constructor pattern, patch, or branch environment does not match the checked source-field telescope. Compilation fails closed rather than guessing binder positions."
   , ent "E_INTERNAL_GENERATED_APPLICATION" (Just "kappa.internal.compiler")
       "A compiler-generated application does not match the checked dependent telescope from which its argument spine was derived."
   , ent "E_INTERNAL_ARITHMETIC_PROOF" (Just "kappa.internal.compiler")

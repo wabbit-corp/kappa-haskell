@@ -6,7 +6,7 @@
 -- current negation-fact bridge operates on that layer; the standard
 -- `Ord Nat` spelling of the same negated-condition discharge (§28.2.3
 -- `subDefined x y = (y <= x)` + §15.8.4 negation) is pinned by
--- tests/pending-import/spec-coverage/nat-fin-refinement/positive/
+-- tests/conformance/spec-coverage/nat-fin-refinement/positive/
 -- branch-negation-checked-sub.
 --! assertNoErrors
 

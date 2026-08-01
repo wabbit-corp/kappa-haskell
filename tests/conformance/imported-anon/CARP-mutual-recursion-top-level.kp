@@ -10,17 +10,17 @@
 
 -- POSITIVE: two top-level definitions reference each other; the order in
 -- which they appear in source is irrelevant to elaboration.
-isEven : Int -> Bool
+isEven : Nat -> Bool
 let isEven n =
     if n == 0 then True else isOdd (n - 1)
 
-isOdd : Int -> Bool
+isOdd : Nat -> Bool
 let isOdd n =
     if n == 0 then False else isEven (n - 1)
 
 --! assertNoErrors
---! assertType isEven Int -> Bool
---! assertType isOdd Int -> Bool
+--! assertType isEven Nat -> Bool
+--! assertType isOdd Nat -> Bool
 
 -- POSITIVE: forward reference — `usesLater` mentions `definedLater` which
 -- appears later in the file; both are well-formed.

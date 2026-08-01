@@ -1,6 +1,6 @@
 -- Source issues: vale#443 (Problem ignoring in a destructure),
 --               Vale PatternTests, Vale OwnershipTests
--- Spec: expressions.patterns.forms, expressions.patterns.scoping_validity
+-- Spec: expressions.patterns.forms (§17.2.1), declarations.terms.irrefutable_patterns_let_bindings (§9.1.2)
 -- In Vale, struct destructuring (`Marine[hp, ammo] = m`) binds each field
 -- to a new variable. Using `_` as the pattern for a field is allowed when
 -- the field type is not linear. This test verifies that destructuring
@@ -13,23 +13,30 @@ data Marine : Type = Marine Int Int String
 
 -- POSITIVE: destructuring and using all three fields.
 allFields : Marine -> String
-let allFields (Marine hp ammo name) =
+let allFields marine =
+    let Marine hp ammo name = marine
     name ++ " hp=" ++ show hp ++ " ammo=" ++ show ammo
 
 -- POSITIVE: ignoring the first field with `_` (Int is droppable).
 ignoreHp : Marine -> Int
-let ignoreHp (Marine _ ammo _) = ammo
+let ignoreHp marine =
+    let Marine _ ammo _ = marine
+    ammo
 
 -- POSITIVE: ignoring the second and third fields with `_`.
 justHp : Marine -> Int
-let justHp (Marine hp _ _) = hp
+let justHp marine =
+    let Marine hp _ _ = marine
+    hp
 
 -- POSITIVE: a nested record destructuring.
 data Weapon : Type = Weapon Int
 data Soldier : Type = Soldier Marine Weapon
 
 getHpFromSoldier : Soldier -> Int
-let getHpFromSoldier (Soldier (Marine hp _ _) _) = hp
+let getHpFromSoldier soldier =
+    let Soldier (Marine hp _ _) _ = soldier
+    hp
 
 -- POSITIVE: chained binding — bind intermediate name, then destructure.
 bindThenDestructure : Unit -> Int
@@ -40,10 +47,14 @@ let bindThenDestructure () =
 
 -- POSITIVE: tuple destructuring (pair).
 swapPair : (Int, String) -> (String, Int)
-let swapPair (a, b) = (b, a)
+let swapPair pair =
+    let (a, b) = pair
+    (b, a)
 
 -- POSITIVE: nested tuple destructuring.
 nestedTuple : ((Int, Int), String) -> Int
-let nestedTuple ((x, y), _) = x + y
+let nestedTuple pair =
+    let ((x, y), _) = pair
+    x + y
 
 --! assertNoErrors

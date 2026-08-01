@@ -592,15 +592,16 @@ pLetDef = do
       token TokRParen
       token TokEquals
       body <- pDefBody
-      pure (LetDef Nothing True (Just (PVar n)) prefix [] (Just ty) Nothing body)
+      pure (LetDef Nothing True (Just (PVar n)) Nothing prefix [] (Just ty) Nothing body)
     named = try $ do
       n <- pSigName
       -- parameters may be ordinary binders OR parenthesized destructuring
       -- patterns (e.g. `let foo (Bar n) = n`), each desugared to a `match`
       -- on a fresh binder (§9.1.2 irrefutable pattern parameter)
       (parts, continued) <- pNamedParams
-      let binders = concatMap fst parts
-          wrapPats = foldr (.) id (map snd parts)
+      let binders = concatMap (\(bs, _, _) -> bs) parts
+          wrapPats = foldr (.) id [wrap | (_, wrap, _) <- parts]
+          patternArguments = traverse (\(_, _, candidate) -> candidate) parts
       when continued (void (many pNewline))
       -- "decreases" is a global stop keyword, so the result type ends
       -- before any decreases clause
@@ -609,7 +610,34 @@ pLetDef = do
       token TokEquals
       body <- if continued then pSameIndentExpr else pDefBody
       when continued (void (many pNewline) *> token TokDedent)
-      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec (wrapPats (desugarRecordParams binders body)))
+      let patternCandidate =
+            case (dec, patternArguments) of
+              (Nothing, Just arguments@(_ : _)) ->
+                Just
+                  ( ConstructorPatternCandidate
+                      (PCtor (CtorRef Nothing n) arguments (nameSpan n))
+                      body
+                  )
+              _ -> Nothing
+          namedBody = wrapPats (desugarRecordParams binders body)
+      -- @let C x = rhs@ is syntactically both a named declaration and a
+      -- constructor-pattern binding because capitalization is not semantic.
+      -- Preserve both readings until the checker can resolve @C@ to a
+      -- constructor identity. The ordinary named reading remains fully
+      -- desugared in 'ldBody'; the alternate pattern reading retains its raw
+      -- right-hand side in 'ConstructorPatternCandidate'.
+      pure
+        ( LetDef
+            (Just n)
+            False
+            Nothing
+            patternCandidate
+            emptyPrefix
+            binders
+            resTy
+            dec
+            namedBody
+        )
     patBinding = do
       -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
       prefix <- pBinderPrefix
@@ -617,7 +645,7 @@ pLetDef = do
       ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       body <- pDefBody
-      pure (LetDef Nothing False (Just pat) prefix [] ty Nothing body)
+      pure (LetDef Nothing False (Just pat) Nothing prefix [] ty Nothing body)
 
 -- | Bind the fields of a §13.2 record-typed parameter
 -- ('(x : Int, y : Int)', parsed as a hidden '__rp*' binder) by
@@ -1482,7 +1510,7 @@ pParamBinders = concat <$> many pParamBinder
 -- as data, type, and projection declarations. Keep pattern parameters here:
 -- reducing this to 'pDeclParamBinders' would silently lose the §9.1.2
 -- destructuring parameter surface on continued lines.
-pNamedParams :: P ([([Binder], Expr -> Expr)], Bool)
+pNamedParams :: P ([([Binder], Expr -> Expr, Maybe Pattern)], Bool)
 pNamedParams = do
   inline <- many pNamedParam
   continued <- optionMaybe . try $ do
@@ -1532,11 +1560,15 @@ pSameIndentExpr =
 -- parameter (§9.1.2) and generalizes the record-parameter destructuring
 -- already handled by 'desugarRecordParams'. Returns the binder(s) plus a
 -- body transformer that introduces the match (composed left-to-right, so a
--- leading pattern parameter's match is outermost).
-pNamedParam :: P ([Binder], Expr -> Expr)
+-- leading pattern parameter's match is outermost), plus the corresponding
+-- pattern when this parameter can participate in the semantically-disambiguated
+-- constructor-head reading of a local @let@.
+pNamedParam :: P ([Binder], Expr -> Expr, Maybe Pattern)
 pNamedParam = patternParam <|> plain
   where
-    plain = (\bs -> (bs, id)) <$> pParamBinder
+    plain = do
+      bs <- pParamBinder
+      pure (bs, id, plainPatternCandidate bs)
     patternParam = try $ do
       sp <- currentSpan
       token TokLParen
@@ -1550,11 +1582,32 @@ pNamedParam = patternParam <|> plain
               <> "_" <> T.pack (show (posCol (spanStart sp)))
           name = Name nm sp
           b = Binder False emptyPrefix Nothing NoReceiver False (Just name) False Nothing Nothing sp
-      pure ([b], \body -> EMatch (EVar name) [MatchCase pat Nothing body sp] sp)
+      pure
+        ( [b]
+        , \body -> EMatch (EVar name) [MatchCase pat Nothing body sp] sp
+        , Just pat
+        )
     isDestructuringPat = \case
       PVar _ -> False
       PWild _ -> False
       _ -> True
+    plainPatternCandidate = \case
+      [binder]
+        | not (bImplicit binder)
+        , let prefix = bPrefix binder
+        , isNothing (bpObservation prefix)
+        , isNothing (bpQuantity prefix)
+        , isNothing (bpBorrow prefix)
+        , isNothing (bSusp binder)
+        , bReceiver binder == NoReceiver
+        , not (bInout binder)
+        , not (bUnitBinder binder)
+        , isNothing (bType binder)
+        , isNothing (bDefault binder) ->
+            Just $ case bName binder of
+              Just name -> PVar name
+              Nothing -> PWild (bSpan binder)
+      _ -> Nothing
 
 -- The body of a parenthesized binder. Handles implicit `@`, quantities,
 -- borrow markers, suspension sugar, receiver markers, inout, and (for
@@ -3316,9 +3369,24 @@ pDoItem = do
         pKeyword "else"
         rp <- pPattern
         token TokArrow
-        fe <- pSuiteOrExpr
+        fe <- pAbruptFallback <|> pSuiteOrExpr
         pure (rp, fe)
       DoLetQ pat e els <$> spanFrom start
+      where
+        -- §18.2.1 permits an explicit abrupt-control do-item in the failure
+        -- arm. Preserve that syntactic category by wrapping the single item
+        -- in a transparent nested do expression; parsing it as an ordinary
+        -- expression would turn `return`/`break`/`continue` into names.
+        pAbruptFallback = do
+          next <- peekToken
+          guard
+            ( next == TokIdent "return"
+                || next == TokIdent "break"
+                || next == TokIdent "continue"
+            )
+          abruptStart <- currentSpan
+          abrupt <- pDoItem
+          EDo Nothing [abrupt] <$> spanFrom abruptStart
     assignOrExpr start = assignItem start <|> labeledLoop start <|> (DoExpr <$> pExpr)
     assignItem start = try $ do
       stop <- pAtStopKeyword

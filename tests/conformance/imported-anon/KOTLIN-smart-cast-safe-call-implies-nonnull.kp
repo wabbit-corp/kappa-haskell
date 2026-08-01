@@ -1,18 +1,19 @@
 -- Source issues: KT-2127 (smart cast after safe call result is not null)
 -- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
 --   expressions.application.dotted_forms.safe_navigation_safe_navigation
+-- This portable fixture isolates the receiver-narrowing obligation with Option
+-- constructor evidence; it does not depend on Kotlin's safe-call spelling.
 
 --! mode check
 
 data Container : Type =
     Container (items : List Int)
 
--- POSITIVE: if `c?.someField != None` then `c` itself is non-null (Some).
--- After testing the result of a safe navigation, the receiver is narrowed.
+-- POSITIVE: after proving the receiver is Some, its payload is available.
 getItemCount : Container? -> Int
 let getItemCount mc =
-    if mc != Option.None then
-        mc.value.items.length
+    if not (mc is Option.None) then
+        listLength mc.value.items
     else
         0
 
@@ -24,7 +25,7 @@ accessNested : Container? -> Int
 let accessNested mc =
     match mc
     case Option.None    -> -1
-    case Option.Some c  -> c.items.length
+    case Option.Some c  -> listLength c.items
 
 --! assertNoErrors
 
@@ -41,8 +42,8 @@ let processContainer mc =
 -- POSITIVE: safe navigation used twice — both times result is optional.
 firstAndLast : Container? -> Int? -> Int?
 let firstAndLast mc mi =
-    if mc != Option.None && mi != Option.None then
-        Option.Some (mc.value.items.length + mi.value)
+    if not (mc is Option.None) && not (mi is Option.None) then
+        Option.Some (listLength mc.value.items + mi.value)
     else
         Option.None
 

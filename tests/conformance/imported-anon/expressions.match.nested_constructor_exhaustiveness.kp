@@ -16,8 +16,8 @@ let treeHeight t =
     match t
     case Leaf _     -> 0
     case Node l r   -> 1 + max (treeHeight l) (treeHeight r)
-  where
-    let max (a : Nat) (b : Nat) : Nat = if a > b then a else b
+    where
+        let max (a : Nat) (b : Nat) : Nat = if a > b then a else b
 
 -- POSITIVE: exhaustive match on nested Tree pattern.
 leftmostLeaf : forall {a : Type}. Tree a -> a

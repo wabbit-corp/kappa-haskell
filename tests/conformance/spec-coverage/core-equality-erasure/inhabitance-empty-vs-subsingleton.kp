@@ -52,7 +52,7 @@ let falseIsNotTrue q =
 -- of the standard Nat package, and the reachability side of that
 -- package must discharge case impossible here. (The applied-function
 -- side of natZeroNotSucc/natSuccInjective is owned by
--- tests/pending-import/spec-coverage/nat-fin-refinement/positive/nat-no-confusion-derived-hlevel,
+-- tests/conformance/spec-coverage/nat-fin-refinement/positive/nat-no-confusion-derived-hlevel,
 -- which never reaches exhaustiveness.)
 zeroNotSucc : forall (n : Nat). (q : Nat.Zero = Nat.Succ n) -> Int
 let zeroNotSucc q =

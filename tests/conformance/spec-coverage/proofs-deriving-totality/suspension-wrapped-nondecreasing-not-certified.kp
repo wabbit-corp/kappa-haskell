@@ -3,10 +3,7 @@
 -- termination certification — `force (thunk (f xs))` re-evaluates the body
 -- each force, so certifying either definition below would make an infinite
 -- loop total-certified. This implementation's convention for an
--- unverifiable recursive definition is warn-and-accept as NOT
--- conversion-reducible (same convention as
--- tests/conformance/recursion/decreases-div-surface-reject.kp; the
--- warning-vs-error question is a known SPEC_ISSUES item). The load-bearing
+-- unverifiable recursive definition is rejected. The load-bearing
 -- assertion: BOTH suspension-wrapped definitions draw
 -- kappa.termination.failure diagnostics, i.e. neither is certified.
 module main
@@ -21,7 +18,6 @@ g : Int -> Int
 let g n = force (lazy (g n))
 
 --! mode check
---! assertNoErrors
---! assertWarningCount 2
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 2
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 -- STATUS(a0497523): PASS

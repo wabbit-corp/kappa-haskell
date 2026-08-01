@@ -13,12 +13,10 @@ module test
 
 --! mode check
 
-data Option a : Type =
-    None
-    Some a
-
 -- A "lens-style" view: parse a non-empty composer name out of an input
 -- string (placeholder: split on " " into surname/given).
+-- §17.3.2 classifies partial active patterns by the canonical prelude Option,
+-- not by an unrelated local datatype with the same constructor spellings.
 pattern ComposerView (& s : String) : Option (String, String) =
     if s == "" then None
     else if s == "Sibelius" then Some ("Jean", "Sibelius")

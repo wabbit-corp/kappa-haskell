@@ -58,7 +58,7 @@ renderTerm = go 0
         | otherwise -> paren (p > 1) (T.unwords (gnameText g : map (go 2) args))
         where
           args = [caTerm argument | argument <- constructorArgs, caPayload argument]
-      CMatch s _ _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
+      CMatch s _ _ _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
       -- §3.1.11 / §13.2.11: internal existential labels (`⟨wit_i⟩`,
       -- `⟨payload⟩`) are not source-addressable fields. They are hidden
       -- from user-facing renderings — a record carrying only such labels

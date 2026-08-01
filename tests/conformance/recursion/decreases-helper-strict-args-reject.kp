@@ -1,9 +1,8 @@
 -- §15.6/§15.7: transparent helper normalization may expose useful recursive
 -- edges, but it must not erase recursive calls that occur in strict helper
 -- arguments before edge collection sees them.
---! assertNoErrors
---! assertWarningCount 1
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 2
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 ignore : Int -> Int

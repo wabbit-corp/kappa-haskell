@@ -582,6 +582,9 @@ data Env = Env
   , eBinaryStorageHeads :: !(Set.Set Text)
   -- ^ Source heads that import resolution proved denote payload-propagating
   -- binary storage types such as the prelude Result/Exit.
+  , eConstructorPatternLetSpans :: !(Set.Set Span)
+  -- ^ Ambiguous constructor-headed lets selected by the checker from resolved
+  -- constructor identity. Usage never re-resolves these from spelling.
   , eLatentCurrentReadEscape :: !Bool
   -- ^ While walking the body of a user-written closure/thunk/code quote,
   -- a generated current-value read captures the hidden cell. Keep ordinary
@@ -658,6 +661,7 @@ usageDiagnostics ::
   Map Span Quantity ->
   Map Span Quantity ->
   Set.Set Span ->
+  Set.Set Span ->
   Set.Set Text ->
   Set.Set Text ->
   Map Text ProjUse ->
@@ -666,11 +670,16 @@ usageDiagnostics ::
   Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
-    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    lets =
+      [ ld
+      | DLet _ ld declarationSpan <- decls
+      , declarationSpan `Set.notMember` constructorPatternLetSpans
+      , Just _ <- [ldName ld]
+      ]
     -- §18.1: top-level effect declarations are visible module-wide, so seed
     -- the resumption-quantity map with them (a scoped effect adds to it via
     -- addEffDecls in its block); without this a `return@/k` in a handler of
@@ -726,7 +735,7 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
     localDuplicableAliasHeads =
       fixedAliasHeads Set.empty (length localAliasDecls + 1)
@@ -952,6 +961,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               duplicableStorageHeads
               unaryStorageHeads
               binaryStorageHeads
+              Set.empty
               False
        in storedValueInfo env ("$result:" <> nameText n) (exprSpan (ldBody ld)) (ldBody ld)
 
@@ -2478,6 +2488,7 @@ analyzeLet ::
   Map Span Quantity ->
   Map Span Quantity ->
   Set.Set Span ->
+  Set.Set Span ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
@@ -2492,7 +2503,7 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
+analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -2506,7 +2517,7 @@ analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinder
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
   let env =
-          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
+          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads constructorPatternLetSpans False)
           {ePendingSig = pendingSig}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
@@ -3154,8 +3165,10 @@ walkERaw env e0 = case e0 of
           then rPlain <$> movePlace env vi path sp
           else
             -- a non-linear field projection touches a disjoint path of
-            -- the root, not the whole binding (§12.4)
-            pure (rPlain (Map.singleton (vKey vi) touchUC))
+            -- the root, not the whole binding (§12.4). It remains a
+            -- chronological read event so a preceding whole-root
+            -- reconstruction consume is diagnosed.
+            pure (rPlain (placeBorrow vi path sp))
   EDot b _ -> walkE env b
   EQDot b _ -> walkE env b
   ERecordPatch b items _ -> walkPatch env b items (exprSpan e0)
@@ -3197,7 +3210,10 @@ walkERaw env e0 = case e0 of
     -- §9.3.1.1: collect scoped effect declarations (label ↦ op
     -- quantities) for the handler checks before walking the lets
     let env' = addEffDecls env decls
-    binds <- declsToBinds [d | d <- decls, not (isEffDecl d)]
+    binds <-
+      declsToBinds
+        (eConstructorPatternLetSpans env')
+        [d | d <- decls, not (isEffDecl d)]
     walkE env' (ELet binds (fromMaybe (EUnit (exprSpan e0)) mres) (exprSpan e0))
   EDo _ items _ -> do
     fl <- walkItems env items
@@ -3707,7 +3723,7 @@ checkRecordRest _ _ _ = pure ()
 walkPatch :: Env -> Expr -> [PatchItem] -> Span -> Analysis WalkResult
 walkPatch env base items sp = do
   vu <- walks (concatMap patchExprs items)
-  bu <- case base of
+  usage <- case base of
     EVar n
       | Just vi <- Map.lookup (nameText n) (eVars env) -> do
           let patched = concatMap patchPaths items
@@ -3718,9 +3734,15 @@ walkPatch env base items sp = do
           -- rebuilt owned result cannot take a linear payload out of a borrow.
           checkBorrowOverlap env vi [] sp
           checkBorrowedPatchFillers vi patched sp
-          pure $ patchRootUsage vi patched sp
-    _ -> fst . flatR <$> walkE env base
-  pure (rPlain (bu `seqU` vu))
+          -- §13.2.5 evaluates every patch RHS before canonical full-record
+          -- reconstruction consumes the old root. This permits reads such as
+          -- @c.{ value = c.value + 1 }@ while making any later read of @c@
+          -- a use-after-consume.
+          pure (vu `seqU` patchRootUsage vi patched sp)
+    _ -> do
+      bu <- fst . flatR <$> walkE env base
+      pure (bu `seqU` vu)
+  pure (rPlain usage)
   where
     patchExprs = \case
       PatchUpdate _ (PatchValue v) -> [v]
@@ -3738,7 +3760,11 @@ walkPatch env base items sp = do
 
 patchRootUsage :: VInfo -> [FieldPath] -> Span -> Usage
 patchRootUsage vi patched sp =
-  Map.fromList ((vKey vi <> ".~", oneUC sp) : (vKey vi, touchUC) : reconsumed)
+  Map.fromList
+    ( (vKey vi <> ".~", oneUC sp)
+        : (vKey vi, evUC (PMove [] sp) touchUC)
+        : reconsumed
+    )
   where
     reconsumed =
       [ (pathKey vi p, oneUC sp)
@@ -3798,8 +3824,7 @@ applyStableExprVarInoutWrites env = \case
   where
     applyGroup (u, bound, envc) (nm, vi, targets) = do
       k <- freshKey nm
-      let patched = [path | (path, _, _) <- targets]
-          sp = case targets of
+      let sp = case targets of
             ((_, _, targetSp) : _) -> targetSp
             [] -> vSpan vi
           refreshed =
@@ -3809,7 +3834,15 @@ applyStableExprVarInoutWrites env = \case
               targets
           newVi = refreshed {vKey = k, vSpan = sp}
           env' = envc {eVars = Map.insert nm newVi (eVars envc)}
-      pure (u `seqU` patchRootUsage vi patched sp, bound ++ [(nm, newVi)], env')
+      pure
+        -- The callee consumes the complete old receiver and returns a fresh
+        -- successor. Discharge every old linear subpath under the old key;
+        -- the refreshed successor receives a new key and is checked
+        -- independently after this call.
+        ( u `seqU` patchRootUsage vi [] sp
+        , bound ++ [(nm, newVi)]
+        , env'
+        )
 
 varInoutWriteBacks :: Env -> Expr -> [Arg] -> [(Text, VInfo)]
 varInoutWriteBacks env f args =
@@ -5193,14 +5226,30 @@ doItemExprs = \case
       ++ maybe [] (concatMap doItemExprs) mels
   DoDecl _ -> []
 
-declsToBinds :: [Decl] -> Analysis [LetBind]
-declsToBinds [] = pure []
-declsToBinds (d : ds) = case d of
-  DLet _ (LetDef (Just n) _ Nothing prefix [] _ Nothing body) sp ->
-    (LetBind False prefix (PVar n) Nothing body sp :) <$> declsToBinds ds
-  DLet _ (LetDef Nothing imp (Just pat) prefix [] mty Nothing body) sp ->
-    (LetBind imp prefix pat mty body sp :) <$> declsToBinds ds
-  DSig {} -> declsToBinds ds
+declsToBinds :: Set.Set Span -> [Decl] -> Analysis [LetBind]
+declsToBinds _ [] = pure []
+declsToBinds selectedConstructorPatterns (d : ds) = case d of
+  DLet _ definition sp
+    | sp `Set.member` selectedConstructorPatterns
+    , Just (ConstructorPatternCandidate pattern' rhs) <-
+        ldConstructorPatternCandidate definition ->
+        ( LetBind
+            False
+            (ldPrefix definition)
+            pattern'
+            (ldResultType definition)
+            rhs
+            sp
+            :
+        )
+          <$> declsToBinds selectedConstructorPatterns ds
+  DLet _ (LetDef (Just n) _ Nothing _ prefix [] _ Nothing body) sp ->
+    (LetBind False prefix (PVar n) Nothing body sp :)
+      <$> declsToBinds selectedConstructorPatterns ds
+  DLet _ (LetDef Nothing imp (Just pat) _ prefix [] mty Nothing body) sp ->
+    (LetBind imp prefix pat mty body sp :)
+      <$> declsToBinds selectedConstructorPatterns ds
+  DSig {} -> declsToBinds selectedConstructorPatterns ds
   _ -> bailOut >> pure []
 
 -- | Control-flow result of a do-scope segment: fall-through usage
@@ -5437,7 +5486,7 @@ walkItems env0 items0 = go env0 items0
         prefixFlow u <$> go env rest
       DoDecl d | isEffDecl d -> go (addEffDecls env [d]) rest
       DoDecl d -> do
-        lbs <- declsToBinds [d]
+        lbs <- declsToBinds (eConstructorPatternLetSpans env) [d]
         case lbs of
           [lb] -> bindLike env lb rest
           _ -> go env rest
@@ -5565,7 +5614,10 @@ walkItems env0 items0 = go env0 items0
             pure (su `seqU` altUs (map psU paths), firstJust (maybeToList st ++ mapMaybe (\(_, t, _) -> t) caseRuns), env')
           EBlock decls mres _ -> do
             let envBlock = addEffDecls envc decls
-            binds <- declsToBinds [d | d <- decls, not (isEffDecl d)]
+            binds <-
+              declsToBinds
+                (eConstructorPatternLetSpans envBlock)
+                [d | d <- decls, not (isEffDecl d)]
             (segs, envBound) <- walkBinds envBlock binds
             let bindU = foldr (\(u, _, _) acc -> u `seqU` acc) Map.empty segs
                 bound = concat [b | (_, b, _) <- segs]

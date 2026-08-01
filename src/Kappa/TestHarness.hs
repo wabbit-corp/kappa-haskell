@@ -258,6 +258,8 @@ data Assertion
   | AInterfaceContainsCurrentUniverseRoles !Text ![UniverseVariance]
   | ATotal !Text
   | AArithmeticCertificatesValid
+  | AArithmeticCertificateMutationsReject
+  | ARepresentationCertificateMutationsReject
   | AInhabitance !InhabitancePurpose !InhabitanceSummary !Text
   | ASymbolicCardinality !Text !Text
   | AOrdinalRepresentation !Text !Text
@@ -598,14 +600,23 @@ parseDirective allLines lno body =
       "assertTotal" -> case args of
         [declaration] -> ok (SAssert (ATotal declaration))
         _ -> bad "malformed 'assertTotal' directive"
-      -- §T.5.2 Nat/Fin/refinement assertions remain part of the portable
-      -- directive grammar before their compiler-query capabilities land.
-      -- Validate their syntax now and classify the suite Unsupported. This is
-      -- intentionally not a test-only approximation of cardinality,
-      -- certificates, or backend representation selection.
+      -- §T.5.2 Nat/Fin/refinement assertions are parsed here and evaluated
+      -- below through production analysis, certificate replay, and verified
+      -- KBackendIR queries. Capability checks apply only to representation
+      -- classes the selected backend profile does not advertise.
       "assertArithmeticCertificatesValid"
         | null args -> ok (SAssert AArithmeticCertificatesValid)
         | otherwise -> bad "malformed 'assertArithmeticCertificatesValid' directive"
+      "assertArithmeticCertificateMutationsReject"
+        | null args ->
+            ok (SAssert AArithmeticCertificateMutationsReject)
+        | otherwise ->
+            bad "malformed 'assertArithmeticCertificateMutationsReject' directive"
+      "assertRepresentationCertificateMutationsReject"
+        | null args ->
+            ok (SAssert ARepresentationCertificateMutationsReject)
+        | otherwise ->
+            bad "malformed 'assertRepresentationCertificateMutationsReject' directive"
       "assertInhabitance" ->
         case splitDirectiveInfix " for " rest of
           Just (summary, ty)
@@ -2168,6 +2179,18 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
               parseKCore
               "generated arithmetic-certificate KCore"
               dump
+  AArithmeticCertificateMutationsReject ->
+    pure
+      (assertCertificateMutationsReject
+        "assertArithmeticCertificateMutationsReject"
+        "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID"
+        kcoreArithmeticCertificateMutationCases)
+  ARepresentationCertificateMutationsReject ->
+    pure
+      (assertCertificateMutationsReject
+        "assertRepresentationCertificateMutationsReject"
+        "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+        kcoreRepresentationCertificateMutationCases)
   AInhabitance purpose expected tyExpr ->
     pure $ case elaborateQueryType [] tyExpr of
       Left detail -> AssertFail ("assertInhabitance: " <> detail)
@@ -2383,6 +2406,43 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
           checkpointDataInterfaces
           checkpointConstructorInterfaces
           checkpointRepresentationCertificates
+    assertCertificateMutationsReject
+      directive
+      expectedCode
+      mutationCases =
+        case renderCheckpointKCore of
+          Left detail ->
+            AssertFail (directive <> ": KCore emission failed: " <> detail)
+          Right dump ->
+            case parseKCore dump of
+              Left err ->
+                AssertFail
+                  ( directive <> ": generated KCore does not verify: "
+                      <> kcteCode err <> ": " <> kcteMessage err
+                  )
+              Right core ->
+                case mutationCases core of
+                  Left detail ->
+                    AssertFail (directive <> ": " <> detail)
+                  Right cases ->
+                    case mapMaybe checkMutation cases of
+                      [] -> AssertOk
+                      failures ->
+                        AssertFail
+                          ( directive <> ": "
+                              <> T.intercalate "; " failures
+                          )
+      where
+        checkMutation (label, mutant) =
+          case parseKCore mutant of
+            Left err
+              | kcteCode err == expectedCode -> Nothing
+              | otherwise ->
+                  Just
+                    ( label <> " rejected with " <> kcteCode err
+                        <> ", expected " <> expectedCode
+                    )
+            Right _ -> Just (label <> " mutation was accepted")
     checkpointRepresentationCertificates =
       kbackendRepresentationCertificates
         ( lowerKBackendIRForCapabilities

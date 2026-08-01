@@ -7,6 +7,10 @@
 -- exactly once when the linear field is extracted
 type LinearPair : Type = (1 first : Int, second : String)
 
+consumeInt : (1 n : Int) -> Unit
+let consumeInt n =
+    if n == 0 then () else ()
+
 -- POSITIVE: the record is consumed (linear); first is extracted (satisfying the linear
 -- field constraint) and second is returned as the non-linear result
 getFirst : (1 p : LinearPair) -> Int
@@ -16,7 +20,9 @@ let getFirst p = p.first
 getSecond : (1 p : LinearPair) -> String
 let getSecond p =
     match p
-      case (first = _, second = s) -> s
+      case (first = first, second = s) ->
+        let _ : Unit = consumeInt first
+        s
 
 -- POSITIVE: construct the linear record and immediately consume it
 roundTrip : (1 n : Int) -> (s : String) -> Int

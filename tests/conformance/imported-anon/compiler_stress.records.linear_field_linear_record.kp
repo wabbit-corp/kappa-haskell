@@ -6,6 +6,10 @@
 -- Handle has a linear field fd; the entire Handle must be consumed exactly once
 type Handle : Type = (1 fd : Int, name : String)
 
+consumeFd : (1 fd : Int) -> Unit
+let consumeFd fd =
+    if fd == 0 then () else ()
+
 -- POSITIVE: construct a Handle value
 openHandle : (name : String) -> (fd : Int) -> Handle
 let openHandle name fd = (fd = fd, name = name)
@@ -15,7 +19,9 @@ let openHandle name fd = (fd = fd, name = name)
 closeHandle : (1 h : Handle) -> String
 let closeHandle h =
     match h
-    case (fd = _, name = n) -> n
+    case (fd = fd, name = n) ->
+        let _ : Unit = consumeFd fd
+        n
 
 -- POSITIVE: full round-trip: open and then close
 useHandle : (name : String) -> (fd : Int) -> String

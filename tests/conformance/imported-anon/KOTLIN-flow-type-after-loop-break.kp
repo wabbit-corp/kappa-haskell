@@ -1,6 +1,8 @@
 -- Source issues: KT-6283, KT-6284 (no smart cast after do-while / while(true))
 -- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
 --   expressions.conditionals.stable_aliases_transport_refinement_evidence
+-- This portable fixture isolates the constructor-refinement core of the source
+-- issues; it does not attempt to reproduce Kotlin's loop syntax directly.
 
 --! mode check
 
@@ -8,7 +10,7 @@
 -- after the check in the same scope.
 processOpt : Int? -> Int
 let processOpt mn =
-    if mn != Option.None then
+    if not (mn is Option.None) then
         mn.value + 1
     else
         0
@@ -30,8 +32,8 @@ let safeAdd mn base =
 -- POSITIVE: sequential conditions — both narrowed in the then branch.
 bothNonNull : String? -> Int? -> String
 let bothNonNull ms mn =
-    if ms != Option.None && mn != Option.None then
-        ms.value ++ toString mn.value
+    if not (ms is Option.None) && not (mn is Option.None) then
+        ms.value ++ show mn.value
     else
         "missing"
 
@@ -40,7 +42,7 @@ let bothNonNull ms mn =
 -- POSITIVE: narrowing persists across multiple uses in the same branch.
 useMultiple : String? -> String
 let useMultiple ms =
-    if ms != Option.None then
+    if not (ms is Option.None) then
         ms.value ++ " " ++ ms.value   -- ms used twice while narrowed
     else
         ""

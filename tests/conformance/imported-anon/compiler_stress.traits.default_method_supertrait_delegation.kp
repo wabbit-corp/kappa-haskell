@@ -1,5 +1,5 @@
--- Stress test: A default method implementation in a derived trait calls
---   methods from a supertrait; an instance of the derived trait that does
+-- Stress test: A default member implementation in a derived trait calls
+--   members from a supertrait; an instance of the derived trait that does
 --   not override the default method inherits the cross-supertrait call.
 -- Spec: traits.headers.supertraits, traits.instances.default_methods
 
@@ -51,7 +51,7 @@ let test2 = compareAndDescribe High Low
 data Level : Type = Level Int
 
 instance Describable Level =
-    let describe (Level n) = "Level" ++ int_to_string n
+    let describe (Level n) = "Level" ++ show n
 
 instance Reportable Level =
     let compare (Level a) (Level b) = a == b
@@ -59,7 +59,7 @@ instance Reportable Level =
     let compareAndDescribe x y =
         let (Level a) = x
         let (Level b) = y
-        "L" ++ int_to_string a ++ (if a == b then "==" else "/=") ++ "L" ++ int_to_string b
+        "L" ++ show a ++ (if a == b then "==" else "/=") ++ "L" ++ show b
 
 test3 : String
 let test3 = compareAndDescribe (Level 5) (Level 5)
@@ -70,3 +70,7 @@ let test4 = compareAndDescribe (Level 1) (Level 2)
 --! assertNoErrors
 --! assertType test1 String
 --! assertType test3 String
+--! assertEval test1 "Low vs Low -> same"
+--! assertEval test2 "High vs Low -> different"
+--! assertEval test3 "L5==L5"
+--! assertEval test4 "L1/=L2"

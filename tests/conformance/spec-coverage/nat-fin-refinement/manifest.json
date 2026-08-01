@@ -14,7 +14,7 @@
       "path": "analysis/erased-impossible-field-empty",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.8"
@@ -30,7 +30,7 @@
       "path": "analysis/fin-inhabitance-cardinality",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.5",
@@ -48,7 +48,7 @@
       "path": "analysis/product-sum-cardinality",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.8"
@@ -66,7 +66,7 @@
       "path": "analysis/range-symbolic-cardinality",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.8"
@@ -83,7 +83,7 @@
       "path": "analysis/refined-nonrange-cardinality",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.8"
@@ -101,7 +101,7 @@
       "path": "analysis/reversed-range-empty",
       "category": "analysis",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-5",
       "appendixSections": [
         "T.12.8"
@@ -119,7 +119,7 @@
       "path": "artifact/arithmetic-certificates",
       "category": "artifact",
       "expectedOutcome": "mixed-artifact",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-6",
       "appendixSections": [
         "T.12.3",
@@ -130,8 +130,7 @@
         "kcoreText"
       ],
       "files": [
-        "main.kp",
-        "MUTATION.md"
+        "main.kp"
       ],
       "description": "Valid arithmetic certificates verify; mutations of decisive semantic fields reject independently."
     },
@@ -139,7 +138,7 @@
       "path": "artifact/no-confusion-opacity",
       "category": "artifact",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -157,7 +156,7 @@
       "path": "artifact/provider-determinism",
       "category": "artifact",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3",
@@ -177,7 +176,7 @@
       "path": "artifact/representation-certificates",
       "category": "artifact",
       "expectedOutcome": "mixed-artifact",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-6",
       "appendixSections": [
         "T.12.8",
@@ -187,8 +186,7 @@
         "kcoreText"
       ],
       "files": [
-        "main.kp",
-        "MUTATION.md"
+        "main.kp"
       ],
       "description": "Ordinal, exact-natural, and refinement certificates verify; round-trip and identity mutations reject."
     },
@@ -196,7 +194,7 @@
       "path": "backend/nat-exactness",
       "category": "backend",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-7",
       "appendixSections": [
         "T.12.1",
@@ -214,7 +212,7 @@
       "path": "backend/native-compact-layout",
       "category": "backend",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-7",
       "appendixSections": [
         "T.12.9"
@@ -234,7 +232,7 @@
       "path": "backend/nested-wrapper-erasure",
       "category": "backend",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-7",
       "appendixSections": [
         "T.12.9"
@@ -254,7 +252,7 @@
       "path": "backend/proof-erasure",
       "category": "backend",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-7",
       "appendixSections": [
         "T.12.5",
@@ -273,7 +271,7 @@
       "path": "negative/arithmetic-underconstrained",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -288,7 +286,7 @@
       "path": "negative/bare-boolean-predicate-not-coerced",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -304,7 +302,7 @@
       "path": "negative/checked-sub-no-proof",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -320,7 +318,7 @@
       "path": "negative/derive-eq-function-field",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -336,7 +334,7 @@
       "path": "negative/derive-isset-function-field",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -351,7 +349,7 @@
       "path": "negative/eq-reflection-equiv-boundary",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -367,7 +365,7 @@
       "path": "negative/fin-nat-distinct",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -383,7 +381,7 @@
       "path": "negative/gadt-bridge-refuted",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -399,7 +397,7 @@
       "path": "negative/gadt-bridge-unknown",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -415,7 +413,7 @@
       "path": "negative/handwritten-ordinal-no-layout",
       "category": "negative",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-7",
       "appendixSections": [
         "T.12.9"
@@ -433,7 +431,7 @@
       "path": "negative/in-membership-syntax",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -448,7 +446,7 @@
       "path": "negative/isprop-carrier-foreign-rigid",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -464,7 +462,7 @@
       "path": "negative/isprop-function-carrier-unsolved",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -480,7 +478,7 @@
       "path": "negative/meta-principal-mult-zero",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -496,7 +494,7 @@
       "path": "negative/nat-gadt-unknown-bridge",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -512,7 +510,7 @@
       "path": "negative/no-proof-scavenging",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -528,7 +526,7 @@
       "path": "negative/noncommutative-provider-no-commutation",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -543,7 +541,7 @@
       "path": "negative/provider-closure-distinct-goal-types",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -559,7 +557,7 @@
       "path": "negative/range-membership-outside",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -574,7 +572,7 @@
       "path": "negative/refined-derive-view-ineligible",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -590,7 +588,7 @@
       "path": "negative/refined-linear-construction",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -606,7 +604,7 @@
       "path": "negative/refined-non-prop-fiber",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -622,7 +620,7 @@
       "path": "negative/refined-parity-violation",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -638,7 +636,7 @@
       "path": "negative/refined-proof-required",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6",
@@ -654,7 +652,7 @@
       "path": "negative/refinement-no-chain-search",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -670,7 +668,7 @@
       "path": "negative/runtime-erased-without-proof",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -686,7 +684,7 @@
       "path": "negative/subst-transport-stuck-index",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -702,7 +700,7 @@
       "path": "negative/user-natural-provider-gate",
       "category": "negative",
       "expectedOutcome": "reject",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -718,7 +716,7 @@
       "path": "positive/algebraic-hierarchy-evidence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -734,7 +732,7 @@
       "path": "positive/arithmetic-index-transport",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.2",
@@ -752,7 +750,7 @@
       "path": "positive/arithmetic-provider-commutative",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3",
@@ -770,7 +768,7 @@
       "path": "positive/branch-fact-presburger-consequence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -786,7 +784,7 @@
       "path": "positive/branch-fact-range-membership",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -802,7 +800,7 @@
       "path": "positive/branch-negation-checked-sub",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -818,7 +816,7 @@
       "path": "positive/checked-sub-domain-proof",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -834,7 +832,7 @@
       "path": "positive/checked-sub-reified-simplification",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -850,7 +848,7 @@
       "path": "positive/derive-eq-enumeration",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -866,7 +864,7 @@
       "path": "positive/derive-eq-fin-field",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -882,7 +880,7 @@
       "path": "positive/derive-eq-recursive-wrapper",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -898,7 +896,7 @@
       "path": "positive/derive-isset-recursive-tree",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -914,7 +912,7 @@
       "path": "positive/div-mod-literal-congruence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -930,7 +928,7 @@
       "path": "positive/fin-api",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -945,7 +943,7 @@
       "path": "positive/fin-auto-weaken-via-refinement",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -961,7 +959,7 @@
       "path": "positive/fin-cases-induction-semantics",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -977,7 +975,7 @@
       "path": "positive/fin-literal-index-position",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -993,7 +991,7 @@
       "path": "positive/fin-zero-case-impossible",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.5"
@@ -1009,7 +1007,7 @@
       "path": "positive/finite-domain-enumeration",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1025,7 +1023,7 @@
       "path": "positive/gadt-bridge-propositional",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1043,7 +1041,7 @@
       "path": "positive/gadt-telescope-injectivity",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1059,7 +1057,7 @@
       "path": "positive/isset-supertrait-closure",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1075,7 +1073,7 @@
       "path": "positive/meta-principal-mult-literal",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1091,7 +1089,7 @@
       "path": "positive/meta-principal-solution",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1107,7 +1105,7 @@
       "path": "positive/minmax-clamp-case-split",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1123,7 +1121,7 @@
       "path": "positive/nat-add-cancellation",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1139,7 +1137,7 @@
       "path": "positive/nat-additive-identity-channels",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1155,7 +1153,7 @@
       "path": "positive/nat-constructor-branch-fact",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1171,7 +1169,7 @@
       "path": "positive/nat-constructors-computation",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1186,7 +1184,7 @@
       "path": "positive/nat-eq-isset-member-projection",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1202,7 +1200,7 @@
       "path": "positive/nat-gadt-index-refutation",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1218,7 +1216,7 @@
       "path": "positive/nat-giant-range-literal",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1234,7 +1232,7 @@
       "path": "positive/nat-index-reduction-boundary",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1250,7 +1248,7 @@
       "path": "positive/nat-indexed-replicate",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1266,7 +1264,7 @@
       "path": "positive/nat-left-identity-definitional",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1282,7 +1280,7 @@
       "path": "positive/nat-literal-spelling-convergence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1298,7 +1296,7 @@
       "path": "positive/nat-no-confusion-derived-hlevel",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1313,7 +1311,7 @@
       "path": "positive/nat-plus-delegation",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1329,7 +1327,7 @@
       "path": "positive/nat-right-identity-transport",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.1",
@@ -1345,7 +1343,7 @@
       "path": "positive/nat-succ-add-asymmetry",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-1",
       "appendixSections": [
         "T.12.1"
@@ -1361,7 +1359,7 @@
       "path": "positive/presburger-linear",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.4"
@@ -1379,7 +1377,7 @@
       "path": "positive/proof-insensitive-coherence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1395,7 +1393,7 @@
       "path": "positive/provider-evidence-canonicalization",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1413,7 +1411,7 @@
       "path": "positive/range-integer-negative-bounds",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -1429,7 +1427,7 @@
       "path": "positive/range-membership",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -1444,7 +1442,7 @@
       "path": "positive/range-respelling-stability",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.7"
@@ -1460,7 +1458,7 @@
       "path": "positive/refined-custom-view",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1476,7 +1474,7 @@
       "path": "positive/refined-derive-view",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
         "T.12.2"
@@ -1492,7 +1490,7 @@
       "path": "positive/refined-equality-singleton",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1508,7 +1506,7 @@
       "path": "positive/refined-linear-base",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1524,7 +1522,7 @@
       "path": "positive/refined-literal-synthesis",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6",
@@ -1540,7 +1538,7 @@
       "path": "positive/refined-nested-explicit",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1556,7 +1554,7 @@
       "path": "positive/refined-nonnumeric-bases",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1572,7 +1570,7 @@
       "path": "positive/refined-parity-congruence",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1588,7 +1586,7 @@
       "path": "positive/refined-record-ordered-pair",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1604,7 +1602,7 @@
       "path": "positive/refined-widening-alias-base",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1620,7 +1618,7 @@
       "path": "positive/refinement-single-evaluation",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6"
@@ -1636,7 +1634,7 @@
       "path": "positive/supertrait-projection-coherent",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1652,7 +1650,7 @@
       "path": "positive/symbolic-add-identity-boundary",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-3",
       "appendixSections": [
         "T.12.3"
@@ -1668,7 +1666,7 @@
       "path": "positive/try-refine-custom-dec",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6",
@@ -1685,7 +1683,7 @@
       "path": "positive/try-refine-runtime",
       "category": "positive",
       "expectedOutcome": "accept",
-      "currentStatus": "pending",
+      "currentStatus": "active",
       "ownerStage": "NFR-4",
       "appendixSections": [
         "T.12.6",

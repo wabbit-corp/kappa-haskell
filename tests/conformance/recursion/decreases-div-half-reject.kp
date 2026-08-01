@@ -1,6 +1,6 @@
 -- §15.11: the halving rule must not certify calls that can fail to decrease.
---! assertWarningCount 2
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 2
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 mayStayZero : Int -> Int

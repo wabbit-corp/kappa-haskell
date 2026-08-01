@@ -1,0 +1,22 @@
+module main
+
+-- §15: instance members participate in the same checked termination analysis
+-- as ordinary declarations. The recursive accessor is resolved through the
+-- in-progress instance dictionary, and structural descent on the list tail is
+-- sufficient to certify the member.
+
+trait CountItems (a : Type) =
+    countItems : a -> Int
+
+instance CountItems (List Int) =
+    let countItems xs decreases structural xs =
+        match xs
+          case Nil -> 0
+          case _ :: tail -> 1 + countItems tail
+
+answer : Int
+let answer = countItems (1 :: 2 :: 3 :: Nil)
+
+--! mode check
+--! assertNoErrors
+--! assertEval answer 3

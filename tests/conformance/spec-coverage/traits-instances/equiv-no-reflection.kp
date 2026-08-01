@@ -12,7 +12,7 @@
 -- Eq shape so the positive half is independent of the shipped prelude;
 -- the prelude-Eq member probes (eqSound at Int, IsSet-supertrait
 -- projection, the removed eqIsSet member) are pinned by
--- tests/pending-import/spec-coverage/nat-fin-refinement/negative/
+-- tests/conformance/spec-coverage/nat-fin-refinement/negative/
 -- eq-reflection-equiv-boundary. The negative half shows Equiv evidence
 -- grants no derivation.
 module main

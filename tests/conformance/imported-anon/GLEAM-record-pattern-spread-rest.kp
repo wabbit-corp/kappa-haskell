@@ -1,5 +1,5 @@
 -- Source issues: gleam#474, gleam#588
--- Spec: expressions.patterns.forms (17.2.1), types.records.update
+-- Spec: expressions.patterns.forms (§17.2.1), types.records.update
 -- Anonymous record patterns support a spread/rest item `..` (discard) and
 -- `..rest` (capture residual). Omitted fields that are not named in the
 -- pattern and not captured by `..rest` are ignored.

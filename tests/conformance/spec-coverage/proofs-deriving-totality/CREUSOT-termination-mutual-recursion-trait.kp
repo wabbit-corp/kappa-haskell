@@ -34,7 +34,7 @@ instance Tr2 t => Tr1 (Wrap t) =
 instance Tr2 Int =
     let g2 x = h x
 
-let h x = f1 (MkWrap x)                       --!! W_TERMINATION_UNVERIFIED
+let h x = f1 (MkWrap x)                       --!! E_TERMINATION_UNVERIFIED
 
---! assertDiagnosticFamily warning kappa.termination.failure
+--! assertDiagnosticFamily error kappa.termination.failure
 -- STATUS(a0497523): PASS

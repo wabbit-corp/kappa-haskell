@@ -1,7 +1,6 @@
 -- §15.11: user helpers and custom relations are not trusted merely by shape.
---! assertNoErrors
---! assertWarningCount 2
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 2
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 fakeSub : Int -> Int -> Int

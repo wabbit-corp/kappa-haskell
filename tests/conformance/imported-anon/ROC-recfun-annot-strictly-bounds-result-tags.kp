@@ -19,28 +19,34 @@ data A : Type =
 data B : Type =
     B
 
+data Steps : Type =
+    Done
+    Next Steps
+    Other
+
 --! mode check
 
 -- NEGATIVE: signature says the return row is exactly (| A |). The body's
 -- third arm injects B, which is outside the annotated row. The self-call
 -- `bug n` on the second arm cannot be used to launder the type — the
 -- compiler must reject the B injection with kappa.type.mismatch.
-bug : Int -> (| A |)
-let bug n =
-    match n
-      case 1 -> bug 3
-      case 2 -> (| A : A |)
-      case _ -> (| B : B |)
+bug : Steps -> (| A |)
+let bug steps =
+    match steps
+      case Next rest -> bug rest
+      case Done -> (| A : A |)
+      case Other -> (| B : B |)
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
 -- POSITIVE: removing the offending arm makes the body well-typed.
-bugOk : Int -> (| A |)
-let bugOk n =
-    match n
-      case 1 -> bugOk 3
-      case _ -> (| A : A |)
+bugOk : Steps -> (| A |)
+let bugOk steps =
+    match steps
+      case Next rest -> bugOk rest
+      case Done -> (| A : A |)
+      case Other -> (| A : A |)
 
---! assertType bugOk Int -> (| A |)
+--! assertType bugOk Steps -> (| A |)
 
 --! assertErrorCount 1

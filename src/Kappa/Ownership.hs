@@ -121,6 +121,7 @@ import Kappa.Core
   , Term (..)
   , Value (..)
   , constructorBridgeBinderCount
+  , interleaveConstructorSourceBinders
   , mapArithmeticCertificate
   , gKey
   )
@@ -571,7 +572,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
         termReadDeps d scs UseConsumes c
           `Set.union` borrowedResultDeps d scs t
           `Set.union` borrowedResultDeps d scs e
-      CMatch s ann alts ->
+      CMatch s ann _resultAnn alts ->
         let scrutDeps = termReadDeps d scs UseReads s
             armDeps (CaseAlt pat mg b) =
               let n = patBindersC pat
@@ -629,7 +630,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in freeDeps (d + 1) (sc : scs) rhs `Set.union` freeDeps (d + 1) (sc : scs) b
-      CMatch s ann alts ->
+      CMatch s ann _resultAnn alts ->
         let scrutDeps = termReadDeps d scs UseReads s
             freeAlt (CaseAlt pat mg b) =
               let n = patBindersC pat
@@ -691,7 +692,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CRecordV fs -> Set.unions (map (termReadDeps d scs UseConsumes . snd) fs)
       CVariantT ms -> Set.unions (map (termReadDeps d scs UseErased) ms)
       CIf c t e -> termReadDeps d scs UseConsumes c `Set.union` termReadDeps d scs uc t `Set.union` termReadDeps d scs uc e
-      CMatch s ann alts ->
+      CMatch s ann _resultAnn alts ->
         let scrutDeps = termReadDeps d scs UseReads s
             readAlt (CaseAlt pat mg b) =
               let n = patBindersC pat
@@ -985,7 +986,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
      in (acc2, liveOuter)
 
   -- Branching: each arm is its own completion path -------------------------
-  CMatch s ann alts ->
+  CMatch s ann _resultAnn alts ->
     -- The arms are independent completion paths joined here; the scrutinee runs
     -- first (sequentially before all arms). An arm uses a binder it pattern-
     -- binds, or an outer binder; an outer binder used in one arm but not
@@ -1340,12 +1341,12 @@ patBindingTypes ctx ctorTypes depth pat mTy =
     CPLit _ -> []
     CPVarM _ _ -> [mTy]
     CPAsM _ _ p -> mTy : patBindingTypes ctx ctorTypes depth p mTy
-    CPCtorM existentialModes bridges g universes ps ->
+    CPCtorM existentialModes bridges hidden g universes ps ->
       let nEx =
             length existentialModes + constructorBridgeBinderCount bridges
           fields = ctorFieldDomains ctx ctorTypes depth g universes (length ps) mTy
        in replicate nEx Nothing
-            ++ concat [patBindingTypes ctx ctorTypes depth p (indexMaybe i fields >>= id) | (i, p) <- zip [0 ..] ps]
+            ++ constructorSourceBindingTypes hidden ps fields
     CPTuple ps ->
       concat [patBindingTypes ctx ctorTypes depth p (tupleFieldType ctx i =<< mTy) | (i, p) <- zip [0 ..] ps]
     CPRecordM fs mrest ->
@@ -1359,6 +1360,26 @@ patBindingTypes ctx ctorTypes depth pat mTy =
       case ps of
         p : _ -> patBindingTypes ctx ctorTypes depth p mTy
         [] -> []
+  where
+    constructorSourceBindingTypes hidden patterns fields =
+      case
+          interleaveConstructorSourceBinders
+            hidden
+            (zip patterns (fields ++ repeat Nothing))
+        of
+          Just slots ->
+            concatMap
+              ( \case
+                  Left _ -> [Nothing]
+                  Right (pattern', fieldType) ->
+                    patBindingTypes ctx ctorTypes depth pattern' fieldType
+              )
+              slots
+          Nothing ->
+            replicate (length hidden) Nothing
+              ++ concatMap
+                (\pattern' -> patBindingTypes ctx ctorTypes depth pattern' Nothing)
+                patterns
 
 ctorFieldDomains :: EvalCtx -> OwnershipCtorTypes -> Int -> GName -> [Level] -> Int -> Maybe Value -> [Maybe Value]
 ctorFieldDomains ctx ctorTypes depth g universes arity mScrutTy =
@@ -1487,8 +1508,13 @@ substValue ctx subst = go
         VRecordV fs -> VRecordV [(n, go x) | (n, x) <- fs]
         VVariantT ms -> VVariantT (map go ms)
         VInject tag x -> VInject tag (go x)
-        VMatchN scrut annotation alts env ->
-          VMatchN (go scrut) (go <$> annotation) alts (map go env)
+        VMatchN scrut scrutineeAnnotation resultAnnotation alts env ->
+          VMatchN
+            (go scrut)
+            (go <$> scrutineeAnnotation)
+            (go <$> resultAnnotation)
+            alts
+            (map go env)
         VProjN mode x field -> VProjN mode (go x) field
         VAppN ic f a -> VAppN ic (go f) (go a)
         VSealV ls x -> VSealV ls (go x)
@@ -1608,7 +1634,7 @@ termTypeAt ctx depth localType = go
       CProjM _ e field -> recordFieldType ctx field =<< go e
       CProjAtM _ e field _ -> recordFieldType ctx field =<< go e
       CSealE _ e -> go e
-      CMatch _ ann _ -> evalTypeAt ctx depth <$> ann
+      CMatch _ _ resultAnn _ -> evalTypeAt ctx depth <$> resultAnn
       CIf _ t f -> sameType (go t) (go f)
       t@CApp {} ->
         let (h, args) = spineOfTerm t
@@ -1970,7 +1996,7 @@ usageIntervals ctx ctorTypes owner body =
             recorded = foldr (\bid sub -> recordSelf bid combined sub) combinedSub binderIds
          in (external, recorded, next3)
 
-      CMatch s ann alts ->
+      CMatch s ann _resultAnn alts ->
         let (uAlts, sAlts, next1) = countAlts depth scopes ann alts next
             (uS, sS, next2) = count [] depth scopes UseConsumes s next1
          in (addUses uS uAlts, Map.union sS sAlts, next2)
@@ -2479,7 +2505,7 @@ argConvFindings ctx owner = goTerm
       CPiEvidenceM _ _ _ _ _ _ _ _ a b -> goTerm a ++ goTerm b
       CCtorI _ _ _ arguments ->
         concatMap (goTerm . caTerm) [argument | argument <- arguments, caPayload argument]
-      CMatch s _ alts ->
+      CMatch s _ _ alts ->
         goTerm s ++ concatMap (\(CaseAlt _ gd b) -> maybe [] goTerm gd ++ goTerm b) alts
       CRecordTQ fs -> concatMap (goTerm . rfType) fs
       CRecordV fs -> concatMap (goTerm . snd) fs

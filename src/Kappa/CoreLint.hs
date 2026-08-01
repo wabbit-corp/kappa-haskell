@@ -87,7 +87,7 @@ lintTermHeads ctx who = go
       CLevel _ -> []
       CLit _ -> []
       CCtor _ _ as -> concatMap go as
-      CMatch s _ alts -> go s ++ concatMap goAlt alts
+      CMatch s _ _ alts -> go s ++ concatMap goAlt alts
       CRecordT fs -> concatMap (go . snd) fs
       CRecordV fs -> concatMap (go . snd) fs
       CProj e _ -> go e

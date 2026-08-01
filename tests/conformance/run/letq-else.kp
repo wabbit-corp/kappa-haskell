@@ -6,7 +6,9 @@ describe : List Integer -> UIO Unit
 let describe xs = do
     let? x :: _ = xs
     else _ ->
-        printlnString "empty"
+        do
+            printlnString "empty"
+            return ()
     printlnString (stringAppend "head " (showInt x))
 
 main : UIO Unit

@@ -52,7 +52,7 @@ instance Numeric PNat =
         case PZero -> PZero
         case PSucc p -> addN m (mulN p m)
 
-    let fromInt n =
+    let fromInt n decreases n =
         if n <= 0
         then PZero
         else PSucc (fromInt (n - 1))

@@ -9,7 +9,7 @@
 -- now member-less `Semiring`, and §28.2.3 mandates those instances for
 -- Nat/Integer/Int/Rational (they are the §15.8.2 provider evidence behind
 -- solver-discharged Nat identities). Evidence probes for the split are
--- pinned by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- pinned by tests/conformance/spec-coverage/nat-fin-refinement/
 -- positive/algebraic-hierarchy-evidence; this file pins only the surface
 -- both hierarchies share.
 

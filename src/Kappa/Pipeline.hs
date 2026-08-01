@@ -729,14 +729,52 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                   then recovered
                   else attachSuppressed recovered suppressedByParse
               preDiags = recovered' ++ rdiags ++ ieDiags ie ++ cdiags
+              letDeclSpans =
+                [ sp
+                | DLet _ _ sp <- modDecls m'
+                ]
+              spanContains outer inner =
+                spanFile outer == spanFile inner
+                  && spanStart outer <= spanStart inner
+                  && spanEnd inner <= spanEnd outer
+              failedLetSpans =
+                [ declSpan
+                | diagnostic <- preDiags
+                , isError diagnostic
+                , declSpan <- letDeclSpans
+                , spanContains declSpan (dPrimary diagnostic)
+                ]
+              usageHasUnlocalizedError =
+                any
+                  ( \diagnostic ->
+                      isError diagnostic
+                        && not
+                          ( any
+                              (`spanContains` dPrimary diagnostic)
+                              letDeclSpans
+                          )
+                  )
+                  preDiags
+              usageModule =
+                m'
+                  { modDecls =
+                      filter
+                        ( \case
+                            DLet _ _ sp -> sp `notElem` failedLetSpans
+                            _ -> True
+                        )
+                        (modDecls m')
+                  }
               -- §12.2–§12.4 usage analysis runs only over cleanly
-              -- elaborated modules (its judgements presume well-typed
-              -- bodies)
+              -- elaborated declarations (its judgements presume well-typed
+              -- bodies). A bad sibling definition must not hide an
+              -- independent quantity error, but an error that cannot be
+              -- localized to a definition still suppresses the module pass.
               udiags =
-                if hasErrors preDiags
+                if usageHasUnlocalizedError
                   then []
                   else
-                    let resolvedCtorAliases = usageLocalCtorAliases byName st1 m'
+                    let resolvedCtorAliases = usageLocalCtorAliases byName st1 usageModule
                      in
                     usageDiagnostics
                       (csExpansions st1)
@@ -758,13 +796,14 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (usageHandlerOpQuantities st1)
                       (usagePatternBinderQuantities st1)
                       (csPatternBinderBorrows st1)
+                      (csConstructorPatternLetSpans st1)
                       (usageImportedBorrowViewHeads st1 ie)
-                      (usageVisibleMonadicResultHeads st1 ie m')
+                      (usageVisibleMonadicResultHeads st1 ie usageModule)
                       (usageImportedProjections byName st1 ie)
                       (usageImportedDuplicableStorageHeads byName st1 ie)
                       (usageImportedUnaryStorageHeads st1 ie)
                       (usageImportedBinaryStorageHeads st1 ie)
-                      m'
+                      usageModule
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
               -- §8.4 re-exports: record where each aliased/selected
@@ -1126,7 +1165,7 @@ moduleExportNames m =
         concatMap
           ( \case
               DSig mods n _ _ -> [(nameText n, [dmVisibility mods])]
-              DLet mods (LetDef (Just n) _ _ _ _ _ _ _) _ -> [(nameText n, [dmVisibility mods])]
+              DLet mods (LetDef (Just n) _ _ _ _ _ _ _ _) _ -> [(nameText n, [dmVisibility mods])]
               DTypeAlias mods n _ _ _ _ -> [(nameText n, [dmVisibility mods])]
               DProjection mods n _ _ _ _ -> [(nameText n, [dmVisibility mods])]
               _ -> []
@@ -1159,7 +1198,7 @@ moduleExportNames m =
             nameText (trName td)
               : nub
                   ( [nameText mn | TraitSig mn _ _ <- trMembers td]
-                      ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- trMembers td]
+                      ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _ _) _ <- trMembers td]
                   )
       DExpect mods form _ -> [nameText (expectName form) | vis mods]
       -- §8.4 re-exports: `export M.(x [as y], ...)` exports the items
@@ -1724,7 +1763,7 @@ usageLocalCtorAliases ::
 usageLocalCtorAliases byName st m =
   Map.fromList
     [ (alias, rekeyCtorFact alias facts)
-    | DLet _ (LetDef (Just n) _ Nothing _ [] _ _ _) _ <- modDecls m
+    | DLet _ (LetDef (Just n) _ Nothing _ _ [] _ _ _) _ <- modDecls m
     , let alias = nameText n
           aliasG = GName (csModule st) alias
     , Just target <- [resolvedCtorAliasTarget st aliasG]

@@ -7,7 +7,7 @@
 -- NOTE: the condition keeps the primitive comparison spelling because the
 -- current negation-fact bridge operates on that layer; the standard
 -- `Ord Nat` spelling of negated-condition facts (§28.2.3 + §15.8.4) is
--- pinned by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- pinned by tests/conformance/spec-coverage/nat-fin-refinement/
 -- positive/branch-negation-checked-sub.
 --! assertNoErrors
 

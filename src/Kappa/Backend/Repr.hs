@@ -732,7 +732,7 @@ maxVar = \case
     maximum (-1 : map maxVar (foldMapArithmeticCertificate (: []) certificate))
   CLit _ -> -1
   CCtorI _ _ _ arguments -> maximum (-1 : map (maxVar . caTerm) arguments)
-  CMatch s _ alts ->
+  CMatch s _ _ alts ->
     maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
   CRecordTQ fs -> maximum (-1 : map (maxVar . rfType) fs)
   CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
@@ -768,9 +768,10 @@ patBinders = \case
   CPWild -> 0
   CPVarM _ _ -> 1
   CPLit _ -> 0
-  CPCtorM existentialModes bridges _ _ ps ->
+  CPCtorM existentialModes bridges hidden _ _ ps ->
     length existentialModes
       + constructorBridgeBinderCount bridges
+      + length hidden
       + sum (map patBinders ps)
   CPTuple ps -> sum (map patBinders ps)
   CPRecordM fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr

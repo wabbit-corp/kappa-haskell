@@ -1,8 +1,7 @@
 --! mode check
---! assertNoErrors
---! assertWarningCount 1
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
---! assertDiagnosticFamily warning kappa.termination.failure
+--! assertErrorCount 1
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
+--! assertDiagnosticFamily error kappa.termination.failure
 
 -- Combination (§3.2.11 termination × §12.2 quantities): structural
 -- recursion whose decreasing argument is LINEAR verifies without
@@ -24,5 +23,5 @@ let sumAll xs =
     case LCons n tail -> n + sumAll tail
 
 drain : (1 xs : LinList) -> Int
-let drain xs = drain xs --!! W_TERMINATION_UNVERIFIED
+let drain xs = drain xs --!! E_TERMINATION_UNVERIFIED
 -- STATUS(a51e1bf): PASS

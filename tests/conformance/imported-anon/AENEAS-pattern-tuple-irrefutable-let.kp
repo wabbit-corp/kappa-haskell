@@ -1,7 +1,7 @@
 -- Source issues: AENEAS-938, AENEAS-29
 -- Spec: declarations.terms.irrefutable_patterns_let_bindings,
 --       expressions.patterns.forms
--- §6.5 (declarations.terms.irrefutable_patterns_let_bindings): a `let`
+-- §9.1.2 (declarations.terms.irrefutable_patterns_let_bindings): a `let`
 -- binding may use an irrefutable pattern on the left-hand side.  Tuple and
 -- record patterns are irrefutable for single-constructor types.
 -- Aeneas issue #938 (wrong translation with tuple update) and #29 (implicit
@@ -55,7 +55,9 @@ let useSplit =
 
 -- POSITIVE: pattern in function parameter position (irrefutable).
 addPair : (Int, Int) -> Int
-let addPair (a, b) = a + b
+let addPair pair =
+    let (a, b) = pair
+    a + b
 
 result : Int
 let result = addPair (3, 4)

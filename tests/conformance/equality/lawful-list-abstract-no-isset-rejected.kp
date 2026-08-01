@@ -21,7 +21,7 @@ module main
 -- type-check and a `subst` over a discriminator type family would
 -- transport `Unit` into `Void`, inhabiting `Void` — the soundness
 -- catastrophe pinned closed for carriers with no `Eq` in their supertrait
--- closure by tests/pending-import/spec-coverage/nat-fin-refinement/
+-- closure by tests/conformance/spec-coverage/nat-fin-refinement/
 -- negative/unsafe-assert-no-isset-function-carrier. List's monoid laws
 -- are instead PROVEN by honest structural induction (see
 -- `listAppendAssoc`).

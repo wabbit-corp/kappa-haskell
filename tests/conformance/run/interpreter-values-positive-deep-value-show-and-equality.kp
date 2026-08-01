@@ -10,20 +10,22 @@ module main
 -- and the deep value's integrity via its length; small `show` output pins the
 -- iterative renderer byte-for-byte against the original recursive renderer.
 
-buildList : Int -> List Int -> List Int
+buildList : Nat -> List Nat -> List Nat
 let buildList n acc =
-    if n == 0 then acc else buildList (n - 1) (n :: acc)
+    match n
+      case Nat.Zero -> acc
+      case Nat.Succ predecessor -> buildList predecessor (n :: acc)
 
-big : List Int
+big : List Nat
 let big = buildList 4000 Nil
 
-bigSame : List Int
+bigSame : List Nat
 let bigSame = buildList 4000 Nil
 
-bigOther : List Int
+bigOther : List Nat
 let bigOther = 0 :: buildList 3999 Nil
 
-eqListInt : List Int -> List Int -> Bool
+eqListInt : List Nat -> List Nat -> Bool
 let eqListInt xs ys =
     match xs
       case Nil ->
@@ -35,7 +37,7 @@ let eqListInt xs ys =
           case Nil -> False
           case y :: yt -> if x == y then eqListInt xt yt else False
 
-len : List Int -> Int
+len : List Nat -> Int
 let len xs =
     match xs
       case Nil -> 0
@@ -54,10 +56,10 @@ let bigLength = len big
 -- asserting directly on container values pins the iterative renderer's output
 -- byte-for-byte against the original recursive renderer (no Show instance for
 -- List/Option exists, so `show` cannot be used here).
-small : List Int
+small : List Nat
 let small = 1 :: 2 :: 3 :: Nil
 
-wrapped : Option (List Int)
+wrapped : Option (List Nat)
 let wrapped = Some (1 :: Nil)
 
 --! mode check

@@ -73,5 +73,5 @@ let growNat v = v
 -- symmetric right-identity PROPOSITIONAL ("V1 does not add the symmetric
 -- propositional equations n + Zero = n ... to definitional equality");
 -- that side of the boundary is owned by
--- tests/pending-import/spec-coverage/nat-fin-refinement/positive/nat-right-identity-transport,
+-- tests/conformance/spec-coverage/nat-fin-refinement/positive/nat-right-identity-transport,
 -- which pins the §15.8-evidence + explicit-transport acceptance path.

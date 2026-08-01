@@ -495,8 +495,11 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VRecordV fields -> any (go seen . snd) fields
           VVariantT members -> any (go seen) members
           VInject _ payload -> go seen payload
-          VMatchN scrutinee annotation _ environment ->
-            go seen scrutinee || maybe False (go seen) annotation || any (go seen) environment
+          VMatchN scrutinee scrutineeAnnotation resultAnnotation _ environment ->
+            go seen scrutinee
+              || maybe False (go seen) scrutineeAnnotation
+              || maybe False (go seen) resultAnnotation
+              || any (go seen) environment
           VProjN _ receiver _ -> go seen receiver
           VAppN _ function argument -> go seen function || go seen argument
           VSealV _ inner -> go seen inner
@@ -553,9 +556,13 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VRecordV fields -> VRecordV [(name, go resolving field) | (name, field) <- fields]
           VVariantT members -> VVariantT (map (go resolving) members)
           VInject tag payload -> VInject tag (go resolving payload)
-          VMatchN scrutinee annotation alternatives environment ->
-            VMatchN (go resolving scrutinee) (go resolving <$> annotation)
-              alternatives (map (go resolving) environment)
+          VMatchN scrutinee scrutineeAnnotation resultAnnotation alternatives environment ->
+            VMatchN
+              (go resolving scrutinee)
+              (go resolving <$> scrutineeAnnotation)
+              (go resolving <$> resultAnnotation)
+              alternatives
+              (map (go resolving) environment)
           VProjN mode receiver field -> VProjN mode (go resolving receiver) field
           VAppN icit function argument -> VAppN icit (go resolving function) (go resolving argument)
           VSealV labels inner -> VSealV labels (go resolving inner)
@@ -866,8 +873,8 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CLit _ -> Set.empty
       CCtorI constructor universes annotation arguments ->
         constructorDependencies path env constructor (Just universes) annotation arguments
-      CMatch scrutinee annotation alternatives ->
-        matchDependencies path env wanted scrutinee annotation alternatives
+      CMatch scrutinee scrutineeAnnotation _resultAnnotation alternatives ->
+        matchDependencies path env wanted scrutinee scrutineeAnnotation alternatives
       -- Constructing Sigma/static record code is not a package-construction
       -- sealing boundary. Field modes govern values supplied to CRecordV;
       -- dependencies of every field TYPE remain observable components of the
@@ -1526,7 +1533,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CPWild -> []
       CPVarM mode _ -> [(mode, expectedType)]
       CPLit _ -> []
-      CPCtorM existentialModes bridges constructor universes patterns ->
+      CPCtorM existentialModes bridges hidden constructor universes patterns ->
         let explicitSites = do
               constructorType <- ooConstructorType oracle constructor (Just universes)
               scrutineeType <- expectedType
@@ -1537,12 +1544,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
               ++ replicate
                 (constructorBridgeBinderCount bridges)
                 (Parametric, Nothing)
-              ++ case explicitSites of
-                   Just sites -> concat
-                     [ patternSites depth (Just fieldType) pattern'
-                     | (pattern', (_, fieldType)) <- zip patterns sites
-                     ]
-                   Nothing -> concatMap (patternSites depth Nothing) patterns
+              ++ constructorSourceSites depth hidden patterns explicitSites
       CPTuple patterns ->
         case expectedType >>= forceRecordType of
           Just fields ->
@@ -1566,6 +1568,24 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CPOr (pattern' : _) _ -> patternSites depth expectedType pattern'
       CPOr [] _ -> []
       CPAsM mode _ pattern' -> (mode, expectedType) : patternSites depth expectedType pattern'
+
+    constructorSourceSites depth hidden patterns explicitSites =
+      case
+          interleaveConstructorSourceBinders
+            hidden
+            (zip patterns (maybe (repeat Nothing) (map (Just . snd)) explicitSites))
+        of
+          Just slots ->
+            concatMap
+              ( \case
+                  Left binder -> [(chbMode binder, Nothing)]
+                  Right (pattern', fieldType) ->
+                    patternSites depth fieldType pattern'
+              )
+              slots
+          Nothing ->
+            [(Parametric, Nothing) | _ <- hidden]
+              ++ concatMap (patternSites depth Nothing) patterns
 
     doDependencies path env = goItems path env 0
       where

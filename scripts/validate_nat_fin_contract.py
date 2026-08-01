@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the pending Nat/Fin/refinement conformance contract."""
+"""Validate the active Nat/Fin/refinement conformance contract."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_ROOT = ROOT / "tests/pending-import/spec-coverage/nat-fin-refinement"
+CONTRACT_ROOT = ROOT / "tests/conformance/spec-coverage/nat-fin-refinement"
 MANIFEST = CONTRACT_ROOT / "manifest.json"
 OWNER_STAGE = re.compile(r"NFR-[1-7]\Z")
 EXPECTED_OUTCOMES = {"accept", "reject", "mixed-artifact"}
@@ -83,8 +83,8 @@ def main() -> int:
             errors.append(f"{path}: invalid or mismatched category {category!r}")
         if suite.get("expectedOutcome") not in EXPECTED_OUTCOMES:
             errors.append(f"{path}: invalid expectedOutcome {suite.get('expectedOutcome')!r}")
-        if suite.get("currentStatus") != "pending":
-            errors.append(f"{path}: currentStatus must remain pending before promotion")
+        if suite.get("currentStatus") != "active":
+            errors.append(f"{path}: currentStatus must be active after promotion")
         if not isinstance(suite.get("ownerStage"), str) or not OWNER_STAGE.fullmatch(
             suite["ownerStage"]
         ):
@@ -162,7 +162,7 @@ def main() -> int:
         category = suite["category"]
         counts[category] = counts.get(category, 0) + 1
     rendered = ", ".join(f"{category}={counts[category]}" for category in sorted(counts))
-    print(f"Nat/Fin contract validation passed: {len(suites)} pending suites ({rendered})")
+    print(f"Nat/Fin contract validation passed: {len(suites)} active suites ({rendered})")
     return 0
 
 

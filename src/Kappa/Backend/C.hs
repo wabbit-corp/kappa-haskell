@@ -62,6 +62,7 @@ import Kappa.Backend.IR
   , BackendBody (..)
   , BackendCond (..)
   , BackendCtorLayout (..)
+  , BackendExactNaturalOperation (..)
   , BackendIRViolation (..)
   , BackendItem (..)
   , BackendMeta (..)
@@ -71,6 +72,7 @@ import Kappa.Backend.IR
   , BackendTerm (..)
   , BackendUse (..)
   , KBackendIR (..)
+  , backendExactNaturalOperation
   , lowerKBackendIR
   , validateCoreCapabilities
   , validateKBackendIR
@@ -94,6 +96,7 @@ import Kappa.Ownership
   ( BinderOwn (..)
   , UseKind (..)
   )
+import Kappa.Representation (ExactNaturalRepresentationCertificate)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
 
@@ -202,6 +205,7 @@ data GenState = GenState
   , gsGlobals :: !(Map GName GlobalDef)
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBackendBodies :: !(Map GName BackendBody)
+  , gsExactNaturalCertificate :: !(Maybe ExactNaturalRepresentationCertificate)
   , gsBodies :: !(Map GName Term)
   , gsIOMonadRefDicts :: !(Set GName)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
@@ -1136,6 +1140,7 @@ generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
                   , gsGlobals = csGlobals cs
                   , gsEvalCtx = evalCtx0
                   , gsBackendBodies = kbirBodies backendIr
+                  , gsExactNaturalCertificate = kbirExactNaturalCertificate backendIr
                   , gsBodies = csCoreBodies cs
                   , gsIOMonadRefDicts = ioMonadRefDicts (csInstances cs)
                   , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
@@ -1243,8 +1248,8 @@ termMultishotOps multi = go
       CPi _ _ _ _ a b -> [a, b]
       CApp _ a b -> [a, b]
       CCtor _ mty as -> maybe [] pure mty ++ as
-      CMatch s mty alts ->
-        [s] ++ maybe [] pure mty
+      CMatch s scrutineeType resultType alts ->
+        [s] ++ maybe [] pure scrutineeType ++ maybe [] pure resultType
           ++ concat [maybe [] pure (caGuard a) ++ [caBody a] | a <- alts]
       CRecordT fs -> map snd fs
       CRecordV fs -> map snd fs
@@ -3326,10 +3331,18 @@ primDirectTable = Map.fromList
 -- Otherwise fall back to per-argument 'kapp'/'kappi'.
 compileApp :: BackendTerm -> Gen Text
 compileApp term
+  | BApp {} <- term = do
+      compileExactNaturalApplication term >>= \case
+        Just result -> pure result
+        Nothing -> compileAppAfterExactNatural term
+compileApp term = compileAppAfterExactNatural term
+
+compileAppAfterExactNatural :: BackendTerm -> Gen Text
+compileAppAfterExactNatural term
   -- P0-A: a saturated eta-expanded constructor application is a direct
   -- 'kctor', not a curried closure chain (see 'etaCtorApp').
   | Just (g, args) <- etaCtorApp term = compileCtor g args
-compileApp term = do
+compileAppAfterExactNatural term = do
   -- KBackendIR has already discharged Q0/type erasure; the spine here contains
   -- only runtime-kept arguments with their selected calling convention.
   let (hd, sargs) = spineOf term
@@ -3370,6 +3383,82 @@ compileApp term = do
                   )
           _ -> compileAppGlob g sargs term
       _ -> compileAppDefault term
+
+compileExactNaturalApplication :: BackendTerm -> Gen (Maybe Text)
+compileExactNaturalApplication term =
+  case spineOf term of
+    (BGlob _ global, arguments) -> do
+      certificate <- gets gsExactNaturalCertificate
+      case backendExactNaturalOperation certificate global of
+        Nothing -> pure Nothing
+        Just operation -> do
+          let explicit = [argTerm argument | argument <- arguments, argIcit argument == Expl]
+              implicitCount = length arguments - length explicit
+          if implicitCount /= 0 || length explicit > 2
+            then pure Nothing
+            else Just <$> compileExactNaturalOperation operation explicit
+    _ -> pure Nothing
+
+exactNaturalApplicationAvailable :: BackendTerm -> Gen Bool
+exactNaturalApplicationAvailable term =
+  case spineOf term of
+    (BGlob _ global, arguments) -> do
+      certificate <- gets gsExactNaturalCertificate
+      let explicitCount =
+            length [() | argument <- arguments, argIcit argument == Expl]
+      pure
+        ( isJust (backendExactNaturalOperation certificate global)
+            && explicitCount == length arguments
+            && explicitCount <= 2
+        )
+    _ -> pure False
+
+compileExactNaturalOperation :: BackendExactNaturalOperation -> [BackendTerm] -> Gen Text
+compileExactNaturalOperation operation arguments
+  | length arguments == 2 = do
+      compiled <- mapM (compileCallArg False) arguments
+      pure
+        ( exactNaturalDirectSymbol operation
+            <> "("
+            <> T.intercalate ", " compiled
+            <> ")"
+        )
+  | otherwise = do
+      start <- compileExactNaturalValue operation
+      foldM
+        (\function argument -> do
+          compiled <- compileCallArg True argument
+          pure ("kapp(" <> function <> ", " <> compiled <> ")"))
+        start
+        arguments
+
+compileExactNaturalValue :: BackendExactNaturalOperation -> Gen Text
+compileExactNaturalValue operation =
+  pure
+    ( "knative("
+        <> exactNaturalWrapperSymbol operation
+        <> ", 2, "
+        <> cStr (exactNaturalDebugName operation)
+        <> ", 0)"
+    )
+
+exactNaturalDirectSymbol :: BackendExactNaturalOperation -> Text
+exactNaturalDirectSymbol = \case
+  BackendNaturalAdd -> "kp_addInt"
+  BackendNaturalMultiply -> "kp_mulInt"
+  BackendNaturalCompare -> "kp_compareInt"
+
+exactNaturalWrapperSymbol :: BackendExactNaturalOperation -> Text
+exactNaturalWrapperSymbol = \case
+  BackendNaturalAdd -> "kpf_exact_nat_add"
+  BackendNaturalMultiply -> "kpf_exact_nat_multiply"
+  BackendNaturalCompare -> "kpf_exact_nat_compare"
+
+exactNaturalDebugName :: BackendExactNaturalOperation -> Text
+exactNaturalDebugName = \case
+  BackendNaturalAdd -> "exact Nat addition"
+  BackendNaturalMultiply -> "exact Nat multiplication"
+  BackendNaturalCompare -> "exact Nat comparison"
 
 -- | The non-host global application spine (primitive / direct-call / default).
 compileAppGlob :: GName -> [BackendArg] -> BackendTerm -> Gen Text
@@ -3757,46 +3846,50 @@ compileAppDefault term =
           pure ("kappi(" <> acc <> ", " <> ae <> ")")
 
 compileGlob :: GName -> Gen Text
-compileGlob g@(GName m nm)
-  | m == primModule = emitPrim nm
-  | otherwise = do
-      globals <- gets gsGlobals
-      ctors <- gets gsCtors
-      hostSyms <- gets gsHostSyms
-      case Map.lookup g globals of
-        -- A prelude `prim` registration: its value is a bare VPrim, so it
-        -- maps directly to the runtime primitive of the same name.
-        Just gd | Just (VPrim pname _) <- gdValue gd ->
-          emitPrim pname
-        -- §27.1.1: a provided host-binding member (an abstract global of a
-        -- manifest-selected `host.native.*` module) lowers to a curried
-        -- native action carrying the codegen-emitted wrapper pointer — a
-        -- DIRECT typed call, no runtime name dispatch. The wrapper + extern
-        -- prototype are emitted by 'assemble' for each used member. The
-        -- gname→symbol map is built per build from the manifest's native
-        -- bindings (never a hardcoded catalog).
-        Just gd
-          | Nothing <- gdValue gd
-          , Just rns <- Map.lookup g hostSyms ->
-              emitHostNative g rns
-        _ -> case Map.lookup g ctors of
-          Just ci ->
-            -- A nullary constructor used as a value builds directly (the
-            -- 'Repr.LayoutImmediate' / @b010@ case). A positive-arity
-            -- constructor reference is eta-expanded to a saturated CCtor under
-            -- lambdas by elaboration (§10.1 etaCtor), so a bare positive-arity
-            -- ctor never reaches codegen for an accepted program; treat it as
-            -- an internal invariant.
-            case Repr.ctorLayoutByArity (length (ciFields ci)) of
-              Repr.LayoutImmediate -> do
-                tc <- ctorTagConst g
-                pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
-              _ -> escalated "bare-ctor"
-                ("constructor '" <> nm <> "' is referenced un-eta-expanded; \
-                 \accepted programs eta-expand constructor values (§10.1)")
-          Nothing -> do
-            enqueue g
-            pure (cGlobIdent g <> "()")
+compileGlob g@(GName m nm) = do
+  certificate <- gets gsExactNaturalCertificate
+  case backendExactNaturalOperation certificate g of
+    Just operation -> compileExactNaturalValue operation
+    Nothing
+      | m == primModule -> emitPrim nm
+      | otherwise -> do
+          globals <- gets gsGlobals
+          ctors <- gets gsCtors
+          hostSyms <- gets gsHostSyms
+          case Map.lookup g globals of
+            -- A prelude `prim` registration: its value is a bare VPrim, so it
+            -- maps directly to the runtime primitive of the same name.
+            Just gd | Just (VPrim pname _) <- gdValue gd ->
+              emitPrim pname
+            -- §27.1.1: a provided host-binding member (an abstract global of a
+            -- manifest-selected `host.native.*` module) lowers to a curried
+            -- native action carrying the codegen-emitted wrapper pointer — a
+            -- DIRECT typed call, no runtime name dispatch. The wrapper + extern
+            -- prototype are emitted by 'assemble' for each used member. The
+            -- gname→symbol map is built per build from the manifest's native
+            -- bindings (never a hardcoded catalog).
+            Just gd
+              | Nothing <- gdValue gd
+              , Just rns <- Map.lookup g hostSyms ->
+                  emitHostNative g rns
+            _ -> case Map.lookup g ctors of
+              Just ci ->
+                -- A nullary constructor used as a value builds directly (the
+                -- 'Repr.LayoutImmediate' / @b010@ case). A positive-arity
+                -- constructor reference is eta-expanded to a saturated CCtor under
+                -- lambdas by elaboration (§10.1 etaCtor), so a bare positive-arity
+                -- ctor never reaches codegen for an accepted program; treat it as
+                -- an internal invariant.
+                case Repr.ctorLayoutByArity (length (ciFields ci)) of
+                  Repr.LayoutImmediate -> do
+                    tc <- ctorTagConst g
+                    pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
+                  _ -> escalated "bare-ctor"
+                    ("constructor '" <> nm <> "' is referenced un-eta-expanded; \
+                     \accepted programs eta-expand constructor values (§10.1)")
+              Nothing -> do
+                enqueue g
+                pure (cGlobIdent g <> "()")
 
 compileLit :: Literal -> Gen Text
 compileLit = \case
@@ -4219,10 +4312,15 @@ consume sink term = case term of
     withEnv e2 ((consume sink body))
   _ -> do
     isCps <- cpsNodeApp term
+    isExactNatural <- exactNaturalApplicationAvailable term
     let fallback
           | sinkIsTail sink
           , BApp {} <- term
           , isCps =
+              compile term >>= sinkResult sink
+          | sinkIsTail sink
+          , BApp {} <- term
+          , isExactNatural =
               compile term >>= sinkResult sink
           | sinkIsTail sink
           , BApp {} <- term
@@ -4234,6 +4332,10 @@ consume sink term = case term of
           | sinkIsBounce sink
           , BApp {} <- term
           , isCps =
+              compile term >>= sinkResult sink
+          | sinkIsBounce sink
+          , BApp {} <- term
+          , isExactNatural =
               compile term >>= sinkResult sink
           | sinkIsBounce sink
           , BApp {} <- term
@@ -5109,7 +5211,7 @@ termGlobals = goT
       CLevel {} -> Set.empty
       CLit {} -> Set.empty
       CCtor g _ args -> Set.insert g (goAll args)
-      CMatch s _ alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
+      CMatch s _ _ alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
       CRecordT fs -> goAll (map snd fs)
       CRecordV fs -> goAll (map snd fs)
       CProj e _ -> goT e

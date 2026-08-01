@@ -381,6 +381,21 @@ static uint64_t kint_low64(KValue *v) {
 KValue *kpf_addInt(KValue **a) {
   return kp_addInt(a[0], a[1]);
 }
+
+/* Certified logical-Nat operations share the exact integer substrate but keep
+ * distinct internal wrappers so first-class/partial applications never depend
+ * on a source-visible primitive alias. */
+KValue *kpf_exact_nat_add(KValue **a) {
+  return kp_addInt(a[0], a[1]);
+}
+
+KValue *kpf_exact_nat_multiply(KValue **a) {
+  return kp_mulInt(a[0], a[1]);
+}
+
+KValue *kpf_exact_nat_compare(KValue **a) {
+  return kp_compareInt(a[0], a[1]);
+}
 KValue *kpf_subInt(KValue **a) {
   return kp_subInt(a[0], a[1]);
 }

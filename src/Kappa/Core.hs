@@ -104,7 +104,9 @@ module Kappa.Core
   , pattern CPAs
   , CaseAlt (..)
   , ConstructorBridge (..)
+  , ConstructorHiddenBinder (..)
   , constructorBridgeBinderCount
+  , interleaveConstructorSourceBinders
   , propositionalConstructorBridges
   , CorePat (..)
   , KItem (..)
@@ -706,12 +708,12 @@ data Term
     -- ^ Saturated typed constructor occurrence: declaration-universe
     -- instantiation, observe-only checked head type, and the full constructor
     -- Pi spine. Runtime/evaluator consumers select only 'caPayload' arguments.
-  -- | Pattern match. The optional 'Term' is the KBackendIR Stage 0
-  -- annotation: the scrutinee's monomorphic type as a quoted Core type
-  -- term (populated from the elaborator's @sTy1@). Like 'CCtor's
-  -- annotation it is observe-only — backends ignore it and 'Eq'\/
-  -- conversion drop it.
-  | CMatch !Term !(Maybe Term) ![CaseAlt]
+  -- | Pattern match. The optional terms are the scrutinee's monomorphic type
+  -- and the match's checked result type. Both are observe-only typed-checkpoint
+  -- metadata: backends and conversion ignore them, while KCoreText uses them
+  -- to replay constructor elimination and dependent motives without guessing
+  -- from an enclosing expected type.
+  | CMatch !Term !(Maybe Term) !(Maybe Term) ![CaseAlt]
   -- Records --------------------------------------------------------------
   | CRecordTQ ![RecordField Term] -- ^ canonical dependency-respecting field order
   | CRecordV ![(Text, Term)]
@@ -790,7 +792,7 @@ instance Eq Term where
   -- structural equality/checkpoint comparison.
   CCtorI g us _ as == CCtorI g' us' _ as' =
     g == g' && us == us' && as == as'
-  CMatch s _ alts == CMatch s' _ alts' = s == s' && alts == alts'
+  CMatch s _ _ alts == CMatch s' _ _ alts' = s == s' && alts == alts'
   CRecordTQ a == CRecordTQ a' = a == a'
   CRecordV a == CRecordV a' = a == a'
   CProjM a b c == CProjM a' b' c' = a == a' && b == b' && c == c'
@@ -887,6 +889,42 @@ propositionalConstructorBridges =
     ConstructorPropositionalBridge {} -> True
     ConstructorForcedEquality {} -> False
 
+-- | One source-written implicit constructor field omitted from surface
+-- patterns.  The field still introduces an erased branch-local binder when a
+-- constructor is eliminated.  'chbAfterExplicitFields' records its exact
+-- declaration position as the number of explicit source fields preceding it;
+-- several hidden fields at one position retain list order.
+data ConstructorHiddenBinder = ConstructorHiddenBinder
+  { chbAfterExplicitFields :: !Int
+  , chbMode :: !ObservationMode
+  }
+  deriving stock (Eq, Show)
+
+-- | Reconstruct the source constructor telescope from explicit pattern fields
+-- and the authenticated hidden-field positions carried by 'CPCtorM'.  Invalid
+-- positions fail closed instead of silently choosing a different branch
+-- environment order.
+interleaveConstructorSourceBinders
+  :: [ConstructorHiddenBinder]
+  -> [a]
+  -> Maybe [Either ConstructorHiddenBinder a]
+interleaveConstructorSourceBinders hidden explicit
+  | any invalid hidden = Nothing
+  | map chbAfterExplicitFields hidden /= sort (map chbAfterExplicitFields hidden) = Nothing
+  | otherwise = Just (go 0 hidden explicit)
+  where
+    explicitCount = length explicit
+    invalid binder =
+      chbAfterExplicitFields binder < 0
+        || chbAfterExplicitFields binder > explicitCount
+    go _ [] [] = []
+    go index remaining [] =
+      [Left binder | binder <- remaining, chbAfterExplicitFields binder == index]
+    go index remaining (field : fields) =
+      let (before, later) =
+            span ((== index) . chbAfterExplicitFields) remaining
+       in map Left before ++ Right field : go (index + 1) later fields
+
 data CorePat
   = CPWild
   | CPVarM !ObservationMode !Text
@@ -909,7 +947,13 @@ data CorePat
     -- elaborating this occurrence.  It is identity-bearing checkpoint data:
     -- later passes validate/specialize it and never reconstruct it from the
     -- scrutinee result type.
-    CPCtorM ![ObservationMode] ![ConstructorBridge] !GName ![Level] ![CorePat]
+    CPCtorM
+      ![ObservationMode]
+      ![ConstructorBridge]
+      ![ConstructorHiddenBinder]
+      !GName
+      ![Level]
+      ![CorePat]
   | CPTuple ![CorePat]
   | CPRecordM ![(Text, CorePat)] !(Maybe (ObservationMode, Text))
   -- ^ fields, optional rest binder (binds the remaining fields; @Just ""@
@@ -1016,7 +1060,8 @@ data Value
   | VRecordV ![(Text, Value)]
   | VVariantT ![Value]
   | VInject !Text !Value
-  | VMatchN !Value !(Maybe Value) ![CaseAlt] !Env -- ^ stuck match retaining its checked scrutinee type
+  | VMatchN !Value !(Maybe Value) !(Maybe Value) ![CaseAlt] !Env
+    -- ^ stuck match retaining its checked scrutinee and result types
   | VProjN !ObservationMode !Value !Text -- ^ stuck projection with its checked field mode
   | VAppN !Icit !Value !Value -- ^ stuck application preserving its typed application shape
   | VSealV ![Text] !Value -- ^ §13.2.10 sealed package (opaque member projections stick)
@@ -1154,10 +1199,12 @@ pattern CPCtor constructor erasedBinderCount fields <-
 
 viewConstructorPattern :: CorePat -> Maybe (GName, Int, [CorePat])
 viewConstructorPattern = \case
-  CPCtorM existentials bridges constructor _ fields ->
+  CPCtorM existentials bridges hidden constructor _ fields ->
     Just
       ( constructor
-      , length existentials + constructorBridgeBinderCount bridges
+      , length existentials
+          + constructorBridgeBinderCount bridges
+          + length hidden
       , fields
       )
   _ -> Nothing

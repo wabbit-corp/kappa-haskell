@@ -14,5 +14,7 @@ run : List Integer -> UIO Unit
 let run values = do
     let? head :: _ = values
     else _ ->
-        printlnString "empty"
+        do
+            printlnString "empty"
+            return ()
     printlnString (showInt head)

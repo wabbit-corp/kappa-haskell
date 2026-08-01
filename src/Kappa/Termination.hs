@@ -178,7 +178,12 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
       CCtorI cg universes ann arguments ->
         CCtorI cg universes <$> traverse (go curDepth) ann
           <*> traverse (\argument -> (\term -> argument {caTerm = term}) <$> go curDepth (caTerm argument)) arguments
-      CMatch s ann alts -> CMatch <$> go curDepth s <*> traverse (go curDepth) ann <*> traverse goAlt alts
+      CMatch s scrutineeAnn resultAnn alts ->
+        CMatch
+          <$> go curDepth s
+          <*> traverse (go curDepth) scrutineeAnn
+          <*> traverse (go curDepth) resultAnn
+          <*> traverse goAlt alts
         where
           goAlt (CaseAlt pat gd b) =
             CaseAlt pat
@@ -240,16 +245,23 @@ simplifyDecisionTermAt = go
               (CCtor g _ [], _, _) | g == prelFalse -> e'
               (_, CCtor gt _ [], CCtor gf _ []) | gt == prelTrue, gf == prelFalse -> c'
               _ -> CIf c' t' e'
-      CMatch (CIf c t e) ann alts | all ((== 0) . patBindersC . caPat) alts ->
-        go depth (CIf c (CMatch t ann alts) (CMatch e ann alts))
-      CMatch s ann alts ->
+      CMatch (CIf c t e) scrutineeAnn resultAnn alts
+        | all ((== 0) . patBindersC . caPat) alts ->
+            go depth
+              ( CIf c
+                  (CMatch t scrutineeAnn resultAnn alts)
+                  (CMatch e scrutineeAnn resultAnn alts)
+              )
+      CMatch s scrutineeAnn resultAnn alts ->
         let s' = go depth s
             alts' =
               [ let branchDepth = depth + patBindersC p
                  in CaseAlt p (fmap (go branchDepth) gd) (go branchDepth b)
               | CaseAlt p gd b <- alts
               ]
-         in fromMaybe (CMatch s' ann alts') (reduceSimpleMatch s' alts')
+         in fromMaybe
+              (CMatch s' scrutineeAnn resultAnn alts')
+              (reduceSimpleMatch s' alts')
       CApp ic f a ->
         let function = go depth f
             argument = go depth a

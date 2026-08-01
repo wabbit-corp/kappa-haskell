@@ -4,7 +4,7 @@
 --       `derive Eq T` is permitted only if eqSound, eqComplete, AND the
 --       IsSet T supertrait can be synthesized), §14.5.2 (derived
 --       exact-natural representation), §10.1 (`data` declarations).
--- NOTE: overlaps with tests/pending-import/spec-coverage/nat-fin-refinement/positive/derive-eq-enumeration
+-- NOTE: overlaps with tests/conformance/spec-coverage/nat-fin-refinement/positive/derive-eq-enumeration
 --       (ground derive Eq acceptance); this file adds recursive and
 --       multi-field derive targets with evaluated equality witnesses.
 --

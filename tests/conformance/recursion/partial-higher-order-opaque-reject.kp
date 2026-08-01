@@ -1,8 +1,7 @@
 -- §15.11: a partial recursive closure may not be hidden inside an opaque
 -- higher-order argument; unknown code could call it at unrelated measures.
---! assertNoErrors
---! assertWarningCount 5
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 5
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 idFun : (Int -> Int) -> (Int -> Int)

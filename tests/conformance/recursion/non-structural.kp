@@ -1,6 +1,5 @@
---! assertNoErrors
---! assertWarningCount 1
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 1
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 
 collatzish : Integer -> Integer
 let collatzish n =

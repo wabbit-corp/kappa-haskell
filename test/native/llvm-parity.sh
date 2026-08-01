@@ -83,6 +83,27 @@ check_c_reuse_shape_if_required() {
   return 1
 }
 
+check_exact_nat_shape_if_required() {
+  local kp="$1"; local generated="$2"; local backend="$3"
+  if [ "$(basename "$kp" .kp)" != "nat-exactness" ]; then
+    return 0
+  fi
+  if [ ! -f "$generated" ]; then
+    echo "[FAIL] nat-exactness — $backend generated-code artifact is missing"
+    return 1
+  fi
+  if grep -q 'kp_mulInt' "$generated" \
+      && grep -q 'kp_addInt' "$generated" \
+      && grep -q 'kp_compareInt' "$generated" \
+      && ! grep -qE 'kw_.*natMultiply|kg_.*natMultiply' "$generated"; then
+    return 0
+  fi
+  echo "[FAIL] nat-exactness — $backend did not retain certified exact-Nat lowering"
+  grep -nE 'kp_(add|mul|compare)Int|nat(Add|Multiply|Compare)' "$generated" \
+    | head -20 | sed 's/^/    /' || true
+  return 1
+}
+
 # Built-in corpus grows as milestones land.  With no args, run every program in
 # tests/native/llvm/ (M0 hello, M1 arithmetic/show + bigint, M2 cross-CAFs),
 # plus an inline hello as a self-contained smoke (so the harness still exercises
@@ -104,6 +125,7 @@ KP
   CORPUS+=("test/native/cases/adv-boxed-loop-tail.kp")
   CORPUS+=("test/native/cases/adv-loop-tail-effect.kp")
   CORPUS+=("test/native/cases/adv-loop-tail-read.kp")
+  CORPUS+=("test/native/cases/nat-exactness.kp")
   # §18.5/§18.6 through the CK machine: suspending loops with break,
   # continue, and return must scope return to the do-block value.
   CORPUS+=("test/native/cases/suspendbreak.kp")
@@ -183,6 +205,10 @@ for kp in "${CORPUS[@]}"; do
     cleanup_generated_for_source "$kp"
     fail=$((fail+1)); continue
   fi
+  if ! check_exact_nat_shape_if_required "$kp" "${kp%.kp}.kappa.c" "C"; then
+    cleanup_generated_for_source "$kp"
+    fail=$((fail+1)); continue
+  fi
   cleanup_generated_for_source "$kp"
   timeout "$PARITY_TIMEOUT" "$cbin" >"$c_out" 2>/dev/null; c_rc=$?
   if [ "$c_rc" -eq 124 ]; then
@@ -193,18 +219,25 @@ for kp in "${CORPUS[@]}"; do
 
   cleanup_generated_for_source "$kp"
   timeout "$BUILD_TIMEOUT" env KAPPA_BACKEND=llvm KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=true $KAPPA build "$kp" -o "$lbin" >/dev/null 2>"$TMP/lbuild.err"; lbuild_rc=$?
-  cleanup_generated_for_source "$kp"
   if [ "$lbuild_rc" -eq 124 ]; then
+    cleanup_generated_for_source "$kp"
     echo "[FAIL] $name — LLVM backend build timed out after ${BUILD_TIMEOUT}s"
     fail=$((fail+1))
     continue
   fi
   if [ "$lbuild_rc" -ne 0 ]; then
+    cleanup_generated_for_source "$kp"
     echo "[FAIL] $name — LLVM backend build error"; sed 's/^/    /' "$TMP/lbuild.err" | head -8; fail=$((fail+1)); continue
   fi
   if ! check_perceus_rc_log "$TMP/lbuild.err"; then
+    cleanup_generated_for_source "$kp"
     fail=$((fail+1)); continue
   fi
+  if ! check_exact_nat_shape_if_required "$kp" "${kp%.kp}.kappa.ll" "LLVM"; then
+    cleanup_generated_for_source "$kp"
+    fail=$((fail+1)); continue
+  fi
+  cleanup_generated_for_source "$kp"
   timeout "$PARITY_TIMEOUT" "$lbin" >"$l_out" 2>/dev/null; l_rc=$?
   if [ "$l_rc" -eq 124 ]; then
     echo "[FAIL] $name — LLVM binary timed out after ${PARITY_TIMEOUT}s"

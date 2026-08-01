@@ -1,0 +1,44 @@
+-- Native exact-Nat regression (§28.2, §34.3.2A). Logical Nat remains an
+-- ordinary inductive type through KCore, while every runnable backend uses a
+-- verified exact non-unary representation. The product crosses the immediate
+-- and machine-word boundaries; its successor and exact self-subtraction must
+-- agree with the interpreter without making the parity smoke itself expensive.
+module main
+
+largeProduct : Nat
+let largeProduct =
+    natMultiply 4294967296 4294967296
+
+aboveWord : Nat
+let aboveWord =
+    natAdd largeProduct 1
+
+needDiv :
+    forall (A : Type).
+    (@evidence : CheckedDiv A) ->
+    (x : A) ->
+    (y : A) ->
+    (@proof : divDefined x y = True) ->
+    A
+let needDiv @evidence x y @proof =
+    divide x y @proof
+
+needMod :
+    forall (A : Type).
+    (@evidence : CheckedMod A) ->
+    (x : A) ->
+    (y : A) ->
+    (@proof : modDefined x y = True) ->
+    A
+let needMod @evidence x y @proof =
+    modulo x y @proof
+
+main : UIO Unit
+let main = do
+    printlnString (show aboveWord)
+    printlnString (show (needDiv aboveWord 3))
+    printlnString (show (needMod aboveWord 3))
+    printlnString (show (natAdd aboveWord 1))
+    printlnString (show (aboveWord - 1))
+    printlnString (show (natCompare aboveWord largeProduct))
+    printlnString (show (largeProduct - largeProduct))

@@ -54176,6 +54176,8 @@ assertLevelSolveClass <selected-meta-list> where <constraint-list> <inference-cl
 assertSemanticHashEquals <artifact-or-target>
 assertRecursiveSchemaEdge <caller> <callee> <relation>
 assertSelectedEvidence <goalType> <qualified-evidence>
+assertArithmeticCertificateMutationsReject
+assertRepresentationCertificateMutationsReject
 ```
 
 where:
@@ -54281,6 +54283,15 @@ Arithmetic, inhabitance, and representation assertions:
 
 * `assertArithmeticCertificatesValid` independently verifies every arithmetic certificate reachable from the suite's
   final KCore artifact. It requires capability `arithmeticCertificates`.
+* `assertArithmeticCertificateMutationsReject` obtains that same final KCore artifact, changes one decisive arithmetic
+  certificate field class at a time, canonically serializes each mutated artifact, and requires independent replay to
+  reject every mutation with `E_KCORE_ARITHMETIC_CERTIFICATE_INVALID`. The required field classes are the declared goal,
+  assumption index or order, provider identity, provider version, domain version, context telescope, and canonical
+  normal-form payload.
+* `assertRepresentationCertificateMutationsReject` performs the analogous canonical mutation audit for representation
+  certificates. The required field classes are a round-trip proof, target type identity, retained-field summary,
+  source-evidence identity, constructor mapping, erased-field summary, and backend-profile restriction; every mutation
+  must reject with `E_KCORE_REPRESENTATION_CERTIFICATE_INVALID`.
 * `assertInhabitance purpose summary for typeExpr` queries the concrete inhabitance summary under one of
   `SourceReachability`, `Completion`, `RuntimeShape`, or `Optimization`. `summary` uses the canonical spellings
   `Empty`, `Subsingleton`, `Contractible`, `Finite(n)`, `Range(lo,hi)`, `AtLeast(lo)`, or `Unknown`.

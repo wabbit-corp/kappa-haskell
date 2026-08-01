@@ -21,7 +21,10 @@ let grow (inout len : Int) : UIO (1 len : Int,) =
     pure (len = addInt len 1,)
 
 consumeSized : (1 s : Sized) -> UIO Unit
-let consumeSized (1 s : Sized) : UIO Unit = pure ()
+let consumeSized (1 s : Sized) : UIO Unit =
+    do
+        let (len = n, buffer = b, checksum = c) = s
+        pure ()
 
 bad : (1 s : Sized) -> UIO Unit
 let bad (1 s : Sized) : UIO Unit = do

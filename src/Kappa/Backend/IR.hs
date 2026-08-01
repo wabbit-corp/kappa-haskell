@@ -32,9 +32,11 @@ module Kappa.Backend.IR
   , BackendFieldStorage (..)
   , BackendRepresentationSubject (..)
   , BackendRepresentationDecision (..)
+  , BackendExactNaturalOperation (..)
   , BackendIRViolation (..)
   , lowerKBackendIR
   , lowerKBackendIRForCapabilities
+  , backendExactNaturalOperation
   , kbackendRepresentationCertificates
   , validateCoreCapabilities
   , validateKBackendIR
@@ -63,7 +65,10 @@ import Kappa.Builtins
   , prelInteger
   , prelIsSet
   , prelNat
+  , prelNatAdd
   , prelNatAddRightIdentity
+  , prelNatCompare
+  , prelNatMultiply
   , prelNatSucc
   , prelNatZero
   , prelPathInd
@@ -192,6 +197,7 @@ import Kappa.Representation
   , verifyOrdinalRepresentationCertificate
   , verifyRefinementRepresentationCertificate
   )
+import Kappa.Source (ModuleName)
 
 data ParamLowerSite = ParamLowerSite
   { plsIcit :: !Icit
@@ -213,8 +219,10 @@ newtype BackendUseId = BackendUseId Int
   deriving stock (Eq, Ord, Show)
 
 data KBackendIR = KBackendIR
-  { kbirBodies :: !(Map GName BackendBody)
+  { kbirModule :: !ModuleName
+  , kbirBodies :: !(Map GName BackendBody)
   , kbirCapabilities :: !(Set Text)
+  , kbirExactNaturalCertificate :: !(Maybe ExactNaturalRepresentationCertificate)
   , kbirSourceFields :: !(Map BackendSourceFieldIdentity BackendFieldStorage)
   , kbirRepresentations :: !(Map BackendRepresentationSubject BackendRepresentationDecision)
   , kbirLoweringViolations :: ![BackendIRViolation]
@@ -314,6 +322,16 @@ data BackendFieldStorage
 data BackendRepresentationSubject
   = BackendDeclarationSubject !GName
   | BackendConstructorFieldSubject !BackendSourceFieldIdentity
+  deriving stock (Eq, Ord, Show)
+
+-- | A canonical logical-'Nat' operation whose compact runtime lowering is
+-- authorized by 'kbirExactNaturalCertificate'.  The constructor is selected
+-- from checked global identity, never source spelling; both native emitters
+-- consume this shared classification.
+data BackendExactNaturalOperation
+  = BackendNaturalAdd
+  | BackendNaturalMultiply
+  | BackendNaturalCompare
   deriving stock (Eq, Ord, Show)
 
 -- | One final target-profile representation choice.  Certificates are kept on
@@ -478,6 +496,12 @@ lowerKBackendIRForCapabilities capabilities st =
         Map.mapWithKey
           (lowerBody ctx globals (csCtors st) (csTraits st) (csInstances st) builtinIntegerLiteralDicts)
           (csCoreBodies st)
+      exactNaturalCertificate =
+        exactNaturalRepresentationForState
+          st
+          emptyRepresentationContext
+          0
+          (eval ctx [] (CGlob prelNat))
       fieldFacts = backendSourceFieldFacts st ctx
       sourceFields =
         Map.fromList
@@ -510,8 +534,10 @@ lowerKBackendIRForCapabilities capabilities st =
               ))
           fieldFacts
    in KBackendIR
-        { kbirBodies = Map.map fst lowered
+        { kbirModule = csModule st
+        , kbirBodies = Map.map fst lowered
         , kbirCapabilities = capabilities
+        , kbirExactNaturalCertificate = exactNaturalCertificate
         , kbirSourceFields = sourceFields
         , kbirRepresentations =
             Map.fromList (declarationRepresentations ++ fieldRepresentations)
@@ -527,13 +553,20 @@ lowerKBackendIRForCapabilities capabilities st =
 kbackendRepresentationCertificates
   :: KBackendIR
   -> [VerifiedRepresentationCertificate]
-kbackendRepresentationCertificates =
-  Map.elems
-    . Map.fromList
-    . concatMap certificatesForDecision
-    . Map.elems
-    . kbirRepresentations
+kbackendRepresentationCertificates backendIr =
+  Map.elems . Map.fromList $
+    concatMap certificatesForDecision
+      [ decision
+      | (subject, decision) <- Map.toAscList (kbirRepresentations backendIr)
+      , representationSubjectModule subject == kbirModule backendIr
+      ]
   where
+    representationSubjectModule = \case
+      BackendDeclarationSubject (GName owner _) -> owner
+      BackendConstructorFieldSubject identity ->
+        case bsfiOwner identity of
+          GName owner _ -> owner
+
     certificatesForDecision decision =
       [ ( ordinalRepresentationCertificateIdentity certificate
         , VerifiedOrdinalRepresentation certificate
@@ -550,6 +583,28 @@ kbackendRepresentationCertificates =
              )
            | certificate <- maybeToList (brdRefinementCertificate decision)
            ]
+
+-- | Classify a canonical logical-natural operation only when the backend IR
+-- carries a replayable certificate for the canonical 'Nat' representation.
+-- A custom operation with the same readable name, or a certificate for a
+-- different unary type, does not pass this boundary.
+backendExactNaturalOperation
+  :: Maybe ExactNaturalRepresentationCertificate
+  -> GName
+  -> Maybe BackendExactNaturalOperation
+backendExactNaturalOperation maybeCertificate operation = do
+  certificate <- maybeCertificate
+  guard (verifyExactNaturalRepresentationCertificate certificate == Right ())
+  guard
+    ( coreHeadGlobal (enrcRepresentedType certificate) == Just prelNat
+        && enrcZeroConstructor certificate == prelNatZero
+        && enrcSuccessorConstructor certificate == prelNatSucc
+    )
+  if
+    | operation == prelNatAdd -> Just BackendNaturalAdd
+    | operation == prelNatMultiply -> Just BackendNaturalMultiply
+    | operation == prelNatCompare -> Just BackendNaturalCompare
+    | otherwise -> Nothing
 
 emptyRepresentationContext :: RepresentationContext
 emptyRepresentationContext =
@@ -859,7 +914,7 @@ validateObservationModeFlows st =
         CCtorI g universes annotation arguments ->
           constructorChecks owner depth scopes modes g universes annotation True
             (zip [0 :: Int ..] arguments)
-        CMatch scrut ann alts ->
+        CMatch scrut ann _resultAnn alts ->
           let scrutineeType =
                 (evalTypeAt ctx depth <$> ann)
                   <|> termTypeAt globals (csTraits st) ctx depth scopes scrut
@@ -1317,7 +1372,7 @@ validateObservationModeFlows st =
           CPWild -> []
           CPVarM actualMode _ -> maybe [] (\wanted -> modeMismatch owner "pattern binder" wanted actualMode) mode
           CPLit _ -> []
-          CPCtorM _ _ constructor universes patterns ->
+          CPCtorM _ _ _ constructor universes patterns ->
             case Map.lookup constructor (csCtors st) of
               Nothing ->
                 [modeViolation owner "E_BACKENDIR_CONSTRUCTOR_INTERFACE"
@@ -1373,16 +1428,16 @@ validateObservationModeFlows st =
       CPWild -> []
       CPVarM mode _ -> [(mode, expectedType)]
       CPLit _ -> []
-      CPCtorM existentialModes bridges constructor universes patterns ->
+      CPCtorM existentialModes bridges hidden constructor universes patterns ->
         case Map.lookup constructor (csCtors st) of
           Nothing -> [(mode, Nothing) | mode <- existentialModes]
             ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
-            ++ concatMap (patternSites depth Nothing) patterns
+            ++ constructorSourceSites depth hidden patterns Nothing
           Just info ->
             case specializeConstructorType ctx (Just universes) info of
               Nothing -> [(mode, Nothing) | mode <- existentialModes]
                 ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
-                ++ concatMap (patternSites depth Nothing) patterns
+                ++ constructorSourceSites depth hidden patterns Nothing
               Just constructorType ->
                 let sites = do
                       scrutineeType <- expectedType
@@ -1390,12 +1445,7 @@ validateObservationModeFlows st =
                         ctx False depth (length (ciFields info)) constructorType scrutineeType
                  in [(mode, Nothing) | mode <- existentialModes]
                       ++ replicate (constructorBridgeBinderCount bridges) (Ordinary, Nothing)
-                      ++ case sites of
-                           Just aligned -> concat
-                             [ patternSites depth (Just fieldType) pattern'
-                             | (pattern', (_, fieldType)) <- zip patterns aligned
-                             ]
-                           Nothing -> concatMap (patternSites depth Nothing) patterns
+                      ++ constructorSourceSites depth hidden patterns sites
       CPTuple patterns -> case expectedType >>= forceRecordType ctx of
         Just fields -> concat
           [ patternSites depth (Just (rfType field)) pattern'
@@ -1417,6 +1467,24 @@ validateObservationModeFlows st =
       CPOr (pattern' : _) _ -> patternSites depth expectedType pattern'
       CPOr [] _ -> []
       CPAsM mode _ pattern' -> (mode, expectedType) : patternSites depth expectedType pattern'
+
+    constructorSourceSites depth hidden patterns explicitSites =
+      case
+          interleaveConstructorSourceBinders
+            hidden
+            (zip patterns (maybe (repeat Nothing) (map (Just . snd)) explicitSites))
+        of
+          Just slots ->
+            concatMap
+              ( \case
+                  Left binder -> [(chbMode binder, Nothing)]
+                  Right (pattern', fieldType) ->
+                    patternSites depth fieldType pattern'
+              )
+              slots
+          Nothing ->
+            [(Parametric, Nothing) | _ <- hidden]
+              ++ concatMap (patternSites depth Nothing) patterns
 
     termDependencies scopes modes expected term =
       let depth = length modes
@@ -1577,9 +1645,10 @@ validateFinalizedLevelScopes st =
         CArithmeticProof certificate ->
           concatMap recur (foldMapArithmeticCertificate (: []) certificate)
         CCtorI _ _ ann arguments -> maybe [] recur ann ++ concatMap (recur . caTerm) arguments
-        CMatch scrut ann alts ->
+        CMatch scrut ann resultAnn alts ->
           recur scrut
             ++ maybe [] recur ann
+            ++ maybe [] recur resultAnn
             ++ concatMap (checkAlt interfaceArtifact depth owner universeArity assumptions localSchemas) alts
         CRecordTQ fields ->
           checkRecordFields interfaceArtifact depth owner universeArity assumptions localSchemas fields
@@ -1738,7 +1807,7 @@ validateFinalizedLevelScopes st =
       CPWild -> []
       CPVarM {} -> []
       CPLit {} -> []
-      CPCtorM _ _ constructor universes patterns ->
+      CPCtorM _ _ _ constructor universes patterns ->
         concatMap (checkLevel interfaceArtifact owner depth universeArity) universes
           ++ concatMap (checkPattern interfaceArtifact depth owner universeArity) patterns
           ++ case globalUniverseArity constructor of
@@ -2077,10 +2146,29 @@ validateFinalizedLevelScopes st =
 validateKBackendIR :: KBackendIR -> [BackendIRViolation]
 validateKBackendIR backendIr =
   kbirLoweringViolations backendIr
+    ++ validateExactNaturalRuntimeCertificate backendIr
     ++ validateRepresentationDecisions backendIr
     ++ concatMap
       (uncurry validateBody)
       (Map.toList (kbirBodies backendIr))
+
+validateExactNaturalRuntimeCertificate :: KBackendIR -> [BackendIRViolation]
+validateExactNaturalRuntimeCertificate backendIr =
+  case kbirExactNaturalCertificate backendIr of
+    Nothing -> []
+    Just certificate ->
+      case verifyExactNaturalRepresentationCertificate certificate of
+        Right () -> []
+        Left detail ->
+          case Map.elems (kbirBodies backendIr) of
+            body : _ ->
+              [ violation
+                  (bbOwner body)
+                  (backendMeta (bbRoot body))
+                  "E_KCORE_REPRESENTATION_CERTIFICATE_INVALID"
+                  ("exact-natural runtime certificate replay failed: " <> T.unpack detail)
+              ]
+            [] -> []
 
 validateRepresentationDecisions :: KBackendIR -> [BackendIRViolation]
 validateRepresentationDecisions backendIr =
@@ -3751,7 +3839,7 @@ lowerTermExpected expected term depth scopes = case term of
     lowerCtorTerm meta g ann
       [caTerm argument | argument <- arguments, caPayload argument]
       depth scopes
-  CMatch s _ann alts -> do
+  CMatch s _ann _resultAnn alts -> do
     meta <- metaAt
     ctors <- asks lsCtors
     globals <- asks lsGlobals
@@ -4497,7 +4585,7 @@ termTypeAt globals traits ctx depth scopes = go
       CProjAt e field _ -> projectionFieldType globals traits ctx depth scopes e field =<< go e
       CSealE _ e -> go e
       CIf _ t f -> sameType (go t) (go f)
-      CMatch _ ann _ -> evalTypeAt ctx depth <$> ann
+      CMatch _ _ resultAnn _ -> evalTypeAt ctx depth <$> resultAnn
       CCtorI _ _ (Just constructorType) arguments ->
         applyArgs
           (evalTypeAt ctx depth constructorType)
@@ -4943,9 +5031,9 @@ lowerPattern depth expected q borrowed origin pat = do
 lowerPatShape :: Int -> Maybe Value -> CorePat -> Lower (BackendPat, [Bool])
 lowerPatShape depth expected = \case
   CPWild -> pure (BPWild, [])
-  CPVar n -> pure (BPVar n, [True])
+  CPVarM _ n -> pure (BPVar n, [True])
   CPLit l -> pure (BPLit l, [])
-  CPCtor g nEx ps -> do
+  CPCtorM existentialModes bridges hidden g _ ps -> do
     (runtimeArity, fieldFacts) <- ctorExplicitRuntimePatternFacts g (length ps)
     forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
       unless runtime $ do
@@ -4958,12 +5046,33 @@ lowerPatShape depth expected = \case
           ++ [(True, Just index) | index <- [runtimeArity ..]]
         fields = zip3 placements (map fst lowered) (map snd lowered)
         pats' = [(physicalIndex, p') | ((True, Just physicalIndex), p', _) <- fields]
-        slots =
-          replicate nEx False
-            ++ concat
-              [ if keep then patSlots else map (const False) patSlots
-              | ((keep, _), _, patSlots) <- fields
-              ]
+        explicitSlots =
+          [ if keep then patSlots else map (const False) patSlots
+          | ((keep, _), _, patSlots) <- fields
+          ]
+    sourceSlots <-
+      case interleaveConstructorSourceBinders hidden explicitSlots of
+        Just source ->
+          pure
+            ( concatMap
+                (either (const [False]) id)
+                source
+            )
+        Nothing -> do
+          violationMeta <- metaAt
+          recordLoweringViolation
+            violationMeta
+            "E_BACKENDIR_CONSTRUCTOR_PATTERN_ALIGNMENT"
+            "constructor pattern hidden-field positions do not form a valid source telescope"
+          pure
+            ( replicate (length hidden) False
+                ++ concatMap (map (const False)) explicitSlots
+            )
+    let slots =
+          replicate
+            (length existentialModes + constructorBridgeBinderCount bridges)
+            False
+            ++ sourceSlots
     pure (BPCtor g runtimeArity pats', slots)
   CPTuple ps -> do
     ctx <- asks lsCtx
@@ -4985,10 +5094,11 @@ lowerPatShape depth expected = \case
             | ((keep, _), _, patSlots) <- fields
             ]
     pure (BPTuple runtimeArity pats', slots)
-  CPRecord fs rest ->
+  CPRecordM fs restDescriptor ->
     do
       ctx <- asks lsCtx
-      let fieldFacts = namedRecordPatternFacts ctx depth expected
+      let rest = fmap snd restDescriptor
+          fieldFacts = namedRecordPatternFacts ctx depth expected
       forM_ fieldFacts $ \(name, runtime, _, provenance) ->
         unless runtime $ do
           erasureMeta <- metaAt
@@ -5016,8 +5126,8 @@ lowerPatShape depth expected = \case
   CPInject tag p -> do
     (p', slots) <- lowerPatShape depth Nothing p
     pure (BPInject tag p', slots)
-  CPInjectRest tags -> pure (BPInjectRest tags, [True])
-  CPAs name p -> do
+  CPInjectRestM _ tags -> pure (BPInjectRest tags, [True])
+  CPAsM _ name p -> do
     (p', slots) <- lowerPatShape depth expected p
     pure (BPAs name p', True : slots)
   CPOr ps perms -> do

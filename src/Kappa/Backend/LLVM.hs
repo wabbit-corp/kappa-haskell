@@ -50,12 +50,14 @@ import Kappa.Backend.IR
   , BackendBody (..)
   , BackendCond (..)
   , BackendCtorLayout (..)
+  , BackendExactNaturalOperation (..)
   , BackendItem (..)
   , BackendMeta (..)
   , BackendParam (..)
   , BackendPat (..)
   , BackendTerm (..)
   , KBackendIR (..)
+  , backendExactNaturalOperation
   , lowerKBackendIR
   )
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
@@ -65,6 +67,7 @@ import Kappa.Build.Types (FfiClass (..))
 import Kappa.Check (CheckState (..))
 import Kappa.Core
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
+import Kappa.Representation (ExactNaturalRepresentationCertificate)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex)
 
@@ -92,6 +95,7 @@ data GenState = GenState
   , gsEvalCtx :: !EvalCtx -- ^ a non-runtime EvalCtx (from the CheckState), used only to 'quote' a global's 'gdType' to a Term in 'isTypeGlob' (the sort-kind erasure fallback — mirrors C's 'gsEvalCtx').
   , gsBodies :: !(Map GName Term)
   , gsBackendBodies :: !(Map GName BackendBody)
+  , gsExactNaturalCertificate :: !(Maybe ExactNaturalRepresentationCertificate)
   , gsSuspenders :: !(Set GName) -- ^ Shared §3.3 transitive suspender closure. A do-block that reaches one of these heads must lower to a CK-machine action tree; a non-suspending block can stay as a suspended legacy kio thunk so its pure lets are not evaluated at action construction time.
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsDeclSites :: !(Map GName Span)
@@ -293,7 +297,7 @@ userCtorKeys = goT
       CLevel {} -> Set.empty
       CLit {} -> Set.empty
       CCtor g _ args -> user g <> foldMap goT args
-      CMatch s _ alts -> goT s <> foldMap goAlt alts
+      CMatch s _ _ alts -> goT s <> foldMap goAlt alts
       CRecordT fs -> foldMap (goT . snd) fs
       CRecordV fs -> foldMap (goT . snd) fs
       CProj e _ -> goT e
@@ -472,6 +476,7 @@ generateLL rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
                 , gsEvalCtx = evalCtx0
                 , gsBodies = csCoreBodies cs
                 , gsBackendBodies = kbirBodies backendIr
+                , gsExactNaturalCertificate = kbirExactNaturalCertificate backendIr
                 , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
                 , gsPrims = Set.union basePrims ffiPrims
                 , gsDeclSites = csDeclSites cs
@@ -997,18 +1002,21 @@ compileCurriedFunction params inner = case params of
 -- depth is bounded by EXPRESSION depth, not recursion depth.
 compileTail :: BackendTerm -> Gen Text
 compileTail term = case term of
-  BApp {}
-    -- A saturated eta-expanded constructor is a final data value — build it
-    -- directly (it cannot bounce or recurse).
-    | Just (g, ctorArgs) <- etaCtorApp term -> compileCtor g ctorArgs
-    | otherwise -> do
-        let (hd, _) = backendSpineOf term
-        mp <- case hd of BGlob _ g -> globPrimName g; _ -> pure Nothing
-        case mp of
-          -- A prim spine returns a value (no bounce) iff it is the saturated
-          -- fast path; otherwise it falls through 'compile' to the kapp chain.
-          Just pname | saturatedPrim pname term -> compile term
-          _ -> compileTailApp term
+  BApp {} ->
+    compileExactNaturalApplication term >>= \case
+      Just result -> pure result
+      Nothing
+        -- A saturated eta-expanded constructor is a final data value — build it
+        -- directly (it cannot bounce or recurse).
+        | Just (g, ctorArgs) <- etaCtorApp term -> compileCtor g ctorArgs
+        | otherwise -> do
+            let (hd, _) = backendSpineOf term
+            mp <- case hd of BGlob _ g -> globPrimName g; _ -> pure Nothing
+            case mp of
+              -- A prim spine returns a value (no bounce) iff it is the saturated
+              -- fast path; otherwise it falls through 'compile' to the kapp chain.
+              Just pname | saturatedPrim pname term -> compile term
+              _ -> compileTailApp term
   BLet _ _ _ _ rhs body -> do
     rv <- compile rhs
     env0 <- gets gsEnv
@@ -4284,33 +4292,37 @@ litValueLL = \case
 -- ('compilePrimValue', Milestone D).  Any other global is a CAF: emit a call to
 -- its accessor and enqueue it.
 compileGlob :: GName -> Gen Text
-compileGlob g@(GName m nm)
-  | m == primModule = compilePrimValue nm
-  | otherwise = do
-      globals <- gets gsGlobals
-      hostSyms <- gets gsHostSyms
-      case Map.lookup g globals of
-        Just gd | Just (VPrim pname _) <- gdValue gd -> compilePrimValue pname
-        -- Milestone L (§27.1.1): a provided host-binding member is lowered like
-        -- a PRIM over its codegen-emitted C wrapper — a CURRIED native closure
-        -- ('knative' over 'wrapperCName', IO since native bindings are UIO).
-        -- Recognised HERE at the reference (mirrors C's 'emitHostNative' at the
-        -- 'compileGlob' site), so it is never enqueued as a no-core-body CAF
-        -- (the 'emitGlobal' no-core-body rejection — the delve "(definition)"
-        -- errors).  A saturated reference takes the 'knative_sat' fast path in
-        -- 'compileApp'.
-        _ | Just rns <- Map.lookup g hostSyms -> compileHostValue rns
-        _ -> do
-          enqueue g
-          let ident = cGlobIdent g
-          -- No forward @declare@: the accessor is enqueued and emitted as a
-          -- @define internal@ in THIS module, and LLVM resolves an intra-module
-          -- call by name regardless of definition order.  A @declare@ here would
-          -- be an external-linkage prototype that CLASHES with the later
-          -- @define internal@ (an "invalid redefinition") — so it is omitted.
-          r <- freshReg
-          emit (r <> " = call ptr @" <> ident <> "()")
-          pure r
+compileGlob g@(GName m nm) = do
+  certificate <- gets gsExactNaturalCertificate
+  case backendExactNaturalOperation certificate g of
+    Just operation -> compileExactNaturalValue operation
+    Nothing
+      | m == primModule -> compilePrimValue nm
+      | otherwise -> do
+          globals <- gets gsGlobals
+          hostSyms <- gets gsHostSyms
+          case Map.lookup g globals of
+            Just gd | Just (VPrim pname _) <- gdValue gd -> compilePrimValue pname
+            -- Milestone L (§27.1.1): a provided host-binding member is lowered like
+            -- a PRIM over its codegen-emitted C wrapper — a CURRIED native closure
+            -- ('knative' over 'wrapperCName', IO since native bindings are UIO).
+            -- Recognised HERE at the reference (mirrors C's 'emitHostNative' at the
+            -- 'compileGlob' site), so it is never enqueued as a no-core-body CAF
+            -- (the 'emitGlobal' no-core-body rejection — the delve "(definition)"
+            -- errors).  A saturated reference takes the 'knative_sat' fast path in
+            -- 'compileApp'.
+            _ | Just rns <- Map.lookup g hostSyms -> compileHostValue rns
+            _ -> do
+              enqueue g
+              let ident = cGlobIdent g
+              -- No forward @declare@: the accessor is enqueued and emitted as a
+              -- @define internal@ in THIS module, and LLVM resolves an intra-module
+              -- call by name regardless of definition order.  A @declare@ here would
+              -- be an external-linkage prototype that CLASHES with the later
+              -- @define internal@ (an "invalid redefinition") — so it is omitted.
+              r <- freshReg
+              emit (r <> " = call ptr @" <> ident <> "()")
+              pure r
 
 -- | A primitive used as a VALUE (Milestone D): build the curried native closure
 -- @knative(\@kpf_*, arity, name, isio)@ — the same closure the C backend's
@@ -4442,7 +4454,13 @@ backendMetaOf = \case
 -- prim, is out of Milestone-A scope (general @kapp@/closures are Milestone C)
 -- and reported.
 compileApp :: BackendTerm -> Gen Text
-compileApp term
+compileApp term = do
+  compileExactNaturalApplication term >>= \case
+    Just result -> pure result
+    Nothing -> compileAppAfterExactNatural term
+
+compileAppAfterExactNatural :: BackendTerm -> Gen Text
+compileAppAfterExactNatural term
   -- §10.1/P0-A: a saturated application of an ETA-EXPANDED constructor — the
   -- @CApp (… (CLam … (CCtor g [CVar…]))) args@ shape elaboration produces for a
   -- field-carrying constructor occurrence ('etaCtorApp') — beta-reduces to a
@@ -4451,7 +4469,7 @@ compileApp term
   -- through as a bare 'CCtor'), so without it 'match'-on-a-constructed-value and
   -- every field-carrying construction would fall to the unsupported head path.
   | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
-compileApp term0 = do
+compileAppAfterExactNatural term0 = do
   let term = term0
       (hd, sargs) = backendSpineOf term
   case hd of
@@ -4493,6 +4511,91 @@ compileApp term0 = do
                       compileScalarFnCallLL g pks ret sargs runtimeIdxs
                 _ -> compileAppDefault term
     _ -> compileAppDefault term
+
+compileExactNaturalApplication :: BackendTerm -> Gen (Maybe Text)
+compileExactNaturalApplication term =
+  case backendSpineOf term of
+    (BGlob _ global, arguments) -> do
+      certificate <- gets gsExactNaturalCertificate
+      case backendExactNaturalOperation certificate global of
+        Nothing -> pure Nothing
+        Just operation -> do
+          let explicit = [argTerm argument | argument <- arguments, argIcit argument == Expl]
+              implicitCount = length arguments - length explicit
+          if implicitCount /= 0 || length explicit > 2
+            then pure Nothing
+            else Just <$> compileExactNaturalOperation operation explicit
+    _ -> pure Nothing
+
+compileExactNaturalOperation :: BackendExactNaturalOperation -> [BackendTerm] -> Gen Text
+compileExactNaturalOperation operation arguments
+  | length arguments == 2 = do
+      compiled <- mapM compile arguments
+      let symbol = exactNaturalDirectSymbol operation
+      declRuntime ("declare ptr @" <> symbol <> "(ptr, ptr)")
+      result <- freshReg
+      emit
+        ( result
+            <> " = call ptr @"
+            <> symbol
+            <> "(ptr "
+            <> T.intercalate ", ptr " compiled
+            <> ")"
+        )
+      pure result
+  | otherwise = do
+      start <- compileExactNaturalValue operation
+      foldM
+        (\function argument -> do
+          compiled <- compile argument
+          declRuntime "declare ptr @kapp(ptr, ptr)"
+          result <- freshReg
+          emit
+            ( result
+                <> " = call ptr @kapp(ptr "
+                <> function
+                <> ", ptr "
+                <> compiled
+                <> ")"
+            )
+          pure result)
+        start
+        arguments
+
+compileExactNaturalValue :: BackendExactNaturalOperation -> Gen Text
+compileExactNaturalValue operation = do
+  let wrapper = exactNaturalWrapperSymbol operation
+  declRuntime "declare ptr @knative(ptr, i32, ptr, i32)"
+  declRuntime ("declare ptr @" <> wrapper <> "(ptr)")
+  debugName <- internCStr (exactNaturalDebugName operation)
+  result <- freshReg
+  emit
+    ( result
+        <> " = call ptr @knative(ptr @"
+        <> wrapper
+        <> ", i32 2, ptr "
+        <> debugName
+        <> ", i32 0)"
+    )
+  pure result
+
+exactNaturalDirectSymbol :: BackendExactNaturalOperation -> Text
+exactNaturalDirectSymbol = \case
+  BackendNaturalAdd -> "kp_addInt"
+  BackendNaturalMultiply -> "kp_mulInt"
+  BackendNaturalCompare -> "kp_compareInt"
+
+exactNaturalWrapperSymbol :: BackendExactNaturalOperation -> Text
+exactNaturalWrapperSymbol = \case
+  BackendNaturalAdd -> "kpf_exact_nat_add"
+  BackendNaturalMultiply -> "kpf_exact_nat_multiply"
+  BackendNaturalCompare -> "kpf_exact_nat_compare"
+
+exactNaturalDebugName :: BackendExactNaturalOperation -> Text
+exactNaturalDebugName = \case
+  BackendNaturalAdd -> "exact Nat addition"
+  BackendNaturalMultiply -> "exact Nat multiplication"
+  BackendNaturalCompare -> "exact Nat comparison"
 
 -- | Milestone L (§27.1.1): lower a saturated host-member application to a direct
 -- @knative_sat@ over its C wrapper ('wrapperCName'), the same node 'compileIoSat'

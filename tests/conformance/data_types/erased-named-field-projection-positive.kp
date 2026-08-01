@@ -22,3 +22,4 @@ let boundedProof @limit @x =
 
 --! mode check
 --! assertNoErrors
+--! assertStageDumpRoundTrips KCore

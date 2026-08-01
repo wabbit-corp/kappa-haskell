@@ -41,6 +41,7 @@ import Kappa.Backend.IR
   , BackendBody (..)
   , BackendCond (..)
   , BackendCtorLayout (..)
+  , BackendExactNaturalOperation (..)
   , BackendItem (..)
   , BackendMeta (..)
   , BackendNodeId (..)
@@ -53,6 +54,7 @@ import Kappa.Backend.IR
   , BackendUse (..)
   , KBackendIR (..)
   , BackendUseId (..)
+  , backendExactNaturalOperation
   , kbackendRepresentationCertificates
   , lowerKBackendIR
   , validateCoreCapabilities
@@ -80,6 +82,9 @@ import Kappa.Builtins
   , prelInt
   , prelLevelLe
   , prelNat
+  , prelNatAdd
+  , prelNatCompare
+  , prelNatMultiply
   , prelNatSucc
   , prelNatZero
   , prelUnit
@@ -2339,7 +2344,7 @@ universeCapabilityBoundary = do
       modeLevelCodes = map bivCode (validateCoreCapabilities modeLevel)
       annotationLevelMetas =
         ( levelMetasOfTerm (CCtor prelUnit (Just (CSort (LMeta 80))) [])
-        , levelMetasOfTerm (CMatch (CGlob prelUnit) (Just (CSort (LMeta 81))) [])
+        , levelMetasOfTerm (CMatch (CGlob prelUnit) (Just (CSort (LMeta 81))) Nothing [])
         )
       generatedOwner = GName (ModuleName [T.pack "universe_capability"]) (T.pack "generatedBad")
       mismatchedGeneratedMode =
@@ -2370,7 +2375,7 @@ universeCapabilityBoundary = do
           , csCoreBodies =
               Map.singleton patternOwner
                 (CLamM Ordinary Expl QW "s"
-                  (CMatch (CVar 0) Nothing
+                  (CMatch (CVar 0) Nothing Nothing
                     [CaseAlt
                       (CPRecordM [("A", CPVarM Ordinary "A")] Nothing)
                       Nothing
@@ -2827,6 +2832,7 @@ constructorPatternAlignmentDomain = do
         CPCtorM
           []
           []
+          []
           constructor
           []
           [CPVarM Ordinary (T.pack "value")]
@@ -3208,6 +3214,11 @@ representationCertificateIdentityDomain = do
       wrapper = GName (ModuleName ["test", "representation"]) "Wrapper"
       wrapperCtor = GName (ModuleName ["test", "representation"]) "MkWrapper"
       wrapperType = CGlob wrapper
+      nonCanonicalExactCertificate =
+        exactCertificate
+          { enrcRepresentedType = wrapperType
+          , enrcTypeIdentity = representationTypeIdentity context wrapperType
+          }
       refinementCertificate =
         RefinementRepresentationCertificate
           { rrcContext = context
@@ -3229,6 +3240,21 @@ representationCertificateIdentityDomain = do
         all (isLeft . verify) mutations
       checks =
         [ ("exact-natural certificate verifies", verifyExactNaturalRepresentationCertificate exactCertificate == Right ())
+        , ( "canonical exact-natural operations require the verified Nat certificate"
+          , and
+              [ backendExactNaturalOperation (Just exactCertificate) prelNatAdd
+                  == Just BackendNaturalAdd
+              , backendExactNaturalOperation (Just exactCertificate) prelNatMultiply
+                  == Just BackendNaturalMultiply
+              , backendExactNaturalOperation (Just exactCertificate) prelNatCompare
+                  == Just BackendNaturalCompare
+              , backendExactNaturalOperation Nothing prelNatMultiply == Nothing
+              , backendExactNaturalOperation
+                  (Just nonCanonicalExactCertificate)
+                  prelNatMultiply
+                  == Nothing
+              ]
+          )
         , ("ordinal certificate verifies", verifyOrdinalRepresentationCertificate ordinalCertificate == Right ())
         , ("refinement certificate verifies", verifyRefinementRepresentationCertificate refinementCertificate == Right ())
         , ( "exact-natural decisive fields affect identity"
@@ -4876,8 +4902,13 @@ backendIRPhaseAS5 = do
       constructorPatternErasedTailReindexed =
         any
           ( \case
-              BackendAlt _ (BPCtor g 2 [(0, BPWild), (1, BPVar n)]) binders _ _ ->
-                g == mkErasedTailG && n == T.pack "b" && length binders == 1
+              BackendAlt
+                _
+                (BPCtor g 2 [(0, BPAs _ BPWild), (1, BPVar n)])
+                [Just _, Just _]
+                _
+                _ ->
+                  g == mkErasedTailG && n == T.pack "b"
               _ -> False
           )
           erasedTailAlts
@@ -4949,6 +4980,8 @@ backendIRPhaseAS5 = do
   unless (null failed) $ do
     putStrLn "backendIRPhaseAS5 FAILED:"
     mapM_ (putStrLn . ("  " <>)) failed
+    unless constructorPatternErasedTailReindexed $
+      putStrLn ("  erased-tail alternatives=" <> show erasedTailAlts)
     case renderedKCore of
       Left err ->
         putStrLn
@@ -5003,8 +5036,10 @@ backendIRValidatorS5 = do
       meta3 = BackendMeta (BackendNodeId 3) []
       malformed bodies violations =
         KBackendIR
-          { kbirBodies = bodies
+          { kbirModule = m
+          , kbirBodies = bodies
           , kbirCapabilities = Set.empty
+          , kbirExactNaturalCertificate = Nothing
           , kbirSourceFields = Map.empty
           , kbirRepresentations = Map.empty
           , kbirLoweringViolations = violations

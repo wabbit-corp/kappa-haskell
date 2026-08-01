@@ -15,12 +15,13 @@ commutative natural-sum `TypeLevel`, finite observation dependencies, parametric
 sealing, standard schema families, replayable structural level evidence, nominal role
 inference, schema action summaries, explicit `CSchemaLift`, and the complete KCoreText grammar.
 The focused universe ledger, full conformance/unit gate, native parity, RC detector lanes,
-package builds, and performance gate are green. The measured full test result is 3,055 passed,
-zero failed, and eight explicitly unsupported future variance capabilities (3,063 total).
+package builds, and performance gate are green. The current full conformance result is 3,788
+passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,798 total):
+eight future variance suites and two optional compact Nat/Fin layout suites.
 The focused owner gates are
 47/47 ordinary/parametric/KCoreText, 88/88 package/schema (71 imported plus 17 strengthening),
-34/34 current variance with eight future HIIT/HIRT/QIT/QIIT cases capability-gated, and 71/71
-under the active first-class-level root (67 bundle contracts plus 4 implementation-strengthening
+34/34 current variance with eight future HIIT/HIRT/QIT/QIIT cases capability-gated, and 72/72
+under the active first-class-level root (67 bundle contracts plus 5 implementation-strengthening
 contracts).
 
 The 2026-07-24 closeout additionally passed the spec and universe-ledger validators, focused
@@ -44,7 +45,7 @@ interfaces, and KCoreText, while 8 are capability-gated future HIIT/HIRT/QIT/QII
 U-F0 owns the resulting active ledger of 160 bundle suites plus the 17 strengthening suites.
 The new first-class-level bundle contributes 67 additional suites: 47 accepts and 20 rejects,
 split into 29 positive source, 17 negative source, 13 direct solver, and 8 KCoreText suites.
-Its manifest, catalog, validator, and READMEs agree on 67. Those 67 plus 4 explicitly catalogued
+Its manifest, catalog, validator, and READMEs agree on 67. Those 67 plus 5 explicitly catalogued
 implementation-strengthening contracts are active under
 `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`.
 
@@ -394,12 +395,12 @@ binders, and monotonicity becomes ordinary trait evidence. Preserve every establ
 soundness barrier while making these migrations; compatibility with dirty internal structures
 is not a reason to retain a superseded semantic contract.
 
-- **U-G0 — import and classify the 67-suite contract (implemented; ledger green).** The exact bundle tree plus four
+- **U-G0 — import and classify the 67-suite contract (implemented; ledger green).** The exact bundle tree plus five
   implementation-strengthening suites is active at
   `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`
   with its manifest, preserving 47 accepts and 20 rejects: 29 positive, 17 negative, 13
   solver, and 8 KCoreText suites. Extend `validate_universe_contract.py` to own every path and
-  stage without capability skips. *Gate:* exact 67-path base inventory plus the exact four-path
+  stage without capability skips. *Gate:* exact 67-path base inventory plus the exact five-path
   strengthening inventory, machine-checked provenance and current `docs/Spec.md` target, all
   source and `.kcore` files present, no harness errors misreported as language outcomes, and an
   owner stage for every suite.
@@ -488,7 +489,7 @@ is not a reason to retain a superseded semantic contract.
   goals, canonical evidence dependencies, and version fields through interfaces and stage
   dumps. Replay the required substitution, subject-reduction, entailment, inference,
   generalization, recursion, eta-reification, role-evidence, cache, and noninterference
-  obligations. Promote all 67 bundle leaves and 4 strengthening leaves only at their owner
+  obligations. Promote all 67 bundle leaves and 5 strengthening leaves only at their owner
   gates, then run the universe ledger,
   spec validator, unit/property, full conformance, KCoreText/interface, interpreter, C/LLVM,
   RC/poison/TSan, package, and performance gates. The 2026-07-24 closeout passed every listed
@@ -497,7 +498,7 @@ is not a reason to retain a superseded semantic contract.
 **U-G exit:** every stable total level term has a deterministic admissibility and neutral-atom
 story; rigid entailment and portable inference expose their distinct contracts; declaration
 constraints have one proof-binder authority; recursive schema calls, schema reification, and
-monotonicity evidence are explicit and replayable; all 67 bundle suites plus 4 strengthening
+monotonicity evidence are explicit and replayable; all 67 bundle suites plus 5 strengthening
 suites are active; and the full
 U-E/U-F/U-G regression gate is clean.
 
@@ -572,7 +573,7 @@ U-E/U-F/U-G regression gate is clean.
 
 1. **The conformance gate:** active tests stay green at every stage; the 118 existing bundle
    leaves, 17 strengthening leaves, and all 42 variance leaves remain active. The 67 G-bundle
-   leaves plus 4 strengthening leaves are discoverable at G0 and promote only after their
+   leaves plus 5 strengthening leaves are discoverable at G0 and promote only after their
    owner stage passes; none has a capability-skip escape hatch.
 2. **Level algebra properties (E2):** exhaustive small `omega*c+n` values establish source,
    solver, interpreter, C, and LLVM agreement for compare/succ/add/max and all required laws.
@@ -734,7 +735,7 @@ current normative delta.
 | **U-F6** | interfaces, opacity, identity, trait coherence | opaque import/hash/instance-order gates |
 | **U-F7** | standard-family and generated coherence | equality/bounded/GADT/case/partial-former gates |
 | **U-F8** | future boundary, metatheory, closeout | 34 current active; future capabilities honest; full gate |
-| **U-G0** | first-class-level ledger | 67 bundle + 4 strengthening contracts; no capability skips |
+| **U-G0** | first-class-level ledger | 67 bundle + 5 strengthening contracts; no capability skips |
 | **U-G1** | admissibility + neutral atoms | opaque/projection/snapshot/identity/stability gates |
 | **U-G2** | solver layers + portable outcomes | 13 solver suites; cancellation/residuation/classification |
 | **U-G3** | rigid generalization + proof constraints | boundary/escape/proof-binder/package gates |
@@ -742,7 +743,7 @@ current normative delta.
 | **U-G5** | recursive schemas + termination edges | identity/lower/strict/increase/implicit controls |
 | **U-G6** | direct lifts + schema/forall reification | expected-type and explicit-argument controls |
 | **U-G7** | ordinary monotonicity evidence | local/global/standard/no-scan/cycle gates |
-| **U-G8** | artifacts, harness, metatheory, closeout | all 67 + 4 active; full U-E/U-F/U-G gate green |
+| **U-G8** | artifacts, harness, metatheory, closeout | all 67 + 5 active; full U-E/U-F/U-G gate green |
 
 Current ordering rationale: E0 prevents silent expectation drift. E1 separates the three axes
 before any formation fix. E2 settles the algebra consumed by principal solving. E3 establishes

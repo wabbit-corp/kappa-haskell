@@ -27,6 +27,8 @@ module Kappa.CoreText
   , semanticHashKCoreText
   , kcoreArithmeticCertificateCount
   , kcoreRepresentationCertificateCount
+  , kcoreArithmeticCertificateMutationCases
+  , kcoreRepresentationCertificateMutationCases
   , kcoreHasValidSchemaCertificate
   , kcoreLevelCertificateDependencies
   , kcoreNominalRoles
@@ -843,8 +845,8 @@ portableArithmeticProvider trait evidence = \case
       , kapTrait = trait
       , kapLaw = Nothing
       , kapNormalFormVersion = Nothing
-      , kapProviderVersion = Nothing
-      , kapCheckerVersion = Nothing
+      , kapProviderVersion = Just directArithmeticProviderVersion
+      , kapCheckerVersion = Just directArithmeticProviderCheckerVersion
       , kapEvidence = evidence
       }
   Just provider ->
@@ -858,6 +860,12 @@ portableArithmeticProvider trait evidence = \case
       , kapCheckerVersion = Just (anpCheckerVersion provider)
       , kapEvidence = evidence
       }
+
+directArithmeticProviderVersion :: Integer
+directArithmeticProviderVersion = 1
+
+directArithmeticProviderCheckerVersion :: Integer
+directArithmeticProviderCheckerVersion = 1
 
 standardNormalizationProviders :: KTerm -> [KArithmeticProvider]
 standardNormalizationProviders evidence =
@@ -4062,14 +4070,34 @@ verifyRepresentationCertificateSummaries KRepresentationCertificate {..} =
   case krcKind of
     KRepresentationOrdinal -> do
       program <- mapProgram "rankTerm"
+      encoding <- case program of
+        KVList [KVText "ordinal-v1", _, encoded] -> pure encoded
+        _ -> Left "ordinal representation map has a malformed structural program"
+      requireExact "constructorEncoding" encoding
       requireExact
         "eliminatorSimulation"
         (KVList [KVText "structural-bijection-v1", program])
     KRepresentationExactNatural -> do
+      program <- mapProgram "toNatTerm"
+      (programZero, programSuccessor, programRecursive, programErased) <-
+        case program of
+          KVList
+            [ KVText "exact-natural-v1"
+            , zero
+            , successor
+            , recursive
+            , erased
+            ] ->
+              pure (zero, successor, recursive, erased)
+          _ ->
+            Left "exact-natural representation map has a malformed structural program"
       zero <- requiredValue "zeroConstructor"
       successor <- requiredValue "successorConstructor"
       recursiveField <- requiredValue "recursiveField"
-      program <- mapProgram "toNatTerm"
+      requireExactValue "zeroConstructor" zero programZero
+      requireExactValue "successorConstructor" successor programSuccessor
+      requireExactValue "recursiveField" recursiveField programRecursive
+      requireExact "erasureView" programErased
       requireExact
         "constructorSimulation"
         ( KVList
@@ -4084,6 +4112,19 @@ verifyRepresentationCertificateSummaries KRepresentationCertificate {..} =
         (KVList [KVText "structural-bijection-v1", program])
     KRepresentationRefinement -> do
       program <- mapProgram "baseProjection"
+      (programRetained, programErased) <- case program of
+        KVList
+          [ KVText "refinement-v1"
+          , _
+          , retained
+          , erased
+          ] ->
+            pure (retained, erased)
+        _ ->
+          Left "refinement representation map has a malformed structural program"
+      requireExact "retainedBaseField" programRetained
+      requireExact "erasedEvidenceFields" programErased
+      requireExact "erasureView" programErased
       requireExact
         "eliminatorSimulation"
         (KVList [KVText "structural-bijection-v1", program])
@@ -4110,6 +4151,8 @@ verifyRepresentationCertificateSummaries KRepresentationCertificate {..} =
             )
     requireExact name expected = do
       actual <- requiredValue name
+      requireExactValue name actual expected
+    requireExactValue name actual expected =
       unless (actual == expected) $
         Left
           ( "representation-certificate field '"
@@ -4151,6 +4194,25 @@ verifyOptionalCertificateIdentity name fields =
             <> "' must be a nonempty identity or []"
         )
 
+representationSemanticRefValue :: StableRef -> KValueNode
+representationSemanticRefValue ref =
+  KVList
+    [ KVText "semantic-ref"
+    , KVText (srName ref)
+    , KVText (srId ref)
+    ]
+
+decodeRepresentationSemanticRef :: KValueNode -> Either Text StableRef
+decodeRepresentationSemanticRef = \case
+  KVList
+    [ KVText "semantic-ref"
+    , KVText readable
+    , KVText identity
+    ]
+      | not (T.null identity) ->
+          pure (StableRef readable identity)
+  _ -> Left "representation certificate contains a malformed semantic reference"
+
 verifyCertificateFieldPaths
   :: VerifyContext
   -> [(Text, KValueNode)]
@@ -4162,8 +4224,8 @@ verifyCertificateFieldPaths context fields name =
     Nothing -> Left ("representation-certificate is missing field '" <> name <> "'")
   where
     decodePaths = \case
-      KVList [KVGlobal constructor [], KVInteger index] ->
-        pure [(constructor, index)]
+      KVList [constructorNode, KVInteger index] ->
+        (: []) . (, index) <$> decodeRepresentationSemanticRef constructorNode
       KVList nodes -> concat <$> mapM decodePaths nodes
       _ ->
         Left
@@ -4207,15 +4269,11 @@ representationCertificateTypeIdentity
   :: KRepresentationCertificate
   -> Text
 representationCertificateTypeIdentity certificate =
-  case canonicalizeDecl (KDRepresentationCertificate certificate) of
-    KDRepresentationCertificate KRepresentationCertificate {..} ->
-      contextualKCoreTypeIdentity
-        krcUniverses
-        krcBinders
-        krcConstraints
-        krcTarget
-    _ ->
-      contextualKCoreTypeIdentity [] [] [] (krcTarget certificate)
+  contextualKCoreTypeIdentity
+    (krcUniverses certificate)
+    (krcBinders certificate)
+    (krcConstraints certificate)
+    (krcTarget certificate)
 
 contextualKCoreTypeIdentity
   :: [UniverseRef]
@@ -4224,16 +4282,32 @@ contextualKCoreTypeIdentity
   -> KTerm
   -> Text
 contextualKCoreTypeIdentity universes binders constraints target =
-  canonicalIdentityHex
-    "TypeNF"
-    ( T.intercalate
-        "\n"
-        [ T.intercalate "," (map renderUniverse universes)
-        , T.intercalate "\n" (map printBinder binders)
-        , T.intercalate "\n" (map printConstraint constraints)
-        , printTerm target
-        ]
-    )
+  case canonicalizeDecl (KDRepresentationCertificate prototype) of
+    KDRepresentationCertificate canonical ->
+      canonicalIdentityHex
+        "TypeNF"
+        ( T.intercalate
+            "\n"
+            [ T.intercalate "," (map renderUniverse (krcUniverses canonical))
+            , T.intercalate "\n" (map printBinder (krcBinders canonical))
+            , T.intercalate "\n" (map printConstraint (krcConstraints canonical))
+            , printTerm (krcTarget canonical)
+            ]
+        )
+    _ -> canonicalIdentityHex "TypeNF" "invalid"
+  where
+    prototype =
+      KRepresentationCertificate
+        { krcRef = StableRef "type-identity.pending" "pending"
+        , krcUniverses = universes
+        , krcBinders = binders
+        , krcCheckerVersion = 1
+        , krcCertificateVersion = 1
+        , krcKind = KRepresentationOrdinal
+        , krcTarget = target
+        , krcConstraints = constraints
+        , krcPayload = []
+        }
 
 representationCertificateIdentity
   :: KRepresentationCertificate
@@ -4744,7 +4818,22 @@ verifyTermScoped context universes assumptions env = \case
               payload0
               alignment
       unless (length payload == length (casePayloadBinders bindings)) $
-        Left (invalid "case pattern binder count does not match the constructor payload telescope")
+        Left
+          ( invalid
+              ( "case pattern binder count does not match the constructor payload telescope"
+                  <> " (expected " <> tshow (length payload)
+                  <> ", found " <> tshow (length (casePayloadBinders bindings))
+                  <> ", unresolved parameters "
+                  <> tshow
+                    [ lrId (kbRef binder)
+                    | binder <- parameters
+                    , Map.notMember
+                        (lrId (kbRef binder))
+                        (kcaParameterSubstitution alignment)
+                    ]
+                  <> ")"
+              )
+          )
       env' <-
         checkCaseBindings
           refinedEnv
@@ -6552,7 +6641,8 @@ alignKConstructorResult allowRefinements allowPropositional nominalFamily localA
                       Just alignment
                   | otherwise ->
                       refine alignment actualTerm prior
-            _ | equivalentSpecialized alignment patternTerm actualTerm ->
+            _ | noUnresolvedParameters alignment rawPatternTerm
+              , equivalentSpecialized alignment patternTerm actualTerm ->
                   Just alignment
             -- Recurse over declaration-owned result syntax, not its
             -- specialized copy. The latter contains caller-owned terms; a
@@ -6613,6 +6703,20 @@ alignKConstructorResult allowRefinements allowPropositional nominalFamily localA
       sameTerm
         (applyRefinements (kcaLocalRefinements alignment) lhs)
         (applyRefinements (kcaLocalRefinements alignment) rhs)
+
+    -- Declaration and use-site scopes may reuse the same presentation ids.
+    -- Do not let whole-term equality bypass parameter alignment while a
+    -- declaration parameter is still visible in the term: its apparent
+    -- equality may only be an id collision with an unrelated caller local.
+    noUnresolvedParameters alignment term =
+      Set.null
+        ( Set.intersection
+            (kTermLocalIds term)
+            ( Set.difference
+                parameterIds
+                (Map.keysSet (kcaParameterSubstitution alignment))
+            )
+        )
 
     finalizeDeclarationTerm alignment =
       applyRefinements (kcaLocalRefinements alignment)
@@ -7333,6 +7437,12 @@ sameKCoreTypeWith assumptions sameLevel context env lhs0 rhs0 =
       case (projectionEliminator lhs, projectionEliminator rhs) of
         (Just lhsProjection, Just rhsProjection) ->
           sameProjectionEliminator lhsProjection rhsProjection
+        _ | Just lhsProjection <- projectionEliminator lhs
+          , KTProject rhsField rhsScrutinee <- rhs ->
+            sameProjectionWithField lhsProjection rhsField rhsScrutinee
+          | KTProject lhsField lhsScrutinee <- lhs
+          , Just rhsProjection <- projectionEliminator rhs ->
+            sameProjectionWithField rhsProjection lhsField lhsScrutinee
         _ -> case (lhs, rhs) of
           (KTApply lhsFunction lhsArguments, KTApply rhsFunction rhsArguments) ->
             length lhsArguments == length rhsArguments
@@ -7368,6 +7478,24 @@ sameKCoreTypeWith assumptions sameLevel context env lhs0 rhs0 =
           && and (zipWith sameLevel lhsLevels rhsLevels)
           && same lhsScrutinee rhsScrutinee
           && same lhsResult rhsResult
+    sameProjectionWithField
+      (selectorScrutinee, _, constructor, _, payloadIndex)
+      field
+      projectedScrutinee =
+        same selectorScrutinee projectedScrutinee
+          && authenticatedProjectionPosition constructor field == Just payloadIndex
+    authenticatedProjectionPosition constructor field = do
+      guard
+        ( any
+            (\family ->
+               case knfConstructors family of
+                 [KCtorDecl familyConstructor _ _ _] ->
+                   familyConstructor == constructor
+                 _ -> False)
+            (Map.elems (vcNominalFamilies context))
+        )
+      positions <- Map.lookup constructor (vcConstructorFields context)
+      Map.lookup field positions
     findIndexBy predicate = goIndex 0
       where
         goIndex _ [] = Nothing
@@ -9561,26 +9689,53 @@ verifyRepresentationLaw context universes assumptions env fields = do
     applyUnary function argument =
       KTApply function [KArgument KExplicit argument]
     verifyGeneratedMap operation target auxiliary program = \case
-      KTLambda binder (KTGeneric tag mapFields)
-        | tag == representationMapTag
-        , isRepresentationValueBinder binder
-        , let inputType =
-                if operation == "to-auxiliary" then target else auxiliary
-        , same (kbType binder) inputType
-        , lookup "operation" mapFields == Just (KVText operation)
-        , lookup "target" mapFields == Just (KVTerm target)
-        , lookup "auxiliary" mapFields == Just (KVTerm auxiliary)
-        , lookup "program" mapFields == Just program
-        , lookup "value" mapFields == Just (KVTerm (KTLocal (kbRef binder) []))
-        , let outputType =
-                if operation == "to-auxiliary" then auxiliary else target
-        , lookup "result-type" mapFields == Just (KVTerm outputType) ->
-            verifyImplGenericSchema tag mapFields
+      KTLambda binder (KTGeneric tag mapFields) -> do
+        let inputType =
+              if operation == "to-auxiliary" then target else auxiliary
+            outputType =
+              if operation == "to-auxiliary" then auxiliary else target
+            require condition detail =
+              unless condition $
+                Left
+                  ( representationCertificateInvalid
+                      ( "representation law contains a noncanonical "
+                          <> operation <> " map: " <> detail
+                      )
+                  )
+        require (tag == representationMapTag) "wrong implementation-node tag"
+        require (isRepresentationValueBinder binder) "invalid value binder"
+        require (same (kbType binder) inputType) "input type does not match"
+        require
+          (lookup "operation" mapFields == Just (KVText operation))
+          "operation field does not match"
+        require
+          (matchesTerm "target" target mapFields)
+          "target field does not match"
+        require
+          (matchesTerm "auxiliary" auxiliary mapFields)
+          "auxiliary field does not match"
+        require
+          (lookup "program" mapFields == Just program)
+          "structural program does not match"
+        require
+          (lookup "value" mapFields == Just (KVTerm (KTLocal (kbRef binder) [])))
+          "value field does not reference its binder"
+        require
+          (matchesTerm "result-type" outputType mapFields)
+          "result type does not match"
+        verifyImplGenericSchema tag mapFields
       _ ->
         Left
           ( representationCertificateInvalid
-              ("representation law contains a noncanonical " <> operation <> " map")
+              ( "representation law contains a noncanonical "
+                  <> operation <> " map: expected a lambda over a representation-map node"
+              )
           )
+      where
+        matchesTerm name expected fields =
+          case lookup name fields of
+            Just (KVTerm actual) -> same actual expected
+            _ -> False
 
 -- | Validate the serialized structural representation algebra against the
 -- authenticated nominal and constructor interfaces.  The checker is
@@ -9612,11 +9767,13 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
       verifyOrdinalEncoding (Just target) encoding
     KVList
       [ KVText "exact-natural-v1"
-      , KVGlobal zero []
-      , KVGlobal successor []
+      , zeroNode
+      , successorNode
       , recursiveField
       , erasedFields
       ] -> do
+        zero <- decodeRepresentationSemanticRef zeroNode
+        successor <- decodeRepresentationSemanticRef successorNode
         unless (same auxiliary naturalType) $
           Left "exact-natural representation auxiliary is not Nat"
         family <- nominalTargetFamily target
@@ -9630,10 +9787,11 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
         mapM_ (verifyFieldPath family) (recursive : erased)
     KVList
       [ KVText "refinement-v1"
-      , KVGlobal constructor []
+      , constructorNode
       , retainedField
       , erasedFields
       ] -> do
+        constructor <- decodeRepresentationSemanticRef constructorNode
         family <- nominalTargetFamily target
         unless (familyConstructorRefs family == [constructor]) $
           Left "refinement constructor does not exactly match the represented family"
@@ -9685,9 +9843,10 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
         Left "represented target universe arity disagrees with its constructor"
       unless (length parameters == length arguments) $
         Left "represented target saturation disagrees with its constructor"
-      forM_ (zip parameters arguments) $ \(parameter, KArgument explicitness _) ->
-        unless (kbExplicitness parameter == explicitness) $
-          Left "represented target argument explicitness disagrees with its constructor"
+      -- Constructor occurrences omit family parameters and recover them
+      -- bidirectionally from their demanded result. Their constructor-side
+      -- binders may therefore be implicit even when the represented family
+      -- application spells the corresponding argument explicitly.
       let universeSubstitution =
             Map.fromList (zip (map urId schema) levels)
           constructorType1 =
@@ -9710,8 +9869,9 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
       pure ()
 
     decodeFieldPath = \case
-      KVList [KVGlobal constructor [], KVInteger sourceIndex]
-        | sourceIndex >= 0 ->
+      KVList [constructorNode, KVInteger sourceIndex]
+        | sourceIndex >= 0 -> do
+            constructor <- decodeRepresentationSemanticRef constructorNode
             pure (constructor, fromInteger sourceIndex)
       _ -> Left "representation program has a malformed constructor-field path"
 
@@ -9726,22 +9886,39 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
       KVList [KVText "contractible"] ->
         pure ()
       KVList [KVText "record", KVList fields] -> do
-        case expected of
-          Just (KTRecordType recordFields)
-            | length fields == length recordFields -> pure ()
-          Just _ -> Left "record ordinal encoding does not match its represented record"
-          Nothing -> pure ()
-        mapM_ (verifyOrdinalEncoding Nothing) fields
+        expectedFields <- case expected of
+          Just represented ->
+            case unfoldTypeHeadWithLocals context env represented of
+              KTRecordType recordFields
+                | length fields == length recordFields ->
+                    pure (map (Just . kbType . snd) recordFields)
+              _ -> Left "record ordinal encoding does not match its represented record"
+          Nothing -> pure (replicate (length fields) Nothing)
+        zipWithM_
+          (\field expectedField -> verifyOrdinalEncoding expectedField field)
+          fields
+          expectedFields
       KVList [KVText "variant", KVList members] -> do
-        case expected >>= variantArity of
-          Just arity
-            | arity == length members -> pure ()
-          Just _ -> Left "variant ordinal encoding does not match its represented variant"
-          Nothing -> pure ()
-        mapM_ (verifyOrdinalEncoding Nothing) members
+        expectedMembers <- case expected of
+          Just represented ->
+            case variantMembers represented of
+              Just memberTypes
+                | length members == length memberTypes ->
+                    pure (map Just memberTypes)
+              _ -> Left "variant ordinal encoding does not match its represented variant"
+          Nothing -> pure (replicate (length members) Nothing)
+        zipWithM_
+          (\member expectedMember -> verifyOrdinalEncoding expectedMember member)
+          members
+          expectedMembers
       KVList [KVText "data", KVList constructors] -> do
-        family <- maybe (Left "nested data ordinal encoding lacks an authenticated represented family") nominalTargetFamily expected
-        encoded <- mapM verifyOrdinalConstructor constructors
+        represented <-
+          maybe
+            (Left "nested data ordinal encoding lacks an authenticated represented family")
+            pure
+            expected
+        family <- nominalTargetFamily represented
+        encoded <- mapM (verifyOrdinalConstructor represented) constructors
         unless (map fst encoded == familyConstructorRefs family) $
           Left "data ordinal constructor order does not match its represented family"
       KVList [KVText "inclusive-range", KVTerm lower, KVTerm upper] -> do
@@ -9754,27 +9931,32 @@ verifyRepresentationProgram context universes assumptions env target auxiliary =
           Left "filtered ordinal list is not strictly increasing"
       _ -> Left "ordinal representation contains an unknown or malformed encoding"
 
-    verifyOrdinalConstructor = \case
-      KVList [KVGlobal constructor [], KVTerm offset, KVList fields] -> do
+    verifyOrdinalConstructor represented = \case
+      KVList [constructorNode, KVTerm offset, KVList fields] -> do
+        constructor <- decodeRepresentationSemanticRef constructorNode
         liftKCore
           (checkTerm context universes assumptions env offset naturalType)
-        (_, _, constructorType) <-
-          maybe
-            (Left "ordinal encoding names an unavailable constructor")
-            pure
-            (Map.lookup constructor (vcConstructorTypes context))
-        let (payload, _) = splitPiTelescope constructorType
+        payload <- instantiatedConstructorPayload represented constructor
         unless (length payload == length fields) $
           Left "ordinal constructor encoding arity does not match its payload telescope"
-        mapM_ (verifyOrdinalEncoding Nothing) fields
+        zipWithM_
+          (\field parameter ->
+             verifyOrdinalEncoding (Just (kbType parameter)) field)
+          fields
+          payload
         pure (constructor, fields)
       _ -> Left "ordinal constructor encoding is malformed"
 
-    variantArity term =
+    variantMembers term =
       case unfoldTypeHeadWithLocals context env term of
         KTGeneric "impl.kappa.core.variant-type" fields ->
           case lookup "members" fields of
-            Just (KVList members) -> Just (length members)
+            Just (KVList members) ->
+              traverse
+                (\case
+                   KVTerm member -> Just member
+                   _ -> Nothing)
+                members
             _ -> Nothing
         _ -> Nothing
 
@@ -10009,8 +10191,20 @@ verifyArithmeticCertificate context universes assumptions env fields =
       _ -> invalidArithmetic ("certificate field '" <> name <> "' must be a term")
 
     verifyProvider = \case
-      KVList [KVText readable, KVText identity, KVTerm evidence] -> do
+      KVList
+        [ KVText "evidence"
+        , KVText readable
+        , KVText identity
+        , KVInteger providerVersion
+        , KVInteger checkerVersion
+        , KVTerm evidence
+        ] -> do
         let trait = StableRef readable identity
+        unless
+          ( providerVersion == directArithmeticProviderVersion
+              && checkerVersion == directArithmeticProviderCheckerVersion
+          ) $
+          invalidArithmetic "direct evidence provider has an unsupported version"
         unless (trait `Map.member` vcGlobalArities context) $
           invalidArithmetic "provider trait identity is unavailable"
         verifyTerm context universes assumptions env evidence
@@ -10026,8 +10220,8 @@ verifyArithmeticCertificate context universes assumptions env fields =
             , kapTrait = trait
             , kapLaw = Nothing
             , kapNormalFormVersion = Nothing
-            , kapProviderVersion = Nothing
-            , kapCheckerVersion = Nothing
+            , kapProviderVersion = Just providerVersion
+            , kapCheckerVersion = Just checkerVersion
             , kapEvidence = evidence
             }
       KVList
@@ -10072,7 +10266,7 @@ verifyArithmeticCertificate context universes assumptions env fields =
           unless (kTermHeadGlobal (unfoldTypeHead context evidenceType) == Just trait) $
             invalidArithmetic "provider evidence does not implement its recorded trait identity"
           pure provider
-      _ -> invalidArithmetic "provider entry must contain a stable trait identity and evidence term"
+      _ -> invalidArithmetic "provider entry must contain a versioned stable identity and evidence term"
 
     verifyProviderLawAssumption provider goal = \case
       KVList
@@ -13544,6 +13738,477 @@ kcoreRepresentationCertificateCount (KCoreFile _ modules) =
     , KDRepresentationCertificate {} <- declarations
     ]
 
+-- | Produce canonical, independently reparseable mutations of every
+-- arithmetic-certificate field class required by Appendix T. Each case
+-- changes one field class across the artifact; callers must feed the returned
+-- text through the normal environment-aware parser/verifier and require
+-- 'E_KCORE_ARITHMETIC_CERTIFICATE_INVALID'.
+kcoreArithmeticCertificateMutationCases
+  :: KCoreFile
+  -> Either Text [(Text, Text)]
+kcoreArithmeticCertificateMutationCases file =
+  traverse build
+    [ ("goal", mutateNamed "replay-goal" (const (Just (KVTerm (KTType (KLFinite 0))))))
+    , ("assumption-index-or-order", mutateNamed "assumptions" mutateAssumptions)
+    , ("provider-identity", mutateNamed "providers" mutateProviderIdentity)
+    , ("provider-version", mutateNamed "providers" mutateProviderVersion)
+    , ("domain-version", mutateNamed "version" mutateInteger)
+    , ("context-telescope", mutateNamed "variables" mutateVariables)
+    , ("canonical-normal-form", mutateNamed "replay" (const (Just (KVList []))))
+    ]
+  where
+    build (label, mutateFields) =
+      let mutated =
+            mapKCoreFileTerms $ \case
+              KTGeneric "impl.kappa.core.arithmetic-proof" fields ->
+                KTGeneric
+                  "impl.kappa.core.arithmetic-proof"
+                  (fromMaybe fields (mutateFields fields))
+              term -> term
+       in if mutated file == file
+            then Left ("arithmetic-certificate fixture cannot mutate " <> label)
+            else Right (label, printCanonicalKCoreText (mutated file))
+
+    mutateNamed name mutate fields =
+      traverseNamedValue name mutate fields
+
+    mutateInteger = \case
+      KVInteger value -> Just (KVInteger (value + 1))
+      _ -> Nothing
+
+    mutateVariables = \case
+      KVList [] -> Just (KVList [KVText "malformed-variable"])
+      KVList (variable : variables) ->
+        Just (KVList (variable : variable : variables))
+      _ -> Nothing
+
+    mutateAssumptions = \case
+      KVList [] -> Just (KVList [KVText "malformed-assumption"])
+      KVList [assumption] ->
+        Just (KVList [mutateAssumption assumption])
+      KVList assumptions -> Just (KVList (reverse assumptions))
+      _ -> Nothing
+
+    mutateAssumption = \case
+      KVList (KVInteger index : fields) ->
+        KVList (KVInteger (index + 1) : fields)
+      _ -> KVText "malformed-assumption"
+
+    mutateProviderIdentity = \case
+      KVList providers ->
+        KVList <$> mutateFirst mutateIdentity providers
+      _ -> Nothing
+    mutateIdentity = \case
+      KVList
+        (tag@(KVText "normalization")
+          : readable
+          : KVText identity
+          : fields) ->
+            Just
+              (KVList
+                (tag : readable : KVText (identity <> ".mutated") : fields))
+      KVList
+        (tag@(KVText "evidence")
+          : readable
+          : KVText identity
+          : fields) ->
+        Just
+          (KVList
+            (tag : readable : KVText (identity <> ".mutated") : fields))
+      _ -> Nothing
+
+    mutateProviderVersion = \case
+      KVList providers ->
+        KVList <$> mutateFirst mutateVersion providers
+      _ -> Nothing
+    mutateVersion = \case
+      KVList
+        [ tag@(KVText "evidence")
+        , readable
+        , identity
+        , KVInteger providerVersion
+        , checkerVersion
+        , evidence
+        ] ->
+          Just
+            ( KVList
+                [ tag
+                , readable
+                , identity
+                , KVInteger (providerVersion + 1)
+                , checkerVersion
+                , evidence
+                ]
+            )
+      KVList
+        [ tag@(KVText "normalization")
+        , providerReadable
+        , providerIdentity
+        , theory
+        , traitReadable
+        , traitIdentity
+        , lawReadable
+        , lawIdentity
+        , normalFormVersion
+        , KVInteger providerVersion
+        , checkerVersion
+        , evidence
+        ] ->
+          Just
+            ( KVList
+                [ tag
+                , providerReadable
+                , providerIdentity
+                , theory
+                , traitReadable
+                , traitIdentity
+                , lawReadable
+                , lawIdentity
+                , normalFormVersion
+                , KVInteger (providerVersion + 1)
+                , checkerVersion
+                , evidence
+                ]
+            )
+      _ -> Nothing
+
+-- | Produce canonical representation-certificate mutants for every decisive
+-- field class required by Appendix T. Certificate IDs are recomputed after
+-- mutation so rejection exercises semantic replay rather than stopping at
+-- the outer content-address mismatch.
+kcoreRepresentationCertificateMutationCases
+  :: KCoreFile
+  -> Either Text [(Text, Text)]
+kcoreRepresentationCertificateMutationCases file =
+  traverse build
+    [ ("round-trip-proof", mutateRoundTrip)
+    , ("target-type-identity", mutatePayloadAny "typeIdentity" (const (Just (KVText "mutated-type-identity"))))
+    , ("retained-field-summary", mutatePayloadKind KRepresentationRefinement "retainedBaseField" (const (Just (KVList []))))
+    , ("source-evidence-identity", mutatePayloadKind KRepresentationOrdinal "sourceEvidenceIdentity" (const (Just (KVText ""))))
+    , ("constructor-mapping", mutateConstructorMapping)
+    , ("erased-field-summary", mutatePayloadAny "erasureView" (const (Just (KVList [KVText "malformed-erasure-view"]))))
+    , ("backend-profile-restriction", mutatePayloadAny "profileRestrictions" duplicateRestriction)
+    ]
+  where
+    build (label, mutateCertificate) =
+      case mutateFirstRepresentationCertificate mutateCertificate file of
+        Nothing ->
+          Left ("representation-certificate fixture cannot mutate " <> label)
+        Just mutated ->
+          Right (label, printCanonicalKCoreText mutated)
+
+    mutateRoundTrip certificate =
+      let field = case krcKind certificate of
+            KRepresentationOrdinal -> "unrankRankProof"
+            KRepresentationExactNatural -> "toNatFromNatProof"
+            KRepresentationRefinement -> "valueAfterRefineProof"
+       in mutateCertificatePayload
+            field
+            (const (Just (KVTerm (krcTarget certificate))))
+            certificate
+
+    mutatePayloadAny name mutate certificate =
+      mutateCertificatePayload name mutate certificate
+
+    mutatePayloadKind kind name mutate certificate
+      | krcKind certificate == kind =
+          mutateCertificatePayload name mutate certificate
+      | otherwise = Nothing
+
+    mutateConstructorMapping certificate
+      | krcKind certificate /= KRepresentationOrdinal = Nothing
+      | otherwise =
+          mutateCertificatePayload
+            "constructorEncoding"
+            mutateEncoding
+            certificate
+      where
+        mutateEncoding = \case
+          KVList [tag@(KVText "data"), KVList (_ : constructors)] ->
+            Just (KVList [tag, KVList (KVList [] : constructors)])
+          _ -> Nothing
+
+    duplicateRestriction = \case
+      KVList (restriction : restrictions) ->
+        Just (KVList (restriction : restriction : restrictions))
+      KVList [] ->
+        Just (KVList [KVText "unknown-profile-restriction"])
+      _ -> Nothing
+
+traverseNamedValue
+  :: Text
+  -> (KValueNode -> Maybe KValueNode)
+  -> [(Text, KValueNode)]
+  -> Maybe [(Text, KValueNode)]
+traverseNamedValue requested mutate = go
+  where
+    go [] = Nothing
+    go ((name, value) : fields)
+      | name == requested =
+          (\value' -> (name, value') : fields) <$> mutate value
+      | otherwise =
+          ((name, value) :) <$> go fields
+
+mutateFirst
+  :: (a -> Maybe a)
+  -> [a]
+  -> Maybe [a]
+mutateFirst _ [] = Nothing
+mutateFirst mutate (value : values) =
+  case mutate value of
+    Just value' -> Just (value' : values)
+    Nothing -> (value :) <$> mutateFirst mutate values
+
+mutateCertificatePayload
+  :: Text
+  -> (KValueNode -> Maybe KValueNode)
+  -> KRepresentationCertificate
+  -> Maybe KRepresentationCertificate
+mutateCertificatePayload name mutate certificate = do
+  payload <- traverseNamedValue name mutate (krcPayload certificate)
+  pure (reidentifyRepresentationCertificate certificate {krcPayload = payload})
+
+reidentifyRepresentationCertificate
+  :: KRepresentationCertificate
+  -> KRepresentationCertificate
+reidentifyRepresentationCertificate certificate =
+  let identity =
+        representationCertificateIdentity
+          certificate
+            { krcRef =
+                StableRef "certificate.representation.pending" "pending"
+            }
+   in certificate
+        { krcRef =
+            StableRef
+              ("certificate.representation." <> T.take 20 identity)
+              identity
+        }
+
+mutateFirstRepresentationCertificate
+  :: (KRepresentationCertificate -> Maybe KRepresentationCertificate)
+  -> KCoreFile
+  -> Maybe KCoreFile
+mutateFirstRepresentationCertificate mutate (KCoreFile version modules) =
+  KCoreFile version <$> mutateModules modules
+  where
+    mutateModules [] = Nothing
+    mutateModules (module0 : rest) =
+      case mutateDeclarations (kmDecls module0) of
+        Just declarations ->
+          Just (module0 {kmDecls = declarations} : rest)
+        Nothing ->
+          (module0 :) <$> mutateModules rest
+
+    mutateDeclarations [] = Nothing
+    mutateDeclarations (declaration : rest) =
+      case declaration of
+        KDRepresentationCertificate certificate
+          | Just certificate' <- mutate certificate ->
+              Just (KDRepresentationCertificate certificate' : rest)
+        _ ->
+          (declaration :) <$> mutateDeclarations rest
+
+-- | Complete bottom-up map over every term-bearing KCoreText field. Keeping
+-- this traversal in the typed interchange module makes certificate audits and
+-- future source-free transforms share the checkpoint's actual recursive
+-- shape instead of maintaining source-shaped or textual recognizers.
+mapKCoreFileTerms :: (KTerm -> KTerm) -> KCoreFile -> KCoreFile
+mapKCoreFileTerms transform (KCoreFile version modules) =
+  KCoreFile version (map mapModule modules)
+  where
+    mapModule module0 =
+      module0 {kmDecls = map mapDeclaration (kmDecls module0)}
+
+    mapDeclaration = \case
+      KDDef ref mode universes ty body ->
+        KDDef ref mode universes (term ty) (term body)
+      KDAxiom ref mode universes ty ->
+        KDAxiom ref mode universes (term ty)
+      KDInterface ref universes ty ->
+        KDInterface ref universes (term ty)
+      KDAssociatedNormalization normalization ->
+        KDAssociatedNormalization
+          normalization
+            { kanBinders = map binder (kanBinders normalization)
+            , kanValue = term (kanValue normalization)
+            }
+      KDData ref universes binders result certificate constructors ->
+        KDData ref universes (map binder binders) (term result) certificate
+          [ KCtorDecl constructor ctorUniverses fields (term ty)
+          | KCtorDecl constructor ctorUniverses fields ty <- constructors
+          ]
+      KDSchemaCertificate certificate ->
+        KDSchemaCertificate
+          certificate
+            { kscMonotoneWitnesses =
+                [ witness
+                    { kmwOperator = term (kmwOperator witness)
+                    , kmwGoal = term (kmwGoal witness)
+                    , kmwEvidence = term (kmwEvidence witness)
+                    }
+                | witness <- kscMonotoneWitnesses certificate
+                ]
+            }
+      KDTermProbe value -> KDTermProbe (term value)
+      KDLevelCertificate ref universes constraints theorem proof ->
+        KDLevelCertificate
+          ref
+          universes
+          (map constraint constraints)
+          (constraint theorem)
+          (levelProof proof)
+      KDRepresentationCertificate certificate ->
+        KDRepresentationCertificate
+          certificate
+            { krcBinders = map binder (krcBinders certificate)
+            , krcTarget = term (krcTarget certificate)
+            , krcConstraints = map constraint (krcConstraints certificate)
+            , krcPayload = mapNamedValues (krcPayload certificate)
+            }
+      KDExtension owner extensionVersion ->
+        KDExtension owner extensionVersion
+      KDGeneric tag fields -> KDGeneric tag (mapNamedValues fields)
+
+    term original =
+      transform $ case original of
+        KTLocal ref levels -> KTLocal ref (map level levels)
+        KTGlobal ref levels -> KTGlobal ref (map level levels)
+        KTType universe -> KTType (level universe)
+        KTPi parameter body -> KTPi (binder parameter) (term body)
+        KTSigma parameter body -> KTSigma (binder parameter) (term body)
+        KTLambda parameter body -> KTLambda (binder parameter) (term body)
+        KTApply function arguments ->
+          KTApply (term function) (map argument arguments)
+        KTBlock items result ->
+          KTBlock (map blockItem items) (term result)
+        KTLetRec definitions result ->
+          KTLetRec (map localDefinition definitions) (term result)
+        KTCase scrutinee result alternatives ->
+          KTCase
+            (term scrutinee)
+            (term result)
+            (map alternative alternatives)
+        KTConstruct constructor levels arguments ->
+          KTConstruct constructor (map level levels) (map argument arguments)
+        KTProject field record -> KTProject field (term record)
+        KTLift lower upper proof value ->
+          KTLift (level lower) (level upper) (evidence proof) (term value)
+        KTSchemaLift family source target certificate roles arguments value ->
+          KTSchemaLift
+            family
+            (map level source)
+            (map level target)
+            certificate
+            (map schemaRole roles)
+            (map argument arguments)
+            (term value)
+        KTAscribe value ty -> KTAscribe (term value) (term ty)
+        KTLiteral literal -> KTLiteral literal
+        KTRecordType fields ->
+          KTRecordType [(field, binder parameter) | (field, parameter) <- fields]
+        KTRecordValue fields ->
+          KTRecordValue [(name, term value) | (name, value) <- fields]
+        KTIf condition yes no ->
+          KTIf (term condition) (term yes) (term no)
+        KTGeneric tag fields -> KTGeneric tag (mapNamedValues fields)
+
+    level = \case
+      KLSucc value -> KLSucc (level value)
+      KLMax left right -> KLMax (level left) (level right)
+      KLAdd left right -> KLAdd (level left) (level right)
+      KLTerm value -> KLTerm (term value)
+      value -> value
+
+    quantity = \case
+      KQTerm value -> KQTerm (term value)
+      value -> value
+
+    binder parameter =
+      parameter
+        { kbQuantity = quantity (kbQuantity parameter)
+        , kbType = term (kbType parameter)
+        }
+
+    evidence = \case
+      KEGlobal ref levels -> KEGlobal ref (map level levels)
+      KECertificate ref levels -> KECertificate ref (map level levels)
+      value -> value
+
+    argument (KArgument explicitness value) =
+      KArgument explicitness (term value)
+
+    blockItem (KBLet parameter value) =
+      KBLet (binder parameter) (term value)
+
+    localDefinition definition =
+      definition
+        { kldType = term (kldType definition)
+        , kldBody = term (kldBody definition)
+        }
+
+    alternative = \case
+      KCaseConstructor constructor levels bindings body ->
+        KCaseConstructor
+          constructor
+          (map level levels)
+          (map caseBinding bindings)
+          (term body)
+      KCaseDefault body -> KCaseDefault (term body)
+      KCasePattern pattern' guard' body ->
+        KCasePattern
+          (patternValue pattern')
+          (term <$> guard')
+          (term body)
+
+    caseBinding = \case
+      KCasePayload parameter -> KCasePayload (binder parameter)
+      KCaseBridge bridge ->
+        KCaseBridge
+          bridge
+            { kcbBinder = binder (kcbBinder bridge)
+            , kcbProof = term (kcbProof bridge)
+            }
+
+    patternValue =
+      mapKPattern binder level term
+
+    schemaRole = \case
+      KSchemaCovariant proof -> KSchemaCovariant (evidence proof)
+      role -> role
+
+    constraint (KConstraint strict lower upper) =
+      KConstraint strict (level lower) (level upper)
+
+    levelProof = \case
+      KLPMaxLeast left right ->
+        KLPMaxLeast (levelProof left) (levelProof right)
+      KLPZero value -> KLPZero (level value)
+      KLPRefl value -> KLPRefl (level value)
+      KLPTrans left right -> KLPTrans (levelProof left) (levelProof right)
+      KLPSuccMono proof -> KLPSuccMono (levelProof proof)
+      KLPMaxLeft left right -> KLPMaxLeft (level left) (level right)
+      KLPMaxRight left right -> KLPMaxRight (level left) (level right)
+      KLPAddMonoLeft fixed proof ->
+        KLPAddMonoLeft (level fixed) (levelProof proof)
+      KLPAddMonoRight fixed proof ->
+        KLPAddMonoRight (level fixed) (levelProof proof)
+      proof -> proof
+
+    mapNamedValues fields =
+      [(name, value node) | (name, node) <- fields]
+
+    value = \case
+      KVTerm inner -> KVTerm (term inner)
+      KVLevel universe -> KVLevel (level universe)
+      KVQuantity valueQuantity -> KVQuantity (quantity valueQuantity)
+      KVGlobal ref levels -> KVGlobal ref (map level levels)
+      KVLocal ref levels -> KVLocal ref (map level levels)
+      KVBinder parameter -> KVBinder (binder parameter)
+      KVPattern pattern' -> KVPattern (patternValue pattern')
+      KVList nodes -> KVList (map value nodes)
+      node -> node
+
 kcoreHasValidSchemaCertificate :: KCoreFile -> Text -> Bool
 kcoreHasValidSchemaCertificate (KCoreFile _ modules) requestedFamily =
   case verifySchemaCertificates (Map.keysSet families) families certificates of
@@ -14388,8 +15053,8 @@ renderVerifiedRepresentationCertificate context liftCertificates verified = do
       KTApply
         (KTGlobal (stableRefForGlobal prelFin) [])
         [KArgument KExplicit cardinality]
-    constructorValue constructor =
-      KVGlobal (stableRefForConstructor constructor) []
+    constructorValue =
+      representationSemanticRefValue . stableRefForConstructor
     fieldPathValue path =
       KVList
         [ constructorValue (cfpConstructor path)
@@ -14470,10 +15135,9 @@ renderOrdinalEncoding context liftCertificates = \case
           (renderOrdinalEncoding context liftCertificates)
           (coeFields constructor)
       pure
-        ( KVList
-            [ KVGlobal
+          ( KVList
+            [ representationSemanticRefValue
                 (stableRefForConstructor (coeConstructor constructor))
-                []
             , KVTerm offset
             , KVList fields
             ]
@@ -14897,8 +15561,11 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
                 encoded = case descriptor of
                   Nothing ->
                     KVList
-                      [ KVText (srName traitRef)
+                      [ KVText "evidence"
+                      , KVText (srName traitRef)
                       , KVText (srId traitRef)
+                      , KVInteger directArithmeticProviderVersion
+                      , KVInteger directArithmeticProviderCheckerVersion
                       , KVTerm evidence'
                       ]
                   Just provider ->
@@ -15206,8 +15873,12 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
                       ]
                   )
             | otherwise -> conversionError ("constructor interface is unavailable for " <> gKey constructor)
-      CMatch scrutinee scrutineeAnnotation alternatives -> do
-        resultCore <- maybe (conversionError "case emission requires its checked result type") pure expectedHere
+      CMatch scrutinee scrutineeAnnotation resultAnnotation alternatives -> do
+        resultCore <-
+          maybe
+            (conversionError "case emission requires its checked result type")
+            pure
+            (resultAnnotation <|> expectedHere)
         scrutineeType <-
           maybe
             (conversionError "case scrutinee type is unavailable at the typed checkpoint")
@@ -15356,7 +16027,7 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
       other -> conversionError ("Core form has no KCoreText schema: " <> T.pack (show other))
     goCaseAlt env scrutineeType scrutineeType' resultCore = \case
       CaseAlt CPWild Nothing body -> KCaseDefault <$> goAgainst env resultCore body
-      CaseAlt (CPCtorM existentialModes bridges constructor levels patterns) Nothing body
+      CaseAlt (CPCtorM existentialModes bridges hidden constructor levels patterns) Nothing body
         | all simplePattern patterns -> do
         info <-
           maybe
@@ -15402,7 +16073,12 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
               && length fieldPayload == fieldCount
           ) $
           conversionError ("case constructor " <> gKey constructor <> " source-field telescope does not align with its checked payload")
-        alignedPatterns <- alignConstructorPatterns constructor (kcciSourceFields info) patterns
+        alignedPatterns <-
+          alignConstructorPatterns
+            constructor
+            (kcciSourceFields info)
+            hidden
+            patterns
         (existentialBinders, existentialLocals) <- prepareExistentialBinders existentialPayload existentialModes
         (bridgeBinders, bridgeLocals) <-
           prepareConstructorBridges
@@ -15478,7 +16154,7 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
             conversionError "tuple pattern arity does not match its checked record telescope"
           (patterns', locals) <- preparePatternFields envHere coreFields (map snd textFields) patterns
           pure (KPattern slot False (KPNTuple patterns'), locals)
-        CPCtorM existentialModes bridges constructor levels patterns -> do
+        CPCtorM existentialModes bridges hidden constructor levels patterns -> do
           info <-
             maybe (conversionError ("nested case constructor interface is unavailable for " <> gKey constructor)) pure
               (Map.lookup constructor (cccConstructors conversionContext))
@@ -15527,7 +16203,12 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
                 && length coreFields == fieldCount
             ) $
             conversionError "nested constructor source-field telescope does not align with its checked payload"
-          alignedPatterns <- alignConstructorPatterns constructor (kcciSourceFields info) patterns
+          alignedPatterns <-
+            alignConstructorPatterns
+              constructor
+              (kcciSourceFields info)
+              hidden
+              patterns
           (existentials, existentialLocals) <- prepareExistentialBinders existentialPayload existentialModes
           (bridgeBinders, bridgeLocals) <-
             prepareConstructorBridges
@@ -15652,18 +16333,30 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
       CPInjectRestM {} -> True
       _ -> False
 
-    alignConstructorPatterns constructor sourceFields explicitPatterns = do
-      unless (length explicitPatterns == length [() | (Expl, _) <- sourceFields]) $
+    alignConstructorPatterns constructor sourceFields hidden explicitPatterns = do
+      sourcePatterns <-
+        maybe
+          (conversionError ("constructor " <> gKey constructor <> " has an invalid hidden-field layout"))
+          pure
+          (interleaveConstructorSourceBinders hidden explicitPatterns)
+      unless
+        ( length explicitPatterns == length [() | (Expl, _) <- sourceFields]
+            && length sourcePatterns == length sourceFields
+        ) $
         conversionError
           ( "constructor " <> gKey constructor
               <> " explicit pattern arity does not match its checked source-field telescope"
           )
-      pure (go sourceFields explicitPatterns)
+      zipWithM align sourceFields sourcePatterns
       where
-        go [] [] = []
-        go ((Impl, _) : rest) remaining = CPWild : go rest remaining
-        go ((Expl, _) : rest) (pattern' : remaining) = pattern' : go rest remaining
-        go _ _ = []
+        align (Impl, _) (Left binder) =
+          pure (CPVarM (chbMode binder) "__ctor_implicit")
+        align (Expl, _) (Right pattern') = pure pattern'
+        align _ _ =
+          conversionError
+            ( "constructor " <> gKey constructor
+                <> " hidden-field positions disagree with its checked source telescope"
+            )
     expectedTextHead = id
 
     renameExpectedBinders expected actual rest =
@@ -15791,7 +16484,19 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
           Nothing -> pure ([], [])
           Just (elsePattern, elseAction) -> do
             (elsePattern', elseLocals) <- prepareDoPattern env QW rhsCoreType rhsType elsePattern
-            elseAction' <- goInferred (reverse elseLocals ++ env) "do let? else action" elseAction
+            elseActionType <-
+              if coreTermAbrupt elseAction
+                then pure actionCore
+                else
+                  maybe
+                    (conversionError "do let? else action carrier has no replaceable result argument")
+                    pure
+                    (replaceMonadicCoreResult actionCore (CGlobal (gPrel "Void") []))
+            elseAction' <-
+              goAgainst
+                (reverse elseLocals ++ env)
+                elseActionType
+                elseAction
             pure ([KVPattern elsePattern'], [KVTerm elseAction'])
         let encoded =
               KTGeneric "impl.kappa.core.do.letq"
@@ -15831,6 +16536,25 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
       _ -> do
         encoded <- goDoItem actionCore resultCore env item
         (encoded :) <$> goDoItems actionCore resultCore env rest
+    coreTermAbrupt = \case
+      CDo _ items -> coreItemsAbrupt items
+      CIf _ thenBranch elseBranch ->
+        coreTermAbrupt thenBranch && coreTermAbrupt elseBranch
+      CMatch _ _ _ alternatives ->
+        all (coreTermAbrupt . caBody) alternatives
+      CUniverseLift _ _ _ term -> coreTermAbrupt term
+      CSchemaLift _ _ _ _ _ _ _ _ term -> coreTermAbrupt term
+      _ -> False
+    coreItemsAbrupt items = case reverse items of
+      KReturn {} : _ -> True
+      KBreak {} : _ -> True
+      KContinue {} : _ -> True
+      KSubDo _ inner : _ -> coreItemsAbrupt inner
+      KExpr term : _ -> coreTermAbrupt term
+      KIf alternatives (Just elseItems) : _ ->
+        all (coreItemsAbrupt . snd) alternatives
+          && coreItemsAbrupt elseItems
+      _ -> False
     goDoItem actionCore resultCore env = \case
       KExpr value -> typedItem "expr" [("value", KVTerm <$> goInferred env "do expression action" value)]
       KReturn value -> typedItem "return" [("value", KVTerm <$> goAgainst env resultCore value)]

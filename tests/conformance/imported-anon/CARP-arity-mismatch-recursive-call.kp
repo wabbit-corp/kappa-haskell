@@ -15,12 +15,12 @@
 
 -- POSITIVE: recursion with the correct arity is accepted; the function
 -- type after elaboration matches its declared signature.
-recurseOk : Int -> Int -> Int
+recurseOk : Nat -> Int -> Int
 let recurseOk a b =
     let c : Int = b + 1
     if a == 0 then c else recurseOk (a - 1) c
 
---! assertType recurseOk Int -> Int -> Int
+--! assertType recurseOk Nat -> Int -> Int
 
 -- NEGATIVE: the recursive call supplies one argument to a 2-arg function.
 -- The arity mismatch must be caught at the call site at elaboration time;

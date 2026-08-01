@@ -814,15 +814,16 @@ dependencies, structural level certificates, nominal role inference and closures
 The 47 ordinary/parametric/KCoreText suites, 71 package/schema suites, 17 strengthening suites,
 and all 42 variance suites are active; `scripts/validate_universe_contract.py` reports a clean
 `47 + 71 + 17 pre-variance, 34 current variance, 8 gated future` ledger. U-E and U-F therefore
-have clean focused owner gates. The full conformance/unit gate is also clean at 3,055 passed,
-zero failed, and eight explicitly unsupported future variance capabilities (3,063 total).
+have clean focused owner gates. The current full conformance result is also clean at 3,788
+passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,798 total):
+eight future variance suites and two optional compact Nat/Fin layout suites.
 
 The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
 positive source, 17 negative source, 13 solver, and 8 KCoreText suites. All 67 are imported and
-active with 4 implementation-strengthening contracts under
+active with 5 implementation-strengthening contracts under
 `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`, and
 `scripts/validate_universe_contract.py` reports the full clean ledger (47 + 71 + 17
-pre-variance, 34 current variance, 8 gated future, 67 first-class-level + 4 strengthening). U-G owns neutral
+pre-variance, 34 current variance, 8 gated future, 67 first-class-level + 5 strengthening). U-G owns neutral
 level terms, the specified solver outcomes, rigid generalization, proof-binder migration,
 recursive schemas, complete arithmetic replay/versioning, schema reification, and ordinary
 `Monotone` evidence — implemented per `docs/UNIVERSES-PLAN.md` (2026-07-21) with owner gates
@@ -947,7 +948,7 @@ All U-G stages and the combined U-E/U-F/U-G repository-wide closeout are green (
       active under `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`
       with 47 accepts/20 rejects and all source/solver/KCoreText category metadata preserved;
       `validate_universe_contract.py` owns every path with no capability skips and
-      machine-checks the exact 67-base + 4-strengthening provenance partition against the
+      machine-checks the exact 67-base + 5-strengthening provenance partition against the
       current `docs/Spec.md`.
 - [x] **U-G1 — admit stable total levels and canonical neutral identities.** Check level-term
       typing, totality, lifetime stability, scope, expression lifting, serialization, and rigid
@@ -983,7 +984,7 @@ All U-G stages and the combined U-E/U-F/U-G repository-wide closeout are green (
       closure, reject cycles, and never scan arbitrary theorem declarations.
 - [x] **U-G8 — artifacts, harness, metatheory, and closeout.** Add the four aliases, three
       families, and twelve Appendix T assertions; serialize neutral terms, proof summaries,
-      recursive edges, selected evidence, and versions; promote all 67 bundle leaves plus 4
+      recursive edges, selected evidence, and versions; promote all 67 bundle leaves plus 5
       strengthening leaves at owner gates;
       then run the combined U-E/U-F/U-G unit, conformance, interface/KCoreText, interpreter,
       C/LLVM, sanitizer, package, and performance gate.
@@ -991,34 +992,31 @@ All U-G stages and the combined U-E/U-F/U-G repository-wide closeout are green (
 **U-G exit:** every stable total level term has a deterministic serialized identity; rigid
 entailment and portable inference remain distinct replayable contracts; constraints have one
 proof-binder authority; recursive schemas, reification, and monotonicity evidence are explicit;
-all 67 bundle suites plus 4 strengthening suites are active; and the combined universe
+all 67 bundle suites plus 5 strengthening suites are active; and the combined universe
 regression gate is clean.
 
 ## Track: Logical Nat / Fin / refinements / value arithmetic ([`NAT-FIN-REFINEMENT-PLAN.md`](docs/NAT-FIN-REFINEMENT-PLAN.md))
 
-**Specification applied and implementation contract staged 2026-07-25.**
+**Portable contract implemented 2026-07-30.**
 `docs/Spec.md` now defines canonical logical `Nat`, generated no-confusion, checked
 `derive IsSet` / `derive Eq`, the corrected semiring hierarchy, proof-producing
 value-arithmetic providers and certificates, `Fin`, `Refined`, ordinary `Contains`
 range membership, symbolic cardinality, representation certificates, and tiered
 backend obligations.
 
-The repository already has exact `Integer` evaluation and a GMP-backed C/LLVM
-fallback, exact finite bounds in `Inhabitance.hs`, a shared representation selector,
-and versioned universe evidence patterns to reuse. It does not yet have the required
-logical `Nat` constructors, derivation, value-level solver, refinement surface,
-certificate artifacts, or verified backend classes. The exact 103-suite contract (22 originally derived, 49 from the catalog-gap and
-corpus-reconciliation pass, 12 non-range refinement suites, the 2026-07-26
-evidence-canonicalization rewrite pair and same-day full-tree review
-corrections, and 18 corner-case and
-interaction suites) is
-pending under `tests/pending-import/spec-coverage/nat-fin-refinement/`; the 2026-07-26 baseline is
-8 narrow/pre-existing passes, 73 failures, 0 unsupported suites, and 22 harness errors
-(the harness errors are the not-yet-implemented directives/capabilities NFR-0 converts to Unsupported).
+The implementation now has ordinary logical `Nat`, checked derivation, the
+value-arithmetic solver, refinement surface, independently replayed certificate
+artifacts, exact non-unary native execution, verified proof erasure, and
+profile-scoped backend classes. The exact 103-suite contract is active under
+`tests/conformance/spec-coverage/nat-fin-refinement/`: 101 suites pass in the
+conservative profile and the two optional compact-layout suites report
+`Unsupported` because that profile does not advertise
+`rt-compact-finite-ordinal`, `rt-packed-finite-fields`, or
+`rt-unboxed-refinement`.
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
 
-- [ ] **NFR-0 - contract and harness observability.** Implement every new Appendix T
+- [x] **NFR-0 - contract and harness observability.** Implement every new Appendix T
       arithmetic/inhabitance/representation directive through production queries,
       advertise only complete capabilities, convert certificate mutation prose
       into executable fixtures, and add KCore/provider comparisons that distinguish
@@ -1032,36 +1030,42 @@ capabilities, stage ownership, and T.12 coverage.
 - [x] **NFR-2 - no-confusion and checked derivation.** Generate ordinary verified
       KCore no-confusion packages, make `Eq` refine `IsSet`, implement checked
       `derive IsSet` / `derive Eq`, and reject unsupported shapes without UIP/K.
-- [ ] **NFR-3 - algebraic hierarchy and value arithmetic.** Land
+- [x] **NFR-3 - algebraic hierarchy and value arithmetic.** Land
       `AdditivelyNoncommutativeSemiring`, coherent standard evidence, deterministic
       provider selection, the portable proof solver, automatic explicit transports
       at expected-type boundaries, compact certificates, and mutation-checked
       replay. Keep this authority separate from universe-level `TypeLevel`
       arithmetic.
-- [ ] **NFR-4 - Fin, Refined, subsumption, and ranges.** Add the proof-carrying
+- [x] **NFR-4 - Fin, Refined, subsumption, and ranges.** Add the proof-carrying
       prelude surface, exactly-once proof synthesis, ownership-preserving
       construction/projection, and ordinary `contains`; retain rejection of special
       `in` syntax.
-- [ ] **NFR-5 - analysis and representation evidence.** Extend purpose-keyed
+- [x] **NFR-5 - analysis and representation evidence.** Extend purpose-keyed
       inhabitance, add canonical symbolic cardinality, and produce independently
       checked ordinal, exact-natural, and refinement representation certificates.
-- [ ] **NFR-6 - KCoreText and artifact trust boundary.** Version, serialize, hash,
+- [x] **NFR-6 - KCoreText and artifact trust boundary.** Version, serialize, hash,
       round-trip, and independently verify every certificate before KBackendIR;
       reject forged, stale, context/provider, proof, erasure, and profile mutations.
-- [ ] **NFR-7 - verified backend profiles.** Require exact non-unary Nat and proof
+- [x] **NFR-7 - verified backend profiles.** Require exact non-unary Nat and proof
       erasure on every runnable backend; add certificate-backed finite-ordinal,
       packed-field, and unboxed-refinement classes only where advertised; audit
       dynamic, FFI, bridge, and ABI narrowing.
-- [ ] **NFR-8 - adversarial closeout and promotion.** Promote the exact 103 suites
+- [x] **NFR-8 - adversarial closeout and promotion.** Promote the exact 103 suites
       only after every declared outcome and assertion passes, then run full
       conformance/unit, KCoreText/interface/cache, interpreter/C/LLVM parity,
       native exactness, RC/poison/TSan, package, and performance gates.
 
-**Ordering:** NFR-0 starts first; the critical implementation path is
+**Implemented ordering:** NFR-0 landed first; the critical implementation path was
 NFR-1 -> NFR-2/NFR-3 -> NFR-4 -> NFR-5 -> NFR-6 -> NFR-7 -> NFR-8.
 Logical source/KCore `Nat` remains authoritative throughout. Compact runtime forms
 are selected only from verified certificates and never feed back into conversion,
 trait search, proof checking, or source reachability.
+
+**Performance follow-up:** fresh CLI startup currently takes about 33 seconds
+even for the pre-existing native `hello` fixture, exceeding the LLVM parity
+runner's 30-second execution budget before program-specific work becomes
+material. Keep the 30-second default visible as the regression target; use a
+bounded per-run override only while diagnosing prelude/checker startup cost.
 
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 

@@ -1,5 +1,5 @@
 -- Source issues: gleam#473, gleam#355
--- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings (§9.1.2)
 -- A constructor pattern in a plain `let` binding IS irrefutable when the
 -- scrutinee type has exactly one constructor. Such bindings must be accepted
 -- without error.
@@ -11,7 +11,7 @@ data Wrapper (a : Type) : Type =
     Wrap a
 
 data Point : Type =
-    Point (x : Int) (y : Int)
+    Point { x : Int, y : Int }
 
 data Unit2 : Type =
     MkUnit2

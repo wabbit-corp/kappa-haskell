@@ -1,0 +1,46 @@
+data Indexed (n : Nat) : Type =
+    Indexed
+
+commuteIndex :
+    (m : Nat) ->
+    (n : Nat) ->
+    Indexed (natAdd m n) ->
+    Indexed (natAdd n m)
+
+let commuteIndex m n value =
+    value
+
+data LinearIndex (n : Nat) : Type =
+    LinearIndex
+
+linearTransport :
+    (n : Nat) ->
+    LinearIndex (natAdd (natMultiply 2 n) 3) ->
+    LinearIndex (natAdd (natAdd n n) 3)
+
+let linearTransport n value =
+    value
+
+requiresStrict :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 strict : (n < m) = True) ->
+    Nat
+
+let requiresStrict m n @strict =
+    m
+
+strictFromSuccessorBound :
+    (m : Nat) ->
+    (n : Nat) ->
+    (@0 fromSucc : (natAdd n 1 <= m) = True) ->
+    Nat
+
+let strictFromSuccessorBound m n @fromSucc =
+    requiresStrict m n
+
+--! requires capability arithmeticCertificates
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertArithmeticCertificatesValid
+--! assertArithmeticCertificateMutationsReject

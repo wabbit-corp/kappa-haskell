@@ -1,8 +1,7 @@
 --! mode check
---! assertNoErrors
---! assertWarningCount 1
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
---! assertDiagnosticFamily warning kappa.termination.failure
+--! assertErrorCount 1
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
+--! assertDiagnosticFamily error kappa.termination.failure
 
 -- Combination (§3.2.11 termination diagnostics × §17.1.1 GADTs, §15):
 -- structural recursion on a GADT-indexed vector verifies without any
@@ -27,8 +26,8 @@ let vlen @a @n v =
     case VCons _ tail -> 1 + vlen tail
 
 spin : forall (@0 a : Type) (@0 n : PNat). Vec n a -> Int
-let spin @a @n v = --!! W_TERMINATION_UNVERIFIED
+let spin @a @n v =
     match v
     case VNil -> 0
-    case VCons _ tail -> spin v
+    case VCons _ tail -> spin v --!! E_TERMINATION_UNVERIFIED
 -- STATUS(a51e1bf): PASS

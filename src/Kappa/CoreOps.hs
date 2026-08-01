@@ -10,6 +10,8 @@ module Kappa.CoreOps
   , foldTermWithDepth
   , mapTermWithDepth
   , mapPatternConstructorUniverses
+  , transformConstructorSourcePatterns
+  , plainPatternBinder
   , eraseObserveOnlyAnnotations
   , patBindersC
   , CorePatternDecision (..)
@@ -327,7 +329,8 @@ foldTerm termF itemF = go
       CArithmeticProof certificate -> foldMapArithmeticCertificate go certificate
       CLit _ -> mempty
       CCtorI _ _ ann arguments -> foldMap go ann <> foldMap (go . caTerm) arguments
-      CMatch s ann alts -> go s <> foldMap go ann <> foldMap goAlt alts
+      CMatch s scrutineeAnn resultAnn alts ->
+        go s <> foldMap go scrutineeAnn <> foldMap go resultAnn <> foldMap goAlt alts
       CRecordTQ fs -> foldMap (go . rfType) fs
       CRecordV fs -> foldMap (go . snd) fs
       CProjM _ e _ -> go e
@@ -434,7 +437,11 @@ foldTermWithDepth termF = go
         foldMapArithmeticCertificate (go d) certificate
       CLit _ -> mempty
       CCtorI _ _ ann arguments -> foldMap (go d) ann <> foldMap (go d . caTerm) arguments
-      CMatch s ann alts -> go d s <> foldMap (go d) ann <> foldMap (goAlt d) alts
+      CMatch s scrutineeAnn resultAnn alts ->
+        go d s
+          <> foldMap (go d) scrutineeAnn
+          <> foldMap (go d) resultAnn
+          <> foldMap (goAlt d) alts
       CRecordTQ fs -> foldMap (go d . rfType) fs
       CRecordV fs -> foldMap (go d . snd) fs
       CProjM _ e _ -> go d e
@@ -485,10 +492,11 @@ mapPatternConstructorUniverses rewrite =
       CPWild -> CPWild
       CPVarM mode name -> CPVarM mode name
       CPLit literal -> CPLit literal
-      CPCtorM existentialModes bridges constructor universes patterns ->
+      CPCtorM existentialModes bridges hidden constructor universes patterns ->
         CPCtorM
           existentialModes
           bridges
+          hidden
           constructor
           (transform constructor universes)
           (map (goPattern transform) patterns)
@@ -605,10 +613,11 @@ mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
           CCtorI g universes
             (fmap (go d) (rewriteAnnotation ann))
             (map (\argument -> argument {caTerm = go d (caTerm argument)}) arguments)
-        CMatch s ann alts ->
+        CMatch s scrutineeAnn resultAnn alts ->
           CMatch
             (go d s)
-            (fmap (go d) (rewriteAnnotation ann))
+            (fmap (go d) (rewriteAnnotation scrutineeAnn))
+            (fmap (go d) (rewriteAnnotation resultAnn))
             (map (goAlt d) alts)
         CRecordTQ fs -> CRecordTQ (map (fmap (go d)) fs)
         CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
@@ -658,11 +667,18 @@ mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
       CPWild -> CPWild
       CPVarM mode name -> CPVarM mode name
       CPLit literal -> CPLit literal
-      CPCtorM existentialModes bridges constructor universes patterns ->
+      CPCtorM existentialModes bridges hidden constructor universes patterns ->
         let bridgeDepth = d + length existentialModes
             (bridges', fieldDepth) = transformBridges bridgeDepth bridges
-            patterns' = fst (transformPatternList fieldDepth patterns)
-         in CPCtorM existentialModes bridges' constructor universes patterns'
+            patterns' =
+              fst
+                ( transformConstructorSourcePatterns
+                    transformPatternTerms
+                    fieldDepth
+                    hidden
+                    patterns
+                )
+         in CPCtorM existentialModes bridges' hidden constructor universes patterns'
       CPTuple patterns ->
         CPTuple (fst (transformPatternList d patterns))
       CPRecordM fields rest ->
@@ -697,6 +713,40 @@ mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
               (rest', endDepth) = transformBridges (d + 1) rest
            in (bridge' : rest', endDepth)
 
+-- | Traverse explicit constructor patterns under the exact source telescope.
+-- Hidden source fields introduce erased slots at their recorded positions but
+-- have no child pattern to transform.
+transformConstructorSourcePatterns
+  :: (Int -> CorePat -> CorePat)
+  -> Int
+  -> [ConstructorHiddenBinder]
+  -> [CorePat]
+  -> ([CorePat], Int)
+transformConstructorSourcePatterns transform initial hidden patterns =
+  case interleaveConstructorSourceBinders hidden patterns of
+    Nothing ->
+      error
+        "Kappa.CoreOps.transformConstructorSourcePatterns: invalid hidden constructor-field layout"
+    Just slots -> go initial slots
+  where
+    go depth [] = ([], depth)
+    go depth (Left _ : rest) = go (depth + 1) rest
+    go depth (Right pattern' : rest) =
+      let transformed = transform depth pattern'
+          (remaining, finalDepth) =
+            go (depth + patBindersC transformed) rest
+       in (transformed : remaining, finalDepth)
+
+-- | A pattern that introduces exactly one branch-local identity without
+-- imposing another runtime test.  Dependent wildcards are elaborated as an
+-- internal as-pattern so later telescope entries can refer to their identity;
+-- semantically they remain the same one-slot binder as a source variable.
+plainPatternBinder :: CorePat -> Bool
+plainPatternBinder = \case
+  CPVarM {} -> True
+  CPAsM _ _ CPWild -> True
+  _ -> False
+
 -- | Number of de Bruijn binders introduced by a core pattern.  This is the
 -- structural binder count used when descending into match guards/bodies and
 -- do-kernel binders.  Keep the semantics aligned with the pattern elaborator:
@@ -709,9 +759,10 @@ patBindersC = \case
   CPLit _ -> 0
   -- @nEx@ existential-skolem placeholder slots (§17.1) sit below the field
   -- binders; they push real runtime slots, so they count.
-  CPCtorM existentialModes bridges _ _ ps ->
+  CPCtorM existentialModes bridges hidden _ _ ps ->
     length existentialModes
       + constructorBridgeBinderCount bridges
+      + length hidden
       + sum (map patBindersC ps)
   CPTuple ps -> sum (map patBindersC ps)
   CPRecordM fs rest -> sum (map (patBindersC . snd) fs) + case rest of
@@ -746,9 +797,10 @@ matchCorePattern pattern' value =
     (CPLit expected, CLit actual)
       | expected == actual -> CorePatternMatched []
       | otherwise -> CorePatternMismatch
-    (CPCtorM existentialModes bridges expected _ fields, CCtorI actual _ _ arguments)
+    (CPCtorM existentialModes bridges hidden expected _ fields, CCtorI actual _ _ arguments)
       | expected /= actual -> CorePatternMismatch
-      | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
+      | not (null existentialModes) || not (null bridges) || not (null hidden) ->
+          CorePatternUndecided
       | length fields == length explicitArguments ->
           combinePatternDecisions
             [ matchCorePattern field (caTerm argument)
@@ -763,9 +815,10 @@ matchCorePattern pattern' value =
         -- erased evidence and silently prove the wrong dependent equality.
         explicitArguments =
           [argument | argument <- arguments, caIcit argument == Expl]
-    (CPCtorM existentialModes bridges expected _ fields, CCtor actual _ arguments)
+    (CPCtorM existentialModes bridges hidden expected _ fields, CCtor actual _ arguments)
       | expected /= actual -> CorePatternMismatch
-      | not (null existentialModes) || not (null bridges) -> CorePatternUndecided
+      | not (null existentialModes) || not (null bridges) || not (null hidden) ->
+          CorePatternUndecided
       | length fields <= length arguments ->
           combinePatternDecisions
             (zipWith matchCorePattern fields (drop (length arguments - length fields) arguments))
@@ -1145,8 +1198,11 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CCtorI g universes ann arguments ->
         CCtorI g (map resolve universes) (fmap (go seen resolve d) ann)
           (map (\argument -> argument {caTerm = go seen resolve d (caTerm argument)}) arguments)
-      CMatch s ann alts ->
-        CMatch (go seen resolve d s) (fmap (go seen resolve d) ann)
+      CMatch s scrutineeAnn resultAnn alts ->
+        CMatch
+          (go seen resolve d s)
+          (fmap (go seen resolve d) scrutineeAnn)
+          (fmap (go seen resolve d) resultAnn)
           [ CaseAlt (goPat seen resolve d p)
               (fmap (go seen resolve (d + patBindersC p)) gd)
               (go seen resolve (d + patBindersC p) b)
@@ -1204,12 +1260,19 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CPWild -> CPWild
       CPVarM mode name -> CPVarM mode name
       CPLit literal -> CPLit literal
-      CPCtorM existentialModes bridges constructor universes patterns ->
+      CPCtorM existentialModes bridges hidden constructor universes patterns ->
         let bridgeDepth = d + length existentialModes
             (bridges', fieldDepth) =
               goBridges seen resolve bridgeDepth bridges
-            patterns' = fst (goPatList seen resolve fieldDepth patterns)
-         in CPCtorM existentialModes bridges' constructor (map resolve universes) patterns'
+            patterns' =
+              fst
+                ( transformConstructorSourcePatterns
+                    (goPat seen resolve)
+                    fieldDepth
+                    hidden
+                    patterns
+                )
+         in CPCtorM existentialModes bridges' hidden constructor (map resolve universes) patterns'
       CPTuple patterns -> CPTuple (fst (goPatList seen resolve d patterns))
       CPRecordM fields rest ->
         let (patterns', _) = goPatList seen resolve d (map snd fields)
@@ -1331,7 +1394,7 @@ termNodeLevels = \case
   CSchemaLift _ source target _ evidence _ _ _ _ ->
     source ++ target ++ concatMap schemaRoleEvidenceLevels evidence
   CCtorI _ universes _ _ -> universes
-  CMatch _ _ alternatives ->
+  CMatch _ _ _ alternatives ->
     concatMap (corePatternLevels . caPat) alternatives
   CRecordTQ fields ->
     concatMap
@@ -1346,7 +1409,7 @@ termNodeLevels = \case
 -- principalization but remain visible to backend validation.
 corePatternLevels :: CorePat -> [Level]
 corePatternLevels = \case
-  CPCtorM _ bridges _ universes patterns ->
+  CPCtorM _ bridges _ _ universes patterns ->
     universes
       ++ concatMap
         (\case
@@ -1458,7 +1521,7 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
           CLam _ _ _ b -> go (next n) b
           CPi _ _ _ _ a b -> go (next n) a || go (next n) b
           CCtorI _ _ _ arguments -> any (go (next n) . caTerm) arguments
-          CMatch scrut _ alts ->
+          CMatch scrut _ _ alts ->
             go (next n) scrut
               || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
           CRecordTQ fs -> any (go (next n) . rfType) fs

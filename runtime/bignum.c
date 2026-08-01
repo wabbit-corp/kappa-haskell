@@ -236,6 +236,12 @@ KValue *kp_negInt(KValue *x) {
 KValue *kp_eqInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) == 0); }
 KValue *kp_ltInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) < 0); }
 KValue *kp_leInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) <= 0); }
+KValue *kp_compareInt(KValue *x, KValue *y) {
+  int order = kint_cmp(x, y);
+  if (order < 0) return kctor0(KCT_LT, "LT");
+  if (order > 0) return kctor0(KCT_GT, "GT");
+  return kctor0(KCT_EQ, "EQ");
+}
 /* Convert a (possibly huge) integer magnitude to a double with IEEE
  * round-to-NEAREST-EVEN, matching Haskell `fromInteger :: Integer -> Double`.
  * GMP's `mpz_get_d` rounds TOWARD ZERO, which is wrong for values whose nearest

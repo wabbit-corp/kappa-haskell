@@ -23,6 +23,7 @@ module Kappa.Eval
   , globalDefWithCoreType
   , globalDefWithCoreBody
   , globalDefWithNominalSummary
+  , globalDefinitionBodyUniversesReplayable
   , specializeGlobalDefinitionBody
   , specializeGlobalDefinitionTypePrefix
   , MetaState
@@ -52,6 +53,7 @@ import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Ratio (denominator, numerator)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -206,6 +208,26 @@ specializeGlobalDefinitionBody universes definition = do
               0
               body
 
+-- | A transparent global body may cross a declaration boundary only when its
+-- universe occurrence is replayable in full. Before SCC finalization, the
+-- declaration projection records source-interface metas, but the body can also
+-- contain nested occurrence metas introduced by transparent dependencies. Such
+-- metas belong to the declaration's pending solver component and cannot be
+-- freshened from the caller's universe spine. Delta-reducing that body would
+-- leak those local identities into another declaration's retained Core.
+--
+-- Finalized bodies contain rigid 'LParam's (and therefore no level metas);
+-- monomorphic bodies likewise pass directly. A provisional body is reducible
+-- only when every level meta is authenticated by its source projection.
+globalDefinitionBodyUniversesReplayable :: GlobalDef -> Bool
+globalDefinitionBodyUniversesReplayable definition =
+  case gdCoreBody definition of
+    Nothing -> True
+    Just body ->
+      let projected =
+            Set.fromList (map fst (gdProvisionalUniverseProjection definition))
+       in Set.fromList (levelMetasOfTerm body) `Set.isSubsetOf` projected
+
 newtype Globals = Globals {globalsMap :: Map GName GlobalDef}
 
 type MetaState = Map MetaId (Maybe Value)
@@ -335,8 +357,14 @@ eval ctx env = \case
           (eval ctx env (caTerm argument))
       | argument <- arguments
       ]
-  CMatch scrut annotation alts ->
-    reduceMatch ctx (eval ctx env scrut) (eval ctx env <$> annotation) alts env
+  CMatch scrut scrutineeAnnotation resultAnnotation alts ->
+    reduceMatch
+      ctx
+      (eval ctx env scrut)
+      (eval ctx env <$> scrutineeAnnotation)
+      (eval ctx env <$> resultAnnotation)
+      alts
+      env
   CRecordTQ fs -> VRecordTQ (map (fmap (eval ctx env)) fs)
   CRecordV fs -> VRecordV [(n, eval ctx env t) | (n, t) <- fs]
   CProjM mode e f -> vproj ctx mode (eval ctx env e) f
@@ -525,6 +553,7 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
       VGlobI g universes sp
         | Just gd <- lookupGlobal ctx g
         , Just body <- gdValue gd
+        , ecRuntime ctx || globalDefinitionBodyUniversesReplayable gd
         , ecRuntime ctx || gdReducible gd || isPrimRoot body ->
             -- runtime is strict (§32.1): force arguments before entry so
             -- deep recursion does not pile up unreduced argument chains
@@ -553,7 +582,7 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
         VCtor g [] | g == prelTrue -> go (fuel - 1) (closRun t)
         VCtor g [] | g == prelFalse -> go (fuel - 1) (closRun f)
         _ -> v
-      VMatchN scrut _ alts env
+      VMatchN scrut _ _ alts env
         | Just v' <- tryReduceMatch ctx scrut alts env ->
             go (fuel - 1) v'
       _ -> v
@@ -646,11 +675,11 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
         closRun (Closure env body) = eval ctx env body
 
 -- ι-reduction of match when the scrutinee is canonical.
-reduceMatch :: EvalCtx -> Value -> Maybe Value -> [CaseAlt] -> Env -> Value
-reduceMatch ctx scrut annotation alts env =
+reduceMatch :: EvalCtx -> Value -> Maybe Value -> Maybe Value -> [CaseAlt] -> Env -> Value
+reduceMatch ctx scrut scrutineeAnnotation resultAnnotation alts env =
   case tryReduceMatch ctx scrut alts env of
     Just v -> v
-    Nothing -> VMatchN scrut annotation alts env
+    Nothing -> VMatchN scrut scrutineeAnnotation resultAnnotation alts env
 
 -- | 'Just' iff some alternative definitely fires (used by 'force' to
 -- re-reduce matches stuck on metavariables).
@@ -687,6 +716,15 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
                    | (p, a) <- zip ps (drop (length args - length ps) args)
                    ]
              )
+      (CPCtorM _ _ hidden g _ ps, VCtorI g' _ arguments) ->
+        g /= g'
+          || case typedConstructorSource hidden ps arguments of
+               Nothing -> False
+               Just source ->
+                 or
+                   [ definitelyNoMatch pattern' (cvaValue argument)
+                   | (Right pattern', argument) <- source
+                   ]
       (CPCtor g _ _, VLit (LitInt n))
         | g == prelNatZero -> n /= 0
         | g == prelNatSucc -> n <= 0
@@ -702,6 +740,26 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
       (CPAs _ p, v) -> definitelyNoMatch p v
       _ -> False
 
+typedConstructorSource
+  :: [ConstructorHiddenBinder]
+  -> [a]
+  -> [ConstructorValueArg]
+  -> Maybe [(Either ConstructorHiddenBinder a, ConstructorValueArg)]
+typedConstructorSource hidden explicit arguments = do
+  source <- interleaveConstructorSourceBinders hidden explicit
+  let sourceCount = length source
+  guard (sourceCount <= length arguments)
+  let sourceArguments = drop (length arguments - sourceCount) arguments
+  guard
+    ( and
+        [ case slot of
+            Left _ -> cvaIcit argument == Impl
+            Right _ -> cvaIcit argument == Expl
+        | (slot, argument) <- zip source sourceArguments
+        ]
+    )
+  pure (zip source sourceArguments)
+
 -- | First-order pattern matching on values. 'Nothing' means "did not
 -- match or could not decide" — callers must distinguish via
 -- 'definitelyNoMatch' for soundness during conversion.
@@ -712,26 +770,36 @@ matchPat ctx pat v0 =
         (CPWild, _) -> Just []
         (CPVar _, _) -> Just [v]
         (CPLit l, VLit l') | l == l' -> Just []
-        (CPCtor g nEx ps, VLit (LitInt n))
+        (CPCtorM existentialModes bridges hidden g _ ps, VLit (LitInt n))
           | g == prelNatZero
           , n == 0
           , null ps ->
-              Just (replicate nEx (VRecordV []))
+              constructorBindings existentialModes bridges hidden [] []
           | g == prelNatSucc
           , n > 0
           , length ps <= 1 ->
-              (replicate nEx (VRecordV []) ++)
-                <$> concatM
-                  [matchPat ctx p (VLit (LitInt (n - 1))) | p <- ps]
-        (CPCtor g nEx ps, VCtor g' args)
+              constructorBindings
+                existentialModes
+                bridges
+                hidden
+                ps
+                [VLit (LitInt (n - 1))]
+        (CPCtorM existentialModes bridges hidden g _ ps, VCtor g' args)
           | g == g', length ps <= length args ->
-              -- §17.1: the @nEx@ existential-skolem slots come FIRST (so after the
-              -- caller's @reverse binds@ they land BELOW the field binders, exactly
-              -- where 'ctorFieldTypesCtx' bound the skolems). They are erased types
-              -- never read at runtime; a unit placeholder keeps the slot count and
-              -- ordering aligned with the arm body's de Bruijn indices.
-              (replicate nEx (VRecordV []) ++)
-                <$> concatM [matchPat ctx p a | (p, a) <- zip ps (drop (length args - length ps) args)]
+              constructorBindings
+                existentialModes
+                bridges
+                hidden
+                ps
+                (drop (length args - length ps) args)
+        (CPCtorM existentialModes bridges hidden g _ ps, VCtorI g' _ arguments)
+          | g == g' ->
+              typedConstructorBindings
+                existentialModes
+                bridges
+                hidden
+                ps
+                arguments
         (CPTuple ps, VRecordV fs)
           | length ps == length fs ->
               concatM [matchPat ctx p a | (p, (_, a)) <- zip ps fs]
@@ -755,6 +823,37 @@ matchPat ctx pat v0 =
         (CPAs _ p, _) -> (v :) <$> matchPat ctx p v
         _ -> Nothing
   where
+    constructorBindings existentialModes bridges hidden patterns arguments = do
+      source <-
+        interleaveConstructorSourceBinders hidden (zip patterns arguments)
+      sourceBindings <-
+        concatM
+          [ case slot of
+              Left _ -> Just [VRecordV []]
+              Right (pattern', argument) -> matchPat ctx pattern' argument
+          | slot <- source
+          ]
+      pure
+        ( replicate
+            (length existentialModes + constructorBridgeBinderCount bridges)
+            (VRecordV [])
+            ++ sourceBindings
+        )
+    typedConstructorBindings existentialModes bridges hidden patterns arguments = do
+      source <- typedConstructorSource hidden patterns arguments
+      sourceBindings <-
+        concatM
+          [ case slot of
+              Left _ -> Just [cvaValue argument]
+              Right pattern' -> matchPat ctx pattern' (cvaValue argument)
+          | (slot, argument) <- source
+          ]
+      pure
+        ( replicate
+            (length existentialModes + constructorBridgeBinderCount bridges)
+            (VRecordV [])
+            ++ sourceBindings
+        )
     concatM = fmap concat . sequence
     firstJust xs = case [x | Just x <- xs] of
       (x : _) -> Just x
@@ -832,10 +931,14 @@ quote ctx lvl v = case forceQ ctx v of
   VRecordV fs -> CRecordV [(n, quote ctx lvl t) | (n, t) <- fs]
   VVariantT ms -> CVariantT (map (quote ctx lvl) ms)
   VInject t x -> CInject t (quote ctx lvl x)
-  VMatchN scrut annotation alts env ->
+  VMatchN scrut scrutineeAnnotation resultAnnotation alts env ->
     -- Stuck match: quote scrutinee, keep alts with their env baked in
     -- only when env is empty; otherwise approximate via fresh rigids.
-    CMatch (quote ctx lvl scrut) (quote ctx lvl <$> annotation) (map (quoteAlt env) alts)
+    CMatch
+      (quote ctx lvl scrut)
+      (quote ctx lvl <$> scrutineeAnnotation)
+      (quote ctx lvl <$> resultAnnotation)
+      (map (quoteAlt env) alts)
   VProjN mode e f -> CProjM mode (quote ctx lvl e) f
   VAppN ic f a -> CApp ic (quote ctx lvl f) (quote ctx lvl a)
   VSealV ls x -> CSealE ls (quote ctx lvl x)
@@ -984,7 +1087,7 @@ convertible ctx = go (200 :: Int)
       -- terms required (a stuck guard cannot have fired, so the surrounding
       -- match is genuinely neutral). This is the §7.4.1 neutral-eliminator
       -- rule for 'match', mirroring the existing 'VProjN'/'VIfN' cases.
-      (VMatchN s1 _ alts1 e1, VMatchN s2 _ alts2 e2)
+      (VMatchN s1 _ _ alts1 e1, VMatchN s2 _ _ alts2 e2)
         | length alts1 == length alts2
         , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts1
         , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts2
@@ -1004,9 +1107,10 @@ convertible ctx = go (200 :: Int)
           CPWild -> 0
           CPVarM _ _ -> 1
           CPLit _ -> 0
-          CPCtorM existentialModes bridges _ _ ps ->
+          CPCtorM existentialModes bridges hidden _ _ ps ->
             length existentialModes
               + constructorBridgeBinderCount bridges
+              + length hidden
               + sum (map patBinders ps)
           CPTuple ps -> sum (map patBinders ps)
           CPRecordM fs rest ->

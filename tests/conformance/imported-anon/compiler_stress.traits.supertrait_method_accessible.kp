@@ -1,4 +1,4 @@
--- Stress test: Supertrait methods accessible via derived trait instance
+-- Stress test: supertrait methods are accessible via a derived-trait instance.
 -- Spec: traits.headers.supertraits
 
 --! mode check
@@ -27,10 +27,11 @@ instance Pretty Color =
 displayList : forall (a : Type). (@_ : Pretty a) -> List a -> String
 let displayList xs = match xs
     case Nil       -> ""
-    case Cons h t  -> toString h ++ " " ++ displayList t
+    case h :: t    -> toString h ++ " " ++ displayList t
 
 -- toString is from Printable, but available via Pretty's supertrait evidence
 testDisplay : String
-let testDisplay = displayList (Cons Red (Cons Green (Cons Blue Nil)))
+let testDisplay = displayList [Red, Green, Blue]
 
 --! assertNoErrors
+--! assertEval testDisplay "red green blue "

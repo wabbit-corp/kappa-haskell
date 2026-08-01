@@ -354,6 +354,10 @@ builtinState =
               coreAt (LParam 0) (CVar 2) (CVar 1)
                 ~> coreAt (LParam 1) (CVar 3) (CVar 1) ~> tType
     projT r f = CApp Expl (CApp Expl (tcon "Projector") r) f
+    capturesT universe valueType region =
+      CApp Expl
+        (CApp Expl (CGlobI (prel "__captures") [universe]) valueType)
+        region
     -- §12.4.3 composeProjector (one-field root packs of the middle
     -- projector are admitted structurally, hence the extra parameter)
     composeProjectorTy =
@@ -369,8 +373,12 @@ builtinState =
       tyV $
         piI Q0 "ρ" (tcon "Region") $
           piI Q0 "a" tType $
-            piM Ordinary Expl QW False "_" (CVar 0) $
-              CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)
+            capturesT
+              (LParam 0)
+              ( piM Ordinary Expl QW True "_" (CVar 0) $
+                  CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)
+              )
+              (CVar 1)
     borrowRegionOfTy =
       tyV $
         piI Q0 "a" tType $
@@ -381,7 +389,12 @@ builtinState =
           piI Q0 "a" tType $
             piI Q0 "r" tType $
               piM Ordinary Expl QW False "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
-                piM Ordinary Expl QW False "_" (piM Ordinary Expl QW False "_" (CVar 2) (CVar 2)) $
+                piM Ordinary Expl QW False "_"
+                  ( capturesT
+                      (levelMax (LParam 0) (LParam 1))
+                      (piM Ordinary Expl QW True "_" (CVar 2) (CVar 2))
+                      (CVar 3)
+                  ) $
                   CVar 2
     -- Nat is logically an ordinary inductive family even though its runtime
     -- representation is the exact compact Integer carrier.  Seed the same
@@ -1486,7 +1499,7 @@ preludeSource =
     , ""
     , "data Option (0 a : Type) : Type ="
     , "    None"
-    , "    Some a"
+    , "    Some (value : a)"
     , ""
     , "data Result (0 e : Type) (0 a : Type) : Type ="
     , "    Ok a"
@@ -2255,12 +2268,12 @@ preludeSource =
     , "    case Nat.Succ predecessor -> predecessor"
     , ""
     , "__finInductionByValue : forall (parametric 0 motive : (k : Nat) -> Fin k -> Type). (forall (k : Nat). motive (natAdd k 1) finZero) -> (forall (k : Nat) (i : Fin k). motive k i -> motive (natAdd k 1) (finSucc i)) -> forall (n : Nat). (value : Nat) -> (@0 isLt : (value < n) = True) -> motive n (Fin value @isLt)"
-    , "let __finInductionByValue @motive zeroCase successorCase @n value @isLt ="
+    , "let __finInductionByValue @motive zeroCase successorCase @n value @isLt decreases value ="
     , "    match value"
     , "    case Nat.Zero -> __transport (zeroCase @(__finBoundPred n))"
     , "    case Nat.Succ predecessor ->"
     , "        let predecessorIndex : Fin (__finBoundPred n) = Fin predecessor @(unsafeAssertProof \"Fin induction predecessor preserves the reduced bound\")"
-    , "        let induction : motive (__finBoundPred n) predecessorIndex = __finInductionByValue zeroCase successorCase @(__finBoundPred n) predecessorIndex.value @predecessorIndex.isLt"
+    , "        let induction : motive (__finBoundPred n) predecessorIndex = __finInductionByValue zeroCase successorCase @(__finBoundPred n) predecessor @predecessorIndex.isLt"
     , "        __transport (successorCase @(__finBoundPred n) @predecessorIndex induction)"
     , ""
     , "finInduction : forall (n : Nat) (parametric 0 motive : (k : Nat) -> Fin k -> Type). (forall (k : Nat). motive (natAdd k 1) finZero) -> (forall (k : Nat) (i : Fin k). motive k i -> motive (natAdd k 1) (finSucc i)) -> (i : Fin n) -> motive n i"

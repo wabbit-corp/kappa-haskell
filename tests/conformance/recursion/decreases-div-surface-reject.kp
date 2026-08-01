@@ -1,6 +1,6 @@
 -- §15.11: surface comparison facts must not over-prove non-decreasing calls.
---! assertWarningCount 4
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertErrorCount 4
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
 mayStayZeroSurface : Int -> Int

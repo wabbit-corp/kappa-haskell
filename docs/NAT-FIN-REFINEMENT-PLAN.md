@@ -1,7 +1,7 @@
 # Nat / Fin / Refinement / Arithmetic Certificates - Implementation Plan
 
-Status: **Specification applied; implementation planned (2026-07-25; contract
-expanded 2026-07-26).** `docs/Spec.md` contains the Nat/Fin/refinement patch
+Status: **NFR-0 through NFR-8 implemented for the portable contract
+(2026-07-30).** `docs/Spec.md` contains the Nat/Fin/refinement patch
 from `docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Spec-Nat-Fin-Refinement-v2.patch`
 plus the 2026-07-26 evidence-canonicalization amendment (§15.8.2 canonicalizes
 evidence occurrences at the same normalized trait application to the §16.3.3
@@ -11,7 +11,7 @@ certificates; the no-mixing prohibition is scoped to closures at distinct
 normalized trait applications; §14.3.3 defers same-scope projected candidates
 to the same rule), and passes the repository specification validator. The
 contract is materialized as a **103-suite** tree under
-`tests/pending-import/spec-coverage/nat-fin-refinement/`: the 22 originally
+`tests/conformance/spec-coverage/nat-fin-refinement/`: the 22 originally
 derived suites, 49 added by the T.12 catalog-gap and corpus-reconciliation
 pass (including four dx-issues probes whose dead-end premises the revision
 turned into requirements, and re-based replacements for five green
@@ -39,16 +39,18 @@ premise collapses at concrete carriers), split the linear-refinement claim
 into an elimination positive plus a construction negative, converted the
 supertrait-incoherence negative the canonicalization amendment flipped, and
 renamed the unsafe-assert probe to a direct IsProp demand, bringing the tree
-to 103. None of those suites is eligible for active conformance yet.
+to 103. All 103 suites are active. The conservative profile passes 101 and
+reports the two compact-layout-only suites as `Unsupported` because it does
+not advertise their optional representation capabilities.
 
-The current compiler has useful pieces to preserve: `Literal` stores exact
-Haskell `Integer` values, the evaluator performs exact integer arithmetic, the
-C and LLVM paths already fall back from `int64` workers to GMP-backed boxed
-integers, and `Inhabitance.hs` uses exact `Natural` bounds. The missing work is
-the language and evidence contract around those pieces: source-visible logical
-`Nat`, checked derivation, value-level arithmetic providers and certificates,
+The implementation retains the exact `Integer` substrate and now supplies the
+language and evidence contract around it: source-visible logical `Nat`, checked
+derivation, value-level arithmetic providers and replayable certificates,
 `Fin`, `Refined`, symbolic cardinality, independently verified representation
-certificates, and profile-aware backend obligations.
+certificates, exact non-unary native execution, and profile-aware backend
+obligations. Compact finite-ordinal, packed-field, and unboxed-refinement
+layouts remain optional and are selected only when the active profile
+advertises the corresponding capability.
 
 This plan is the implementation authority for that contract. `ROADMAP.md`
 contains only the short stage ledger.
@@ -112,33 +114,28 @@ The following are deliberate non-goals:
 * `src/Kappa/Syntax.hs` and `src/Kappa/Parser.hs` already preserve `DDerive`
   syntax.
 
-### 1.2 Contract gaps
+### 1.2 Implemented contract surface
 
-* `src/Kappa/Prelude.hs` seeds `Nat` as an opaque compiler type and implements
-  it through the integer primitive path. There are no ordinary source
-  `Zero`/`Succ` constructors or structural eliminators.
-* `Eq` does not refine `IsSet`; `IsSet` is currently only a marker, and
-  `src/Kappa/Check.hs` rejects every `DDerive` as unsupported.
-* the prelude has the old `Semiring` hierarchy. It lacks the required
-  `AdditivelyNoncommutativeSemiring` split and complete coherent standard
-  evidence graph.
-* there is no value-level arithmetic reification/provider/solver service and no
-  arithmetic-certificate KCore representation.
-* there are no standard `Fin`, `Refined`, `RefinementView`, or `Contains`
-  contracts implementing the new rules.
-* `Inhabitance.hs` has interval summaries, but no symbolic-cardinality AST or
-  Fin/refinement representation-certificate production.
-* `Backend.Repr` currently classifies `Int`, `Nat`, and `Integer` together as
-  `RepInt`; it has no exact-natural, finite-ordinal, or refinement certificate
-  inputs and no required-profile failure.
-* `TestHarness.hs` does not implement the new Appendix T assertions for
-  arithmetic certificates, symbolic cardinality, ordinal/exact-natural/
-  refinement representations, representation classes, or erased runtime
-  fields.
+* `src/Kappa/Prelude.hs` exposes ordinary logical `Nat`, the revised algebraic
+  hierarchy, `Fin`, `Refined`, `RefinementView`, and `Contains`.
+* `src/Kappa/Check.hs` implements checked derivation, coherent local-first
+  evidence selection, proof-producing value arithmetic, branch facts,
+  refinement synthesis, and explicit transport at expected-type boundaries.
+* `src/Kappa/Arithmetic.hs`, `src/Kappa/CoreText.hs`, and
+  `src/Kappa/Representation.hs` provide reusable normalization, versioned
+  certificates, independent replay, and semantic identities.
+* `src/Kappa/Inhabitance.hs` provides purpose-keyed interval and symbolic
+  cardinality analysis without feeding runtime layout back into source
+  reachability.
+* `src/Kappa/Backend/IR.hs` records verified exact-natural, finite-ordinal, and
+  refinement decisions and fails closed when an advertised representation
+  contract cannot be proved.
+* `src/Kappa/TestHarness.hs` routes every Appendix T assertion through the
+  production queries and verified checkpoints.
 
-### 1.3 Pending contract baseline
+### 1.3 Active contract baseline
 
-`tests/pending-import/spec-coverage/nat-fin-refinement/manifest.json` owns 103
+`tests/conformance/spec-coverage/nat-fin-refinement/manifest.json` owns 103
 suites:
 
 | owner | suites | contract |
@@ -151,12 +148,9 @@ suites:
 | NFR-6 | 2 | arithmetic and representation artifact mutation |
 | NFR-7 | 5 | exact Nat, proof erasure, profile-aware compact layout |
 
-The 2026-07-26 audited run over all 103 suites reports 8 passed, 73 failed,
-0 unsupported, and 22 harness errors. The passes cover narrow pre-existing
-behavior (rejection paths and an unsolved-hole rule); they are not
-package-promotion evidence, and the 22 harness errors are the new
-directives/capabilities the pre-NFR-0 harness does not know (they must become
-`Unsupported`, per the NFR-0 gate). The validator
+The 2026-07-30 active owner gate reports 101 passed, zero failed, two
+capability-gated optional compact-layout suites, and zero harness errors. The
+validator
 `scripts/validate_nat_fin_contract.py` fixes the suite tree, bundle
 source-document hashes, categories, capabilities, owner stages, and T.12
 coverage; it passes at 103 suites.
@@ -219,7 +213,7 @@ field only after KCore checking and erasure justification.
 
 ## 3. Stages, ordering, and gates
 
-### NFR-0 - Freeze the contract and add harness observability
+### NFR-0 - Freeze the contract and add harness observability (implemented)
 
 Deliverables:
 
@@ -258,13 +252,14 @@ Deliverables:
 
 Gate:
 
-* every pending directive parses;
+* every contract directive parses;
 * unavailable capabilities report `Unsupported`, not `HarnessError` (the
-  2026-07-26 baseline shows 22 harness errors that must convert);
+  historical 22 harness errors are now passing assertions or the two
+  explicitly unavailable optional representation capabilities);
 * malformed assertions fail locally and deterministically;
 * the validator still reports exactly 103 suites with no unowned files.
 
-### NFR-1 - Logical Nat and exact numeric substrate
+### NFR-1 - Logical Nat and exact numeric substrate (implemented)
 
 Deliverables:
 
@@ -307,7 +302,7 @@ Gate:
 * existing arbitrary-precision `Integer` behavior and native fast paths remain
   green.
 
-### NFR-2 - No-confusion, `Eq : IsSet`, and checked derivation
+### NFR-2 - No-confusion, `Eq : IsSet`, and checked derivation (implemented)
 
 Deliverables:
 
@@ -339,7 +334,7 @@ Gate:
 * generated packages round-trip through KCoreText and interfaces;
 * hostile unsupported shapes reject before backend lowering.
 
-### NFR-3 - Algebraic hierarchy and proof-producing arithmetic solver
+### NFR-3 - Algebraic hierarchy and proof-producing arithmetic solver (implemented)
 
 Deliverables:
 
@@ -393,7 +388,7 @@ Gate:
   and semantic identity unchanged;
 * certificate mutation of every decisive field rejects independently.
 
-### NFR-4 - Fin, Refined, subsumption, and ranges
+### NFR-4 - Fin, Refined, subsumption, and ranges (implemented)
 
 Deliverables:
 
@@ -431,7 +426,7 @@ Gate:
 * `contains` passes while the paired `in` syntax suite still rejects;
 * no proof field is silently duplicated or dropped before erasure checking.
 
-### NFR-5 - Inhabitance, symbolic cardinality, and representation evidence
+### NFR-5 - Inhabitance, symbolic cardinality, and representation evidence (implemented)
 
 Deliverables:
 
@@ -464,7 +459,7 @@ Gate:
 * symbolic forms are canonical and stable under alpha-renaming and import
   order.
 
-### NFR-6 - KCoreText, interfaces, certificates, and mutation rejection
+### NFR-6 - KCoreText, interfaces, certificates, and mutation rejection (implemented)
 
 Deliverables:
 
@@ -495,7 +490,7 @@ Gate:
 * an interface or cache hit cannot bypass certificate replay;
 * invalid artifacts produce no accepted KBackendIR.
 
-### NFR-7 - Verified backend representations and profile contracts
+### NFR-7 - Verified backend representations and profile contracts (implemented)
 
 Deliverables:
 
@@ -538,7 +533,7 @@ Gate:
 * KBackendIR verification rejects missing certificates, stored proof fields,
   and unsupported required representations.
 
-### NFR-8 - Promotion, adversarial audit, and closeout
+### NFR-8 - Promotion, adversarial audit, and closeout (implemented)
 
 Deliverables:
 
@@ -570,7 +565,7 @@ Gate:
 
 | stage | depends on | may proceed in parallel with |
 | --- | --- | --- |
-| NFR-0 | frozen spec and pending ledger | early NFR-1 design |
+| NFR-0 | frozen spec and active ledger | early NFR-1 design |
 | NFR-1 | NFR-0 observability for final promotion | NFR-2 generator design |
 | NFR-2 | NFR-1 ordinary Nat/data identities | NFR-3 solver core after prelude hierarchy freeze |
 | NFR-3 | NFR-0, coherent Eq/algebraic prelude | late NFR-2 implementation |
@@ -580,9 +575,9 @@ Gate:
 | NFR-7 | NFR-1 exact runtime and NFR-5/NFR-6 certificates | none at the consuming checkpoints |
 | NFR-8 | NFR-0 through NFR-7 | none |
 
-The critical path is NFR-1 -> NFR-2/NFR-3 -> NFR-4 -> NFR-5 -> NFR-6 ->
-NFR-7 -> NFR-8. NFR-0 starts first because unknown harness assertions currently
-hide whether later failures occur at the intended checkpoint.
+The implementation followed NFR-1 -> NFR-2/NFR-3 -> NFR-4 -> NFR-5 -> NFR-6
+-> NFR-7 -> NFR-8. NFR-0 landed first so every later failure was observable at
+its intended checkpoint; no unknown Nat/Fin harness directive remains.
 
 ## 5. Correctness risks
 
@@ -627,7 +622,7 @@ Focused contract run:
 
 ```sh
 $(cabal list-bin exe:kappa) test \
-  tests/pending-import/spec-coverage/nat-fin-refinement
+  tests/conformance/spec-coverage/nat-fin-refinement
 ```
 
 Closeout additionally requires:
@@ -655,5 +650,5 @@ Closeout additionally requires:
 * §34.3.2A: required backend representation contracts.
 * Appendix T §T.5.2: harness assertions.
 * `Appendix-T-Nat-Fin-Refinement-Tests.md` §T.12.1-§T.12.9 and
-  `Additional-Backend-and-Certificate-Pseudotests.md`: the pending contract
+  `Additional-Backend-and-Certificate-Pseudotests.md`: the active contract
   ledger and mutation requirements.

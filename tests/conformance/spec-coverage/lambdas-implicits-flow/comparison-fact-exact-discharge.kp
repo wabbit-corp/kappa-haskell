@@ -12,7 +12,7 @@
 -- Presburger fragment additionally makes CROSS-shaped consequences
 -- dischargeable (e.g. a branch fact (n < 5) = True closing a goal
 -- (n < 10) = True); that new-spec extension is pinned separately by
--- tests/pending-import/spec-coverage/nat-fin-refinement/positive/
+-- tests/conformance/spec-coverage/nat-fin-refinement/positive/
 -- branch-fact-presburger-consequence. The no-fact negative below stays
 -- valid under §15.8.4: (n < 10) = True for unconstrained n is neither
 -- provable nor refutable, so the solver returns Unknown and the goal
