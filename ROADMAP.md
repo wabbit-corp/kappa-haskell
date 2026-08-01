@@ -814,8 +814,8 @@ dependencies, structural level certificates, nominal role inference and closures
 The 47 ordinary/parametric/KCoreText suites, 71 package/schema suites, 17 strengthening suites,
 and all 42 variance suites are active; `scripts/validate_universe_contract.py` reports a clean
 `47 + 71 + 17 pre-variance, 34 current variance, 8 gated future` ledger. U-E and U-F therefore
-have clean focused owner gates. The current full conformance result is also clean at 3,788
-passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,798 total):
+have clean focused owner gates. The current full conformance result is also clean at 3,834
+passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,844 total):
 eight future variance suites and two optional compact Nat/Fin layout suites.
 
 The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
@@ -1019,6 +1019,9 @@ conservative profile and the two optional compact-layout suites report
 `rt-unboxed-refinement`.
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
+The 2026-07-30 aggregate recheck passed `cabal test all` and the complete active
+conformance corpus at 3,834 passed, zero failed, and the same ten declared
+optional/future capability skips.
 
 - [x] **NFR-0 - contract and harness observability.** Implement every new Appendix T
       arithmetic/inhabitance/representation directive through production queries,
