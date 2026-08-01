@@ -176,8 +176,10 @@ The current implementation state is:
   schema action certificates. KCore retains explicit `CSchemaLift` nodes until verified
   representation-identity erasure.
 * KCoreText supports stable neutral level terms, arithmetic and structural certificate replay,
+  independently replayed size-change certificates for recursive global level producers,
   proof-irrelevant lift hashing, schema certificates/lifts, and all five independent semantic
-  version fields.
+  version fields. Local recursive level producers remain fail-closed until KCoreText has a
+  portable local-SCC certificate schema.
 * `Kappa.TestHarness` implements the §T.5.2 solver/generalization/recursive-schema and KCore
   evidence/hash directives. The exact 67-suite first-class-level tree is active and green.
 
@@ -462,7 +464,11 @@ is not a reason to retain a superseded semantic contract.
   increase/implicit/nontermination negatives, interface edge round trips, and first-class
   increasing recursion control. Unconditional equality cycles between inferred local schema
   metas are quotient-ed by antisymmetry before telescope publication; explicit schema
-  parameters remain distinct source identities.
+  parameters remain distinct source identities. Recursive global level producers are admitted
+  across KCoreText only when a versioned closed extension records the exact SCC and size-change
+  graph, the verifier recomputes that graph from typed KCore, and the shared termination algebra
+  accepts it. Missing, malformed, stale, or forged certificates reject; local recursive
+  producers remain a documented fail-closed future extension.
 
 - **U-G6 — expected-type schema operations and quantifier interchange (implemented; owner gate green).** Keep `schemaLift`
   insertion direct, fully saturated, same-family, and driven by an already-known synthesized
@@ -479,7 +485,8 @@ is not a reason to retain a superseded semantic contract.
   and partial `max`, and optional separate `OrderEmbedding`. Resolve local/instance/standard
   evidence once before the role fixed point and freeze it into the nominal closure. Never scan
   arbitrary theorem declarations; reject cyclic evidence depending on the role/certificate
-  being established; force invariant when selection fails. *Gate:* global instance, local
+  being established; pre-verify the full local dependency closure of a selected witness with
+  local schema certificates removed; force invariant when selection fails. *Gate:* global instance, local
   evidence, standard partial add, theorem-not-scanned, selected-evidence, and
   monotone-not-order-embedding suites plus F2/F4 certificate regressions.
 

@@ -827,7 +827,11 @@ pre-variance, 34 current variance, 8 gated future, 67 first-class-level + 5 stre
 level terms, the specified solver outcomes, rigid generalization, proof-binder migration,
 recursive schemas, complete arithmetic replay/versioning, schema reification, and ordinary
 `Monotone` evidence — implemented per `docs/UNIVERSES-PLAN.md` (2026-07-21) with owner gates
-green. The 2026-07-24 closeout passed the full validator/conformance, C/LLVM parity, LLVM RC,
+green. Recursive global level producers now cross KCoreText through exact, versioned
+size-change certificates whose SCC and graph are recomputed from typed KCore; unsupported local
+recursive producers remain fail-closed. Selected local `Monotone` witnesses are pre-verified
+with their full local dependency closure and without the schema certificates they authorize.
+The 2026-07-24 closeout passed the full validator/conformance, C/LLVM parity, LLVM RC,
 poison RC, TSan RC, and Railyard/Voxelcraft/Delve package gates. A quadratic installed-level
 substitution rewrite was replaced by an indexed dependency graph, reducing the Delve cold
 native build from roughly five minutes to 42.36 seconds while preserving zero Perceus

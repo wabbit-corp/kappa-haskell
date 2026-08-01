@@ -19,6 +19,10 @@
 module Kappa.Termination
   ( TerminationDecl (..)
   , TerminationResult (..)
+  , Change (..)
+  , SCGraph (..)
+  , sizeChangeTerminates
+  , strongerChange
   , AExpr (..)
   , ACmp (..)
   , AFact (..)
@@ -50,10 +54,10 @@ module Kappa.Termination
   , spineOfTerm
   ) where
 
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -102,6 +106,87 @@ data TerminationResult
   | TerminationTotalOnly
   | TerminationConversionSafe
   deriving stock (Eq, Show)
+
+-- | One relation in a size-change graph. A weak edge preserves structural
+-- size; a strict edge proves a proper subterm. The graph algebra is syntax
+-- independent so source Core and serialized KCore replay the same decision
+-- procedure instead of maintaining parallel termination checkers.
+data Change = ChWeak | ChStrict
+  deriving stock (Eq, Ord, Show)
+
+data SCGraph name = SCGraph
+  { scFrom :: !name
+  , scTo :: !name
+  , scRows :: !Int
+  , scCols :: !Int
+  , scMat :: !(Map (Int, Int) Change)
+  }
+  deriving stock (Eq, Ord, Show)
+
+-- | Lee-Jones-Ben-Amram size-change termination over a finite graph closure.
+-- The deterministic cap is deliberately fail-closed: exceeding it cannot turn
+-- an unverified recursive component into a total one.
+sizeChangeTerminates :: Ord name => [SCGraph name] -> Bool
+sizeChangeTerminates initial = go (Set.fromList initial) initial (0 :: Int)
+  where
+    graphCap = 4096 :: Int
+    go allGraphs work fuel
+      | Set.size allGraphs > graphCap = False
+      | fuel > graphCap = False
+      | null work = all idempotentCycleHasStrictDiagonal (Set.toList allGraphs)
+      | otherwise =
+          let newComps =
+                nub
+                  [ comp
+                  | g1 <- work
+                  , g2 <- Set.toList allGraphs
+                  , comp <- catMaybes [composeSC g1 g2, composeSC g2 g1]
+                  , not (Set.member comp allGraphs)
+                  ]
+              all' = foldr Set.insert allGraphs newComps
+           in go all' newComps (fuel + 1)
+
+    idempotentCycleHasStrictDiagonal graph
+      | scFrom graph /= scTo graph = True
+      | Just squared <- composeSC graph graph
+      , squared == graph = hasStrictDiagonal graph
+      | otherwise = True
+
+    hasStrictDiagonal graph =
+      let dimension = min (scRows graph) (scCols graph)
+       in any
+            (\index -> Map.lookup (index, index) (scMat graph) == Just ChStrict)
+            [0 .. dimension - 1]
+
+composeSC :: Ord name => SCGraph name -> SCGraph name -> Maybe (SCGraph name)
+composeSC left right
+  | scTo left /= scFrom right = Nothing
+  | otherwise =
+      Just
+        SCGraph
+          { scFrom = scFrom left
+          , scTo = scTo right
+          , scRows = scRows left
+          , scCols = scCols right
+          , scMat = Map.fromListWith strongerChange entries
+          }
+  where
+    entries =
+      [ ((source, target), composeChange first second)
+      | ((source, middle), first) <- Map.toList (scMat left)
+      , ((middle', target), second) <- Map.toList (scMat right)
+      , middle == middle'
+      ]
+
+composeChange :: Change -> Change -> Change
+composeChange ChStrict _ = ChStrict
+composeChange _ ChStrict = ChStrict
+composeChange ChWeak ChWeak = ChWeak
+
+strongerChange :: Change -> Change -> Change
+strongerChange ChStrict _ = ChStrict
+strongerChange _ ChStrict = ChStrict
+strongerChange ChWeak ChWeak = ChWeak
 
 -- | Expand direct global references through known-reducible bodies.  The caller
 -- supplies only reducibility and body data so this remains independent of the

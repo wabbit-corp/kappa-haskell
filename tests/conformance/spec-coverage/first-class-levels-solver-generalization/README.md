@@ -1,8 +1,8 @@
 # Kappa first-class levels, solver, generalization, and recursive schema tests
 
-This active package contains 71 independent Appendix T directory suites:
+This active package contains 72 independent Appendix T directory suites:
 the 67-suite `kappa_first_class_levels_solver_generalization_spec_patch.md`
-bundle plus four implementation-strengthening suites listed explicitly in
+bundle plus five implementation-strengthening suites listed explicitly in
 `manifest.json`.
 
 The suites cover:
@@ -21,5 +21,5 @@ The suites cover:
 * normal `Monotone` trait evidence discovery.
 
 The package is a conformance specification. The manifest and
-`scripts/validate_universe_contract.py` pin the exact 67 + 4 provenance split;
-all 71 suites pass the Appendix T harness.
+`scripts/validate_universe_contract.py` pin the exact 67 + 5 provenance split;
+all 72 suites pass the Appendix T harness.

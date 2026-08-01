@@ -259,6 +259,7 @@ data Assertion
   | ATotal !Text
   | AArithmeticCertificatesValid
   | AArithmeticCertificateMutationsReject
+  | ATerminationCertificateMutationsReject
   | ARepresentationCertificateMutationsReject
   | AInhabitance !InhabitancePurpose !InhabitanceSummary !Text
   | ASymbolicCardinality !Text !Text
@@ -612,6 +613,11 @@ parseDirective allLines lno body =
             ok (SAssert AArithmeticCertificateMutationsReject)
         | otherwise ->
             bad "malformed 'assertArithmeticCertificateMutationsReject' directive"
+      "assertTerminationCertificateMutationsReject"
+        | null args ->
+            ok (SAssert ATerminationCertificateMutationsReject)
+        | otherwise ->
+            bad "malformed 'assertTerminationCertificateMutationsReject' directive"
       "assertRepresentationCertificateMutationsReject"
         | null args ->
             ok (SAssert ARepresentationCertificateMutationsReject)
@@ -2185,6 +2191,12 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
         "assertArithmeticCertificateMutationsReject"
         "E_KCORE_ARITHMETIC_CERTIFICATE_INVALID"
         kcoreArithmeticCertificateMutationCases)
+  ATerminationCertificateMutationsReject ->
+    pure
+      (assertCertificateMutationsReject
+        "assertTerminationCertificateMutationsReject"
+        "E_KCORE_TEXT_INVALID"
+        kcoreTerminationCertificateMutationCases)
   ARepresentationCertificateMutationsReject ->
     pure
       (assertCertificateMutationsReject

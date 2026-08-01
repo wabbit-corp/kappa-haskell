@@ -29,6 +29,7 @@ module Kappa.CoreText
   , kcoreRepresentationCertificateCount
   , kcoreArithmeticCertificateMutationCases
   , kcoreRepresentationCertificateMutationCases
+  , kcoreTerminationCertificateMutationCases
   , kcoreHasValidSchemaCertificate
   , kcoreLevelCertificateDependencies
   , kcoreNominalRoles
@@ -159,7 +160,13 @@ import Kappa.Level
   , renderLevel
   , substituteLevelParams
   )
-import Kappa.Termination (canonicalTrustedIntPrimitive)
+import Kappa.Termination
+  ( Change (..)
+  , SCGraph (..)
+  , canonicalTrustedIntPrimitive
+  , sizeChangeTerminates
+  , strongerChange
+  )
 import Kappa.LevelEvidence
   ( coreTypeIsTypeLevel
   , scopeRecordFields
@@ -686,6 +693,7 @@ data VerifyContext = VerifyContext
   , vcLevelCertificates :: !(Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof))
   , vcSchemaCertificates :: !(Map StableRef KSchemaCertificate)
   , vcNominalFamilies :: !(Map StableRef KNominalFamily)
+  , vcTerminationCertified :: !(Set StableRef)
   , vcExtensions :: !(Set Text)
   , vcArithmeticBranchFacts :: ![(Bool, KTerm)]
   }
@@ -719,6 +727,7 @@ data KCoreInterface = KCoreInterface
   , kciRepresentationCertificates :: !(Map StableRef KRepresentationCertificate)
   , kciSchemaCertificates :: !(Map StableRef KSchemaCertificate)
   , kciNominalFamilies :: !(Map StableRef KNominalFamily)
+  , kciTerminationCertified :: !(Set StableRef)
   }
 
 data LocalEntry
@@ -2443,7 +2452,7 @@ parseAndVerifyKCoreTextWithEnvironment ec globals dataInfos constructors source 
 verifyKCoreText :: KCoreFile -> Either KCoreTextError ()
 verifyKCoreText =
   verifyKCoreTextWithExternal
-    Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
+    Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty
 
 parseAndVerifyKCoreInterface :: Text -> Either KCoreTextError KCoreInterface
 parseAndVerifyKCoreInterface =
@@ -2475,6 +2484,7 @@ verifyKCoreTextWithInterfaces interfaces file = do
     (kciLevelCertificates merged)
     (kciSchemaCertificates merged)
     (kciNominalFamilies merged)
+    (kciTerminationCertified merged)
     file
 
 verifyKCoreTextWithGlobals :: EvalCtx -> Map GName GlobalDef -> KCoreFile -> Either KCoreTextError ()
@@ -2519,6 +2529,16 @@ verifyKCoreTextWithEnvironment ec globals dataInfos constructors file = do
           [ (ref, (universes, constraints, theorem, proof))
           | (_, _, _, _, _, _, declarations) <- externalEntries
           , KDLevelCertificate ref universes constraints theorem proof <- declarations
+          ]
+      -- This path imports the live, already-checked source environment rather
+      -- than an untrusted artifact. Reducibility is the source termination
+      -- pass's finalized authority; textual interfaces carry the independently
+      -- replayed certificate set below instead.
+      externalTerminationCertified =
+        Set.fromList
+          [ stableRefForGlobal global
+          | (global, definition) <- Map.toList neededGlobals
+          , gdReducible definition
           ]
   externalNominalEntries <- fmap catMaybes . forM (Map.toAscList neededGlobals) $ \(global, definition) ->
     case gdNominalSummary definition of
@@ -2633,6 +2653,7 @@ verifyKCoreTextWithEnvironment ec globals dataInfos constructors file = do
           externalLevelCertificates
           externalSchemaCertificates
           externalNominalFamilies
+          externalTerminationCertified
           (Set.singleton "impl.kappa")
           []
       externalAssociatedCandidates =
@@ -2644,7 +2665,8 @@ verifyKCoreTextWithEnvironment ec globals dataInfos constructors file = do
       externalAssociatedContext
       externalAssociatedCandidates
   verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors
-    externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies file
+    externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies
+    externalTerminationCertified file
   where
     conversionContext = CoreConversionContext (Just ec) globals constructors
     fileRefs = Set.fromList (allStableRefs file)
@@ -2924,9 +2946,10 @@ verifyKCoreTextWithExternal
   -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof)
   -> Map StableRef KSchemaCertificate
   -> Map StableRef KNominalFamily
+  -> Set StableRef
   -> KCoreFile
   -> Either KCoreTextError ()
-verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies file@(KCoreFile version modules) = do
+verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalRecordInterfaces externalAssociatedNormalizations externalConstructors externalConstructorFields externalLevelCertificates externalSchemaCertificates externalNominalFamilies externalTerminationCertified file@(KCoreFile version modules) = do
   when (version /= 1) $
     Left (KCoreTextError "E_KCORE_TEXT_UNSUPPORTED_VERSION" ("unsupported KCoreText schema " <> T.pack (show version)))
   verifyStableIdentities (Map.keys externalTypes) file
@@ -2987,6 +3010,7 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
           certificates
           schemaCertificates
           nominalFamilies
+          externalTerminationCertified
           -- External certificate terms were produced by the compiler's Core
           -- conversion, whose implementation-owned generic nodes have the
           -- installed @impl.kappa@ verifier.  Local certificates are checked
@@ -3022,6 +3046,7 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
         certificates
         schemaCertificates
         nominalFamilies
+        externalTerminationCertified
     )
     modules
 
@@ -3358,8 +3383,8 @@ familyTermLevelParameters family = nub . go
       KVList values -> concatMap value values
       _ -> []
 
-verifyModule :: Map StableRef Int -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ObservationMode -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], KTerm) -> Map KAssociatedNormalizationKey KAssociatedNormalization -> Map StableRef ([UniverseRef], [KBinder], KTerm) -> Map StableRef (Map StableRef Int) -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof) -> Map StableRef KSchemaCertificate -> Map StableRef KNominalFamily -> KModule -> Either KCoreTextError ()
-verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces externalAssociatedNormalizations constructorTypes constructorFields certificates schemaCertificates nominalFamilies KModule {..} = do
+verifyModule :: Map StableRef Int -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ObservationMode -> Map StableRef ([UniverseRef], KTerm) -> Map StableRef ([UniverseRef], KTerm) -> Map KAssociatedNormalizationKey KAssociatedNormalization -> Map StableRef ([UniverseRef], [KBinder], KTerm) -> Map StableRef (Map StableRef Int) -> Map StableRef ([UniverseRef], [KConstraint], KConstraint, KLevelProof) -> Map StableRef KSchemaCertificate -> Map StableRef KNominalFamily -> Set StableRef -> KModule -> Either KCoreTextError ()
+verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces externalAssociatedNormalizations constructorTypes constructorFields certificates schemaCertificates nominalFamilies externalTerminationCertified KModule {..} = do
   let metadata = Map.fromList kmMetadata
       required =
         [ "languageVersion"
@@ -3439,6 +3464,8 @@ verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces
                   <> tshow extensionVersion
               )
           )
+  localTerminationCertified <-
+    verifyTerminationCertificateDeclarations globalBodies kmDecls
   let baseContext =
         VerifyContext
           globalArities
@@ -3452,6 +3479,7 @@ verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces
           certificates
           schemaCertificates
           nominalFamilies
+          (Set.union localTerminationCertified externalTerminationCertified)
           extensions
           []
   verifiedAssociatedNormalizations <-
@@ -3468,11 +3496,21 @@ verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces
           ]
       localSchemaCertificates =
         Map.restrictKeys schemaCertificates localSchemaCertificateRefs
+      externalOnlySchemaContext =
+        context
+          { vcSchemaCertificates =
+              Map.withoutKeys schemaCertificates localSchemaCertificateRefs
+          }
   -- A certificate is an executable proof object at the interchange trust
   -- boundary.  Replay it only after this module's declared extension
   -- verifiers have been installed; otherwise implementation-owned level
   -- values are either spuriously rejected or, if globally enabled, accepted
   -- without the required declaration.
+  verifyMonotoneEvidenceDependencyClosure
+    externalOnlySchemaContext
+    globalBodies
+    kmDecls
+    localSchemaCertificates
   verifySchemaMonotoneWitnesses context nominalFamilies localSchemaCertificates
   forM_ kmDecls $ \declaration ->
     case verifyDecl context declaration of
@@ -3496,6 +3534,51 @@ verifyModule globalArities globalTypes globalModes globalBodies recordInterfaces
       , "levelPrincipalInferenceVersion"
       , "levelCertificateVersion"
       ]
+
+-- | A local monotonicity witness may not use the schema certificate that the
+-- witness is helping establish. Verify the complete local body dependency
+-- closure first with all local schema certificates removed. The module is
+-- still checked normally afterward, so this phase grants no separate
+-- acceptance path; it only breaks the certificate/evidence cycle.
+verifyMonotoneEvidenceDependencyClosure
+  :: VerifyContext
+  -> Map StableRef ([UniverseRef], KTerm)
+  -> [KDecl]
+  -> Map StableRef KSchemaCertificate
+  -> Either KCoreTextError ()
+verifyMonotoneEvidenceDependencyClosure context bodies declarations certificates =
+  forM_ declarations $ \declaration ->
+    when (not (Set.null (Set.intersection needed (Set.fromList (declRefs declaration))))) $
+      case verifyDecl context declaration of
+        Left err ->
+          Left
+            err
+              { kcteMessage =
+                  "while pre-verifying monotonicity evidence dependency "
+                    <> declarationSubject declaration
+                    <> ": "
+                    <> kcteMessage err
+              }
+        Right () -> pure ()
+  where
+    localRefs = Set.fromList (concatMap declRefs declarations)
+    seeds =
+      Set.intersection localRefs . Set.fromList $
+        [ ref
+        | certificate <- Map.elems certificates
+        , witness <- kscMonotoneWitnesses certificate
+        , KRGlobal ref <- kmwDependencies witness
+        ]
+    needed = close seeds
+    close current =
+      let dependencies =
+            Set.unions
+              [ Set.intersection localRefs (Set.fromList (termStableRefs body))
+              | ref <- Set.toList current
+              , Just (_, body) <- [Map.lookup ref bodies]
+              ]
+          next = Set.union current dependencies
+       in if next == current then current else close next
 
 associatedNormalizationKey
   :: KAssociatedNormalization
@@ -3716,9 +3799,12 @@ verifyDecl context = \case
       Left (schemaCertificateInvalid "a schema certificate may not authorize a runtime transformation")
     unless (extensionOwnsTag (vcExtensions context) tag) $
       Left (invalid ("unsupported generic declaration node '" <> tag <> "'"))
-    if tag == "mutual-nominal-signature"
-      then verifyMutualNominalSignature fields
-      else mapM_ (verifyValue context Set.empty emptyAssumptions Map.empty . snd) fields
+    case tag of
+      "mutual-nominal-signature" -> verifyMutualNominalSignature fields
+      _
+        | tag == terminationCertificateTag -> pure ()
+        | otherwise ->
+            mapM_ (verifyValue context Set.empty emptyAssumptions Map.empty . snd) fields
 
 verifyRepresentationCertificate
   :: VerifyContext
@@ -8695,6 +8781,591 @@ verifyLevel context scope assumptions env = \case
   where
     recur = verifyLevel context scope assumptions env
 
+-- KCoreText termination replay ----------------------------------------------
+
+terminationCertificateTag :: Text
+terminationCertificateTag = "impl.kappa.termination-certificate"
+
+data KTerminationGroup = KTerminationGroup
+  { ktgMembers :: ![StableRef]
+  , ktgGraphs :: ![SCGraph StableRef]
+  }
+  deriving stock (Eq, Ord, Show)
+
+data KStructuralStep
+  = KSPosition !Int
+  | KSField !Text
+  | KSVariant !Text
+  deriving stock (Eq, Ord, Show)
+
+data KStructuralOrigin = KStructuralOrigin
+  { ksoRoot :: !Int
+  , ksoPath :: ![KStructuralStep]
+  }
+  deriving stock (Eq, Ord, Show)
+
+type KStructuralOrigins = Map Int (Set KStructuralOrigin)
+
+-- | Emit only independently replayable structural certificates. A recursive
+-- definition accepted by a stronger source-only method remains transparent in
+-- the live compiler, but an interchange consumer will not treat it as a level
+-- producer until that method has its own serialized proof schema.
+terminationCertificateDeclarations
+  :: Map StableRef ([UniverseRef], KTerm)
+  -> [KDecl]
+terminationCertificateDeclarations bodies =
+  case replayableTerminationGroups bodies of
+    [] -> []
+    groups ->
+      [ KDGeneric
+          terminationCertificateTag
+          [ ("checkerVersion", KVInteger 1)
+          , ("certificateVersion", KVInteger 1)
+          , ("groups", KVList (map encodeTerminationGroup groups))
+          ]
+      ]
+
+encodeTerminationGroup :: KTerminationGroup -> KValueNode
+encodeTerminationGroup KTerminationGroup {..} =
+  KVList
+    [ KVText "structural-size-change"
+    , KVList (map representationSemanticRefValue ktgMembers)
+    , KVList (map encodeTerminationGraph ktgGraphs)
+    ]
+
+encodeTerminationGraph :: SCGraph StableRef -> KValueNode
+encodeTerminationGraph SCGraph {..} =
+  KVList
+    [ representationSemanticRefValue scFrom
+    , representationSemanticRefValue scTo
+    , KVInteger (toInteger scRows)
+    , KVInteger (toInteger scCols)
+    , KVList
+        [ KVList
+            [ KVInteger (toInteger row)
+            , KVInteger (toInteger column)
+            , KVText (case change of ChWeak -> "weak"; ChStrict -> "strict")
+            ]
+        | ((row, column), change) <- Map.toAscList scMat
+        ]
+    ]
+
+decodeTerminationCertificate
+  :: [(Text, KValueNode)]
+  -> Either KCoreTextError [KTerminationGroup]
+decodeTerminationCertificate fields = do
+  let names = map fst fields
+      expected = Set.fromList ["checkerVersion", "certificateVersion", "groups"]
+  unless (length names == Set.size (Set.fromList names)) $
+    malformed "termination-certificate payload contains duplicate fields"
+  unless (Set.fromList names == expected) $
+    malformed "termination-certificate payload does not match its closed schema"
+  checkerVersion <- integerField "checkerVersion"
+  certificateVersion <- integerField "certificateVersion"
+  unless (checkerVersion == 1) $
+    malformed "unsupported termination-certificate checker version"
+  unless (certificateVersion == 1) $
+    malformed "unsupported termination-certificate schema version"
+  groupNodes <- listField "groups"
+  groups <- mapM decodeGroup groupNodes
+  let memberSets = map (Set.fromList . ktgMembers) groups
+  unless (length memberSets == Set.size (Set.fromList memberSets)) $
+    malformed "termination-certificate declares one recursive group more than once"
+  pure groups
+  where
+    malformed = Left . invalid
+    required name =
+      maybe
+        (malformed ("termination-certificate is missing field '" <> name <> "'"))
+        pure
+        (lookup name fields)
+    integerField name =
+      required name >>= \case
+        KVInteger value -> pure value
+        _ -> malformed ("termination-certificate field '" <> name <> "' must be an integer")
+    listField name =
+      required name >>= \case
+        KVList values -> pure values
+        _ -> malformed ("termination-certificate field '" <> name <> "' must be a list")
+    decodeGroup = \case
+      KVList [KVText "structural-size-change", KVList memberNodes, KVList graphNodes] -> do
+        members <- mapM decodeRepresentationSemanticRefK memberNodes
+        graphs <- mapM decodeGraph graphNodes
+        unless (members == sort (nub members) && not (null members)) $
+          malformed "termination-certificate group members must be nonempty, unique, and canonical"
+        unless (graphs == sort (nub graphs) && not (null graphs)) $
+          malformed "termination-certificate graphs must be nonempty, unique, and canonical"
+        pure (KTerminationGroup members graphs)
+      _ -> malformed "termination-certificate contains a malformed group"
+    decodeGraph = \case
+      KVList [fromNode, toNode, KVInteger rows, KVInteger columns, KVList entryNodes] -> do
+        from <- decodeRepresentationSemanticRefK fromNode
+        to <- decodeRepresentationSemanticRefK toNode
+        rowCount <- naturalInt "row count" rows
+        columnCount <- naturalInt "column count" columns
+        entries <- mapM (decodeEntry rowCount columnCount) entryNodes
+        unless (entries == sort (nub entries)) $
+          malformed "termination-certificate graph entries must be unique and canonical"
+        pure
+          SCGraph
+            { scFrom = from
+            , scTo = to
+            , scRows = rowCount
+            , scCols = columnCount
+            , scMat = Map.fromList entries
+            }
+      _ -> malformed "termination-certificate contains a malformed size-change graph"
+    decodeEntry rows columns = \case
+      KVList [KVInteger row, KVInteger column, KVText relation] -> do
+        rowIndex <- boundedIndex "row" rows row
+        columnIndex <- boundedIndex "column" columns column
+        change <- case relation of
+          "weak" -> pure ChWeak
+          "strict" -> pure ChStrict
+          _ -> malformed "termination-certificate graph relation is unknown"
+        pure ((rowIndex, columnIndex), change)
+      _ -> malformed "termination-certificate contains a malformed graph entry"
+    naturalInt label value =
+      let decoded = fromInteger value :: Int
+       in if value >= 0 && toInteger decoded == value
+            then pure decoded
+            else malformed ("termination-certificate " <> label <> " is outside the supported range")
+    boundedIndex label bound value = do
+      decoded <- naturalInt (label <> " index") value
+      if decoded < bound
+        then pure decoded
+        else malformed ("termination-certificate graph " <> label <> " index is out of range")
+    decodeRepresentationSemanticRefK =
+      either malformed pure . decodeRepresentationSemanticRef
+
+-- | Verify the certificate against the exact bodies in this module. The
+-- serialized graph is diagnostic/audit data, not authority: call edges and
+-- structural descent are recomputed from typed KCore and must compare exactly.
+verifyTerminationCertificateDeclarations
+  :: Map StableRef ([UniverseRef], KTerm)
+  -> [KDecl]
+  -> Either KCoreTextError (Set StableRef)
+verifyTerminationCertificateDeclarations globalBodies declarations = do
+  let certificatePayloads =
+        [ fields
+        | KDGeneric tag fields <- declarations
+        , tag == terminationCertificateTag
+        ]
+  when (length certificatePayloads > 1) $
+    Left (invalid "a module may contain at most one termination-certificate declaration")
+  groups <- concat <$> mapM decodeTerminationCertificate certificatePayloads
+  let localRefs =
+        Set.fromList
+          [ ref
+          | KDDef ref _ _ _ body <- declarations
+          , not (isUnavailableBody body)
+          ]
+      localBodies = Map.restrictKeys globalBodies localRefs
+      cyclicGroups = map Set.fromList (cyclicKTermGroups localBodies)
+  forM_ groups $ \group -> do
+    let members = Set.fromList (ktgMembers group)
+    unless (members `elem` cyclicGroups) $
+      Left (invalid "termination-certificate group does not match one local recursive SCC")
+    expected <-
+      either
+        (Left . invalid . ("termination-certificate replay failed: " <>))
+        pure
+        (deriveKTerminationGroup localBodies (ktgMembers group))
+    unless (group == expected) $
+      Left (invalid "termination-certificate graph disagrees with the recomputed typed KCore call graph")
+    unless (sizeChangeTerminates (ktgGraphs expected)) $
+      Left (invalid "termination-certificate graph does not prove size-change termination")
+  pure (Set.unions (map (Set.fromList . ktgMembers) groups))
+
+terminationCertificateMembers :: [KDecl] -> Set StableRef
+terminationCertificateMembers declarations =
+  Set.unions
+    [ Set.fromList (concatMap ktgMembers groups)
+    | KDGeneric tag fields <- declarations
+    , tag == terminationCertificateTag
+    , Right groups <- [decodeTerminationCertificate fields]
+    ]
+
+replayableTerminationGroups
+  :: Map StableRef ([UniverseRef], KTerm)
+  -> [KTerminationGroup]
+replayableTerminationGroups bodies =
+  sort
+    [ group
+    | members <- cyclicKTermGroups bodies
+    , Right group <- [deriveKTerminationGroup bodies members]
+    , sizeChangeTerminates (ktgGraphs group)
+    ]
+
+cyclicKTermGroups
+  :: Map StableRef ([UniverseRef], KTerm)
+  -> [[StableRef]]
+cyclicKTermGroups bodies =
+  sort
+    [ sort members
+    | component <- stronglyConnComp nodes
+    , members <- case component of
+        CyclicSCC refs -> [refs]
+        AcyclicSCC ref
+          | ref `Set.member` Map.findWithDefault Set.empty ref dependencies ->
+              [[ref]]
+        _ -> []
+    ]
+  where
+    localRefs = Map.keysSet bodies
+    dependencies =
+      Map.map
+        (Set.intersection localRefs . kTermComputationalRefs . snd)
+        bodies
+    nodes =
+      [ (ref, ref, Set.toList (Map.findWithDefault Set.empty ref dependencies))
+      | ref <- Map.keys bodies
+      ]
+
+deriveKTerminationGroup
+  :: Map StableRef ([UniverseRef], KTerm)
+  -> [StableRef]
+  -> Either Text KTerminationGroup
+deriveKTerminationGroup bodies members0 = do
+  let members = sort members0
+      memberSet = Set.fromList members
+  functions <-
+    forM members $ \ref -> do
+      (_, body) <-
+        maybe
+          (Left ("recursive member body is unavailable for " <> renderStable ref))
+          pure
+          (Map.lookup ref bodies)
+      let (parameters, termBody) = peelKTermParameters body
+      pure (ref, (parameters, termBody))
+  let functionMap = Map.fromList functions
+  graphs <-
+    concat
+      <$> mapM
+        (deriveKFunctionGraphs memberSet functionMap)
+        functions
+  unless (not (null graphs)) $
+    Left "recursive group has no complete typed call edge"
+  pure
+    KTerminationGroup
+      { ktgMembers = members
+      , ktgGraphs = sort (nub graphs)
+      }
+
+peelKTermParameters :: KTerm -> ([KBinder], KTerm)
+peelKTermParameters = go []
+  where
+    go parameters (KTLambda binder body) = go (parameters ++ [binder]) body
+    go parameters body = (parameters, body)
+
+deriveKFunctionGraphs
+  :: Set StableRef
+  -> Map StableRef ([KBinder], KTerm)
+  -> (StableRef, ([KBinder], KTerm))
+  -> Either Text [SCGraph StableRef]
+deriveKFunctionGraphs members functions (source, (parameters, body)) =
+  go initialOrigins body
+  where
+    explicitParameters =
+      [ binder
+      | binder <- parameters
+      , kbExplicitness binder == KExplicit
+      ]
+    initialOrigins =
+      Map.fromList
+        [ (lrId (kbRef binder), Set.singleton (KStructuralOrigin index []))
+        | (index, binder) <- zip [0 ..] explicitParameters
+        ]
+
+    go origins term =
+      case term of
+        KTApply {} ->
+          let (headTerm, arguments) = collectKApplication term
+           in case headTerm of
+                KTGlobal target _
+                  | target `Set.member` members -> do
+                      (targetParameters, _) <-
+                        maybe
+                          (Left ("recursive call target is unavailable: " <> renderStable target))
+                          pure
+                          (Map.lookup target functions)
+                      unless (length arguments == length targetParameters) $
+                        Left "partial or oversaturated recursive calls are not certificate-replayable"
+                      let explicitArguments =
+                            [ argument
+                            | KArgument KExplicit argument <- arguments
+                            ]
+                          targetExplicitCount =
+                            length
+                              [ ()
+                              | binder <- targetParameters
+                              , kbExplicitness binder == KExplicit
+                              ]
+                      unless (length explicitArguments == targetExplicitCount) $
+                        Left "recursive call explicitness spine disagrees with its target telescope"
+                      nested <- concat <$> mapM (go origins . argumentTerm) arguments
+                      let entries =
+                            [ ((sourceIndex, targetIndex), change)
+                            | (targetIndex, argument) <- zip [0 ..] explicitArguments
+                            , origin <- Set.toList (kTermStructuralOrigins origins argument)
+                            , let sourceIndex = ksoRoot origin
+                                  change =
+                                    if null (ksoPath origin)
+                                      then ChWeak
+                                      else ChStrict
+                            ]
+                          graph =
+                            SCGraph
+                              { scFrom = source
+                              , scTo = target
+                              , scRows = length explicitParameters
+                              , scCols = targetExplicitCount
+                              , scMat = Map.fromListWith strongerChange entries
+                              }
+                      pure (graph : nested)
+                _ ->
+                  (++)
+                    <$> go origins headTerm
+                    <*> (concat <$> mapM (go origins . argumentTerm) arguments)
+        KTGlobal ref _
+          | ref `Set.member` members ->
+              Left "a recursive group member escapes without a complete application"
+        KTGlobal {} -> pure []
+        KTLambda binder nested ->
+          go (Map.delete (lrId (kbRef binder)) origins) nested
+        KTBlock items result -> do
+          (itemGraphs, origins') <- foldM step ([], origins) items
+          resultGraphs <- go origins' result
+          pure (itemGraphs ++ resultGraphs)
+        KTLetRec definitions result -> do
+          definitionGraphs <-
+            concat
+              <$> mapM
+                (go origins . kldBody)
+                definitions
+          resultGraphs <- go origins result
+          pure (definitionGraphs ++ resultGraphs)
+        KTCase scrutinee _ alternatives -> do
+          scrutineeGraphs <- go origins scrutinee
+          alternativeGraphs <-
+            concat <$> mapM (goAlternative origins scrutinee) alternatives
+          pure (scrutineeGraphs ++ alternativeGraphs)
+        KTConstruct _ _ arguments ->
+          concat <$> mapM (go origins . argumentTerm) arguments
+        KTProject _ receiver -> go origins receiver
+        KTLift _ _ _ payload -> go origins payload
+        KTSchemaLift _ _ _ _ _ targetArguments payload ->
+          (++)
+            <$> (concat <$> mapM (go origins . argumentTerm) targetArguments)
+            <*> go origins payload
+        KTAscribe value _ -> go origins value
+        KTRecordValue fields -> concat <$> mapM (go origins . snd) fields
+        KTIf condition thenBranch elseBranch ->
+          concat
+            <$> mapM
+              (go origins)
+              [condition, thenBranch, elseBranch]
+        KTGeneric _ fields -> concat <$> mapM (goValue origins . snd) fields
+        KTPi {} -> pure []
+        KTSigma {} -> pure []
+        KTType {} -> pure []
+        KTLiteral {} -> pure []
+        KTRecordType {} -> pure []
+        KTLocal {} -> pure []
+
+    step (graphs, origins) (KBLet binder rhs) = do
+      rhsGraphs <- go origins rhs
+      let aliases = kTermStructuralOrigins origins rhs
+          origins' =
+            if Set.null aliases
+              then Map.delete (lrId (kbRef binder)) origins
+              else Map.insert (lrId (kbRef binder)) aliases origins
+      pure (graphs ++ rhsGraphs, origins')
+
+    goAlternative origins scrutinee = \case
+      KCaseDefault nested -> go origins nested
+      KCaseConstructor _ _ bindings nested ->
+        go (bindKCaseOrigins origins scrutinee bindings) nested
+      KCasePattern pattern' guard' nested -> do
+        let origins' =
+              bindKPatternOrigins
+                origins
+                (kTermStructuralOrigins origins scrutinee)
+                pattern'
+        guardGraphs <- maybe (pure []) (go origins') guard'
+        nestedGraphs <- go origins' nested
+        pure (guardGraphs ++ nestedGraphs)
+
+    goValue origins = \case
+      KVTerm nested -> go origins nested
+      KVLevel (KLTerm nested) -> go origins nested
+      KVQuantity (KQTerm nested) -> go origins nested
+      KVBinder binder -> go origins (kbType binder)
+      KVPattern pattern' -> go origins (kbType (kpSlot pattern'))
+      KVList values -> concat <$> mapM (goValue origins) values
+      _ -> pure []
+
+bindKCaseOrigins
+  :: KStructuralOrigins
+  -> KTerm
+  -> [KCaseBinding]
+  -> KStructuralOrigins
+bindKCaseOrigins origins scrutinee bindings =
+  snd (foldl bindOne (0 :: Int, origins) bindings)
+  where
+    roots = kTermStructuralOrigins origins scrutinee
+    bindOne (position, current) = \case
+      KCaseBridge {} -> (position, current)
+      KCasePayload binder ->
+        let children =
+              Set.map
+                (\origin ->
+                  origin
+                    { ksoPath =
+                        ksoPath origin ++ [KSPosition position]
+                    })
+                roots
+            current' =
+              if Set.null children
+                then Map.delete (lrId (kbRef binder)) current
+                else Map.insert (lrId (kbRef binder)) children current
+         in (position + 1, current')
+
+bindKPatternOrigins
+  :: KStructuralOrigins
+  -> Set KStructuralOrigin
+  -> KPattern
+  -> KStructuralOrigins
+bindKPatternOrigins origins roots pattern' =
+  bindNode
+    (insertIfPresent (kbRef (kpSlot pattern')) roots origins)
+    roots
+    (kpNode pattern')
+  where
+    insertIfPresent ref values current
+      | Set.null values = Map.delete (lrId ref) current
+      | otherwise = Map.insert (lrId ref) values current
+    descend step =
+      Set.map
+        (\origin -> origin {ksoPath = ksoPath origin ++ [step]})
+    bindNode current currentRoots = \case
+      KPNConstructor _ _ _ _ fields ->
+        foldl
+          (\acc (position, fieldPattern) ->
+            bindKPatternOrigins acc (descend (KSPosition position) currentRoots) fieldPattern)
+          current
+          (zip [0 ..] fields)
+      KPNTuple fields ->
+        foldl
+          (\acc (position, fieldPattern) ->
+            bindKPatternOrigins acc (descend (KSPosition position) currentRoots) fieldPattern)
+          current
+          (zip [0 ..] fields)
+      KPNRecord fields rest ->
+        let withFields =
+              foldl
+                (\acc (field, _, fieldPattern) ->
+                  bindKPatternOrigins acc (descend (KSField (srName field)) currentRoots) fieldPattern)
+                current
+                fields
+         in maybe withFields (bindKPatternOrigins withFields Set.empty) rest
+      KPNInject member payload ->
+        bindKPatternOrigins current (descend (KSVariant member) currentRoots) payload
+      KPNOr (first : _) _ -> bindKPatternOrigins current currentRoots first
+      KPNAs payload -> bindKPatternOrigins current currentRoots payload
+      _ -> current
+
+kTermStructuralOrigins
+  :: KStructuralOrigins
+  -> KTerm
+  -> Set KStructuralOrigin
+kTermStructuralOrigins origins = go
+  where
+    go = \case
+      KTLocal ref [] ->
+        Map.findWithDefault Set.empty (lrId ref) origins
+      KTProject field receiver ->
+        Set.map
+          (\origin -> origin {ksoPath = ksoPath origin ++ [KSField (srName field)]})
+          (go receiver)
+      KTConstruct _ _ arguments ->
+        reconstruct
+          [ (KSPosition position, go (argumentTerm argument))
+          | (position, argument) <- zip [0 ..] arguments
+          ]
+      KTRecordValue fields ->
+        reconstruct
+          [ (KSField field, go value)
+          | (field, value) <- fields
+          ]
+      KTLift _ _ _ payload -> go payload
+      KTSchemaLift _ _ _ _ _ _ payload -> go payload
+      KTAscribe value _ -> go value
+      _ -> Set.empty
+
+    reconstruct [] = Set.empty
+    reconstruct children =
+      case
+          [ Set.fromList
+              (mapMaybe (stripSuffix step) (Set.toList childOrigins))
+          | (step, childOrigins) <- children
+          ]
+        of
+          [] -> Set.empty
+          first : rest -> foldl Set.intersection first rest
+    stripSuffix wanted origin =
+      case reverse (ksoPath origin) of
+        actual : reversedPrefix
+          | actual == wanted ->
+              Just origin {ksoPath = reverse reversedPrefix}
+        _ -> Nothing
+
+kTermComputationalRefs :: KTerm -> Set StableRef
+kTermComputationalRefs = go
+  where
+    go = \case
+      KTLocal {} -> Set.empty
+      KTGlobal ref _ -> Set.singleton ref
+      KTType {} -> Set.empty
+      KTPi {} -> Set.empty
+      KTSigma {} -> Set.empty
+      KTLambda _ body -> go body
+      KTApply function arguments ->
+        Set.unions (go function : map (go . argumentTerm) arguments)
+      KTBlock items result ->
+        Set.unions (go result : [go rhs | KBLet _ rhs <- items])
+      KTLetRec definitions result ->
+        Set.unions (go result : map (go . kldBody) definitions)
+      KTCase scrutinee _ alternatives ->
+        Set.unions
+          (go scrutinee : map alternative alternatives)
+      KTConstruct _ _ arguments ->
+        Set.unions (map (go . argumentTerm) arguments)
+      KTProject _ receiver -> go receiver
+      KTLift _ _ _ payload -> go payload
+      KTSchemaLift _ _ _ _ _ arguments payload ->
+        Set.unions (go payload : map (go . argumentTerm) arguments)
+      KTAscribe value _ -> go value
+      KTLiteral {} -> Set.empty
+      KTRecordType {} -> Set.empty
+      KTRecordValue fields -> Set.unions (map (go . snd) fields)
+      KTIf condition thenBranch elseBranch ->
+        Set.unions (map go [condition, thenBranch, elseBranch])
+      KTGeneric _ fields -> Set.unions (map (value . snd) fields)
+    alternative = \case
+      KCaseDefault body -> go body
+      KCaseConstructor _ _ _ body -> go body
+      KCasePattern _ guard' body ->
+        maybe Set.empty go guard' `Set.union` go body
+    value = \case
+      KVTerm term -> go term
+      KVLevel (KLTerm term) -> go term
+      KVQuantity (KQTerm term) -> go term
+      KVBinder binder -> go (kbType binder)
+      KVPattern pattern' -> go (kbType (kpSlot pattern'))
+      KVList values -> Set.unions (map value values)
+      _ -> Set.empty
+
 -- | Independently replay the §11.1.1 level-admissibility obligations that are
 -- not implied by ordinary typing. KCoreText carries no termination
 -- certificate for a local recursive group, so such a producer is rejected
@@ -8722,11 +9393,13 @@ verifyLevelTermAdmissibility context = go Set.empty Set.empty
           Just (parameters, body) -> do
             unless (length parameters == length levels) $
               Left (invalid "level-term global definition has the wrong universe arity")
-            when (ref `Set.member` activeGlobals) $
-              Left (invalid "level-term totality is not established for a recursive global definition")
-            let substitution = Map.fromList (zip (map urId parameters) levels)
-            go (Set.insert ref activeGlobals) activeLocals env
-              (substituteUniverseParameters substitution body)
+            if ref `Set.member` activeGlobals
+              then unless (ref `Set.member` vcTerminationCertified context) $
+                Left (invalid "level-term totality is not established for a recursive global definition")
+              else do
+                let substitution = Map.fromList (zip (map urId parameters) levels)
+                go (Set.insert ref activeGlobals) activeLocals env
+                  (substituteUniverseParameters substitution body)
           Nothing -> pure ()
       KTType _ -> pure ()
       KTPi binder codomain -> underBinder binder codomain
@@ -9233,6 +9906,11 @@ interfaceFromVerifiedKCore (KCoreFile _ modules) =
           | KModule {kmDecls = declarations} <- modules
           , KDData ref universes binders result certificate constructors <- declarations
           ]
+    , kciTerminationCertified =
+        Set.unions
+          [ terminationCertificateMembers declarations
+          | KModule {kmDecls = declarations} <- modules
+          ]
     }
 
 mergeKCoreInterfaces :: [KCoreInterface] -> Either KCoreTextError KCoreInterface
@@ -9255,6 +9933,10 @@ mergeKCoreInterfaces = foldM merge emptyKCoreInterface
           (kciRepresentationCertificates right)
         <*> mergeMap "schema certificate" (kciSchemaCertificates left) (kciSchemaCertificates right)
         <*> mergeMap "nominal family" (kciNominalFamilies left) (kciNominalFamilies right)
+        <*> pure
+          (Set.union
+            (kciTerminationCertified left)
+            (kciTerminationCertified right))
     mergeMap label left right
       | Set.null overlap = pure (Map.union left right)
       | otherwise =
@@ -9297,6 +9979,7 @@ emptyKCoreInterface =
     Map.empty
     Map.empty
     Map.empty
+    Set.empty
 
 isUnavailableBody :: KTerm -> Bool
 isUnavailableBody = \case
@@ -13744,6 +14427,104 @@ kcoreRepresentationCertificateCount (KCoreFile _ modules) =
     , KDRepresentationCertificate {} <- declarations
     ]
 
+-- | Mutate each authority-bearing part of a structural termination
+-- certificate. These cases exercise the normal parser/verifier path and must
+-- all reject; the serialized graph is never trusted as a declaration flag.
+kcoreTerminationCertificateMutationCases
+  :: KCoreFile
+  -> Either Text [(Text, Text)]
+kcoreTerminationCertificateMutationCases file =
+  traverse build
+    [ ("certificate-version", mutateNamed "certificateVersion" bumpInteger)
+    , ("group-member-identity", mutateNamed "groups" mutateMemberIdentity)
+    , ("strict-edge", mutateNamed "groups" weakenStrictEdge)
+    ]
+  where
+    build (label, mutateFields) =
+      case mutateFirstCertificate mutateFields file of
+        Nothing ->
+          Left ("termination-certificate fixture cannot mutate " <> label)
+        Just mutated ->
+          Right (label, printCanonicalKCoreText mutated)
+
+    mutateNamed name mutate fields =
+      traverseNamedValue name mutate fields
+
+    bumpInteger = \case
+      KVInteger value -> Just (KVInteger (value + 1))
+      _ -> Nothing
+
+    mutateMemberIdentity = \case
+      KVList
+        ( KVList
+            [ kind
+            , KVList
+                ( KVList [tag, readable, KVText identity]
+                    : remainingMembers
+                  )
+            , graphs
+            ]
+            : remainingGroups
+          ) ->
+            Just
+              ( KVList
+                  ( KVList
+                      [ kind
+                      , KVList
+                          ( KVList
+                              [tag, readable, KVText (identity <> ".mutated")]
+                              : remainingMembers
+                          )
+                      , graphs
+                      ]
+                      : remainingGroups
+                  )
+              )
+      _ -> Nothing
+
+    weakenStrictEdge node =
+      case mutateFirstText "strict" "weak" node of
+        (True, mutated) -> Just mutated
+        (False, _) -> Nothing
+
+    mutateFirstText wanted replacement = \case
+      KVText value
+        | value == wanted -> (True, KVText replacement)
+      KVList values ->
+        let (changed, values') = mutateFirstList values
+         in (changed, KVList values')
+      other -> (False, other)
+      where
+        mutateFirstList [] = (False, [])
+        mutateFirstList (value : values) =
+          case mutateFirstText wanted replacement value of
+            (True, value') -> (True, value' : values)
+            (False, _) ->
+              let (changed, values') = mutateFirstList values
+               in (changed, value : values')
+
+    mutateFirstCertificate mutate (KCoreFile version modules) = do
+      (modules', changed) <- mutateModules modules
+      guard changed
+      pure (KCoreFile version modules')
+      where
+        mutateModules [] = Nothing
+        mutateModules (module' : rest) =
+          case mutateDeclarations (kmDecls module') of
+            Just declarations ->
+              Just (module' {kmDecls = declarations} : rest, True)
+            Nothing -> do
+              (rest', changed) <- mutateModules rest
+              pure (module' : rest', changed)
+        mutateDeclarations [] = Nothing
+        mutateDeclarations (declaration : rest) =
+          case declaration of
+            KDGeneric tag fields
+              | tag == terminationCertificateTag -> do
+                  fields' <- mutate fields
+                  pure (KDGeneric tag fields' : rest)
+            _ -> (declaration :) <$> mutateDeclarations rest
+
 -- | Produce canonical, independently reparseable mutations of every
 -- arithmetic-certificate field class required by Appendix T. Each case
 -- changes one field class across the artifact; callers must feed the returned
@@ -14537,14 +15318,18 @@ renderKCoreModule
           localLevelCertificates
           localSchemaCertificates
           localNominalFamilies
+          Set.empty
           (Set.singleton "impl.kappa")
           []
       associatedNormalizations =
         deriveAssociatedNormalizations
           localContext
           localBodies
+      terminationDeclarations =
+        terminationCertificateDeclarations localBodyMap
       declarations =
         preliminaryDeclarations
+          ++ terminationDeclarations
           ++ map KDAssociatedNormalization associatedNormalizations
   pure (printCanonicalKCoreText (KCoreFile 1 [KModule moduleRef metadata declarations]))
   where

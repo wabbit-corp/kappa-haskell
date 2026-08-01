@@ -50009,18 +50009,6 @@ patternStructuralBinderOrigins depth context scrutinee =
 
 -- ── Structural size-change checking ──────────────────────────────────
 
-data Change = ChWeak | ChStrict
-  deriving stock (Eq, Ord, Show)
-
-data SCGraph = SCGraph
-  { scFrom :: !GName
-  , scTo :: !GName
-  , scRows :: !Int
-  , scCols :: !Int
-  , scMat :: !(Map (Int, Int) Change)
-  }
-  deriving stock (Eq, Ord, Show)
-
 structuralSccOK :: Map GName TermFun -> Maybe (Map GName [Text]) -> CheckM Bool
 structuralSccOK funMap selectedNames = do
   mEdges <- collectSccEdges funMap
@@ -50043,7 +50031,7 @@ edgeStructuralGraph
   -> Maybe (Map GName [Text])
   -> Bool
   -> CallEdge
-  -> CheckM (Maybe SCGraph)
+  -> CheckM (Maybe (SCGraph GName))
 edgeStructuralGraph st funMap selectedNames useSchemaDimension edge =
   case (Map.lookup (edgeFrom edge) funMap, Map.lookup (edgeTo edge) funMap) of
     (Just src, Just tgt) -> do
@@ -50264,66 +50252,6 @@ termStructuralOrigins depth origins = go
 
     unsnoc [] = Nothing
     unsnoc values = Just (init values, last values)
-
-sizeChangeTerminates :: [SCGraph] -> Bool
-sizeChangeTerminates initial = go (Set.fromList initial) initial (0 :: Int)
-  where
-    graphCap = 4096 :: Int
-    go allGraphs work fuel
-      | Set.size allGraphs > graphCap = False
-      | fuel > graphCap = False
-      | null work = all idempotentCycleHasStrictDiagonal (Set.toList allGraphs)
-      | otherwise =
-          let newComps =
-                nub
-                  [ comp
-                  | g1 <- work
-                  , g2 <- Set.toList allGraphs
-                  , comp <- catMaybes [composeSC g1 g2, composeSC g2 g1]
-                  , not (Set.member comp allGraphs)
-                  ]
-              all' = foldr Set.insert allGraphs newComps
-           in go all' newComps (fuel + 1)
-
-    idempotentCycleHasStrictDiagonal g
-      | scFrom g /= scTo g = True
-      | Just gg <- composeSC g g
-      , gg == g = hasStrictDiagonal g
-      | otherwise = True
-
-    hasStrictDiagonal g =
-      let n = min (scRows g) (scCols g)
-       in any (\i -> Map.lookup (i, i) (scMat g) == Just ChStrict) [0 .. n - 1]
-
-composeSC :: SCGraph -> SCGraph -> Maybe SCGraph
-composeSC g1 g2
-  | scTo g1 /= scFrom g2 = Nothing
-  | otherwise =
-      Just
-        SCGraph
-          { scFrom = scFrom g1
-          , scTo = scTo g2
-          , scRows = scRows g1
-          , scCols = scCols g2
-          , scMat = Map.fromListWith strongerChange entries
-          }
-  where
-    entries =
-      [ ((i, k), composeChange c1 c2)
-      | ((i, j), c1) <- Map.toList (scMat g1)
-      , ((j', k), c2) <- Map.toList (scMat g2)
-      , j == j'
-      ]
-
-composeChange :: Change -> Change -> Change
-composeChange ChStrict _ = ChStrict
-composeChange _ ChStrict = ChStrict
-composeChange ChWeak ChWeak = ChWeak
-
-strongerChange :: Change -> Change -> Change
-strongerChange ChStrict _ = ChStrict
-strongerChange _ ChStrict = ChStrict
-strongerChange ChWeak ChWeak = ChWeak
 
 -- ── Explicit measure checking ────────────────────────────────────────
 

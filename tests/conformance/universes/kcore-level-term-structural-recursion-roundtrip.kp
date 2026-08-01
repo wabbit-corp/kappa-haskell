@@ -1,0 +1,27 @@
+-- Spec §§11.1.1/15.9/30.2.1A: a structurally recursive, conversion-safe
+-- TypeLevel producer remains admissible after KCore serialization. The
+-- checkpoint must carry replayable termination evidence for the recursive
+-- declaration rather than rejecting every cycle or trusting a reducibility bit.
+--! mode check
+--! requires capability stageDumps
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+--! assertTerminationCertificateMutationsReject
+module main
+
+data N : Type0 =
+    Z
+    | S N
+
+levelOf : N -> TypeLevel
+let levelOf n =
+    match n
+    case Z -> 0
+    case S predecessor -> levelOf predecessor
+
+idAt :
+    (n : N) ->
+    (A : Type (levelOf n)) ->
+    A -> A
+let idAt n A x = x
