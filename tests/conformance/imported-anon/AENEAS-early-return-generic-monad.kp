@@ -1,0 +1,41 @@
+-- Source issues: AENEAS-822, AENEAS-930
+-- Fixture focus: generic monadic loop control with an abrupt function return.
+-- Spec: §18.2 (do blocks), §18.5 (return), §18.6 (loops), §14.1 (Monad)
+-- Aeneas translates Rust `return` inside a loop as a conditional exit. The
+-- portable Kappa obligation is an actual `return` from inside monadic loop
+-- sugar, not an ordinary recursive function that happens to stop recursing.
+-- Issue #822: early returns inside loops that are equivalent to breaks.
+-- Issue #930: "could not match contexts" for loops with early returns.
+
+module test
+
+--! mode check
+
+-- POSITIVE: `return` exits the named function from inside the `for` body.
+-- The function is generic in the carrier: §18.5 types `return x` against the
+-- result `m (Option a)` and elaborates the abrupt completion with `pure x`.
+firstMatchingM :
+    Monad m =>
+    (a -> Bool) -> List a -> m (Option a)
+let firstMatchingM p xs = do
+    for x in xs do
+        if p x then
+            return (Option.Some x)
+    pure Option.None
+
+-- Instantiate the generic function at Option so Appendix-T evaluation checks
+-- both the early-return path and ordinary fallthrough.
+firstHit : Option (Option Int)
+let firstHit = firstMatchingM (\x -> x == 2) [1, 2, 3]
+
+noHit : Option (Option Int)
+let noHit = firstMatchingM (\x -> x == 9) [1, 2, 3]
+
+--! assertNoErrors
+--! assertType firstMatchingM (forall (m : (0 A : Type) -> Type) (a : Type). Monad m => (a -> Bool) -> List a -> m (Option a))
+--! assertEval firstHit (Option.Some (Option.Some 2))
+--! assertEval noHit (Option.Some Option.None)
+
+-- STATUS(f693ba9b): FAIL — §§18.8.13-18.8.14 require `for` with `return`
+-- in an arbitrary Monad, but the implementation emits E_UNSUPPORTED for the
+-- loop do-item and falls through to `pure Option.None`.

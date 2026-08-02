@@ -12,8 +12,8 @@
 safeUseAffine : (<=1 x : Int) -> Option Int -> Int
 let safeUseAffine x opt =
     match opt
-    case Nothing -> 0
-    case Just n  -> x + n
+    case Option.None   -> 0
+    case Option.Some n -> x + n
 
 -- POSITIVE: affine value ignored entirely — zero uses satisfies <=1.
 discardAffine : (<=1 x : Int) -> Unit
@@ -27,8 +27,8 @@ let conditionalUse x flag =
 -- NEGATIVE: linear value used in only one branch — the other branch uses it
 -- zero times, violating the =1 requirement.
 badLinearBranch : (1 x : Int) -> Bool -> Int
-let badLinearBranch x flag =
-    if flag then x + 1 else 0   --!! kappa.quantity.unsatisfied
+let badLinearBranch x flag =   --!! E_QTT_LINEAR_DROP
+    if flag then x + 1 else 0
 
 -- POSITIVE: linear value used in BOTH branches.
 goodLinearBranch : (1 x : Int) -> Bool -> Int
@@ -39,7 +39,7 @@ let goodLinearBranch x flag =
 matchAffine : (<=1 x : Int) -> Option Int -> Int
 let matchAffine x opt =
     match opt
-    case Nothing -> x      -- x used here
-    case Just n  -> n      -- x not used; 0 uses is fine for <=1
+    case Option.None   -> x      -- x used here
+    case Option.Some n -> n      -- x not used; 0 uses is fine for <=1
 
---! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnostic error E_QTT_LINEAR_DROP

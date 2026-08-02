@@ -3749,6 +3749,17 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   the current silent implementation behavior. Keep both outside mandatory
   conformance until the triggering boundary and diagnostic identity are fixed.
 
+- **§20.1/§28.2: support length-directed bracket literals for `SizedArray`.**
+  Bracket literals currently elaborate only to `List a`, even when the expected
+  type fixes both the element type and length. Portable source should support
+  expressions such as `[1, 2, 3] : SizedArray 3 Nat`, rejecting a literal when
+  its syntactic element count does not equal the expected index. The Spec must
+  define whether this is expected-type-directed literal elaboration or distinct
+  syntax, how empty and spread/comprehension forms behave, and which diagnostic
+  reports a length mismatch. Until then,
+  `tests/pending-import/line-relaxable-cascade/PIKELET-array-fixed-size-literal.kp`
+  remains a spec issue rather than mandatory conformance.
+
 - **Consolidated effect/borrow/bridge analysis.**
   [SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md](SPEC_COVERAGE_EFFECT_BORROW_BRIDGE_REPORT.md)
   records the full clause-by-clause analysis, affected test inventory,

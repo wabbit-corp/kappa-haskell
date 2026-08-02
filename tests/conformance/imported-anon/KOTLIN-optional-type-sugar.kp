@@ -11,19 +11,22 @@ let greet ms =
     case Option.None   -> "hello, anonymous"
     case Option.Some s -> "hello, " ++ s
 
---! assertType greet (String? -> String)
+-- Check the desugared type so the assertion also verifies that `String?`
+-- is definitionally the same type as `Option String`.
+--! assertType greet (Option String -> String)
 
 -- POSITIVE: Option wrapping is type-correct at Int?.
 wrapInt : Int -> Int?
 let wrapInt n = Option.Some n
 
---! assertType wrapInt (Int -> Int?)
+--! assertType wrapInt (Int -> Option Int)
 
--- POSITIVE: nested optional (Int??) is Option (Option Int), no flattening.
-nestedOpt : Int -> Int??
+-- POSITIVE: nested optional `(Int?)?` is `Option (Option Int)`, with no
+-- flattening. Parentheses are required because `??` is an operator token.
+nestedOpt : Int -> (Int?)?
 let nestedOpt n = Option.Some (Option.Some n)
 
---! assertType nestedOpt (Int -> Int??)
+--! assertType nestedOpt (Int -> Option (Option Int))
 
 -- POSITIVE: optional in a generic context.
 firstOf : forall (a : Type). List a -> a?
@@ -32,7 +35,7 @@ let firstOf xs =
     case Nil    -> Option.None
     case h :: _ -> Option.Some h
 
---! assertType firstOf (forall (a : Type). List a -> a?)
+--! assertType firstOf (forall (a : Type). List a -> Option a)
 
 -- NEGATIVE: assigning None (Int?) to Int without unwrapping is a type error.
 badAssign : Int

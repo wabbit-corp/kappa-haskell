@@ -32,3 +32,6 @@ wrongShape : SizedArray 3 Nat
 let wrongShape = [1, 2, 3]    --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS: SPEC-ISSUE — bracket literals elaborate only as List; portable source
+-- cannot write `[1, 2, 3] : SizedArray 3 Nat` despite the statically known length.

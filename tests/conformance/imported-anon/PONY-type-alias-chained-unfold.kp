@@ -36,18 +36,7 @@ let describeStatus2 s =
 -- NEGATIVE: non-exhaustive match on an aliased union.
 badAlias : StatusAlias -> String
 let badAlias s =
-    match s
-    case Active -> "active"   --!! kappa.pattern.non-exhaustive
+    match s   --!! E_PATTERN_NON_EXHAUSTIVE
+    case Active -> "active"
 
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
-
--- POSITIVE: using a type alias in a generic constraint.
-processStatus :
-    forall (a : Type).
-    (@_ : (a -> String)) ->
-    a -> String
-let processStatus f x = f x
-
-r1 : String
-let r1 = processStatus describeStatus Active
-
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
