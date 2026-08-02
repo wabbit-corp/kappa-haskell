@@ -24,9 +24,9 @@ let useAbsDiff = absDiff 10 3
 -- POSITIVE: nested if as elif chain.
 fizzbuzz : Nat -> String
 let fizzbuzz n =
-    if (n mod 15) == 0 then "FizzBuzz"
-    else if (n mod 3) == 0 then "Fizz"
-    else if (n mod 5) == 0 then "Buzz"
+    if (n % 15) == 0 then "FizzBuzz"
+    else if (n % 3) == 0 then "Fizz"
+    else if (n % 5) == 0 then "Buzz"
     else "n"
 
 -- POSITIVE: if-expression as a sub-expression in a larger computation.
@@ -47,18 +47,20 @@ let gradeOf score =
 -- NEGATIVE: branches of different types.
 mixedBranches : Nat
 let mixedBranches =
-    if True then 1 else "two"    --!! kappa.type.mismatch
+    if True then 1 else "two"    --!! E_TYPE_EQUALITY_MISMATCH
 
 -- NEGATIVE: condition is not Bool.
 badCond : Nat
 let badCond =
-    if 5 then 1 else 0    --!! kappa.type.mismatch
+    if 5 then 1 else 0    --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
 
 -- NEGATIVE: elif branch returns wrong type.
 mixedElif : Nat
 let mixedElif =
     if True then 1
-    else if False then "x"     --!! kappa.type.mismatch
+    else if False then "x"     --!! E_TYPE_EQUALITY_MISMATCH
     else 2
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH, E_NUMERIC_LITERAL_DOMAIN_MISMATCH, E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(846f41e9): PASS — promoted after Spec review.

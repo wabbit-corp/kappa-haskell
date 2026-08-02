@@ -43,11 +43,13 @@ let wildcardFirst p =
 -- NEGATIVE: the (C, Right) cell is uncovered.
 missingCell : (Tag, Side) -> Int
 let missingCell p =
-    match p
+    match p                              --!! E_PATTERN_NON_EXHAUSTIVE
     case (A, Left)  -> 0
     case (A, Right) -> 1
     case (B, Left)  -> 2
     case (B, Right) -> 3
-    case (C, Left)  -> 4    --!! kappa.pattern.non-exhaustive
+    case (C, Left)  -> 4
 
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
+
+-- STATUS(846f41e9): PASS — promoted after Spec review.

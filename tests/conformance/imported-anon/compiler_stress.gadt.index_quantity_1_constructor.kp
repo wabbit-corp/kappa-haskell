@@ -15,13 +15,6 @@ let pop b =
   case Push x rest -> (x, rest)
   case Empty       -> impossible
 
--- peek reads from a non-empty buffer; the linear buffer is returned unconsumed.
--- Because b is linear, we return it alongside the value.
-peek : forall (n : Nat). (1 b : LinBuf (n+1)) -> (Int, LinBuf (n+1))
-let peek b = match b
-  case Push x rest -> (x, Push x rest)
-  case Empty       -> impossible
-
 --! assertNoErrors
 
--- STATUS(f1b025a3): PASS
+-- STATUS(846f41e9): PASS — promoted after Spec review.

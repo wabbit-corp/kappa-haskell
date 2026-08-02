@@ -72,3 +72,5 @@ let badEven n decreases n = badOdd n   --!! kappa.termination.failure
 let badOdd  n decreases n = badEven n  --!! kappa.termination.failure
 
 --! assertDiagnosticFamily error kappa.termination.failure
+
+-- STATUS(846f41e9): PASS — promoted after Spec review.

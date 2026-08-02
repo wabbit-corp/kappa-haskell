@@ -55,3 +55,5 @@ growRec : Q -> Nat
 let growRec x = growRec (qCon x)    --!! kappa.termination.failure
 
 --! assertDiagnosticFamily error kappa.termination.failure
+
+-- STATUS(846f41e9): PASS — promoted after Spec review.
