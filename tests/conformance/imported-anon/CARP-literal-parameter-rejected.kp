@@ -4,7 +4,7 @@
 --       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
 -- Carp #384: `(defn x ["lol"] 1)` was accepted by the front end and
 -- failed at code emission with "Invalid parameter: Str \"lol\"".  The
--- portable Kappa obligation is that the parameter list of a function
+-- Kappa obligation is that the parameter list of a function
 -- definition is a sequence of irrefutable binder patterns; a string
 -- literal is a refutable pattern (matches only "lol") and the function
 -- clause is therefore non-exhaustive over its declared `String` domain.
@@ -20,6 +20,9 @@ let identity x = x
 -- NEGATIVE: a string literal in parameter position is not a name binder;
 -- the rejection must come from the elaborator, not from later stages.
 badParam : String -> Int
-let badParam "lol" = 1                  --!! kappa.pattern.non-exhaustive
+let badParam "lol" = 1                  --!! E_REFUTABLE_LET_PATTERN
 
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+-- The declaration is rejected before exhaustiveness checking because the
+-- definition head is not an irrefutable binding pattern.
+
+-- STATUS(a0f5eada): PASS

@@ -21,7 +21,7 @@ let extractSecret b =
     match b
     case InternalBox { secret = s } -> s
 
--- POSITIVE: a data type with multiple constructors — all constructors can be used as binders.
+-- POSITIVE: a data type with multiple constructors — every constructor can be used as a pattern head.
 data Shape : Type =
     Circle { radius : Int }
     Rectangle { width : Int, height : Int }
@@ -32,25 +32,25 @@ let shapeArea s =
     match s
     case Circle    { radius = r }         -> r * r
     case Rectangle { width = w, height = h } -> w * h
-    case Triangle  { base = b, height = h  } -> (b * h) `div` 2
+    case Triangle  { base = b, height = h  } -> divInt (b * h) 2
 
 -- POSITIVE: all three constructors are independently usable as binders.
 isCircle : Shape -> Bool
 let isCircle s =
     match s
-    case Circle _ -> True
+    case Circle { radius = _ } -> True
     case _        -> False
 
 isRectangle : Shape -> Bool
 let isRectangle s =
     match s
-    case Rectangle _ -> True
+    case Rectangle { width = _, height = _ } -> True
     case _           -> False
 
 isTriangle : Shape -> Bool
 let isTriangle s =
     match s
-    case Triangle _ -> True
+    case Triangle { base = _, height = _ } -> True
     case _          -> False
 
 -- POSITIVE: two independent record variants, each independently accessible.
@@ -63,15 +63,17 @@ let treeDepth t =
     match t
     case Leaf                           -> 0
     case Node { left = l, right = r, value = _ } ->
-        1 + max (treeDepth l) (treeDepth r)
+        let leftDepth = treeDepth l
+        let rightDepth = treeDepth r
+        1 + (if leftDepth > rightDepth then leftDepth else rightDepth)
 
 -- POSITIVE: pattern binding using the second constructor name.
 -- Both constructors must be independently available as binding forms.
-getNodeValue : Tree Int -> Maybe Int
+getNodeValue : Tree Int -> Option Int
 let getNodeValue t =
     match t
-    case Leaf                     -> Nothing
-    case Node { value = v, left = _, right = _ } -> Just v
+    case Leaf                     -> Option.None
+    case Node { value = v, left = _, right = _ } -> Option.Some v
 
 -- POSITIVE: a data type with four constructors — all independently usable.
 data Compass : Type =
@@ -96,3 +98,5 @@ let isEastOrWest c =
     case _    -> False
 
 --! assertNoErrors
+
+-- STATUS(a0f5eada): PASS

@@ -12,7 +12,7 @@
 
 --! mode check
 
--- A type-level function. Its body is parsed in type position.
+-- A transparent type-level function whose body is parsed in type position.
 type Element (a : Type) : Type = a
 
 -- A data type whose field type uses the type-level function applied to a
@@ -25,23 +25,23 @@ intHolder : Holder Int
 let intHolder = Holder 42
 
 -- POSITIVE: projecting through the alias.
-takeOut : (@0 a : Type) -> Holder a -> a
-let takeOut _ h =
+takeOut : forall (a : Type). Holder a -> a
+let takeOut h =
     match h
       case Holder r -> r
 
 readBack : Int
-let readBack = takeOut Int intHolder
+let readBack = takeOut intHolder
 
 -- POSITIVE: a type-level function that performs a non-trivial computation
 -- (here it just chooses between two parameters by a Boolean tag, but the
 -- shape is the same as a type family).
-type Choose (flag : Bool) (a : Type) (b : Type) : Type =
+type Choose (ordinary 0 flag : Bool) (0 a : Type) (0 b : Type) : Type =
     match flag
       case True  -> a
       case False -> b
 
-data Either2 (flag : Bool) (a : Type) (b : Type) : Type =
+data Either2 (ordinary 0 flag : Bool) (a : Type) (b : Type) : Type =
     Either2 (one : Choose flag a b)
 
 leftBranch : Either2 True Int String
@@ -51,3 +51,5 @@ rightBranch : Either2 False Int String
 let rightBranch = Either2 "seven"
 
 --! assertNoErrors
+
+-- STATUS(a0f5eada): PASS

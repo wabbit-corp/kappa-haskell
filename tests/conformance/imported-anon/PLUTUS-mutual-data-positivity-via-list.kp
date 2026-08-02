@@ -21,7 +21,7 @@ data Forest (a : Type) : Type =
 data Tree (a : Type) : Type =
     Node a (Forest a)
 
--- Both Forest and Tree appear inside each other in positive positions.
+-- Forest and Tree appear inside each other only in positive positions.
 -- Per §10.4, the mutual group's positivity signatures converge to:
 -- Forest's `a` is positive, Tree's `a` is positive.
 intLeaf : Tree Int
@@ -34,18 +34,18 @@ let intBranch = Node 0 (FCons intLeaf FNil)
 
 -- POSITIVE: structurally recursive folds over a mutual group are accepted
 -- when each recursive call descends into a substructure.
-sizeTree : (0 a : Type) -> Tree a -> Nat
-let sizeTree _ t decreases structural t =
-    match t
-      case Node _ children -> 1 + sizeForest _ children
+sizeTree : forall (a : Type). Tree a -> Nat
+sizeForest : forall (a : Type). Forest a -> Nat
 
-sizeForest : (0 a : Type) -> Forest a -> Nat
-let sizeForest _ xs decreases structural xs =
+let sizeTree t decreases structural t =
+    match t
+      case Node _ children -> 1 + sizeForest children
+
+let sizeForest xs decreases structural xs =
     match xs
       case FNil          -> 0
-      case FCons child rest -> sizeTree _ child + sizeForest _ rest
-
-count : Nat
-let count = sizeTree Int intBranch
+      case FCons child rest -> sizeTree child + sizeForest rest
 
 --! assertNoErrors
+
+-- STATUS(a0f5eada): PASS

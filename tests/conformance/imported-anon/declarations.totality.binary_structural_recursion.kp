@@ -7,13 +7,14 @@
 
 module test
 
-data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Peano : Type = PZero : Peano | PSucc : Peano -> Peano
 
--- Binary structural recursion: outer decreases on first argument.
+-- Binary structural recursion: the first argument decreases.
 -- add recurses on Succ n: the first argument decreases at each call.
-add : Nat -> Nat -> Nat
-let add Zero     m = m
-let add (Succ n) m = Succ (add n m)
+peanoAdd : Peano -> Peano -> Peano
+let peanoAdd n m = match n
+    case PZero -> m
+    case PSucc smaller -> PSucc (peanoAdd smaller m)
 
 --! mode check
 --! assertNoErrors
@@ -21,19 +22,25 @@ let add (Succ n) m = Succ (add n m)
 -- Lexicographic structural descent: outer decreases on first arg,
 -- inner on second, or outer on first of a pair drawn from both args.
 -- This is the Ackermann function (computationally terminating via lex order).
-ack : Nat -> Nat -> Nat
-let ack Zero     m       = Succ m
-let ack (Succ n) Zero    = ack n (Succ Zero)
-let ack (Succ n) (Succ m) = ack n (ack (Succ n) m)
+ack : Peano -> Peano -> Peano
+let ack n m = match (n, m)
+    case (PZero, value) -> PSucc value
+    case (PSucc smaller, PZero) -> ack smaller (PSucc PZero)
+    case (PSucc smallerN, PSucc smallerM) ->
+        ack smallerN (ack (PSucc smallerN) smallerM)
 
 --! assertNoErrors
 
 -- Pattern: merging two lists. Both decrease structurally (list length).
-data List (a : Type) : Type = Nil : List a | Cons : a -> List a -> List a
+data Chain (a : Type) : Type = End : Chain a | Link : a -> Chain a -> Chain a
 
-interleave : List a -> List a -> List a
-let interleave Nil         ys = ys
-let interleave xs          Nil = xs
-let interleave (Cons x xs) (Cons y ys) = Cons x (Cons y (interleave xs ys))
+interleave : forall (a : Type). Chain a -> Chain a -> Chain a
+let interleave xs ys = match (xs, ys)
+    case (End, right) -> right
+    case (left, End) -> left
+    case (Link x restX, Link y restY) ->
+        Link x (Link y (interleave restX restY))
 
 --! assertNoErrors
+
+-- STATUS(a0f5eada): PASS

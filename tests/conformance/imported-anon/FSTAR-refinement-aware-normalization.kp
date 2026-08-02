@@ -6,7 +6,7 @@
 
 --! mode check
 
--- A record type wrapping a function type.
+-- A structural record type wrapping a function type.
 type Pack = (ff : Type -> Type,)
 
 -- A concrete implementation: ty a = Unit -> a
@@ -14,7 +14,7 @@ ty : Type -> Type
 let ty a = Unit -> a
 
 impl : Pack
-let impl = (ty)
+let impl = (ff = ty,)
 
 -- POSITIVE TEST: impl.ff Int is definitionally equal to ty Int = Unit -> Int.
 -- Applying f to () must succeed after unfolding ff through impl.
@@ -31,3 +31,5 @@ let apply_f = f ()
 type RefProp = (n : Nat) -> (m : Int) -> Unit
 
 --! assertNoErrors
+
+-- STATUS(a0f5eada): PASS

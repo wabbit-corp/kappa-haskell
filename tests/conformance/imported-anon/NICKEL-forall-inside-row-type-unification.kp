@@ -10,8 +10,8 @@
 
 module test
 
--- A record that contains a polymorphic identity function.
-type ContainsId = (id : forall a. a -> a,)
+-- A record containing a genuinely polymorphic identity field.
+type ContainsId = (id : forall (a : Type). a -> a,)
 
 wrapper : ContainsId
 let wrapper = (id = \x -> x,)
@@ -23,11 +23,11 @@ let result1 = wrapper.id "hello"
 
 -- POSITIVE: using the same polymorphic `id` field at type `Number -> Number`.
 -- Both uses at different instantiations must type-check.
-result2 : Number
+result2 : Int
 let result2 = wrapper.id 42
 
 -- POSITIVE: a function parameterized by a record containing a polymorphic field.
-applyId : forall r. (id : forall a. a -> a | r) -> String
+applyId : forall (r : RecRow). (id : forall (a : Type). a -> a | r) -> String
 let applyId rec = rec.id "test"
 
 result3 : String
@@ -36,5 +36,7 @@ let result3 = applyId wrapper
 --! mode check
 --! assertNoErrors
 --! assertType result1 String
---! assertType result2 Number
+--! assertType result2 Int
 --! assertType result3 String
+
+-- STATUS(a0f5eada): PASS
