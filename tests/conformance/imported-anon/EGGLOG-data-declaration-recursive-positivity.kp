@@ -6,9 +6,8 @@
 -- A `data` declaration's constructor signatures must be well-formed and the
 -- recursive use of the type must respect strict positivity (no occurrence of
 -- the type to the left of an arrow inside a constructor argument), otherwise
--- the elaborator must reject the declaration with kappa.type.mismatch
--- (the strict-positivity violation is reported as a type-level well-formedness
--- failure).
+-- the elaborator must reject the declaration with
+-- E_DATA_NOT_STRICTLY_POSITIVE.
 
 module test
 
@@ -32,13 +31,11 @@ data Rose (a : Type) : Type =
 
 -- NEGATIVE: constructor argument with the type on the left of an arrow violates
 -- strict positivity.
-data Bad : Type =
-    MkBad (k : Bad -> Bad)                --!! kappa.type.mismatch
-
---! assertDiagnosticFamily error kappa.type.mismatch
+data Bad : Type =                         --!! E_DATA_NOT_STRICTLY_POSITIVE
+    MkBad (k : Bad -> Bad)
 
 -- NEGATIVE: indirect negative occurrence inside another constructor argument.
-data BadCont : Type =
-    MkBadCont (k : (BadCont -> Int) -> Int)   --!! kappa.type.mismatch
+data BadCont : Type =                     --!! E_DATA_NOT_STRICTLY_POSITIVE
+    MkBadCont (k : (BadCont -> Int) -> Int)
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticCodes E_DATA_NOT_STRICTLY_POSITIVE, E_DATA_NOT_STRICTLY_POSITIVE

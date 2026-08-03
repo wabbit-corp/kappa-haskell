@@ -16,10 +16,10 @@
 classify : Byte -> Int
 let classify b =
     match b
-      case b'\x00' -> 0
-      case b'a'    -> 1
-      case b'Z'    -> 2
-      case _       -> 3
+    case b'\x00' -> 0
+    case b'a'    -> 1
+    case b'Z'    -> 2
+    case _       -> 3
 
 -- POSITIVE: results agree with byte values.
 zeroCase : Int
@@ -37,8 +37,14 @@ let defaultCase = classify b'\x10'
 -- include a catch-all").
 nonExhaustive : Byte -> Int
 let nonExhaustive b =
-    match b
-      case b'\x00' -> 0
-      case b'a'    -> 1   --!! kappa.pattern.non-exhaustive
+    match b                 --!! E_PATTERN_NON_EXHAUSTIVE
+    case b'\x00' -> 0
+    case b'a'    -> 1
 
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
+--! assertEval zeroCase 0
+--! assertEval aCase 1
+--! assertEval defaultCase 3
+
+-- STATUS(dd52bcd9): FAIL — byte literals are accepted as terms but rejected in pattern position with E_RECOVERY_DECLARATION_SKIPPED

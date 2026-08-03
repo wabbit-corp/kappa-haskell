@@ -4,12 +4,9 @@
 -- Spec: expressions.patterns.validity
 --       (§17.2.3 — "Each alternative must bind the same set of names. Each
 --       bound name must have definitionally equal types across alternatives.").
--- Or-patterns require each alternative to bind the same set of names. §17.2.3
--- specifies the rule but does not name a dedicated diagnostic family; Kappa
--- implementations therefore surface the failure as kappa.name.unresolved
--- against the alternatives that bind a name absent from a sibling alternative.
--- See EGGLOG-SA-09 in EGGLOG_SPEC_ADDITIONS.md for a proposed dedicated
--- family.
+-- Or-patterns require each alternative to bind the same set of names. Kappa's
+-- dedicated E_OR_PATTERN_BINDER_MISMATCH diagnostic identifies the malformed
+-- alternatives directly, before either arm body is elaborated.
 
 module test
 
@@ -39,16 +36,15 @@ let isLeaf m =
 mixed : Math -> Math
 let mixed m =
     match m
-    case (Add l r | Sub a b) -> l    --!! kappa.name.unresolved
+    case (Add l r | Sub a b) -> l    --!! E_OR_PATTERN_BINDER_MISMATCH
     case other               -> other
-
---! assertDiagnosticFamily error kappa.name.unresolved
 
 -- NEGATIVE: one alternative binds a name the other does not.
 onlyOne : Math -> Math
 let onlyOne m =
     match m
-    case (Add l r | Num _) -> l      --!! kappa.name.unresolved
+    case (Add l r | Num _) -> l      --!! E_OR_PATTERN_BINDER_MISMATCH
     case other             -> other
 
---! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_OR_PATTERN_BINDER_MISMATCH, E_OR_PATTERN_BINDER_MISMATCH

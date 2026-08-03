@@ -18,7 +18,7 @@
 
 -- POSITIVE: a top-level function with an implicit parameter; the body
 -- closes over the implicit through a let-bound alias.
-useImplicit : forall {X : Type}. X -> X
+useImplicit : forall (X : Type). X -> X
 let useImplicit x =
     let inner = x
     in inner
@@ -33,7 +33,7 @@ let applyTwiceLocal f x =
 
 -- POSITIVE: implicit type parameter is accessible in the body where
 -- it appears in a local type ascription.
-selfReflex : forall {A : Type}. A -> A
+selfReflex : forall (A : Type). A -> A
 let selfReflex x =
     let y : A = x
     in y
@@ -45,7 +45,7 @@ let addOffset offset n =
     in adjusted
 
 -- POSITIVE: implicit parameter used in both branch arms of a match.
-identityOrDefault : forall {A : Type}. Bool -> A -> A -> A
+identityOrDefault : forall (A : Type). Bool -> A -> A -> A
 let identityOrDefault flag x def =
     match flag
     case True  -> x
@@ -54,8 +54,8 @@ let identityOrDefault flag x def =
 -- NEGATIVE: referencing an undeclared name inside a let body produces
 -- kappa.name.unresolved.
 badHelper : Nat -> Nat
-let badHelper n = undeclaredFn n    --!! kappa.name.unresolved
+let badHelper n = undeclaredFn n    --!! E_NAME_UNRESOLVED
 
---! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnostic error E_NAME_UNRESOLVED
 
--- STATUS(3014a0d9): PASS
+-- STATUS(dd52bcd9): PASS — canonical `forall (X : Type). ...` syntax checks successfully

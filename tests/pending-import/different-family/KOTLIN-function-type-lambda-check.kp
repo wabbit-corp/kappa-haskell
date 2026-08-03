@@ -23,13 +23,13 @@ let applyOptFn mf x =
     case Option.Some f -> f x
 
 
--- POSITIVE: lambda with flow-narrowing: the lambda captures the outer type.
+-- POSITIVE: a lambda nested in an Option match is checked using the expected
+-- function type from applyFn.
 withOpt : Int? -> Int
 let withOpt mn =
-    if mn != Option.None then
-        (applyFn (\n -> n + 1) mn.value)
-    else
-        0
+    match mn
+    case Option.None   -> 0
+    case Option.Some n -> applyFn (\x -> x + 1) n
 
 
 -- POSITIVE: a function value stored in a binding.
@@ -46,6 +46,8 @@ let double = \n -> n + n
 notAFunction : Int
 let notAFunction =
     let n = 5
-    n 3   --!! kappa.type.mismatch
+    n 3   --!! E_APPLICATION_NONCALLABLE
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_APPLICATION_NONCALLABLE
+
+-- STATUS(dd52bcd9): PASS

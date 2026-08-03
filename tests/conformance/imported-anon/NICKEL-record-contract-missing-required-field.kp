@@ -2,36 +2,27 @@
 -- Spec: types.records.formation, compiler.frontir.standard_diagnostic_families.type_equality
 -- A closed record contract declares which fields are required. When a value does not
 -- provide all required fields, the contract must fail with kappa.type.mismatch.
--- The diagnostic must identify:
---   * which specific field is missing (payload: field name),
---   * the record that was supposed to provide the field (origin),
---   * the contract that required the field (obligation-introduced-here).
--- The diagnostic must NOT blame a neighboring field or the entire record type
--- without identifying the specific missing field.
+-- The portable obligation pinned here is rejection with the standard type
+-- equality diagnostic. Exact payload fields and source-role presentation are
+-- intentionally not asserted because the Spec does not standardize them.
 
 module test
 
 -- A record contract requiring three fields.
-type ServerConfig = (host : String, port : Number, tls : Bool)
+type ServerConfig = (host : String, port : Int, tls : Bool)
 
 -- NEGATIVE: missing `port` — the diagnostic must name `port` as the missing field.
 missingPort : ServerConfig
-let missingPort = (host = "localhost", tls = True)     --!! kappa.type.mismatch
+let missingPort = (host = "localhost", tls = True)     --!! E_TYPE_EQUALITY_MISMATCH
 
 --! mode check
---! assertDiagnosticFamily error kappa.type.mismatch
-
 -- NEGATIVE: missing `tls` — a different missing field, same contract.
 missingTls : ServerConfig
-let missingTls = (host = "example.com", port = 443)    --!! kappa.type.mismatch
-
---! assertDiagnosticFamily error kappa.type.mismatch
+let missingTls = (host = "example.com", port = 443)    --!! E_TYPE_EQUALITY_MISMATCH
 
 -- NEGATIVE: empty record — all fields missing.
 allMissing : ServerConfig
-let allMissing = ()                                    --!! kappa.type.mismatch
-
---! assertDiagnosticFamily error kappa.type.mismatch
+let allMissing = ()                                    --!! E_TYPE_EQUALITY_MISMATCH
 
 -- POSITIVE: all required fields present.
 fullConfig : ServerConfig
@@ -44,10 +35,10 @@ type DbConfig = (primary : ServerConfig, replica : ServerConfig)
 missingReplicaPort : DbConfig
 let missingReplicaPort = (
     primary = (host = "db1", port = 5432, tls = False),
-    replica = (host = "db2", tls = True)               --!! kappa.type.mismatch
+    replica = (host = "db2", tls = True)               --!! E_TYPE_EQUALITY_MISMATCH
 )
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH
 
 -- POSITIVE: both nested records complete.
 fullDbConfig : DbConfig
@@ -55,4 +46,3 @@ let fullDbConfig = (
     primary = (host = "db1", port = 5432, tls = False),
     replica = (host = "db2", port = 5433, tls = True)
 )
-
