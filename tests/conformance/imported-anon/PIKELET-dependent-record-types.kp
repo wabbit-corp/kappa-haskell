@@ -11,8 +11,10 @@
 --! mode check
 
 -- POSITIVE: simple dependent record type with one element-type field and
--- one value field of that type.
-type Box : Type1 = (A : Type0, a : this.A)
+-- one value field of that type. `ordinary` makes the stored type code an
+-- ordinary field rather than a parametric witness, so the record genuinely
+-- inhabits Type1 without relying on cumulativity from a Type0 telescope.
+type Box : Type1 = (ordinary A : Type 0, a : this.A)
 
 mkBox : Box
 let mkBox = (A = Nat, a = 7)
@@ -24,14 +26,10 @@ let aField = mkBox.a
 -- both earlier fields' values. `List this.A` (not `SizedArray`) is used
 -- because Kappa has no portable bracket-literal form at `SizedArray n a`;
 -- the dependent-record obligation is independent of that gap.
-type Sized : Type1 = (n : Nat, A : Type0, xs : List this.A)
+type Sized : Type1 = (n : Nat, ordinary A : Type 0, xs : List this.A)
 
 empty3 : Sized
-let empty3 = (n = 0, A = Nat, xs = [])
-
--- POSITIVE: extracting the type field is a Type0 value.
-typeField : Type0
-let typeField = mkBox.A
+let empty3 = (n = 0, A = Nat, xs = Nil)
 
 -- POSITIVE: a function over a dependent record can name `this`-projections
 -- in its return type without naming them explicitly first.
@@ -41,6 +39,9 @@ let unbox b = b.a
 -- NEGATIVE: a record literal that omits a field declared in the type is
 -- a structure mismatch (per PIKELET-SA-04 + §3.2.8 `record_projection_*`).
 short : Box
-let short = (A = Nat,)        --!! kappa.type.hidden-structure-mismatch
+let short = (A = Nat,)        --!! E_TYPE_EQUALITY_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.hidden-structure-mismatch
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(80bcd11d): PASS

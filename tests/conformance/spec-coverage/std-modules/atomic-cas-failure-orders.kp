@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "fail-relaxed:7\nfail-acquire:7\nfail-seqcst:7\nunchanged:7\nsuccess-old:7\nfinal:99\n"
+--! assertExitCode 0
 
 -- §29.1 compare-exchange: on failure the cell is left unchanged and
 -- `NotExchanged current` is returned under EVERY CasFailureOrder (the
@@ -11,6 +13,7 @@ module main
 import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst, ctor RmwRelease)
 import std.atomic.(ctor CasFailRelaxed, ctor CasFailAcquire, ctor CasFailSeqCst)
 import std.atomic.(ctor Exchanged, ctor NotExchanged)
+import std.atomic.(type CompareExchangeResult)
 import std.atomic.(term newAtomicRef, term atomicLoad, term atomicCompareExchange)
 
 failWitness : String -> CompareExchangeResult Int -> String
@@ -40,4 +43,4 @@ let main = do
       case NotExchanged _ -> printlnString "success-old:wrongly-failed"
     let final <- atomicLoad LoadSeqCst cell
     printlnString ("final:" ++ showInt final)
--- STATUS(a0497523): FAIL — test bug, not a compiler gap: the type annotation on failWitness references CompareExchangeResult but the import list never imports the type (E_NAME_UNRESOLVED at line 16); adding `import std.atomic.(type CompareExchangeResult)` should make it pass
+-- STATUS(80bcd11d): PASS

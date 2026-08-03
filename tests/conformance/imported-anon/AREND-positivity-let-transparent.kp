@@ -2,9 +2,7 @@
 --   let-bindings that reduce to a known type should be transparent to
 --   the positivity checker.
 -- Source issues: jetbrains/arend#283 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
--- Spec: types.universes.quantities.positive_lower_bounds,
---       compiler.frontir.positive_lower_bound_diagnostics,
---       declarations.totality
+-- Spec: §10.4.2 (strict positivity), §15.3 (structural descent)
 --
 -- A data constructor whose argument type contains a let-binding that
 -- reduces to the enclosing data type is strictly positive (not negative).
@@ -30,12 +28,12 @@ data W : Type =
 
 -- POSITIVE: constructor with no recursive argument (always positive).
 data Base : Type =
-    leaf : Nat -> Base
+    baseLeaf : Nat -> Base
 
 -- POSITIVE: strictly positive nested occurrence via a non-recursive type former.
 data Tree (A : Type) : Type =
     node : A -> Tree A -> Tree A -> Tree A
-    leaf : A -> Tree A
+    treeLeaf : A -> Tree A
 
 -- POSITIVE: let-binding in a return type annotation (not in a data constructor)
 -- must not affect positivity of the data type itself.
@@ -47,7 +45,10 @@ let f (q x) = let r = x in f r    -- let in function body, not in data construct
 
 -- NEGATIVE: a data type that has a negative occurrence (function type
 -- from itself to another type). The positivity checker must reject this.
-data Bad : Type =
-    badCon : (Bad -> Nat) -> Bad    --!! kappa.quantity.positive-lower-bound
+data Bad : Type =                         --!! E_DATA_NOT_STRICTLY_POSITIVE
+    badCon : (Bad -> Nat) -> Bad
 
---! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+
+-- STATUS(80bcd11d): PASS

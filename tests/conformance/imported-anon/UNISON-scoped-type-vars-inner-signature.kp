@@ -12,7 +12,7 @@
 
 -- POSITIVE: inner `temp : x` refers to the outer signature's `x`, so the
 -- assignment is well-typed (`temp` is the outer-bound `x`).
-let outer_scoped : forall (x y : Type). x -> y -> x
+outer_scoped : forall (x y : Type). x -> y -> x
 let outer_scoped a b =
     let temp : x = a   -- `x` here is the outer scope's binder
     temp
@@ -21,19 +21,20 @@ let outer_scoped a b =
 -- POSITIVE: an explicit nested `forall x. ...` introduces a fresh `x`
 -- that shadows the outer one. The inner identity function works at any
 -- type, including the outer `x`'s type at the call site.
-let shadowed : forall (x y : Type). x -> y -> x
+shadowed : forall (x y : Type). x -> y -> x
 let shadowed a b =
-    id : forall (x : Type). x -> x
-    let id x = x
+    let id : forall (x : Type). x -> x = \value -> value
     id a
 
 
 -- NEGATIVE: an inner annotation `temp : y` with the outer signature's `y`
 -- is not the same type as `x`. Kappa must reject assigning a value of type
 -- `x` to a binder annotated `y`.
-let cross_scoped : forall (x y : Type). x -> y -> x
+cross_scoped : forall (x y : Type). x -> y -> x
 let cross_scoped a b =
     let temp : y = a   --!! kappa.type.mismatch
-    b
+    a
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(80bcd11d): PASS

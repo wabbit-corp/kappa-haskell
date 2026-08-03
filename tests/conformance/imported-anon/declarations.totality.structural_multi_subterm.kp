@@ -15,9 +15,9 @@ data Nat : Type =
 
 addNat : Nat -> Nat -> Nat
 let addNat m n decreases structural m =
-  match m with
-  | Z   -> n
-  | S k -> S (addNat k n)
+  match m
+  case Z   -> n
+  case S k -> S (addNat k n)
 
 -- Binary tree: two structural subterms (left and right) from each Node.
 data BTree (a : Type) : Type =
@@ -28,19 +28,20 @@ data BTree (a : Type) : Type =
 -- The termination checker must accept both simultaneously.
 size : BTree a -> Nat
 let size t decreases structural t =
-  match t with
-  | Leaf           -> Z
-  | Node left _ right -> S (addNat (size left) (size right))
+  match t
+  case Leaf -> Z
+  case Node left _ right -> S (addNat (size left) (size right))
 
 --! mode check
 --! assertNoErrors
+--! assertNoWarnings
 
 -- mirror: two recursive calls on swapped subterms are both structural.
 mirror : BTree a -> BTree a
 let mirror t decreases structural t =
-  match t with
-  | Leaf               -> Leaf
-  | Node left val right -> Node (mirror right) val (mirror left)
+  match t
+  case Leaf -> Leaf
+  case Node left val right -> Node (mirror right) val (mirror left)
 
 --! assertNoErrors
 
@@ -52,9 +53,11 @@ data TTree (a : Type) : Type =
 -- All three recursive calls are on structural subterms of t.
 tsize : TTree a -> Nat
 let tsize t decreases structural t =
-  match t with
-  | TLeaf                    -> Z
-  | TNode l1 _ l2 _ l3 ->
+  match t
+  case TLeaf -> Z
+  case TNode l1 _ l2 _ l3 ->
       S (addNat (tsize l1) (addNat (tsize l2) (tsize l3)))
 
 --! assertNoErrors
+
+-- STATUS(80bcd11d): PASS

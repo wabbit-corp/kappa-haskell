@@ -1,5 +1,6 @@
 --! mode check
 --! assertNoErrors
+--! assertNoWarnings
 
 -- §24.9: sameDynRep : forall (@0 a b : Type). DynRep a -> DynRep b ->
 -- Dec (a = b). §24.1: checkedCastWith consults exactly this decision,
@@ -26,7 +27,21 @@ decideEq :
     DynRep a -> DynRep b -> Bool
 let decideEq ra rb =
     match sameDynRep ra rb
-    case Yes _ -> True
-    case No _ -> False
+    case Dec.Yes _ -> True
+    case Dec.No _ -> False
 
--- STATUS(a0497523): FAIL — sameDynRep still returns Option (Dec ((=) a b)) instead of Dec (a = b), and the infix Dec (a = b) spelling additionally trips E_APPLICATION_ARGUMENT_MISMATCH.
+-- Consume the equality carried by Dec.Yes rather than merely inspecting
+-- its constructor. The proof transports an `a` payload to `b`; Dec.No
+-- produces no value. This pins both the result shape and its useful
+-- dependent-elimination behavior.
+transportIfSame :
+    forall (@0 a : Type) (@0 b : Type).
+    DynRep a -> DynRep b -> a -> Option b
+let transportIfSame ra rb value =
+    match sameDynRep ra rb
+    case Dec.Yes refl -> Some value
+    case Dec.No _ -> None
+
+--! assertType transportIfSame (forall (@0 a : Type) (@0 b : Type). DynRep a -> DynRep b -> a -> Option b)
+
+-- STATUS(80bcd11d): PASS

@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "body-and-defer:then-7-9\ndefer-only:fail-9\nbody-only:fail-7\n"
+--! assertExitCode 0
 
 -- §32.2.12 canonical composition rows, observed through sandbox (§18.1.2):
 --   * body fails (Fail 7) and its do-scope defer also fails (Fail 9)
@@ -17,24 +19,24 @@ let bodyAndDeferFail = do
 deferFailOnly : IO Int Int
 let deferFailOnly = do
     defer (throwIO 9)
-    ioPure 1
+    pure 1
 
 bodyFailOnly : IO Int Int
 let bodyFailOnly = do
-    defer (ioPure ())
+    defer (pure ())
     throwIO 7
 
 classify : Cause Int -> IO Void String
 let classify c = match c
-    case Then (Fail 7) (Fail 9) -> ioPure "then-7-9"
-    case Then (Fail 9) (Fail 7) -> ioPure "then-9-7-wrong-order"
-    case Fail 9 -> ioPure "fail-9"
-    case Fail 7 -> ioPure "fail-7"
-    case _ -> ioPure "cause:other"
+    case Cause.Then (Cause.Fail 7) (Cause.Fail 9) -> pure "then-7-9"
+    case Cause.Then (Cause.Fail 9) (Cause.Fail 7) -> pure "then-9-7-wrong-order"
+    case Cause.Fail 9 -> pure "fail-9"
+    case Cause.Fail 7 -> pure "fail-7"
+    case _ -> pure "cause:other"
 
 probe : String -> IO Int Int -> UIO Unit
 let probe tag body = do
-    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "succeeded")) classify
+    let r <- catchIO (ioBind (sandbox body) (\v -> pure "succeeded")) classify
     printlnString (tag ++ ":" ++ r)
 
 main : UIO Unit
@@ -42,4 +44,4 @@ let main = do
     probe "body-and-defer" bodyAndDeferFail
     probe "defer-only" deferFailOnly
     probe "body-only" bodyFailOnly
--- STATUS(a0497523): PASS
+-- STATUS(80bcd11d): PASS

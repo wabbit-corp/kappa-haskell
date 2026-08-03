@@ -1,0 +1,118 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "applicative-only:ab:3\napplicative-and-monad:ab:3\ndirect-monad:ab:3\npolymorphic-false:ab:3\npolymorphic-true:ab:3\nequivalent:True\n"
+--! assertExitCode 0
+
+-- Appendix G.2 (amending §18.2): a do block whose `<-` binds are
+-- independent MAY elaborate through Applicative (liftA2/<*>) alone, and
+-- the result MUST stay observationally equivalent to the §18.2 monadic
+-- desugaring. The erased Bool index gives the two interpretations the same
+-- representation while keeping instance selection distinct:
+--   * Trace False has Applicative but no Monad, forcing G.2 elaboration;
+--   * Trace True has both Applicative and Monad, so the same do program may
+--     use the ordinary overloaded-do route;
+--   * a second Trace True program uses `(>>=)` explicitly;
+--   * a generic do program is checked while the erased index is unknown.
+-- A generic Applicative (Trace mode) instance makes that `someProgram`
+-- valid without a Monad (Trace mode) premise. Exact stdout compares every
+-- accumulated log and result value.
+module main
+
+data Trace (0 monadic : Bool) (0 a : Type) : Type =
+    MkTrace (log : String) (value : a)
+
+instance Functor (Trace mode) =
+    let map f traced =
+        match traced
+        case MkTrace log value -> MkTrace log (f value)
+
+instance Applicative (Trace mode) =
+    let pure value = MkTrace "" value
+    let liftA2 f left right =
+        match left
+        case MkTrace leftLog leftValue ->
+            match right
+            case MkTrace rightLog rightValue ->
+                MkTrace (leftLog ++ rightLog) (f leftValue rightValue)
+
+instance Monad (Trace True) =
+    let (>>=) traced next =
+        match traced
+        case MkTrace firstLog firstValue ->
+            match next firstValue
+            case MkTrace secondLog secondValue ->
+                MkTrace (firstLog ++ secondLog) secondValue
+
+action : (mode : Bool) -> String -> Int -> Trace mode Int
+let action mode label value = MkTrace label value
+
+-- Concrete False: Applicative is available and Monad is not.
+applicativeProgram : Trace False Int
+let applicativeProgram = do
+    let x <- action False "a" 1
+    let y <- action False "b" 2
+    let sum = x + y
+    pure sum
+
+-- Concrete True: both Applicative and Monad are available while this do
+-- block is elaborated. The independent binds still permit G.2 grouping.
+applicativeAndMonadProgram : Trace True Int
+let applicativeAndMonadProgram = do
+    let x <- action True "a" 1
+    let y <- action True "b" 2
+    let sum = x + y
+    pure sum
+
+-- G.2 shape under an unknown erased index. The generic Applicative instance
+-- is enough; no Monad (Trace mode) premise exists or is required.
+someProgram : (mode : Bool) -> Trace mode Int
+let someProgram mode = do
+    let x <- action mode "a" 1
+    let y <- action mode "b" 2
+    let sum = x + y
+    pure sum
+
+polymorphicFalse : Trace False Int
+let polymorphicFalse = someProgram False
+
+polymorphicTrue : Trace True Int
+let polymorphicTrue = someProgram True
+
+-- The ordinary nested-bind desugaring of the same source computation,
+-- forced through the actual Monad (Trace True) instance.
+monadicReference : Trace True Int
+let monadicReference =
+    action True "a" 1 >>= \x ->
+        action True "b" 2 >>= \y ->
+            pure (x + y)
+
+render : forall (monadic : Bool). String -> Trace monadic Int -> String
+let render prefix traced =
+    match traced
+    case MkTrace log value -> prefix ++ ":" ++ log ++ ":" ++ showInt value
+
+equivalent : forall (leftMode rightMode : Bool). Trace leftMode Int -> Trace rightMode Int -> Bool
+let equivalent left right =
+    match (left, right)
+    case (MkTrace leftLog leftValue, MkTrace rightLog rightValue) ->
+        leftLog == rightLog && leftValue == rightValue
+
+renderBool : Bool -> String
+let renderBool value = if value then "True" else "False"
+
+main : UIO Unit
+let main = do
+    printlnString (render "applicative-only" applicativeProgram)
+    printlnString (render "applicative-and-monad" applicativeAndMonadProgram)
+    printlnString (render "direct-monad" monadicReference)
+    printlnString (render "polymorphic-false" polymorphicFalse)
+    printlnString (render "polymorphic-true" polymorphicTrue)
+    let allEquivalent =
+        equivalent applicativeProgram applicativeAndMonadProgram &&
+        equivalent applicativeAndMonadProgram monadicReference &&
+        equivalent monadicReference polymorphicFalse &&
+        equivalent polymorphicFalse polymorphicTrue
+    printlnString ("equivalent:" ++ renderBool allEquivalent)
+
+-- STATUS(80bcd11d): FAIL — the implementation still requires stale Applicative.pureA rather than the Spec member `pure`; both the concrete Trace False do and polymorphic `someProgram` incorrectly demand Monad evidence instead of elaborating from the generic Applicative instance alone (Appendix G.2)
