@@ -37,9 +37,9 @@ data Baz : Type =
 -- match the trait method type; this must be rejected by the instance
 -- coherence check, not silently accepted as "optional documentation".
 instance Foo Baz =
-    let foo (Baz n) = n          --!! kappa.type.mismatch
+    let foo (Baz n) = n          --!! E_TYPE_EQUALITY_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
 
 data Qux : Type =
     Qux Int
@@ -47,6 +47,6 @@ data Qux : Type =
 -- NEGATIVE: instance member declares an extra trailing parameter; trait
 -- method type is fixed.
 instance Foo Qux =
-    let foo (Qux n) k j = n + k + j   --!! kappa.type.mismatch
+    let foo (Qux n) k _ = n + k   --!! E_SIGNATURE_ARITY
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_SIGNATURE_ARITY

@@ -3766,3 +3766,16 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   resolution alternatives, and recommended normative edits for top-level
   effect self labels, the three borrow/flow conflicts, and bridge-surface
   universe polymorphism.
+
+- **§6.1.5/§28.2: decide whether integer-form literals at `Float` require
+  exact representability.**
+  The portable prelude requires `FromInteger Float`, and contextual literal
+  elaboration therefore permits an integer token such as `1` at expected type
+  `Float`. That case is attractive and exact, but the current
+  `fromInteger : Nat -> t` interface cannot express an exactness precondition,
+  while §6.1.3 says ordinary precision loss is never flagged. Decide whether
+  `FromInteger Float` accepts every `Nat` by rounding or only values exactly
+  representable in binary32. If exactness is required, specify the rejection
+  boundary and diagnostic (and make the corresponding decision for `Double`);
+  at minimum, precisely representable literals such as `1 : Float` should be
+  accepted.

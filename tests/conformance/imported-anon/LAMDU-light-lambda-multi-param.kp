@@ -55,10 +55,10 @@ let usePlus3 = plus3 5
 -- NEGATIVE: applying with too few arguments where a fully applied
 -- value of a concrete non-function type is required.
 needFlat : Nat
-let needFlat = addCurried 1    --!! kappa.type.mismatch
+let needFlat = addCurried 1    --!! E_TYPE_EQUALITY_MISMATCH
 
 -- NEGATIVE: passing arguments in the wrong types.
 mistypedArgs : Nat
-let mistypedArgs = addCurried True 1    --!! kappa.type.mismatch
+let mistypedArgs = addCurried True 1    --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH, E_APPLICATION_ARGUMENT_MISMATCH

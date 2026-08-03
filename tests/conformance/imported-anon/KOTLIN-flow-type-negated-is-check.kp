@@ -30,6 +30,15 @@ let evalLit e =
     else
         0
 
+-- POSITIVE: canonical `not` reverses the constructor fact. In the else arm,
+-- `not (e is Lit)` is false, so `e` is narrowed to Lit and `.n` is available.
+evalNegated : Expr -> Int
+let evalNegated e =
+    if not (e is Lit) then
+        0
+    else
+        e.n
+
 
 -- POSITIVE: a chain of is-checks covering all constructors is accepted.
 toInt : Expr -> Int
@@ -45,7 +54,7 @@ let toInt e =
 -- NEGATIVE: accessing a constructor field outside the narrowed branch fails.
 badFieldAccess : Expr -> Int
 let badFieldAccess e =
-    let _ = e.n   --!! kappa.type.mismatch
+    let _ = e.n   --!! E_UNRESOLVED_MEMBER
     0
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_UNRESOLVED_MEMBER

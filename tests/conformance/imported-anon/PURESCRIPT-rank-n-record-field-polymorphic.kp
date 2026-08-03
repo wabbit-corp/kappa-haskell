@@ -18,12 +18,15 @@
 
 -- A record carrying a rank-N (polymorphic) field.
 type PolyR : Type =
-    (id : forall (a : Type). a -> a)
+    (id : forall (a : Type). a -> a,)
 
--- Constructor: the polymorphic field is defined by an explicit lambda
--- annotated with `forall`.
+-- A separately generalized identity value supplies the rank-N field. This
+-- avoids relying on a non-portable `forall` lambda-binder spelling.
+polyId : forall (a : Type). a -> a
+let polyId x = x
+
 mkPolyR : PolyR
-let mkPolyR = (id = \(forall (a : Type)) (x : a) -> x)
+let mkPolyR = (id = polyId,)
 
 -- POSITIVE: a callee that demands a rank-N argument.
 wat : (forall (b : Type). b -> b) -> Unit
@@ -34,11 +37,11 @@ let wat _ = ()
 -- `forall (a : Type). a -> a`, not a monomorphic instantiation.
 example : Unit
 let example =
-    let (id = poly) = mkPolyR
+    let (id = poly,) = mkPolyR
     wat poly
 
 -- POSITIVE: a closed update preserving the polymorphic field type.
 mkPolyR2 : PolyR
-let mkPolyR2 = mkPolyR.{ id = \(forall (a : Type)) (x : a) -> x }
+let mkPolyR2 = mkPolyR.{ id = polyId }
 
 --! assertNoErrors

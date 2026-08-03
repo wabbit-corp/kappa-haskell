@@ -13,35 +13,39 @@ data MyList (a : Type) : Type =
     Cons a (MyList a)
 
 -- NEGATIVE TEST: the inner match is non-exhaustive (only `Cons` is matched).
--- It appears as the scrutinee of an outer match; must still be rejected.
-let bad_inner (xs : MyList Int) : String =
-    match
-        (match xs
-         case Cons _ _ -> Nil)  -- `Nil` branch missing in inner match --!! kappa.pattern.non-exhaustive
+-- It appears inside an arm of an exhaustive outer match and must still be
+-- checked independently.
+bad_inner : MyList Int -> String
+let bad_inner xs =
+    match xs
     case Nil -> "nil"
-    case Cons _ _ -> "cons"
+    case Cons _ rest ->
+        match rest   --!! E_PATTERN_NON_EXHAUSTIVE
+        case Cons _ _ -> "nested cons"
 
 -- NEGATIVE TEST: non-exhaustive match in a let-binding position.
-let bad_let (xs : MyList Int) : String =
+bad_let : MyList Int -> String
+let bad_let xs =
     let first =
-        match xs
-        case Cons x _ -> x   -- `Nil` branch missing --!! kappa.pattern.non-exhaustive
+        match xs   --!! E_PATTERN_NON_EXHAUSTIVE
+        case Cons x _ -> x
     show first
 
 -- POSITIVE TEST: both nested matches are exhaustive.
-let good_nested (xs : MyList Int) : Int =
-    match
-        (match xs
-         case Nil     -> 0
-         case Cons x _ -> x)
-    case 0 -> -1
-    case n -> n
+good_nested : MyList Int -> Int
+let good_nested xs =
+    match xs
+    case Nil -> 0
+    case Cons x rest ->
+        match rest
+        case Nil -> x
+        case Cons y _ -> x + y
 
 -- POSITIVE TEST: recursive function with exhaustive match at every level.
-let sum_list (xs : MyList Int) : Int =
+sum_list : MyList Int -> Int
+let sum_list xs =
     match xs
     case Nil        -> 0
     case Cons x rest -> x + sum_list rest
 
--- expect: bad_inner and bad_let rejected with non-exhaustive error;
---         good_nested, sum_list accepted
+--! assertDiagnosticCodes E_PATTERN_NON_EXHAUSTIVE, E_PATTERN_NON_EXHAUSTIVE

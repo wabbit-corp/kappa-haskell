@@ -16,7 +16,7 @@ module test
 
 -- POSITIVE: introduce an existential packing of Int.
 foo : exists (a : Type). a
-let foo = seal (a = Int, value = 42) as exists (a : Type). a
+let foo = seal exists (a = Int). 42 as exists (a : Type). a
 
 
 -- POSITIVE: open and use under the existential — `f` accepts every type.
@@ -25,7 +25,7 @@ useExists :
     (forall (a : Type). (1 x : a) -> Int) ->
     Int
 let useExists e f =
-    open e as exists (a). y in f @a y
+    open e as exists (a). y in f y
 
 
 -- NEGATIVE: the opened type witness `a` appears free in the result type of
@@ -37,7 +37,7 @@ data Wrap (a : Type) : Type =
 leakWitness :
     (1 e : exists (a : Type). a) -> Wrap Int
 let leakWitness e =
-    open e as exists (a). y in
-        (MkWrap : Wrap a)        --!! kappa.type.mismatch
+    open e as exists (a). y in   --!! E_EXISTENTIAL_WITNESS_ESCAPE
+        (MkWrap : Wrap a)
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_EXISTENTIAL_WITNESS_ESCAPE

@@ -39,9 +39,9 @@ let getLifetimesFor _ = lfts
 
 -- Case 3: nested function that shadows nothing still sees the outer instance.
 outerWrapper : (@_ : TyWf FooTy) -> List Bool
-let outerWrapper =
-    let inner : (@_ : TyWf FooTy) -> List Bool
-        let inner = lfts
-    inner
+let outerWrapper @outer =
+    inner : Unit -> List Bool
+    let inner _ = lfts
+    inner ()
 
 --! assertNoErrors

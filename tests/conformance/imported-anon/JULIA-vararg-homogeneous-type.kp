@@ -37,14 +37,17 @@ okFloat : Float
 let okFloat = sum2 1.0 2.0
 
 -- NEGATIVE: mixing Int and Float at a monomorphic call site.
+floatValue : Float
+let floatValue = 2.0
+
 badMix : Int
-let badMix = sum2 1 2.0   --!! kappa.type.mismatch
+let badMix = sum2 1 floatValue   --!! E_APPLICATION_ARGUMENT_MISMATCH
 
 -- NEGATIVE: wrong type entirely — String where Int is expected.
 badWrong : Int
-let badWrong = sum2 1 "two"   --!! kappa.type.mismatch
+let badWrong = sum2 1 "two"   --!! E_APPLICATION_ARGUMENT_MISMATCH
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticCodes E_APPLICATION_ARGUMENT_MISMATCH, E_APPLICATION_ARGUMENT_MISMATCH
 
 -- POSITIVE: three-argument fold with uniform type.
 sum3 :
@@ -55,4 +58,3 @@ let sum3 x y z = add (add x y) z
 
 ok3 : Int
 let ok3 = sum3 1 2 3
-
