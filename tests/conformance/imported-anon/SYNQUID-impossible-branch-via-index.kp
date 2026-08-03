@@ -23,12 +23,14 @@ data PNat : Type =
 data NonZero (n : PNat) : Type =
     MkNonZero : NonZero (S m)
 
--- POSITIVE: matching on a NonZero (S m) value need only handle MkNonZero.
--- The implicit Z-indexed remainder is statically excluded by the index.
-predOf : forall (n : PNat). NonZero n -> PNat
-let predOf p =
+-- POSITIVE: a NonZero n witness proves that n cannot equal Z. Matching the
+-- witness refines n to S m, after which no-confusion makes n = Z empty.
+nonZeroNotZero : forall (n : PNat). NonZero n -> (n = Z) -> Void
+let nonZeroNotZero p eq =
     match p
-      case MkNonZero -> Z
+      case MkNonZero ->
+        match eq
+        case impossible
 
 -- POSITIVE: explicit empty-remainder match on a scrutinee whose type
 -- has no inhabitants under the current index refinement.
@@ -43,6 +45,7 @@ unreachableBad : PNat -> PNat
 let unreachableBad n =
     match n
       case Z      -> Z
-      case (S _)  -> impossible                 --!! kappa.proof.impossible-reachable
+      case (S _)  -> impossible                 --!! E_IMPOSSIBLE_REACHABLE
 
---! assertDiagnosticFamily error kappa.proof.impossible-reachable
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE
+--! assertErrorCount 1

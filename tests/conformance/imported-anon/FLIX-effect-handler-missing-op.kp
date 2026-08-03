@@ -13,19 +13,19 @@ effect Console =
 
 -- NEGATIVE TEST: handler omits `readLine` -- must be rejected.
 let incomplete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
-    handle Console comp with  --!! kappa.effect.row-mismatch
+    handle Console comp with  --!! E_HANDLER_OP_MISSING
         case return _ -> ()
         case print s _ -> ()
     -- ^^ `readLine` clause is missing: this handler is ill-formed
 
---! assertDiagnosticFamily error kappa.effect.row-mismatch
+--! assertDiagnostic error E_HANDLER_OP_MISSING
 --! assertErrorCount 1
 
 -- POSITIVE TEST: handler provides both operations -- must be accepted.
 let complete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
     handle Console comp with
         case return _ -> ()
-        case print s k -> k ()
-        case readLine _ k -> k ""
+        case print _ _ -> ()
+        case readLine _ _ -> ()
 
--- expect: complete_handler accepted; incomplete_handler rejected with handler-clause-mismatch error
+-- expect: complete_handler accepted; incomplete_handler rejected with E_HANDLER_OP_MISSING

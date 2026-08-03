@@ -20,6 +20,7 @@ let ok = unwrapLinear (Box 42)
 -- NEGATIVE: passing a borrowed Box where linear (owned) access is required.
 -- The quantity of the argument does not match the function's demand.
 peekBox : forall (a : Type). (& b : Box a) -> a
-let peekBox b = unwrapLinear b   --!! kappa.type.mismatch
+let peekBox b = unwrapLinear b   --!! E_QTT_BORROW_CONSUME
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertErrorCount 1

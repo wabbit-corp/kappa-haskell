@@ -40,14 +40,16 @@ let doubleIntoAnnotated = into (into (42 : Int) : String)
 -- The inner `into` result type `?b` and the outer `into` source type `?b` are
 -- ambiguous: there are multiple instances for the intermediate type.
 doubleIntoAmbiguous : Int
-let doubleIntoAmbiguous = into (into (42 : Int))    --!! kappa.implicit.ambiguous
+let doubleIntoAmbiguous = into (into (42 : Int))    --!! E_IMPLICIT_AMBIGUOUS
 
---! assertDiagnosticFamily error kappa.implicit.ambiguous
+--! assertDiagnostic error E_IMPLICIT_AMBIGUOUS
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
 -- NEGATIVE: a local closure where the class constraint has an ambiguous
--- intermediate type. The lambda `fn x -> into (into x)` does not uniquely
+-- intermediate type. The lambda `\x -> into (into x)` does not uniquely
 -- determine the intermediate type without additional annotation.
 ambiguousLambda : Int -> Int
-let ambiguousLambda = fn x -> into (into (x : Int))    --!! kappa.implicit.ambiguous
+let ambiguousLambda = \x -> into (into (x : Int))    --!! E_IMPLICIT_AMBIGUOUS
 
---! assertDiagnosticFamily error kappa.implicit.ambiguous
+--! assertDiagnostic error E_IMPLICIT_AMBIGUOUS
+--! assertErrorCount 4

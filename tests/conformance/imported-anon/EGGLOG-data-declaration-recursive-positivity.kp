@@ -24,17 +24,26 @@ let toInt n =
     case Zero      -> 0
     case (Succ m)  -> toInt m + 1
 
--- POSITIVE: rose tree with List is strictly positive (List is a built-in
--- positively-parameterised constructor per §10.4).
+-- POSITIVE: rose tree with List is strictly positive. `List`'s element
+-- parameter is strictly positive, so recursive Rose values occur in stored
+-- recursive positions.
+
 data Rose (a : Type) : Type =
     Node a (List (Rose a))
 
--- NEGATIVE: constructor argument with the type on the left of an arrow violates
--- strict positivity.
+-- NON-POSITIVE: the constructor field contains a negative occurrence of Bad
+-- in the domain of a function. The field type `Bad -> Bad` is mixed overall,
+-- with one negative and one positive occurrence.
+
 data Bad : Type =                         --!! E_DATA_NOT_STRICTLY_POSITIVE
     MkBad (k : Bad -> Bad)
 
--- NEGATIVE: indirect negative occurrence inside another constructor argument.
+-- POSITIVE BUT NOT STRICTLY POSITIVE: the occurrence of BadCont crosses two
+-- function domains, so the two variance reversals make it positive overall.
+-- It is nevertheless not strictly positive because the recursive occurrence
+-- is hidden in function-domain positions rather than stored as recursive
+-- subdata.
+
 data BadCont : Type =                     --!! E_DATA_NOT_STRICTLY_POSITIVE
     MkBadCont (k : (BadCont -> Int) -> Int)
 

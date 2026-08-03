@@ -3,8 +3,9 @@
 
 --! mode check
 
--- TypeLevel of A is inferred from the argument.
-idType : (A : Type) -> Type
+-- Reifying A as the result requires an ordinary (runtime-relevant) type
+-- binder; its TypeLevel is still inferred from the argument.
+idType : (ordinary A : Type) -> Type
 let idType A = A
 
 -- Both A and B universe levels are inferred independently.
@@ -19,6 +20,6 @@ data Box (A : Type) : Type =
 let boxed   : Box Int  = MkBox 1
 let boxedT  : Box Type = MkBox Int
 
-let answer  : Int    = const Int String 42 "hello"
+let answer  : Int    = const Int (Type 0) 42 String
 
 --! assertNoErrors
