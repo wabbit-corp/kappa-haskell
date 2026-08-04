@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "both-left:1\nthen-first:2\nthen-defect:panic-msg\n"
+--! assertExitCode 0
 
 -- §18.1.2: Cause carries parallel (Both) and sequential (Then) composition
 -- alongside Fail/Interrupt/Defect. A composite cause survives an
@@ -11,27 +13,25 @@ module main
 
 composite : Cause Int
 let composite =
-    Both (Fail 1)
-         (Then (Fail 2)
-               (Defect (DefectInfo Panic (Some "panic-msg"))))
+    Cause.Both (Cause.Fail 1) (Cause.Then (Cause.Fail 2) (Cause.Defect (DefectInfo DefectTag.Panic (Some "panic-msg"))))
 
 sealed : IO (Cause Int) Int
 let sealed = throwIO composite
 
 classify : Cause Int -> IO Void Int
 let classify c = match c
-    case Both (Fail a) (Then (Fail b) (Defect (DefectInfo Panic (Some msg)))) -> do
+    case Cause.Both (Cause.Fail a) (Cause.Then (Cause.Fail b) (Cause.Defect (DefectInfo DefectTag.Panic (Some msg)))) -> do
         printlnString ("both-left:" ++ showInt a)
         printlnString ("then-first:" ++ showInt b)
         printlnString ("then-defect:" ++ msg)
-        ioPure 0
+        pure 0
     case _ -> do
         printlnString "structure-lost"
-        ioPure 1
+        pure 1
 
 main : UIO Unit
 let main = do
     let r <- catchIO (sandbox (unsandbox sealed)) classify
     let _ = r
-    ioPure ()
--- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_UNEXPECTED_INDENTATION "unexpected indentation: no block introducer or continuation context is active; consider a comma… [was PASS in an earlier STATUS line]
+    pure ()
+-- STATUS(6c99ee15): PASS

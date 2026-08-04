@@ -1,8 +1,10 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "returned\nfin-done\ninterrupt:Requested\n"
+--! assertExitCode 0
 
--- §18.1.4 (Spec.md L18848-18850): interruptFork requests interruption but
+-- §18.1.4: interruptFork requests interruption but
 -- does NOT wait for termination. The child's ensuring finalizer parks on a
 -- promise only the parent completes AFTER interruptFork returns — if
 -- interruptFork waited for termination (like interrupt), this would
@@ -11,7 +13,7 @@ module main
 
 childBody : Promise Void Unit -> UIO Unit
 let childBody ready = do
-    let _ <- completePromise ready (Success ())
+    let _ <- completePromise ready (Exit.Success ())
     sleepFor (seconds 10)
 
 finalizer : Promise Void Unit -> UIO Unit
@@ -32,10 +34,10 @@ let main = do
     -- control is back although the child has not terminated (its finalizer
     -- is still parked on `unblock`)
     printlnString "returned"
-    let _ <- completePromise unblock (Success ())
+    let _ <- completePromise unblock (Exit.Success ())
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupt:Requested"
-      case Failure c -> printlnString "other"
--- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 14; stdout mismatch: expected "returned\nfin-done\ni… [was PASS in an earlier STATUS line]
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupt:Requested"
+      case Exit.Failure c -> printlnString "other"
+-- STATUS(6c99ee15): PASS

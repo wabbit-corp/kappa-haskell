@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "sandbox-fail:boom\nsandbox:interrupt-requested\nchild-continues\nchild:2\n"
+--! assertExitCode 0
 
 -- §18.1.2 sandbox: the full terminal Cause (typed Fail AND Interrupt) is
 -- exposed in the typed error channel, so sandboxed code MAY discriminate
@@ -14,33 +16,33 @@ let failing = throwIO "boom"
 
 classifyFail : Cause String -> IO Void Int
 let classifyFail c = match c
-    case Fail msg -> do
+    case Cause.Fail msg -> do
         printlnString ("sandbox-fail:" ++ msg)
-        ioPure 0
+        pure 0
     case _ -> do
         printlnString "sandbox-fail:other"
-        ioPure 0
+        pure 0
 
 sleepyBody : Promise Void Unit -> UIO Int
 let sleepyBody ready = do
-    let _ <- completePromise ready (Success ())
+    let _ <- completePromise ready (Exit.Success ())
     sleepFor (seconds 10)
-    ioPure 1
+    pure 1
 
 recover : Cause Void -> IO Void Int
 let recover c = match c
-    case Interrupt (InterruptCause Requested by) -> do
+    case Cause.Interrupt (InterruptCause InterruptTag.Requested by) -> do
         printlnString "sandbox:interrupt-requested"
-        ioPure 2
+        pure 2
     case _ -> do
         printlnString "sandbox:other-cause"
-        ioPure 3
+        pure 3
 
 child : Promise Void Unit -> UIO Int
 let child ready = do
     let r <- catchIO (sandbox (sleepyBody ready)) recover
     printlnString "child-continues"
-    ioPure r
+    pure r
 
 main : UIO Unit
 let main = do
@@ -55,6 +57,6 @@ let main = do
     interruptFork f
     let ex <- await f
     match ex
-      case Success v -> printlnString ("child:" ++ showInt v)
-      case Failure c -> printlnString "child:failed"
--- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 26; stdout mismatch: expected "sandbox-fail:boom\nsa… [was PASS in an earlier STATUS line]
+      case Exit.Success v -> printlnString ("child:" ++ showInt v)
+      case Exit.Failure c -> printlnString "child:failed"
+-- STATUS(6c99ee15): PASS

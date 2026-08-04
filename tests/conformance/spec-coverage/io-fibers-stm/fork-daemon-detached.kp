@@ -1,0 +1,52 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "scope-exited\nattached:ScopeShutdown\ndaemon:5\n"
+--! assertExitCode 0
+
+-- §18.1.4/§18.1.8: forkDaemon creates a child NOT attached to the current
+-- structured runtime scope. When the enclosing withScope exits, its
+-- ScopeShutdown interruption reaches attached fibers (the forkIn sleeper)
+-- but MUST NOT interrupt the daemon, which stays parked on its gate and
+-- completes normally once released from outside the scope.
+module main
+
+daemonBody : Promise Void Unit -> UIO Int
+let daemonBody gate = do
+    let _ <- awaitPromise gate
+    pure 5
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    pure 0
+
+useScope : Promise Void Unit -> Scope -> UIO (Fiber Void Int, Fiber Void Int)
+let useScope gate sc = do
+    let s <- forkIn sc sleeper
+    let d <- forkDaemon (daemonBody gate)
+    pure (s, d)
+
+main : UIO Unit
+let main = do
+    let gate <- newPromise
+    -- withScope shuts the scope down on exit: the attached sleeper is
+    -- interrupted and drained; the daemon must survive.
+    let handles <- withScope (useScope gate)
+    let (s, d) = handles
+    printlnString "scope-exited"
+    -- The explicit scope is already shut down when withScope returns, so the
+    -- attached fiber must expose the structured shutdown reason directly.
+    let sx <- await s
+    match sx
+      case Exit.Success v -> printlnString "attached:completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.ScopeShutdown by)) ->
+        printlnString "attached:ScopeShutdown"
+      case Exit.Failure c -> printlnString "attached:other"
+    let _ <- completePromise gate (Exit.Success ())
+    let ex <- await d
+    match ex
+      case Exit.Success v -> printlnString ("daemon:" ++ showInt v)
+      case Exit.Failure (Cause.Interrupt c) -> printlnString "daemon:interrupted"
+      case Exit.Failure c -> printlnString "daemon:other"
+-- STATUS(6c99ee15): PASS

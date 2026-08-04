@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "cleaned-up\ninterrupt-returned\ninterrupted:Requested\n"
+--! assertExitCode 0
 
 -- Combination §18.1.4 + §18.1.11 + §18.1.12: a forked child parks inside
 -- `blocking` with an ensuring finalizer installed. Interrupting it must
@@ -11,7 +13,7 @@ module main
 
 childBody : Promise Void Unit -> UIO Unit
 let childBody ready = do
-    let _ <- completePromise ready (Success ())
+    let _ <- completePromise ready (Exit.Success ())
     blocking (sleepFor (seconds 10))
 
 child : Promise Void Unit -> UIO Unit
@@ -28,7 +30,7 @@ let main = do
     printlnString "interrupt-returned"
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
-      case Failure c -> printlnString "other"
--- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 14; stdout mismatch: expected "cleaned-up\ninterrupt… [was PASS in an earlier STATUS line]
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupted:Requested"
+      case Exit.Failure c -> printlnString "other"
+-- STATUS(6c99ee15): PASS

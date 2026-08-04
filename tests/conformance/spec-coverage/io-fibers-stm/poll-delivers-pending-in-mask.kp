@@ -1,0 +1,41 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "resumed-masked\ninterrupted:Requested\n"
+--! assertExitCode 0
+
+-- §18.1.12: poll is an explicit interruption checkpoint that delivers a
+-- PENDING interruption inside an ordinary mask (in Uninterruptible it is
+-- inert and leaves the request pending — pinned elsewhere). The pending
+-- request does not wake the masked promise wait (delivery is suppressed
+-- there), but the explicit poll after it must deliver — "after-poll" must
+-- never print.
+module main
+
+body : Promise Void Unit -> Promise Void Unit -> UIO Unit
+let body ready go = do
+    let _ <- completePromise ready (Exit.Success ())
+    let _ <- awaitPromise go
+    -- reached with the interrupt request already pending (sent while this
+    -- fiber was parked, masked, on `go`)
+    printlnString "resumed-masked"
+    poll
+    printlnString "after-poll"
+
+child : Promise Void Unit -> Promise Void Unit -> UIO Unit
+let child ready go = mask (\_ -> body ready go)
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let go <- newPromise
+    let f <- fork (child ready go)
+    let _ <- awaitPromise ready
+    interruptFork f
+    let _ <- completePromise go (Exit.Success ())
+    let ex <- await f
+    match ex
+      case Exit.Success u -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupted:Requested"
+      case Exit.Failure c -> printlnString "other"
+-- STATUS(6c99ee15): PASS

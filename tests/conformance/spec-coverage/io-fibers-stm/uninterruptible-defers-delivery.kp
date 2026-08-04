@@ -1,8 +1,10 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "left-mask\ninterrupted:Requested\n"
+--! assertExitCode 0
 
--- §18.1.12 (Spec.md L22768-22770): an interruption request suppressed by
+-- §18.1.12: an interruption request suppressed by
 -- `uninterruptible` is NOT lost — it remains pending when the body leaves
 -- the region and becomes observable at the next interruption point (here
 -- the sleep). The tail of the region runs ("left-mask"); the code past the
@@ -13,7 +15,7 @@ import std.prelude.(type Exit(..))
 
 body : Promise Void Unit -> Promise Void Unit -> UIO Unit
 let body ready go = do
-    let _ <- completePromise ready (Success ())
+    let _ <- completePromise ready (Exit.Success ())
     let _ <- awaitPromise go
     -- the interrupt request is already pending here; delivery is suppressed
     printlnString "left-mask"
@@ -31,10 +33,10 @@ let main = do
     let f <- fork (child ready go)
     let _ <- awaitPromise ready
     interruptFork f
-    let _ <- completePromise go (Success ())
+    let _ <- completePromise go (Exit.Success ())
     let ex <- await f
     match ex
-      case Success u -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
-      case Failure c -> printlnString "other"
--- STATUS(a0497523): PASS
+      case Exit.Success u -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupted:Requested"
+      case Exit.Failure c -> printlnString "other"
+-- STATUS(6c99ee15): PASS

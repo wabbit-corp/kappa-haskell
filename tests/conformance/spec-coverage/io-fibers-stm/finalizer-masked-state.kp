@@ -1,9 +1,10 @@
 --! mode run
 --! assertNoErrors
---! assertStdoutContains "finalizer-completed"
---! assertStdoutContains "child-done"
+--! assertNoWarnings
+--! assertStdout "finalizer-completed\nchild-done\n"
+--! assertExitCode 0
 
--- §18.1.12 (Spec.md L19246-19249): finalizers installed by `ensuring` run
+-- §18.1.12: finalizers installed by `ensuring` run
 -- in MASKED state. The child unwinds a typed failure through an ensuring
 -- finalizer that parks on a promise; an interrupt requested during that
 -- park must NOT abort the finalizer — it completes ("finalizer-completed")
@@ -14,17 +15,17 @@ module main
 
 weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
 let weakenVoidIO act =
-    catchIO act (\v -> ioPure (absurd v))
+    catchIO act (\v -> pure (absurd v))
 
 finalizer : Promise Void Unit -> Promise Void Unit -> IO String Unit
 let finalizer ready go = do
-    let _ <- weakenVoidIO (completePromise ready (Success ()))
+    let _ <- weakenVoidIO (completePromise ready (Exit.Success ()))
     let _ <- weakenVoidIO (awaitPromise go)
     weakenVoidIO (printlnString "finalizer-completed")
 
 child : Promise Void Unit -> Promise Void Unit -> UIO Int
 let child ready go =
-    catchIO (ensuring (throwIO "boom") (finalizer ready go)) (\m -> ioPure 0)
+    catchIO (ensuring (throwIO "boom") (finalizer ready go)) (\m -> pure 0)
 
 main : UIO Unit
 let main = do
@@ -34,8 +35,8 @@ let main = do
     -- the child is now parked, masked, inside its ensuring finalizer
     let _ <- awaitPromise ready
     interruptFork f
-    let _ <- completePromise go (Success ())
+    let _ <- completePromise go (Exit.Success ())
     let ex <- await f
     let _ = ex
     printlnString "child-done"
--- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 21; stdout does not contain "finalizer-completed"; s… [was PASS in an earlier STATUS line]
+-- STATUS(6c99ee15): PASS
