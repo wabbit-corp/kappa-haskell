@@ -75,8 +75,11 @@ module Kappa.Syntax
   , DataDecl (..)
   , CtorDecl (..)
   , TraitDecl (..)
+  , SupertraitItem (..)
   , TraitMember (..)
+  , traitMemberName
   , InstanceDecl (..)
+  , InstanceCompletion (..)
   , EffectDecl (..)
   , EffectOp (..)
   , FixityDecl (..)
@@ -360,6 +363,9 @@ data Expr
   | ESpliceInQuote !Expr !Span -- ^ @${ e }@ inside a quote (§21.1)
   | EQuoteHole !Int !Span -- ^ internal: grafting slot of an elaborated quote
   -- Miscellaneous --------------------------------------------------------
+  | EDerive !(Maybe Expr) !Span
+  -- ^ Unified derivation request (§16.3.2A): bare @derive@ is
+  -- expected-type directed; @derive (G)@ stores the explicit goal @G@.
   | EImpossible !Span
   | EKindQualified !KindSelector !Name !Span -- ^ @type T@, @trait C@, ... (§7.1.1)
   | EModuleSig !Name !Span -- ^ @moduleSig M@ (§7.5)
@@ -582,24 +588,52 @@ data CtorDecl = CtorDecl
   deriving stock (Show, Data)
 
 data TraitDecl = TraitDecl
-  { trSupers :: ![Expr] -- ^ supertrait context @C1, ..., Cn =>@
+  { trSupers :: ![SupertraitItem] -- ^ supertrait context @C1, ..., Cn =>@
   , trName :: !Name
   , trParams :: ![Binder]
   , trMembers :: ![TraitMember]
   }
   deriving stock (Show, Data)
 
+-- | A declared supertrait obligation.  The flag is semantic source metadata:
+-- ordinary supertraits must resolve from the instance environment, while a
+-- @derive@ supertrait may be discharged by the checked derivation planner.
+data SupertraitItem = SupertraitItem
+  { stiDerived :: !Bool
+  , stiType :: !Expr
+  , stiSpan :: !Span
+  }
+  deriving stock (Show, Data)
+
 data TraitMember
   = TraitSig !Name !Expr !Span
   | TraitDefault !LetDef !Span
+  | TraitDerived !Name !Expr !Span
+  | TraitEvidenceUniqueness !Expr !Span
   deriving stock (Show, Data)
+
+traitMemberName :: TraitMember -> Maybe Name
+traitMemberName member =
+  case member of
+    TraitSig name _ _ -> Just name
+    TraitDefault def _ -> ldName def
+    TraitDerived name _ _ -> Just name
+    TraitEvidenceUniqueness {} -> Nothing
 
 data InstanceDecl = InstanceDecl
   { inUniverseSchema :: !(Maybe UniverseSchema)
   , inPremises :: ![Expr] -- ^ @Eq a =>@ premises
   , inHead :: !Expr
-  , inMembers :: ![Decl] -- ^ member signatures and definitions
+  , inCompletion :: !InstanceCompletion
   }
+  deriving stock (Show, Data)
+
+-- | The two source-level instance-completion protocols (§14.3.4A). An empty
+-- explicit body is distinct from @instance G = derive@: only the latter opts
+-- every unresolved facet into the checked derivation planner.
+data InstanceCompletion
+  = InstanceMembers ![Decl]
+  | InstanceDerive
   deriving stock (Show, Data)
 
 data EffectDecl = EffectDecl
@@ -740,6 +774,7 @@ surfaceThisRefs = nub . go
             | it <- items
             ]
       EUniverseInstantiation e levels _ -> go e ++ concatMap go levels
+      EDerive goal _ -> maybe [] go goal
       _ -> []
     goArg = \case
       ArgExplicit e -> go e
@@ -781,6 +816,7 @@ surfaceVarNames = nub . go
       ELazy e _ -> go e
       EForce e _ -> go e
       EListLit es _ -> concatMap go es
+      EDerive goal _ -> maybe [] go goal
       _ -> []
     goArg = \case
       ArgExplicit e -> go e
@@ -881,6 +917,7 @@ exprSpan = \case
   ESplice _ sp -> sp
   ESpliceInQuote _ sp -> sp
   EQuoteHole _ sp -> sp
+  EDerive _ sp -> sp
   EImpossible sp -> sp
   EKindQualified _ _ sp -> sp
   EModuleSig _ sp -> sp

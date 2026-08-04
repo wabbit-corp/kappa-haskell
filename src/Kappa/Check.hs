@@ -146,7 +146,7 @@ import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Inhabitance
   ( InhabEnv (..)
-  , InhabitanceSummary (Empty, Contractible, Unknown)
+  , InhabitanceSummary (Empty, Contractible, Finite, Unknown)
   , InhabitancePurpose (..)
   , HeadClass (..)
   , CtorFiber (..)
@@ -251,6 +251,16 @@ data CtorInfo = CtorInfo
   -- intentionally absent: they are constructor-interface binders, not fields.
   }
 
+-- | Whether arbitrary complete evidence values of a trait application may be
+-- constructed by checked source elaboration (§14.1.1/§14.1.1A).  The
+-- independently-unique case is installed only after the declaration's
+-- certificate has been validated; an absent or invalid clause never silently
+-- upgrades sealed-coherent evidence.
+data EvidenceConstructionMode
+  = SealedCoherent
+  | IndependentlyUnique
+  deriving stock (Eq, Show)
+
 data TraitInfo = TraitInfo
   { tiParamCount :: !Int
   , tiMembers :: ![Text]
@@ -272,6 +282,14 @@ data TraitInfo = TraitInfo
   , tiSupers :: ![(Text, Term)]
   -- ^ supertrait premises as (evidence field name, @\\params -> C params@)
   -- (§14.1.4); the field carries the supertrait dictionary (§14.3.3)
+  , tiDerivedMembers :: !(Set Text)
+  -- ^ Members explicitly declared with @derive@. Missing instance
+  -- definitions for these fields are checked derivation obligations.
+  , tiDerivedSupers :: !(Set Text)
+  -- ^ Supertrait dictionary fields whose declarations carry @derive@.
+  , tiEvidenceConstructionMode :: !EvidenceConstructionMode
+  -- ^ Compiler-validated evidence introduction authority.  Coherence of
+  -- ordinary instances alone does not grant fresh construction.
   }
 
 -- | Compiler-owned §15.8.2 proof-normalization provider metadata.  The
@@ -603,7 +621,18 @@ data CheckState = CheckState
   -- owning trait identity. Universe generalization uses this relation to keep
   -- the owner-trait schema as the accessor's leading hidden prefix.
   , csInstances :: ![InstanceEntry]
+  , csInstanceUniverseInterfaces :: !(Map GName [Term])
+  -- ^ Dictionary-identity index of the normalized instance head and premises.
+  -- Universe interface discovery visits every declaration in an SCC; looking
+  -- each dictionary up by scanning 'csInstances' made that pass quadratic in
+  -- prelude size. 'setCheckInstances' is the sole bulk-update path and keeps
+  -- this derived index synchronized with the authoritative ordered list.
   , csMetas :: !MetaState
+  , csSolvedMetas :: !(Set MetaId)
+  -- ^ Exact derived index of solved entries in 'csMetas'. Pending-evidence
+  -- fixed-point detection consults this directly instead of filtering the
+  -- complete meta store on every pass. Point updates and transactional
+  -- restores must keep the two fields synchronized.
   , csNextMeta :: !Int
   , csMetaClassifiers :: !(Map MetaId MetaClassifier)
   , csApplicationPlanningMetas :: !(Set MetaId)
@@ -938,6 +967,19 @@ data CheckState = CheckState
   -- dictionary implicit to the matching
   -- 'this.__superN' projection — without introducing a context binder that
   -- would perturb the operation's other implicit (carrier) inference.
+  , csEvidenceUniquenessStack :: ![GName]
+  -- ^ Traits whose independent uniqueness certificates are currently being
+  -- checked.  Compiler-generated coherence for these exact evidence types is
+  -- disabled so a certificate cannot justify itself through @IsTrait@.
+  , csBlockedSupertraitProjections :: !(Set (GName, Text))
+  -- ^ Exact derived-supertrait facets currently being completed.  Projecting
+  -- one of these slots from the incomplete self dictionary would be a
+  -- circular proof, while all other supertrait paths remain available.
+  , csForbidIncompleteSelfEvidence :: !Bool
+  -- ^ Scoped while elaborating an explicit @summon@ request. Ordinary method
+  -- dispatch may use the current instance dictionary while checking its
+  -- members, but source code may not reify that incomplete dictionary as a
+  -- first-class evidence value (§14.3.4A).
   , csArgIndexRetag :: !Bool
   -- ^ §16.1.8: inside explicit-argument checking, a same-head indexed
   -- type mismatch reports E_APPLICATION_ARGUMENT_MISMATCH (a failed
@@ -1051,6 +1093,13 @@ data CheckState = CheckState
   -- A bare foreign 'expect' therefore has no native provider and is
   -- honestly unsatisfied (E_EXPECT_UNSATISFIED). The hook is retained as an
   -- inert, backend-agnostic seam; see docs/BUILD_AND_NATIVE_BINDINGS.md.
+  , csFoundationProviders :: !(Map GName Term)
+  -- ^ Mandatory portable-foundation providers keyed by resolved declaration
+  -- identity.  Unlike backend intrinsics these are backend-independent proof
+  -- constants, and unlike an ordinary companion definition they have no
+  -- source body.  The stored Core type is an independently seeded ABI: an
+  -- @expect term@ is satisfied only when both the global identity and its
+  -- complete universe-polymorphic type agree definitionally.
   , csCoreBodies :: !(Map GName Term)
   -- ^ Elaborated KCore body of each top-level term definition, captured
   -- before evaluation to a value. The native backends lower these through
@@ -1262,7 +1311,9 @@ initCheckState =
     , csBareTraitMembers = Map.empty
     , csTraitMemberOwners = Map.empty
     , csInstances = []
+    , csInstanceUniverseInterfaces = Map.empty
     , csMetas = emptyMetas
+    , csSolvedMetas = Set.empty
     , csNextMeta = 0
     , csMetaClassifiers = Map.empty
     , csApplicationPlanningMetas = Set.empty
@@ -1351,6 +1402,9 @@ initCheckState =
     , csDemand = DemandRead
     , csThis = Nothing
     , csTraitSupers = []
+    , csEvidenceUniquenessStack = []
+    , csBlockedSupertraitProjections = Set.empty
+    , csForbidIncompleteSelfEvidence = False
     , csArgIndexRetag = False
     , csDefinitionalEqualityOnly = False
     , csReceivers = Map.empty
@@ -1373,6 +1427,7 @@ initCheckState =
     , csAuditLedger = []
     , csScopeNameCache = Nothing
     , csBackendIntrinsics = Map.empty
+    , csFoundationProviders = Map.empty
     , csCoreBodies = Map.empty
     , csCoreSignatures = Map.empty
     , csTransparentValueAliases = Map.empty
@@ -1470,7 +1525,7 @@ data VarRefInfo = VarRefInfo
   , vriStoredTypeTerm :: !Term
   , vriMonadRefDict :: !Term
   , vriMonadType :: !Value
-  , vriErrorType :: !Value
+  , vriDiagnosticRefType :: !Value
   , vriLoweringWitness :: !(Maybe RefLoweringWitness)
   }
 
@@ -1827,7 +1882,7 @@ refineCtx :: [(Text, [GName])] -> Ctx -> Ctx
 refineCtx refs ctx =
   ctx {ctxRefines = foldr add (ctxRefines ctx) refs}
   where
-    add (n, gs) = Map.insert (refineRoot ctx n) gs
+    add (n, gs) = Map.insert (refinementRoot ctx n) gs
 
 -- | Record a stable alias @q = p@ (§7.4.3).
 addCtxAlias :: Text -> Text -> Ctx -> Ctx
@@ -1835,7 +1890,14 @@ addCtxAlias q p ctx = ctx {ctxAliases = Map.insert q p (ctxAliases ctx)}
 
 -- | Current refinement of a variable, through its alias root.
 ctxRefinementOf :: Ctx -> Text -> Maybe [GName]
-ctxRefinementOf ctx n = Map.lookup (refineRoot ctx n) (ctxRefines ctx)
+ctxRefinementOf ctx n = Map.lookup (refinementRoot ctx n) (ctxRefines ctx)
+
+-- | Flow facts for a mutable current value are versioned just like snapshot
+-- aliases. A direct occurrence of the mutable binding denotes its current
+-- version; an immutable alias already resolves to the version it captured.
+refinementRoot :: Ctx -> Text -> Text
+refinementRoot ctx n =
+  fromMaybe (refineRoot ctx n) (varCurrentRootOf ctx n)
 
 varCurrentKey :: Text -> Int -> Text
 varCurrentKey n v = "$var-current:" <> n <> ":" <> T.pack (show v)
@@ -1903,8 +1965,7 @@ evalIn ctx t = do
 
 quoteIn :: HasCallStack => Ctx -> Value -> CheckM Term
 quoteIn ctx v = do
-  ec <- ec_
-  let quoted = quote ec (ctxLen ctx) v
+  quoted <- quoteRawIn ctx v
   unless (termScopedAt (ctxLen ctx) quoted) $
     error
       ( "Kappa.Check.quoteIn: internal error: value quotes outside context depth "
@@ -1917,6 +1978,20 @@ quoteIn ctx v = do
           <> prettyCallStack callStack
       )
   pure quoted
+
+quoteRawIn :: Ctx -> Value -> CheckM Term
+quoteRawIn ctx v = do
+  ec <- ec_
+  pure (quote ec (ctxLen ctx) v)
+
+-- | Read-only normalization probes may encounter values originating in a
+-- deeper pattern/closure context. Such a probe is simply inapplicable at the
+-- caller depth; only committed Core construction uses 'quoteIn' and its fatal
+-- scoping invariant.
+tryQuoteIn :: Ctx -> Value -> CheckM (Maybe Term)
+tryQuoteIn ctx value = do
+  quoted <- quoteRawIn ctx value
+  pure (quoted <$ guard (termScopedAt (ctxLen ctx) quoted))
 
 forceM :: Value -> CheckM Value
 forceM v = do
@@ -1956,6 +2031,17 @@ withThis tm act = do
   r <- act
   modify' $ \st -> st {csThis = old}
   pure r
+
+-- | Reject reification of the dictionary currently being completed only at
+-- an explicit fresh-evidence request. Method calls may still dispatch through
+-- that dictionary while their member body is checked.
+withIncompleteSelfEvidenceForbidden :: CheckM a -> CheckM a
+withIncompleteSelfEvidenceForbidden action = do
+  previous <- gets csForbidIncompleteSelfEvidence
+  modify' $ \state -> state {csForbidIncompleteSelfEvidence = True}
+  result <- action
+  modify' $ \state -> state {csForbidIncompleteSelfEvidence = previous}
+  pure result
 
 -- | The neutral standing for the record under §13.2.1 elaboration.
 thisG :: GName
@@ -2135,8 +2221,8 @@ errMutableBinding sp code binding selectedFacet fields msg =
       diag SevError StageElaborate code (Just "kappa.var.mutable-binding") sp msg
 
 mutableBindingInfoFields :: Ctx -> Int -> CtxEntry -> VarRefInfo -> Text -> CheckM [(Text, Text)]
-mutableBindingInfoFields ctx i entry info occurrence = do
-  hiddenRef <- renderPayloadValue ctx (ceType entry)
+mutableBindingInfoFields ctx i _entry info occurrence = do
+  hiddenRef <- renderPayloadValue ctx (vriDiagnosticRefType info)
   stored <- renderPayloadValue ctx (vriStoredType info)
   monadTy <- renderPayloadValue ctx (vriMonadType info)
   evidenceTy <- renderPayloadValue ctx (VGlobN prelMonadRef [(Expl, vriMonadType info)])
@@ -2159,8 +2245,8 @@ mutableBindingLookupFields ctx n occurrence =
     _ -> pure []
 
 recordMutableBindingFields :: Ctx -> Span -> Value -> VarRefInfo -> CheckM ()
-recordMutableBindingFields ctx sp hiddenRefTy info = do
-  hiddenRef <- renderPayloadValue ctx hiddenRefTy
+recordMutableBindingFields ctx sp _hiddenRefTy info = do
+  hiddenRef <- renderPayloadValue ctx (vriDiagnosticRefType info)
   stored <- renderPayloadValue ctx (vriStoredType info)
   monadTy <- renderPayloadValue ctx (vriMonadType info)
   evidenceTy <- renderPayloadValue ctx (VGlobN prelMonadRef [(Expl, vriMonadType info)])
@@ -2586,7 +2672,10 @@ solveMeta m v = do
             )
     _ -> pure ()
   modify' $ \next ->
-    next {csMetas = Map.insert m (Just v) (csMetas next)}
+    next
+      { csMetas = Map.insert m (Just v) (csMetas next)
+      , csSolvedMetas = Set.insert m (csSolvedMetas next)
+      }
 
 -- | Solve a metavariable only when the candidate value is acyclic through the
 -- current solved-meta graph.  The ordinary occurs check used to quote the
@@ -2787,6 +2876,23 @@ shouldDeferTermination g deps = do
           )
           termDeps
   pure (Set.member g deps || not (Set.null pendingDeps) || not (Set.null deferredDeps))
+
+-- | A direct self-recursive declaration may be certified as soon as every
+-- other termination-relevant dependency is already conversion-reducible.
+-- Requiring the complete dependency set to be exactly @{self}@ incorrectly
+-- keeps ordinary recursion opaque when it calls an earlier total helper. A
+-- pending signature or an earlier opaque declaration may still close a larger
+-- SCC, so those dependencies continue to defer certification.
+singletonTerminationDependenciesReady :: GName -> Set GName -> CheckM Bool
+singletonTerminationDependenciesReady self dependencies = do
+  state <- get
+  let termDependencies =
+        Set.delete self
+          (Set.intersection dependencies (csTerminationNames state))
+      ready dependency =
+        dependency `Set.notMember` Map.keysSet (csSigPending state)
+          && maybe False gdReducible (Map.lookup dependency (csGlobals state))
+  pure (all ready (Set.toList termDependencies))
 
 -- | §3.1.1A: record the first declaration site of a module-scope name
 -- (later occurrences keep the earliest span). Consulted by the
@@ -4284,13 +4390,13 @@ synchronizeGeneratedConstraintInterfacesFor frontier before = do
         repairedEffectLabels = Map.map repairEffectLabel (csModEffLabels current)
         repairedEffectInterfaces = Map.map repairEffectLabel (csEffectInterfaces current)
         stateWithArtifacts =
+          setCheckInstances repairedInstances $
           current
             { csGlobals = globalsWithValues
             , csCtors = repairedConstructors
             , csCoreBodies = repairedBodies
             , csTerminationDecls = repairedTerminationDecls
             , csTraits = repairedTraits
-            , csInstances = repairedInstances
             , csPreInstances = repairedPreInstances
             , csModEffLabels = repairedEffectLabels
             , csEffectInterfaces = repairedEffectInterfaces
@@ -4318,18 +4424,15 @@ generatedConstraintInterfacesAffectedBy
   -> CheckState
   -> Set GeneratedConstraintInterface
 generatedConstraintInterfacesAffectedBy owner before after =
-  let beforeConstructorNames = Map.keysSet (csCtors before)
-      newGlobals =
-        Map.keysSet (csGlobals after) `Set.difference` Map.keysSet (csGlobals before)
+  let newGlobals = Map.keysSet (Map.difference (csGlobals after) (csGlobals before))
+      newConstructors = Map.keysSet (Map.difference (csCtors after) (csCtors before))
+      ownerConstructors =
+        Set.fromList (maybe [] diCtors (Map.lookup owner (csDatas after)))
    in Set.unions
         [ Set.singleton (GeneratedGlobalInterface owner)
         , Set.map GeneratedGlobalInterface newGlobals
-        , Set.fromList
-            [ GeneratedConstructorInterface constructor
-            | (constructor, info) <- Map.toList (csCtors after)
-            , ciData info == owner
-                || constructor `Set.notMember` beforeConstructorNames
-            ]
+        , Set.map GeneratedConstructorInterface
+            (Set.union ownerConstructors newConstructors)
         ]
 
 registerLevelConstraint :: Ctx -> Text -> Text -> Level -> Level -> CheckM ()
@@ -4358,9 +4461,9 @@ levelConstraintKey owner sourceSpan constraint =
 
 reindexLevelConstraints :: CheckState -> CheckState
 reindexLevelConstraints st =
-  let retainedIds = Set.fromList (map lcIdentity (csLevelConstraints st))
-   in st
-    { csLevelConstraintIndex =
+  let constraints = csLevelConstraints st
+      retainedIds = Set.fromList (map lcIdentity constraints)
+      constraintIndex =
         Map.fromList
           [ ( levelConstraintKey
                 (Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st))
@@ -4368,17 +4471,23 @@ reindexLevelConstraints st =
                 constraint
             , lcIdentity constraint
             )
-          | constraint <- csLevelConstraints st
+          | constraint <- constraints
           ]
-    , csLevelConstraintsByOwner =
-        List.foldl'
-          (\byOwner constraint ->
-             case Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st) of
-               Nothing -> byOwner
-               Just owner ->
-                 Map.insertWith (flip (++)) owner [constraint] byOwner)
-          Map.empty
-          (csLevelConstraints st)
+      -- Prepend in constant time, then restore the authoritative constraint
+      -- order once per owner. Appending each singleton made this rebuild
+      -- quadratic for declarations with many universe constraints.
+      constraintsByOwner =
+        Map.map reverse $
+          List.foldl'
+            (\byOwner constraint ->
+               case Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st) of
+                 Nothing -> byOwner
+                 Just owner -> Map.insertWith (++) owner [constraint] byOwner)
+            Map.empty
+            constraints
+   in st
+    { csLevelConstraintIndex = constraintIndex
+    , csLevelConstraintsByOwner = constraintsByOwner
     , csLevelConstraintOwners =
         Map.restrictKeys (csLevelConstraintOwners st) retainedIds
     , csLevelConstraintSpans =
@@ -4471,13 +4580,17 @@ levelMetasByOwner
   :: Map LevelMeta (Set GName)
   -> Map GName (Set LevelMeta)
 levelMetasByOwner =
-  Map.fromListWith Set.union
-    . concatMap
-        (\(meta, owners) ->
-           [ (owner, Set.singleton meta)
-           | owner <- Set.toList owners
-           ])
-    . Map.toList
+  Map.foldlWithKey'
+    (\byOwner meta owners ->
+       Set.foldl'
+         (\current owner ->
+            Map.alter
+              (Just . Set.insert meta . fromMaybe Set.empty)
+              owner
+              current)
+         byOwner
+         owners)
+    Map.empty
 
 constructorsByData
   :: Map GName CtorInfo
@@ -5381,15 +5494,15 @@ finalizeLevelArtifacts = do
                })
           globalsZonked
       finalized =
+        setCheckInstances
+          [ zonkCurrentOwner zonkInstance (ieDict entry) entry
+          | entry <- csInstances st
+          ] $
         st
           { csGlobals = globalsFinal
           , csDatas = zonkCurrentMap zonkData (csDatas st)
           , csCtors = constructorsFinal
           , csTraits = zonkCurrentMap zonkTrait (csTraits st)
-          , csInstances =
-              [ zonkCurrentOwner zonkInstance (ieDict entry) entry
-              | entry <- csInstances st
-              ]
           , csBareTypeLevels = Map.map (substituteLevelMetas assignments) (csBareTypeLevels st)
           , csPreInstances =
               Map.map
@@ -5406,6 +5519,7 @@ finalizeLevelArtifacts = do
                 (\global _ -> not (gnameInModule global currentModule))
                 (csCoreSignatures st)
           , csBackendIntrinsics = Map.map zonkTerm (csBackendIntrinsics st)
+          , csFoundationProviders = Map.map zonkTerm (csFoundationProviders st)
           , csTerminationDecls =
               Map.map
                 (\declaration ->
@@ -6183,6 +6297,15 @@ unifyWith exact ctx =
         goAt (fuel - 1) allowQSubsumption allowUniverseCumulativity lvl t x
       (VVariantT m1, VVariantT m2) | length m1 == length m2 ->
         andM (zipWith (goAt (fuel - 1) False False lvl) m1 m2)
+      -- A saturated nullary constructor can survive interface construction
+      -- either as its declared neutral head or as the typed constructor node
+      -- produced by ordinary term elaboration. Constructor-table membership,
+      -- not spelling, authenticates the equivalence; requiring an empty term
+      -- spine on both forms keeps constructor functions out of this rule.
+      (VGlobI g1 universes1 [], VCtorI g2 universes2 [])
+        | g1 == g2 -> declaredNullaryConstructor g1 universes1 universes2
+      (VCtorI g1 universes1 [], VGlobI g2 universes2 [])
+        | g1 == g2 -> declaredNullaryConstructor g1 universes1 universes2
       (VCtor g1 a1, VCtor g2 a2) | g1 == g2 && length a1 == length a2 ->
         andM (zipWith (goAt (fuel - 1) False False lvl) a1 a2)
       (VLit (LitInt n), VCtor g args)
@@ -6302,6 +6425,15 @@ unifyWith exact ctx =
       where
         andM [] = pure True
         andM (m : ms) = m >>= \ok -> if ok then andM ms else pure False
+        declaredNullaryConstructor constructor leftUniverses rightUniverses = do
+          known <- gets (Map.member constructor . csCtors)
+          if not known || length leftUniverses /= length rightUniverses
+            then pure False
+            else
+              andM
+                [ solveLevelIdentity ctx left right
+                | (left, right) <- zip leftUniverses rightUniverses
+                ]
         unifyCorePat left right = case (left, right) of
           (CPWild, CPWild) -> pure True
           (CPVarM leftMode _, CPVarM rightMode _) -> pure (leftMode == rightMode)
@@ -6440,12 +6572,14 @@ unifyWith exact ctx =
     typeLevelIdentityMatches lvl expectedIdentity value
       | lvl /= ctxLen ctx = pure False
       | otherwise = do
-          term <- quoteIn ctx value
-          (_, identity) <- levelIdentityOfCheckedTerm ctx term
-          pure $ case identity of
-            Right actualIdentity ->
-              normalizeLevel actualIdentity == normalizeLevel expectedIdentity
-            Left _ -> False
+          tryQuoteIn ctx value >>= \case
+            Nothing -> pure False
+            Just term -> do
+              (_, identity) <- levelIdentityOfCheckedTerm ctx term
+              pure $ case identity of
+                Right actualIdentity ->
+                  normalizeLevel actualIdentity == normalizeLevel expectedIdentity
+                Left _ -> False
     -- A dependent TypeLevel application retains the original first-class
     -- term in Core while its closure receives the canonical solver identity.
     -- Comparing only the ordinary application spines can therefore meet
@@ -6458,28 +6592,28 @@ unifyWith exact ctx =
       | lvl /= ctxLen ctx = pure Nothing
       | otherwise = do
           saved <- get
-          leftTerm <- quoteIn ctx left
-          rightTerm <- quoteIn ctx right
-          if not (containsCanonicalLevel leftTerm || containsCanonicalLevel rightTerm)
-            then pure Nothing
-            else do
-              leftRelation <- typeLevelRelationOf ctx leftTerm
-              rightRelation <- typeLevelRelationOf ctx rightTerm
-              put saved
-              case (leftRelation, rightRelation) of
-                ( Just (leftOperator, leftLo, leftHi)
-                  , Just (rightOperator, rightLo, rightHi)
-                  )
-                    | leftOperator == rightOperator -> do
-                        lowerOk <- solveLevelIdentity ctx leftLo rightLo
-                        upperOk <-
-                          if lowerOk
-                            then solveLevelIdentity ctx leftHi rightHi
-                            else pure False
-                        if upperOk
-                          then pure (Just True)
-                          else put saved >> pure (Just False)
-                _ -> pure Nothing
+          quoted <- (,) <$> tryQuoteIn ctx left <*> tryQuoteIn ctx right
+          case quoted of
+            (Just leftTerm, Just rightTerm)
+              | containsCanonicalLevel leftTerm || containsCanonicalLevel rightTerm -> do
+                  leftRelation <- typeLevelRelationOf ctx leftTerm
+                  rightRelation <- typeLevelRelationOf ctx rightTerm
+                  put saved
+                  case (leftRelation, rightRelation) of
+                    ( Just (leftOperator, leftLo, leftHi)
+                      , Just (rightOperator, rightLo, rightHi)
+                      )
+                        | leftOperator == rightOperator -> do
+                            lowerOk <- solveLevelIdentity ctx leftLo rightLo
+                            upperOk <-
+                              if lowerOk
+                                then solveLevelIdentity ctx leftHi rightHi
+                                else pure False
+                            if upperOk
+                              then pure (Just True)
+                              else put saved >> pure (Just False)
+                    _ -> pure Nothing
+            _ -> put saved >> pure Nothing
       where
         containsCanonicalLevel =
           getAny
@@ -6542,6 +6676,17 @@ unifyWith exact ctx =
             solveConstantPlanningSpine argumentMetas >>= \case
               True -> pure True
               False -> fallback lvl (VFlex m sp) t
+        | Just argumentLevels <- rigidPatternSpine sp -> do
+            -- Ordinary higher-order pattern unification also admits the
+            -- constant-family case @?family x = target@ when every argument
+            -- is a distinct rigid introduced after the meta and @target@ is
+            -- scoped before those rigids. This is what lets a constant type
+            -- @B@ instantiate a dependent family expected as @A -> Type@.
+            -- The classifier still supplies every Pi mode/icit/quantity;
+            -- source spelling and the target's head are irrelevant.
+            solveConstantRigidSpine argumentLevels >>= \case
+              True -> pure True
+              False -> fallback lvl (VFlex m sp) t
       _ -> fallback lvl (VFlex m sp) t
       where
         andM' [] = pure True
@@ -6555,6 +6700,15 @@ unifyWith exact ctx =
 
         bareFlex (_, VFlex meta []) = Just meta
         bareFlex _ = Nothing
+
+        rigidPatternSpine arguments = do
+          levels <- traverse bareRigid arguments
+          if length levels == Set.size (Set.fromList levels)
+            then Just levels
+            else Nothing
+
+        bareRigid (_, VRigid level []) = Just level
+        bareRigid _ = Nothing
 
         solveConstantPlanningSpine argumentMetas = do
           state <- get
@@ -6580,6 +6734,23 @@ unifyWith exact ctx =
                           buildConstantLambda classifierValue sp targetTerm >>= \case
                             Nothing -> pure False
                             Just candidate -> solveMetaAcyclic m candidate
+            _ -> pure False
+
+        solveConstantRigidSpine argumentLevels = do
+          state <- get
+          case Map.lookup m (csMetaClassifiers state) of
+            Just classifier
+              | let creationDepth = micDepth classifier
+              , creationDepth == ctxLen ctx
+              , all (>= creationDepth) argumentLevels -> do
+                  targetTerm <- quoteIn ctx t
+                  if not (termScopedAt creationDepth targetTerm)
+                    then pure False
+                    else do
+                      classifierValue <- evalIn ctx (micType classifier)
+                      buildConstantLambda classifierValue sp targetTerm >>= \case
+                        Nothing -> pure False
+                        Just candidate -> solveMetaAcyclic m candidate
             _ -> pure False
 
         buildConstantLambda classifier arguments targetTerm =
@@ -7181,7 +7352,13 @@ expectType ctx sp actual expected = do
           aF <- forceM actual
           eF <- forceM expected
           pure $ case (aF, eF) of
-            (VPi i1 _ _ _ _ _, VPi i2 _ _ _ _ _) -> i1 == i2
+            -- Any function value supplied to a function-typed argument slot
+            -- is still an application mismatch when the checked Pi contracts
+            -- disagree.  In particular an erased implicit @forall@ decider is
+            -- not an ordinary explicit decision procedure; the binder icity
+            -- difference is the reason the argument does not fit, not a
+            -- free-standing type-equality failure (§11.3, §16.1.7.1).
+            (VPi _ _ _ _ _ _, VPi _ _ _ _ _ _) -> True
             _ -> False
     let (inferredCaptures, demandedCaptures, missingCaptures) =
           fromMaybe ([], [], []) captureMismatch
@@ -7821,9 +7998,10 @@ generatedEffPureCore payloadType resultType payload =
 
 generatedEffPureAtM :: Ctx -> Value -> Term -> CheckM Term
 generatedEffPureAtM ctx expected payload = do
-  forceM expected >>= \case
-    VGlobN effect [(_, _row), (_, payloadType)]
-      | effect == prelEff -> do
+  forced <- forceM expected
+  case monadActionViewValue forced of
+    Just (carrier, payloadType)
+      | nominalFamilyValueHead carrier == Just prelEff -> do
           payloadTypeTerm <- quoteIn ctx payloadType
           resultTypeTerm <- quoteIn ctx expected
           pure (generatedEffPureCore payloadTypeTerm resultTypeTerm payload)
@@ -7854,7 +8032,7 @@ generatedApplicativePureAtM ctx site carrier sourceType payload expectedAction =
       ctx
       site
       prelApplicative
-      "pureA"
+      "pure"
       applicativeGoal
       applicativeDictionary
   (application, actualAction) <-
@@ -8826,7 +9004,17 @@ varReadBlocked ctx n sp = do
   errMutableBinding sp code (nameText n) "current-value"
     (infoFields ++ [("sourceOperation", "current read"), ("repair", "ref " <> nameText n), ("blockedBy", blockedBy)])
     msg
-  anyHole ctx
+  case lookupCtx (nameText n) ctx of
+    Just (_, entry)
+      | Just info <- ceVarInfo entry -> do
+          -- Blocking the object-phase read invalidates the term, not the
+          -- mutable binding's authenticated stored type. Preserve that type
+          -- in recovery so an expected static classifier can still constrain
+          -- the declaration that introduced the cell; returning 'anyHole'
+          -- here loses the relation and causes derivative literal ambiguity.
+          recovery <- freshMeta
+          pure (recovery, vriStoredType info)
+    _ -> anyHole ctx
 
 -- | §3.2.2 typo-suggestion candidate index, bucketed by spelling length:
 -- the import scope plus this module's own globals. A single dropped
@@ -9030,11 +9218,17 @@ elabLevelExpr ctx e = do
       pure (candidate, failed, preciseMutableFailure)
   if typingFailed
     then do
-      tm <- zonkTermM (ctxLen ctx) tm0
-      unless typingFailureReported $
+      unless typingFailureReported $ do
+        tm <- zonkTermM (ctxLen ctx) tm0
         reportInvalidLevelTerm (exprSpan e) (renderExprSrc e) tm
           "the level expression does not have type TypeLevel"
-      pure (tm, LZero)
+      -- The rejected source term may be an object-phase action (notably a
+      -- blocked mutable-current read) and can retain inference metas. Never
+      -- embed it in the recovered static family application: doing so makes
+      -- declaration closeout diagnose derivative ambiguity and serialization
+      -- failures. The reported source error owns the failure; @Type 0@ is the
+      -- well-formed recovery placeholder.
+      pure (CLevel LZero, LZero)
     else do
       (tm, identity) <- levelIdentityOfCheckedTerm ctx tm0
       case identity of
@@ -9456,6 +9650,60 @@ reportInconsistentHole ctx n sp nh expected = do
                 <> priorR <> " and " <> thisR <> " (§16.3.2)"
             )
 
+-- | Defer a type equality only while its exact pending evidence component is
+-- unresolved.  This is shared by expression coercions and repeated binder
+-- annotations: both may compare a selected dictionary with the placeholder
+-- captured by an earlier signature occurrence.  The comparison is replayed
+-- by 'flushDeferredTypeEqualities' after evidence selection, so no unresolved
+-- dictionary is treated as definitionally equal.
+deferTypeEqualityOnPendingEvidence
+  :: Ctx
+  -> Span
+  -> Value
+  -> Value
+  -> Set MetaId
+  -> CheckM Bool
+deferTypeEqualityOnPendingEvidence ctx sp actual expected dependencies = do
+  flushPendingSelected dependencies
+  pendingAfter <-
+    gets
+      ( Set.fromList
+          . map (\(meta, _, _, _, _) -> meta)
+          . csPending
+      )
+  let unresolved = Set.intersection dependencies pendingAfter
+  if Set.null unresolved
+    then pure False
+    else do
+      modify' $ \state ->
+        state
+          { csDeferredTypeEqualities =
+              DeferredTypeEquality
+                { dteSpan = sp
+                , dteCtx = ctx
+                , dteActual = actual
+                , dteExpected = expected
+                , dteEvidenceDependencies = unresolved
+                }
+                : csDeferredTypeEqualities state
+          }
+      pure True
+
+-- | Compare two types now when possible, otherwise retain the comparison
+-- behind the evidence metas that actually block it.  This is deliberately
+-- narrower than expression coercion: binder annotations admit no transport or
+-- representation-changing conversion.
+expectTypeAfterPendingEvidence :: Ctx -> Span -> Value -> Value -> CheckM ()
+expectTypeAfterPendingEvidence ctx sp actual expected = do
+  compatible <- tryTypeCompatibility ctx sp actual expected
+  unless compatible $ do
+    dependencies <- pendingEvidenceComponent ctx [actual, expected]
+    deferred <-
+      if Set.null dependencies
+        then pure False
+        else deferTypeEqualityOnPendingEvidence ctx sp actual expected dependencies
+    unless deferred (expectType ctx sp actual expected)
+
 -- | Check an inferred term against an expected type and make universe
 -- cumulativity explicit in KCore. Evidence is frozen only when the check
 -- produced no diagnostic; later level-meta finalization substitutes through
@@ -9477,16 +9725,25 @@ coerceTerm ctx sp term actual expected = do
             Nothing -> do
               before <- gets (length . csDiags)
               compatible <- tryTypeCompatibility ctx sp actual expected
-              canonicalCompatible <-
+              contextualCompatible <-
                 if compatible
                   then pure False
                   else
-                    tryCanonicalStandardArithmeticCompatibility
+                    tryCheckedBranchCompatibility
                       ctx
                       sp
                       actual
                       expected
-              if compatible || canonicalCompatible
+              canonicalProofCompatible <-
+                if compatible || contextualCompatible
+                  then pure False
+                  else
+                    tryCanonicalStandardArithmeticProofCompatibility
+                      ctx
+                      sp
+                      actual
+                      expected
+              if compatible || contextualCompatible || canonicalProofCompatible
                 then do
                   compatibleTerm <- finishCompatible before
                   canonicalizeProviderEqualityProof
@@ -9523,29 +9780,14 @@ coerceTerm ctx sp term actual expected = do
                               pure term
 
     deferBlockedEquality dependencies = do
-      flushPendingSelected dependencies
-      pendingAfter <-
-        gets
-          ( Set.fromList
-              . map (\(meta, _, _, _, _) -> meta)
-              . csPending
-          )
-      let unresolved = Set.intersection dependencies pendingAfter
-      if Set.null unresolved
-        then expectType ctx sp actual expected
-        else
-          modify' $ \state ->
-            state
-              { csDeferredTypeEqualities =
-                  DeferredTypeEquality
-                    { dteSpan = sp
-                    , dteCtx = ctx
-                    , dteActual = actual
-                    , dteExpected = expected
-                    , dteEvidenceDependencies = unresolved
-                    }
-                    : csDeferredTypeEqualities state
-              }
+      deferred <-
+        deferTypeEqualityOnPendingEvidence
+          ctx
+          sp
+          actual
+          expected
+          dependencies
+      unless deferred (expectType ctx sp actual expected)
       pure term
 
     finishCompatible before = do
@@ -9707,10 +9949,10 @@ tryCoherentTraitEvidenceTransport ctx site source actual expected =
   transactional . withDefinitionalEqualityOnly $ do
     actualTerm <- quoteIn ctx actual >>= zonkTermM (ctxLen ctx)
     expectedTerm <- quoteIn ctx expected >>= zonkTermM (ctxLen ctx)
-    localCandidates <-
-      coherentTraitEvidenceLocals ctx [actualTerm, expectedTerm]
+    evidenceCandidates <-
+      coherentTraitEvidenceTerms ctx [actualTerm, expectedTerm]
     selectedCandidates <-
-      fmap catMaybes . forM localCandidates $ \(_, evidenceType) -> do
+      fmap catMaybes . forM evidenceCandidates $ \(_, evidenceType) -> do
         -- Selecting the deterministic representative is a premise of this
         -- transport, so the selection itself must not recursively rely on the
         -- transport being constructed.  The instance head is the same
@@ -9724,11 +9966,7 @@ tryCoherentTraitEvidenceTransport ctx site source actual expected =
     let candidates =
           nubBy
             (\(left, _) (right, _) -> left == right)
-            ( [ (CVar index, evidenceType)
-              | (index, evidenceType) <- localCandidates
-              ]
-                ++ selectedCandidates
-            )
+            (evidenceCandidates ++ selectedCandidates)
     firstSuccessful actualTerm
       [ (fromTerm, fromType, toTerm, toType)
       | (fromTerm, fromType) <- candidates
@@ -9797,22 +10035,91 @@ tryCoherentTraitEvidenceTransport ctx site source actual expected =
         Just value | diagnostics == diagnostics' -> pure (Just value)
         _ -> put saved >> pure Nothing
 
--- | In-scope implicit trait evidence. 'coherentEvidenceEquality'
--- independently re-authenticates each goal and checks the generated equality.
-coherentTraitEvidenceLocals
+-- | Exact implicit locals and projection chains rooted in them whose inferred
+-- classifiers are authenticated trait goals. Coherent evidence is not
+-- restricted to a whole implicit local: a supertrait projection is itself an
+-- evidence value and may be the exact dictionary captured by an overloaded
+-- operation. The generic typed projection oracle is supplemented by the
+-- standard-operation decoder, whose resolved operation identity and checked
+-- telescope independently recover the exact evidence slot even when a nested
+-- supertrait projection cannot be reconstructed in isolation. Restricting
+-- candidates to those two typed evidence shapes avoids turning arbitrary
+-- endpoint subterms into new instance-search triggers. Nested-binder nodes and
+-- terms whose classifier cannot be reconstructed fail closed.
+coherentTraitEvidenceTerms
   :: Ctx
   -> [Term]
-  -> CheckM [(Int, Value)]
-coherentTraitEvidenceLocals ctx endpoints =
-  fmap catMaybes . forM (zip [0 :: Int ..] (ctxEntries ctx)) $ \(index, entry) ->
-    if ceImplicitLocal entry
-      && any (termContainsRoot (CVar index)) endpoints
-      then do
-        authenticated <- isTraitGoal (ceType entry)
-        if authenticated
-          then pure (Just (index, ceType entry))
-          else pure Nothing
-      else pure Nothing
+  -> CheckM [(Term, Value)]
+coherentTraitEvidenceTerms ctx endpoints = do
+  let depth = ctxLen ctx
+      candidates =
+        nub
+          [ node
+          | endpoint <- endpoints
+          , (nodeDepth, node) <-
+              foldTermWithDepth
+                (\nodeDepth node -> [(nodeDepth, node)])
+                depth
+                endpoint
+          , nodeDepth == depth
+          , implicitEvidenceProjection node
+          ]
+  projected <-
+    fmap catMaybes . forM candidates $ \candidate ->
+      coreTermClassifierInCtx ctx candidate >>= \case
+        Nothing -> pure Nothing
+        Just evidenceType -> do
+          authenticated <- isTraitGoal evidenceType
+          pure
+            ( if authenticated
+                then Just (candidate, evidenceType)
+                else Nothing
+            )
+  operationEvidence <-
+    concat <$> mapM (coherentArithmeticEvidenceOccurrences ctx) endpoints
+  pure
+    ( nubBy
+        (\(left, _) (right, _) -> left == right)
+        (projected ++ operationEvidence)
+    )
+  where
+    implicitEvidenceProjection = \case
+      CVar index ->
+        maybe
+          False
+          ceImplicitLocal
+          (listToMaybe (drop index (ctxEntries ctx)))
+      CProjM _ receiver _ -> implicitEvidenceProjection receiver
+      CProjAtM _ receiver _ _ -> implicitEvidenceProjection receiver
+      CSealE _ receiver -> implicitEvidenceProjection receiver
+      _ -> False
+
+
+-- | Recover the classifier of an already checked Core term without freshening
+-- any declaration occurrence. This is an observational query over the current
+-- lexical context; unsupported terms return 'Nothing' and cannot influence
+-- elaboration state.
+coreTermClassifierInCtx :: Ctx -> Term -> CheckM (Maybe Value)
+coreTermClassifierInCtx ctx term = do
+  state <- get
+  evaluator <- ec_
+  pure
+    ( observationTermTypeAt
+        state
+        evaluator
+        (ctxLen ctx)
+        (map observationBinding (ctxEntries ctx))
+        term
+    )
+  where
+    observationBinding entry =
+      ObservationBinding
+        { obMode = ceMode entry
+        , obOrigin = Nothing
+        , obType = Just (ceType entry)
+        , obUniverses = luiTelescope <$> ceLocalUniverses entry
+        , obDefinition = Nothing
+        }
 
 termContainsRoot :: Term -> Term -> Bool
 termContainsRoot root =
@@ -10026,7 +10333,14 @@ singleArithmeticNominalIndexDifference
 singleArithmeticNominalIndexDifference ctx actual expected = do
   exact <- singleNominalIndexDifference ctx actual expected
   case exact of
-    Just difference -> pure (Just difference)
+    Just difference@(carrier, _, _, _, _) -> do
+      carrierTerm <-
+        quoteIn ctx carrier >>= zonkTermM (ctxLen ctx)
+      pure
+        ( case arithmeticDomainForCarrier carrierTerm of
+            Just _ -> Just difference
+            Nothing -> Nothing
+        )
     Nothing -> do
       let depth = ctxLen ctx
       actualTerm <- quoteIn ctx actual >>= zonkTermM depth
@@ -11233,35 +11547,43 @@ tryParametricForallInterchange ctx site sourceTerm actual0 expected0 = do
                 outerValue <- evalIn ctx outerTerm
                 evidenceGoal <-
                   globalValueM prelPreservesParametricForall [(Expl, outerValue)]
-                dictionary <- resolveImplicitQ ctx site QW evidenceGoal
-                (functionTerm, functionType) <-
-                  specializeGlobalAt ctx functionGlobal functionDefinition functionUniverses
-                (method, methodType) <-
-                  knownTraitMemberProjection
-                    ctx
-                    site
-                    prelPreservesParametricForall
-                    (gnameText prelPullForall)
-                    evidenceGoal
-                    dictionary
-                (application, applicationType) <-
-                  applyGeneratedCoreSpine
-                    ctx
-                    site
-                    method
-                    methodType
-                    [ (Expl, functionTerm, functionType)
-                    , (Expl, sourceTerm, actual0)
-                    ]
-                checked <-
-                  coerceTerm ctx site application applicationType expected0
-                -- Generated universe-proof arguments follow the ordinary
-                -- pending-evidence lifecycle.  Requiring them to be solved
-                -- here would reject this compiler-inserted spelling while
-                -- accepting the source-equivalent explicit pullForall call.
-                -- Final evidence closure and typed-Core replay remain the
-                -- fail-closed authorities.
-                Just <$> zonkTermM (ctxLen ctx) checked
+                dictionary0 <- resolveImplicitQ ctx site QW evidenceGoal
+                stateAfterLookup <- get
+                let dependencies =
+                      Set.fromList
+                        (unsolvedMetasOf stateAfterLookup dictionary0)
+                flushPendingSelected dependencies
+                dictionary <- zonkTermM (ctxLen ctx) dictionary0
+                stateAfterResolution <- get
+                if not (null (unsolvedMetasOf stateAfterResolution dictionary))
+                  then pure Nothing
+                  else do
+                    (functionTerm, functionType) <-
+                      specializeGlobalAt ctx functionGlobal functionDefinition functionUniverses
+                    (method, methodType) <-
+                      knownTraitMemberProjection
+                        ctx
+                        site
+                        prelPreservesParametricForall
+                        (gnameText prelPullForall)
+                        evidenceGoal
+                        dictionary
+                    (application, applicationType) <-
+                      applyGeneratedCoreSpine
+                        ctx
+                        site
+                        method
+                        methodType
+                        [ (Expl, functionTerm, functionType)
+                        , (Expl, sourceTerm, actual0)
+                        ]
+                    checked <-
+                      coerceTerm ctx site application applicationType expected0
+                    -- The selected dictionary is fixed above. Generated
+                    -- universe-proof arguments inside the resulting method
+                    -- application retain their ordinary pending-evidence
+                    -- lifecycle and are replayed by the typed-Core verifier.
+                    Just <$> zonkTermM (ctxLen ctx) checked
           pure (fromMaybe Nothing attempted)
         _ -> pure Nothing
 
@@ -11781,6 +12103,7 @@ resolveImplicitQ ctx sp q goal = do
       isEq <- isEqGoal g
       isRow <- isRowGoal g
       flexed <- goalHasFlex g
+      universeFlexed <- goalHasUniverseFlex ctx g
       levelRelation <- authenticatedLevelGoalRelation ctx goal
       let isLevelGoal = isJust levelRelation
           levelFlexed = maybe False relationHasMetas levelRelation
@@ -11827,7 +12150,8 @@ resolveImplicitQ ctx sp q goal = do
           case eagerSuper of
             Just tm -> pure tm
             Nothing ->
-              if (isTrait || isEq || isRow || isLevelGoal) && (flexed || levelFlexed)
+              if (isTrait || isEq || isRow || isLevelGoal)
+                   && (flexed || universeFlexed || levelFlexed)
                 then do
               -- postpone resolution until explicit arguments solve the head
               -- metavariables (§16.1.7.1 spine order); committing to a local
@@ -11938,6 +12262,14 @@ resolveImplicitQ ctx sp q goal = do
     unresolved g isTrait isEq isLevelGoal = do
       isRow <- isRowGoal g
       disprovedLevelGoal <- if isLevelGoal then authenticatedLevelGoalDisproved ctx goal else pure False
+      incompleteSelfAlreadyReported <-
+        gets
+          ( any
+              (\diagnostic ->
+                 dCode diagnostic == "E_DERIVE_INCOMPLETE_SELF"
+                   && dPrimary diagnostic == sp)
+              . csDiags
+          )
       if disprovedLevelGoal
         -- The enclosing Pi carries the same authenticated level assumption.
         -- Its consumption emits the one canonical universe diagnostic.
@@ -11945,9 +12277,10 @@ resolveImplicitQ ctx sp q goal = do
         else if isTrait || isEq || isLevelGoal || q /= Q0
         then do
           gT <- quoteIn ctx g
-          errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
-            ("could not resolve implicit argument of type " <> renderTerm gT
-               <> (if isTrait || isEq || isRow then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
+          unless incompleteSelfAlreadyReported $
+            errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
+              ("could not resolve implicit argument of type " <> renderTerm gT
+                 <> (if isTrait || isEq || isRow then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
           diagnosedEvidenceMeta
         else freshMeta
 
@@ -12054,9 +12387,11 @@ isPropClosureFromTerm
   -> CheckM (Maybe Term)
 isPropClosureFromTerm ctx sp sourceGoal goal = do
   g <- forceM goal
+  state <- get
   case g of
-    VGlobN h [(_, pv)]
-      | h == prelIsProp || h == prelIsSubsingleton ->
+    VGlobI h _ arguments
+      | h == prelIsProp || h == prelIsSubsingleton
+      , Just [(_, pv)] <- traitSemanticSpineIn state h arguments ->
           propEvidence ctx [] (sourceGoal >>= isPropCorePayload h) pv
     _ -> pure Nothing
   where
@@ -12080,7 +12415,17 @@ isPropClosureFromTerm ctx sp sourceGoal goal = do
       -> CheckM (Maybe Term)
     propEvidence cx doms sourceProposition pv = do
       ec <- ec_
-      pF <- forceM pv
+      pF <- forceHLevelCarrier pv
+      direct <- hLevelTraitEvidence cx sp prelIsProp pF
+      case direct of
+        Just evidence -> pure (Just evidence)
+        Nothing -> do
+          propositionGoal <- globalValueM prelIsProp [(Expl, pF)]
+          focusedLocalDerivation (ctxLen ctx) cx sp propositionGoal >>= \case
+            Just evidence -> pure (Just evidence)
+            Nothing -> structuralEvidence cx doms sourceProposition ec pF
+
+    structuralEvidence cx doms sourceProposition ec pF =
       case pF of
         -- h-props are closed under (dependent) function types.  The original
         -- binder's icity/quantity are irrelevant to propositionhood; we reuse
@@ -12156,6 +12501,16 @@ isPropClosureFromTerm ctx sp sourceGoal goal = do
                     (CApp Impl (CApp Impl (CApp Impl eqHead aTm) xTm) yTm)
                     setTm
         _ -> pure Nothing
+
+    -- Cumulativity changes only the classifier of a type. H-level closure is
+    -- therefore stable through an authenticated universe lift, but the NbE
+    -- value deliberately retains that proof wrapper for later reconstruction.
+    -- Strip it only for the structural case split; source Core above remains
+    -- available to retain the checked lift evidence in generated terms.
+    forceHLevelCarrier value =
+      forceM value >>= \case
+        VUniverseLift _ _ _ inner -> forceHLevelCarrier inner
+        forced -> pure forced
 
     isPropCorePayload expectedHead proposition = do
       let (headTerm, arguments) =
@@ -12283,15 +12638,24 @@ equandType cx v = do
           -- The telescope walk solves fresh metas (and may speculatively touch
           -- pre-existing ones) to reconstruct the erased implicits. Carrier
           -- recovery is a read-only QUERY, so we run it transactionally: snapshot
-          -- the meta state, recover and deeply zonk the carrier, then restore the
-          -- snapshot. Zonking bakes any recovered implicit into the returned
-          -- value, so it survives the restore; no meta solution leaks back into
-          -- the surrounding elaboration.
+          -- the complete checker state, recover and deeply zonk the carrier,
+          -- then restore the snapshot. A baked result may escape only when it
+          -- contains no transaction-local term or level meta; otherwise this
+          -- read-only query declines rather than leaving dangling constraints.
           st0 <- get
+          let allocationCutoff = csNextMeta st0
+              depth = ctxLen cx
           r <- applyPrimTelescope hty args
-          r' <- traverse (zonkValue (ctxLen cx)) r
-          modify' $ \st -> st {csMetas = csMetas st0}
-          pure r'
+          baked <- forM r $ \value -> do
+            ec <- ec_
+            zonkTermM depth (quote ec depth value)
+          put st0
+          case baked of
+            Just term
+              | all (< allocationCutoff) (metaIdsOf term)
+              , all (< allocationCutoff) (levelMetasOfTerm term) ->
+                  Just <$> evalIn cx term
+            _ -> pure Nothing
         Nothing -> pure Nothing
     -- A literal's carrier is its (unique) type. The only one that arises as an
     -- equand under these laws is the String literal — e.g. @render@/
@@ -12303,15 +12667,6 @@ equandType cx v = do
     VLit (LitStr _) -> Just <$> globalValueM prelString []
     _ -> pure Nothing
   where
-    -- Deeply resolve all solved metavariables in a value by quoting it, zonking
-    -- the term, and re-evaluating. Used to snapshot the recovered carrier before
-    -- the transactional meta-state restore in the 'VPrim' case.
-    zonkValue :: Int -> Value -> CheckM Value
-    zonkValue d val = do
-      ec <- ec_
-      tz <- zonkTermM d (quote ec d val)
-      evalIn cx tz
-
     -- Walk @spine@ through the head type's Pi binders, substituting each
     -- argument into the codomain to obtain the result type.
     applySpineType :: Value -> Spine -> CheckM (Maybe Value)
@@ -12353,9 +12708,15 @@ equandType cx v = do
         VPi Expl _ _ _ dom clo -> case args of
           (a : rest) -> do
             mArgTy <- equandType cx a
-            forM_ mArgTy $ \argTy -> void (unify cx dom argTy)
-            cod <- clApp clo a
-            applyPrimTelescope cod rest
+            case mArgTy of
+              Just argTy -> do
+                compatible <- unify cx dom argTy
+                if compatible
+                  then do
+                    cod <- clApp clo a
+                    applyPrimTelescope cod rest
+                  else pure Nothing
+              Nothing -> pure Nothing
           -- a partially applied prim: no more explicit args to consume, so the
           -- equand's type is the remaining (function) type — return it as-is.
           [] -> Just <$> forceM tf
@@ -12430,7 +12791,14 @@ intrinsicTraitSubsingletonEvidence ctx site goal =
     VGlobN subsingleton [(_, evidenceType)]
       | subsingleton == prelIsSubsingleton -> do
           authenticated <- isTraitGoal evidenceType
-          if not authenticated
+          blocked <- evidenceUniquenessDependencyBlocked evidenceType
+          if blocked
+            then do
+              errOncePerSpan site "E_EVIDENCE_UNIQUENESS_CYCLE"
+                (Just "kappa.evidence.uniqueness")
+                "an evidence-uniqueness certificate depends on compiler-generated coherence for the same trait (§14.1.1A)"
+              pure Nothing
+            else if not authenticated
             then pure Nothing
             else do
               isTraitGoalValue <-
@@ -12457,6 +12825,17 @@ intrinsicTraitSubsingletonEvidence ctx site goal =
                       valid <- unify ctx evidenceType' goal
                       pure (if valid then Just evidence else Nothing)
     _ -> pure Nothing
+
+-- | Exact semantic-identity guard for the forbidden self-coherence edge in an
+-- independent evidence-uniqueness certificate.  This is intentionally not a
+-- spelling test: the fully checked trait head is compared with the active
+-- declaration identities.
+evidenceUniquenessDependencyBlocked :: Value -> CheckM Bool
+evidenceUniquenessDependencyBlocked evidenceType = do
+  active <- gets csEvidenceUniquenessStack
+  forceM evidenceType >>= \case
+    VGlobI trait _ _ -> pure (trait `elem` active)
+    _ -> pure False
 
 -- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
 -- use sites (metavariables), never searched as evidence (§16.3.3).
@@ -12576,7 +12955,7 @@ observationOracle :: CheckState -> EvalCtx -> ObservationOracle
 observationOracle st ec =
   ObservationOracle
     { ooEvalCtx = ec
-    , ooThisType = Nothing
+    , ooThisType = thisObservationType (csThis st)
     , ooGlobalMode = \global@(GName moduleName _) ->
         -- The active declaration's recursive self edge is an equation
         -- variable, not a fresh observation origin.  Taking it as ordinary
@@ -12602,7 +12981,7 @@ observationOracle st ec =
               <|> nominalHiddenProjectionMode st ec receiverType field
           _ ->
             nominalHiddenProjectionMode st ec receiverType field
-    , ooProjectionType = \depth receiverType field ->
+    , ooProjectionType = \depth _receiver receiverType field ->
         observationTermTypeAt st ec (depth + 1)
           [ ObservationBinding
               { obMode = Ordinary
@@ -12628,6 +13007,12 @@ observationOracle st ec =
     , ooExpandingGlobals = Set.empty
     }
   where
+    thisObservationType = \case
+      Just (ThisType fields) -> Just (VRecordTQ (sortOn rfName fields))
+      Just (ThisTraitSibs fields) -> Just (VRecordTQ (sortOn rfName fields))
+      Just (ThisValue _ fields) -> Just (VRecordTQ (sortOn rfName fields))
+      Nothing -> Nothing
+
     primitiveValue value = case force ec value of
       VPrim {} -> True
       VIOAction {} -> True
@@ -13094,15 +13479,26 @@ superThisCandidate ctx goal = do
           put st0
           supertraitProject ctx 16 direct premV goal
 
+-- | Whether a local context entry participates in §16.3.3's first search
+-- tier. Besides source implicit binders, an explicit local root is eligible
+-- exactly when its elaborated type is authenticated trait evidence. Global
+-- bindings never enter 'Ctx', so this does not turn imported declarations
+-- into ambient instances.
+isLocalEvidenceCandidate :: CtxEntry -> CheckM Bool
+isLocalEvidenceCandidate entry
+  | ceImplicitLocal entry = pure True
+  | otherwise = isTraitGoal (ceType entry)
+
 localCandidate :: Ctx -> Span -> Q -> Value -> CheckM (Maybe Term)
 localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
   where
     -- anonymous binders are not referenceable and never shadow
     shadowName e = [ceName e | ceName e `notElem` ["_", "_ev"]]
     go _ _ [] = pure Nothing
-    go i seen (e : rest)
-      | ceImplicitLocal e
-      , ceName e `notElem` seen = do
+    go i seen (e : rest) = do
+      eligible <- isLocalEvidenceCandidate e
+      if eligible && ceName e `notElem` seen
+        then do
           st0 <- get
           ok <- unify ctx (ceType e) goal
           if ok
@@ -13122,7 +13518,7 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
               checkCandidate i e
               pure (Just (CVar i))
             else put st0 >> go (i + 1) (shadowName e ++ seen) rest
-      | otherwise = go (i + 1) (shadowName e ++ seen) rest
+        else go (i + 1) (shadowName e ++ seen) rest
     -- a second matching candidate in the same scope (no closure
     -- boundary between the two) is ambiguous unless the goal is authenticated
     -- trait evidence. Every fully applied trait goal carries compiler-issued
@@ -13154,14 +13550,15 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
       (e : _) -> ceName e
       [] -> "?"
     findNext _ _ [] = pure Nothing
-    findNext j seen (e : rest)
-      | ceImplicitLocal e
-      , ceName e `notElem` seen = do
+    findNext j seen (e : rest) = do
+      eligible <- isLocalEvidenceCandidate e
+      if eligible && ceName e `notElem` seen
+        then do
           st0 <- get
           ok <- unify ctx (ceType e) goal
           put st0
           if ok then pure (Just j) else findNext (j + 1) (shadowName e ++ seen) rest
-      | otherwise = findNext (j + 1) (shadowName e ++ seen) rest
+        else findNext (j + 1) (shadowName e ++ seen) rest
     checkCandidate i e = do
       -- an erased candidate cannot satisfy a runtime implicit (§12.2)
       when (q /= Q0 && surfaceQuantityZero (ceQ e)) $
@@ -13203,6 +13600,22 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
 
 goalHasFlex :: Value -> CheckM Bool
 goalHasFlex value = not . null <$> unsolvedMetaIdsIn value
+
+-- | A checked evidence goal with a residual universe occurrence is no more
+-- rigid than one with a residual term meta.  In particular, searching for
+-- @Trait.{?u} a@ before the enclosing application has contributed and
+-- principalized @a : Type ?u@ can reject the unique declaration instance at
+-- the wrong occurrence level.  Keep the two notions separate because term
+-- metas and level metas have distinct solvers, but feed either kind of
+-- flexibility into the one generic postponed-evidence queue.
+goalHasUniverseFlex :: Ctx -> Value -> CheckM Bool
+goalHasUniverseFlex ctx value = do
+  state <- get
+  let assignments = csLevelAssignments state
+      term =
+        zonkLevels assignments
+          (quote (ecOf state) (ctxLen ctx) value)
+  pure (not (null (levelMetasOfTerm term)))
 
 -- | Flush postponed trait goals after a body has been elaborated. A
 -- goal whose head is still an unsolved metavariable is kept pending
@@ -13352,7 +13765,7 @@ pendingEvidenceProgressKey = do
         [ meta
         | (meta, _, _, _, _) <- csPending state
         ]
-    , Map.keysSet (Map.filter isJust (csMetas state))
+    , csSolvedMetas state
     , csLevelAssignments state
     )
 
@@ -13526,6 +13939,7 @@ reopenSolvedPendingMeta meta =
     state
       { csMetas =
           Map.adjust (const Nothing) meta (csMetas state)
+      , csSolvedMetas = Set.delete meta (csSolvedMetas state)
       }
 
 -- | Keep the generated-level-evidence side table aligned with 'csPending'.
@@ -14539,16 +14953,30 @@ searchDepth depth ctx sp goal
               if depth > 0 && not (null semanticSpine) && and spineFlex
                 then pure Nothing
                 else do
-                  (_, hits) <-
+                  (_, rawHits) <-
                     matchingInstanceTrials
                       depth
                       ctx
                       traitG
                       goalUniverses
                       (map snd semanticSpine)
+                  let (incompleteSelfHits, hits) =
+                        if csForbidIncompleteSelfEvidence st
+                          then
+                            List.partition
+                              (\(entry, _, _) ->
+                                Just (ieDict entry)
+                                  == csActiveUniverseDefinition st)
+                              rawHits
+                          else ([], rawHits)
                   case sortOn (ieDict . first3) hits of
                     [(_, tm, selectedState)] -> put selectedState >> pure (Just tm)
-                    [] -> put st >> pure Nothing
+                    [] -> do
+                      put st
+                      unless (null incompleteSelfHits) $
+                        errOncePerSpan sp "E_DERIVE_INCOMPLETE_SELF" (Just "kappa.derive")
+                          "instance completion cannot reify its own incomplete evidence value (§14.3.4A)"
+                      pure Nothing
                     ((ie0, tm, selectedState) : rest) -> do
                       -- §33.2.1 step 3: equivalent evidence artifacts are
                       -- harmless overlap — select the deterministic
@@ -14950,9 +15378,9 @@ instantiateInstanceOccurrence ctx ie = do
 -- (structural coherence mode); otherwise the program is rejected at
 -- the later declaration, whether or not any use site resolves
 -- through the overlapping pair.
-checkInstanceOverlap :: Span -> GName -> InstanceEntry -> InstanceEntry -> CheckM ()
-checkInstanceOverlap sp g new prior
-  | length (ieHead new) /= length (ieHead prior) = pure ()
+instanceOverlapIsIncoherent :: InstanceEntry -> InstanceEntry -> CheckM Bool
+instanceOverlapIsIncoherent new prior
+  | length (ieHead new) /= length (ieHead prior) = pure False
   | otherwise = do
       saved <- get
       (_, _, specializeLevel, specializeTerm) <- instantiateInstanceOccurrence emptyCtx new
@@ -14975,21 +15403,7 @@ checkInstanceOverlap sp g new prior
           pure (convertible ecu 0 vN vO)
         _ -> pure True -- disjoint heads or a discarded candidate
       put saved
-      unless equivalent $ do
-        -- §3.1.1A: a coherence diagnostic MUST include every surviving
-        -- incoherent instance declaration site — here the new instance
-        -- (primary 'sp') and the prior overlapping instance.
-        mPrior <- instanceDeclSite (ieDict prior)
-        let rels =
-              related RoleInstanceDeclarationSite sp "this overlapping instance"
-                : [ related RoleInstanceDeclarationSite psp "conflicts with this instance"
-                  | Just psp <- [mPrior]
-                  ]
-        report $
-          withRelateds rels $
-            diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent") sp
-              ("overlapping instances of trait '" <> gnameText g
-                 <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
+      pure (not equivalent)
 
 -- Boolean-proposition normalization (§16.3.3 step 3): goals of shape
 -- (lhs = rhs) decided by conversion yield refl.  Before falling back to full
@@ -15012,11 +15426,10 @@ propProofTerm ctx goalTerm = propProofWithTerm ctx (Just goalTerm)
 propProofWithTerm :: Ctx -> Maybe Term -> Value -> CheckM (Maybe Term)
 propProofWithTerm ctx sourceGoal goal = do
   g <- forceM goal
-  case g of
-    VGlobN eqG [(_, carrier), (_, l), (_, r)] | eqG == prelEqType ->
-      principalizeOrProve g carrier l r
-    VCtor eqG [carrier, l, r] | eqG == prelEqType ->
-      principalizeOrProve g carrier l r
+  evaluation <- ec_
+  case canonicalEqualityPayload evaluation g of
+    Just (carrier, left, right) ->
+      principalizeOrProve g carrier left right
     _ -> pure Nothing
   where
     principalizeOrProve equalityGoal carrier lhs rhs = do
@@ -15052,33 +15465,39 @@ propProofWithTerm ctx sourceGoal goal = do
                     carrier >>= \case
                     Just proof -> pure (Just proof)
                     Nothing ->
-                      generatedNoConfusionProof ctx equalityGoal lhs rhs >>= \case
+                      equalityCompletenessFromCheckedEvidence
+                        ctx
+                        sourceGoal
+                        equalityGoal >>= \case
                         Just proof -> pure (Just proof)
                         Nothing ->
-                          coherentProviderOperationBridgeProof
-                            ctx
-                            sourceGoal
-                            equalityGoal
-                            carrier >>= \case
+                          generatedNoConfusionProof ctx equalityGoal lhs rhs >>= \case
                             Just proof -> pure (Just proof)
                             Nothing ->
-                              providerLawProof ctx sourceGoal Nothing equalityGoal carrier lhs rhs >>= \case
+                              coherentProviderOperationBridgeProof
+                                ctx
+                                sourceGoal
+                                equalityGoal
+                                carrier >>= \case
                                 Just proof -> pure (Just proof)
-                                Nothing -> do
-                                  providerNormalFormBridgeProof
-                                    ctx
-                                    sourceGoal
-                                    equalityGoal
-                                    carrier
-                                    lhs
-                                    rhs >>= \case
-                                      Just proof -> pure (Just proof)
-                                      Nothing -> do
-                                        typeLevelEquality <- typeLevelValueEqualityProof ctx carrier lhs rhs
-                                        typeLevelRelationEquality <- typeLevelLiteralRelationProof ctx lhs rhs
-                                        if typeLevelEquality == Just True || typeLevelRelationEquality == Just True
-                                          then Just <$> typeLevelPropositionCertificate ctx equalityGoal
-                                          else arithmeticEqualityCertificate ctx sourceGoal equalityGoal carrier lhs rhs
+                                Nothing ->
+                                  providerLawProof ctx sourceGoal Nothing equalityGoal carrier lhs rhs >>= \case
+                                    Just proof -> pure (Just proof)
+                                    Nothing -> do
+                                      providerNormalFormBridgeProof
+                                        ctx
+                                        sourceGoal
+                                        equalityGoal
+                                        carrier
+                                        lhs
+                                        rhs >>= \case
+                                          Just proof -> pure (Just proof)
+                                          Nothing -> do
+                                            typeLevelEquality <- typeLevelValueEqualityProof ctx carrier lhs rhs
+                                            typeLevelRelationEquality <- typeLevelLiteralRelationProof ctx lhs rhs
+                                            if typeLevelEquality == Just True || typeLevelRelationEquality == Just True
+                                              then Just <$> typeLevelPropositionCertificate ctx equalityGoal
+                                              else arithmeticEqualityCertificate ctx sourceGoal equalityGoal carrier lhs rhs
 
 -- | Normalize an arithmetic goal through the deterministic representative of
 -- one coherent local trait-evidence value, prove the normalized goal through
@@ -15099,17 +15518,13 @@ coherentProviderOperationBridgeProof ctx sourceGoal equalityGoal carrier =
       case sourceGoal of
         Just source -> zonkTermM (ctxLen ctx) source
         Nothing -> quoteIn ctx equalityGoal >>= zonkTermM (ctxLen ctx)
-    localEvidence <-
-      fmap
-        (map (\(index, evidenceType) -> (CVar index, evidenceType)))
-        (coherentTraitEvidenceLocals ctx [goalTerm])
-    operationEvidence <-
-      coherentArithmeticEvidenceOccurrences ctx goalTerm
+    evidenceCandidates <-
+      coherentTraitEvidenceTerms ctx [goalTerm]
     firstCandidate
       goalTerm
       ( nubBy
           (\(left, _) (right, _) -> left == right)
-          (operationEvidence ++ localEvidence)
+          evidenceCandidates
       )
   where
     firstCandidate _ [] = pure Nothing
@@ -15204,14 +15619,23 @@ coherentArithmeticEvidenceOccurrences
   -> CheckM [(Term, Value)]
 coherentArithmeticEvidenceOccurrences ctx root =
   fmap catMaybes . forM candidates $ \(trait, carrierTerm, dictionary) -> do
-    carrier <- evalIn ctx carrierTerm
-    evidenceType <- globalValueM trait [(Expl, carrier)]
-    authenticated <- isTraitGoal evidenceType
-    pure
-      ( if authenticated
-          then Just (dictionary, evidenceType)
-          else Nothing
-      )
+    let depth = ctxLen ctx
+    if not (termScopedAt depth carrierTerm && termScopedAt depth dictionary)
+      then pure Nothing
+      else
+        coreTermClassifierInCtx ctx dictionary >>= \case
+          Nothing -> pure Nothing
+          Just evidenceType -> do
+            authenticated <- isTraitGoal evidenceType
+            exactTrait <-
+              forceM evidenceType >>= \case
+                VGlobN evidenceTrait _ -> pure (evidenceTrait == trait)
+                _ -> pure False
+            pure
+              ( if authenticated && exactTrait
+                  then Just (dictionary, evidenceType)
+                  else Nothing
+              )
   where
     candidates =
       nubBy
@@ -15271,6 +15695,120 @@ equalityFromCheckedBranchFacts ctx sourceGoal lhs rhs = do
           pure solved
         _ -> pure False
 
+-- | Decode one checked application of the standard @Eq.==@ member. Source
+-- spelling only narrows candidates: callers must authenticate each returned
+-- dictionary against @Eq carrier@ with 'knownTraitMemberProjection' before
+-- using a law. The direct accessor ABI carries the carrier explicitly;
+-- projected forms retain no independently recoverable carrier here and are
+-- therefore returned only to callers that already know it.
+selectedEqOperation
+  :: Term
+  -> Maybe (Term, Term, [(Maybe Term, Term)])
+selectedEqOperation condition = do
+  let (headTerm, arguments) =
+        spineOfTerm (stripIdentityWrappers condition)
+      explicitArguments =
+        [ argument
+        | (Expl, argument) <- arguments
+        ]
+  (leftTerm, rightTerm) <- last2 explicitArguments
+  dictionaries <-
+    case stripIdentityWrappers headTerm of
+      CProjM _ dictionary member
+        | member == "==" ->
+            Just [(Nothing, dictionary)]
+      CProjAtM _ dictionary member _
+        | member == "==" ->
+            Just [(Nothing, dictionary)]
+      globalHead
+        | termHeadGlob globalHead
+            `elem`
+              [ Just (gPrel "==")
+              , Just (memberGlobal (gPrel "Eq") "==")
+              ]
+        , sourceCarrier : dictionary : _ <-
+            [argument | (Impl, argument) <- arguments] ->
+            Just [(Just sourceCarrier, dictionary)]
+      _ -> Nothing
+  guard (not (null dictionaries))
+  pure (leftTerm, rightTerm, dictionaries)
+
+-- | Prove @eq x y = True@ from an ordinary equality proof using the exact
+-- selected @Eq@ dictionary's checked @eqComplete@ member. This is a provider
+-- application, not a conversion rule. In particular, the equality premise is
+-- solved through the generic proposition prover, so a user-defined
+-- one-constructor equality family can refine the endpoints through the same
+-- no-confusion path as the standard equality family.
+equalityCompletenessFromCheckedEvidence
+  :: Ctx
+  -> Maybe Term
+  -> Value
+  -> CheckM (Maybe Term)
+equalityCompletenessFromCheckedEvidence ctx sourceGoal targetGoal = do
+  checkedGoal <-
+    case sourceGoal of
+      Just source -> zonkTermM (ctxLen ctx) source
+      Nothing -> quoteIn ctx targetGoal >>= zonkTermM (ctxLen ctx)
+  case booleanLiteralEqualityPayload checkedGoal of
+    Just (True, condition) ->
+      case selectedEqOperation condition of
+        Just (leftTerm, rightTerm, dictionaries) ->
+          firstDictionary leftTerm rightTerm dictionaries
+        Nothing -> pure Nothing
+    _ -> pure Nothing
+  where
+    firstDictionary _ _ [] = pure Nothing
+    firstDictionary leftTerm rightTerm ((Nothing, _) : rest) =
+      firstDictionary leftTerm rightTerm rest
+    firstDictionary leftTerm rightTerm ((Just carrierTerm, dictionary) : rest) = do
+      saved <- get
+      diagnosticCount <- gets (length . csDiags)
+      tryDictionary leftTerm rightTerm carrierTerm dictionary >>= \case
+        Just proof -> do
+          diagnosticCount' <- gets (length . csDiags)
+          if diagnosticCount' == diagnosticCount
+            then pure (Just proof)
+            else put saved >> firstDictionary leftTerm rightTerm rest
+        Nothing -> put saved >> firstDictionary leftTerm rightTerm rest
+
+    tryDictionary leftTerm rightTerm carrierTerm dictionary = do
+      if not (termScopedAt (ctxLen ctx) carrierTerm)
+        then pure Nothing
+        else do
+          carrier <- evalIn ctx carrierTerm
+          left <- evalIn ctx leftTerm
+          right <- evalIn ctx rightTerm
+          unaryTraitGoalForCarrier ctx (gPrel "Eq") carrier >>= \case
+            Nothing -> pure Nothing
+            Just eqGoal -> do
+              (eqComplete, eqCompleteType) <-
+                knownTraitMemberProjection
+                  ctx
+                  noSpan
+                  (gPrel "Eq")
+                  "eqComplete"
+                  eqGoal
+                  dictionary
+              equality <-
+                globalValueM
+                  prelEqType
+                  [(Impl, carrier), (Expl, left), (Expl, right)]
+              propProof ctx equality >>= \case
+                Nothing -> pure Nothing
+                Just equalityProof -> do
+                  (proof, proofType) <-
+                    applyGeneratedCoreSpine
+                      ctx
+                      noSpan
+                      eqComplete
+                      eqCompleteType
+                      [ (Expl, leftTerm, carrier)
+                      , (Expl, rightTerm, carrier)
+                      , (Expl, equalityProof, equality)
+                      ]
+                  exact <- unifyDefinitional ctx proofType targetGoal
+                  pure (if exact then Just proof else Nothing)
+
 -- | §16.3.3 equality reflection. A true checked branch condition headed by
 -- the selected prelude 'Eq.==' operation supplies ordinary equality evidence
 -- only through that same dictionary's checked 'eqSound' member. The operation
@@ -15298,42 +15836,12 @@ equalityReflectionFromCheckedBranchFacts ctx equalityGoal carrier = do
   where
     firstCondition _ [] = pure Nothing
     firstCondition capturedFacts (condition : rest) =
-      selectedEqCondition condition >>= \case
+      pure (selectedEqOperation condition) >>= \case
         Nothing -> firstCondition capturedFacts rest
         Just (leftTerm, rightTerm, dictionaries) ->
           firstDictionary capturedFacts condition leftTerm rightTerm dictionaries >>= \case
             Just proof -> pure (Just proof)
             Nothing -> firstCondition capturedFacts rest
-
-    selectedEqCondition condition = do
-      let (headTerm, arguments) =
-            spineOfTerm (stripIdentityWrappers condition)
-          explicitArguments =
-            [ argument
-            | (Expl, argument) <- arguments
-            ]
-      pure $ do
-        (leftTerm, rightTerm) <- last2 explicitArguments
-        dictionaries <-
-          case stripIdentityWrappers headTerm of
-            CProjM _ dictionary member
-              | member == "==" ->
-                  Just [(Nothing, dictionary)]
-            CProjAtM _ dictionary member _
-              | member == "==" ->
-                  Just [(Nothing, dictionary)]
-            globalHead
-              | termHeadGlob globalHead
-                  `elem`
-                    [ Just (gPrel "==")
-                    , Just (memberGlobal (gPrel "Eq") "==")
-                    ]
-              , sourceCarrier : dictionary : _ <-
-                  [argument | (Impl, argument) <- arguments] ->
-                  Just [(Just sourceCarrier, dictionary)]
-            _ -> Nothing
-        guard (not (null dictionaries))
-        pure (leftTerm, rightTerm, dictionaries)
 
     firstDictionary _ _ _ _ [] = pure Nothing
     firstDictionary capturedFacts condition leftTerm rightTerm ((sourceCarrier, dictionary) : rest) = do
@@ -17460,9 +17968,28 @@ arithmeticCertificateAssumptions ctx domain = do
     fmap catMaybes . forM branchFacts $ \(condition, truth) -> do
       replayCondition <-
         normalizeArithmeticPredicateTerm depth 24 condition
-      proposition <- booleanFactProposition ctx replayCondition
-      normalized <- normalizeArithmeticCertificateTerm depth proposition
-      replay <- normalizeArithmeticCertificateGoal depth normalized
+      -- The branch source and the arithmetic replay have different trust
+      -- roles.  KCore must be able to recover the proposition from the exact
+      -- checked branch condition (including its selected dictionaries), while
+      -- the solver consumes the normalized primitive form.  Building both
+      -- from 'replayCondition' erased the source-side provider identity and
+      -- made an otherwise valid certificate unverifiable.
+      proposition <- booleanFactProposition ctx condition
+      replayProposition <- booleanFactProposition ctx replayCondition
+      replayNormalized <-
+        normalizeArithmeticCertificateTerm depth replayProposition
+      replayFormula <-
+        arithmeticFormulaForDomain depth domain replayNormalized
+      replay <-
+        case
+            replayFormula
+              >>= arithmeticFormulaReplayTerm depth domain
+          of
+            Just replayCondition' ->
+              booleanFactProposition ctx replayCondition'
+                >>= normalizeArithmeticCertificateGoal depth
+            Nothing ->
+              normalizeArithmeticCertificateGoal depth replayNormalized
       arithmeticFormulaForDomain depth domain replay >>= \case
         Just _ ->
           pure
@@ -17489,6 +18016,152 @@ arithmeticCertificateAssumptions ctx domain = do
               == renderStructuralTermKey (aaProposition right))
         (lexical ++ branch ++ reflected ++ conversion)
     )
+
+-- | Reconstruct the portable, domain-indexed Boolean term corresponding to
+-- an already authenticated arithmetic formula.  Nat and Integer share the
+-- exact integer primitive substrate, so replay must retain an explicit
+-- @natToInt@ boundary around every open Nat comparison operand.  Reifying
+-- from 'AFormula' is safe here because the formula was obtained through the
+-- selected-evidence decoder above; this function grants no authority to a
+-- source spelling and returns 'Nothing' for forms it cannot type faithfully.
+arithmeticFormulaReplayTerm
+  :: Int
+  -> ArithmeticDomain
+  -> AFormula
+  -> Maybe Term
+arithmeticFormulaReplayTerm depth domain = goFormula
+  where
+    goFormula = \case
+      ATruth truth -> Just (boolTerm truth)
+      AAtom (AFact comparison lhs rhs) -> do
+        lhs' <- goExpression lhs
+        rhs' <- goExpression rhs
+        let comparisonTerm operation =
+              binary
+                operation
+                (comparisonOperand lhs')
+                (comparisonOperand rhs')
+        pure $ case comparison of
+          ACmpEq -> comparisonTerm (gPrel "eqInt")
+          ACmpLt -> comparisonTerm (gPrel "ltInt")
+          ACmpLe -> comparisonTerm (gPrel "leInt")
+          ACmpNe ->
+            CIf
+              (comparisonTerm (gPrel "eqInt"))
+              (boolTerm False)
+              (boolTerm True)
+      AAnd lhs rhs ->
+        CIf
+          <$> goFormula lhs
+          <*> goFormula rhs
+          <*> pure (boolTerm False)
+      AOr lhs rhs ->
+        CIf
+          <$> goFormula lhs
+          <*> pure (boolTerm True)
+          <*> goFormula rhs
+      ANot formula ->
+        CIf
+          <$> goFormula formula
+          <*> pure (boolTerm False)
+          <*> pure (boolTerm True)
+
+    goExpression = \case
+      AConst value
+        | domain == ArithmeticInteger || value >= 0 ->
+            Just (CLit (LitInt value))
+      AVar level
+        | level >= 0
+        , level < depth ->
+            Just (CVar (depth - 1 - level))
+      AScale coefficient expression
+        | domain == ArithmeticInteger || coefficient >= 0 ->
+            binary (arithmeticGlobal "multiply")
+              (CLit (LitInt coefficient))
+              <$> goExpression expression
+      AAdd lhs rhs ->
+        binaryResult "add"
+          <$> goExpression lhs
+          <*> goExpression rhs
+      ASub lhs rhs ->
+        binaryResult "subtract"
+          <$> goExpression lhs
+          <*> goExpression rhs
+      AMul lhs rhs ->
+        binaryResult "multiply"
+          <$> goExpression lhs
+          <*> goExpression rhs
+      ADiv lhs rhs ->
+        binaryResult "divide"
+          <$> goExpression lhs
+          <*> goExpression rhs
+      AMod lhs rhs ->
+        binaryResult "modulo"
+          <$> goExpression lhs
+          <*> goExpression rhs
+      ANeg expression
+        | domain == ArithmeticInteger ->
+            unary (gPrel "negInt") <$> goExpression expression
+      AMax lhs rhs -> do
+        lhs' <- goExpression lhs
+        rhs' <- goExpression rhs
+        pure
+          ( CIf
+              (binary (gPrel "leInt") (comparisonOperand lhs') (comparisonOperand rhs'))
+              rhs'
+              lhs'
+          )
+      AMin lhs rhs -> do
+        lhs' <- goExpression lhs
+        rhs' <- goExpression rhs
+        pure
+          ( CIf
+              (binary (gPrel "leInt") (comparisonOperand lhs') (comparisonOperand rhs'))
+              lhs'
+              rhs'
+          )
+      AIf condition thenExpression elseExpression ->
+        CIf
+          <$> goFormula condition
+          <*> goExpression thenExpression
+          <*> goExpression elseExpression
+      _ -> Nothing
+
+    comparisonOperand = case domain of
+      ArithmeticNatural -> unary prelNatToInt
+      ArithmeticInteger -> id
+      ArithmeticTypeLevel -> id
+      ArithmeticProviderLaw -> id
+
+    arithmeticGlobal operation = case (domain, operation) of
+      (ArithmeticNatural, "add") -> prelNatAdd
+      (ArithmeticNatural, "multiply") -> prelNatMultiply
+      (_, "add") -> gPrel "addInt"
+      (_, "subtract") -> gPrel "subInt"
+      (_, "multiply") -> gPrel "mulInt"
+      (_, "divide") -> gPrel "divInt"
+      (_, "modulo") -> gPrel "modInt"
+      _ -> gPrel operation
+
+    binaryResult operation lhs rhs = case domain of
+      ArithmeticNatural
+        | operation == "add" || operation == "multiply" ->
+            binary (arithmeticGlobal operation) lhs rhs
+        | otherwise ->
+            unary
+              (gPrel "natOfInt")
+              ( binary
+                  (arithmeticGlobal operation)
+                  (comparisonOperand lhs)
+                  (comparisonOperand rhs)
+              )
+      _ -> binary (arithmeticGlobal operation) lhs rhs
+
+    boolTerm truth =
+      CCtorI (if truth then prelTrue else prelFalse) [] Nothing []
+    unary function argument = CApp Expl (CGlob function) argument
+    binary function lhs rhs =
+      CApp Expl (CApp Expl (CGlob function) lhs) rhs
 
 -- | Reify branch-local definitional refinements as explicit certificate
 -- assumptions. The source checker admits only exact arithmetic locals whose
@@ -18167,6 +18840,7 @@ standardTypeLevelDictionary trait dictionary = do
 stripIdentityWrappers :: Term -> Term
 stripIdentityWrappers = \case
   CUniverseLift _ _ _ inner -> stripIdentityWrappers inner
+  CSchemaLift _ _ _ _ _ _ _ _ inner -> stripIdentityWrappers inner
   term -> term
 
 -- | Translate the canonical compiler-owned TypeLevel value language from
@@ -19794,7 +20468,7 @@ insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = d
   where
     -- A bare overloaded value may itself be checked at a polymorphic type:
     --
-    --   empty : forall a. Pointed a => a
+    --   empty : forall a. Alternative f => f a
     --   expected: forall m. m
     --
     -- Align the matching source and target binders before selecting the
@@ -19807,6 +20481,34 @@ insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = d
       sourceShape <- peelCapturesM sourceType
       targetShape <- peelCapturesM targetType
       case (sourceShape, targetShape) of
+        -- A completely flexible expectation does not establish that the
+        -- caller wants the terminal result of an implicit telescope.  Keep
+        -- the value first-class and constrain the expectation to its full
+        -- inferred type.  Saturating here turns an endpoint such as a
+        -- @forall@-function into an arbitrarily instantiated point before a
+        -- surrounding dependent application can determine the carrier.
+        -- Once the target has any rigid structure, the ordinary directed
+        -- saturation rules below remain authoritative.
+        (VPiBoundM _ Impl quantity _ _ _ domain _, VFlex _ []) -> do
+          planning <-
+            applicationImplicitIsPlanningParameter
+              activeCtx
+              quantity
+              domain
+          specializationHead <- case resolvedEtaTermHead currentTerm of
+            Nothing -> pure False
+            Just global -> gets $ \state ->
+              Map.member global (csCtors state)
+                || Map.member global (csTraitMemberOwners state)
+                || Map.member global (csBareTraitMembers state)
+          if planning && not specializationHead
+            then do
+              compatible <- unify activeCtx sourceShape targetShape
+              pure (if compatible then Just currentTerm else Nothing)
+            else saturate activeCtx currentTerm sourceShape targetType
+        (_, VFlex _ []) -> do
+          compatible <- unify activeCtx sourceShape targetShape
+          pure (if compatible then Just currentTerm else Nothing)
         ( VPiEvidenceM sourceMode _sourceFormation Impl sourceQuantity sourceBorrowed _ sourceAssumption _sourceOrigin sourceDomain sourceClosure
           , VPiEvidenceM targetMode _targetFormation Impl targetQuantity targetBorrowed targetName targetAssumption _targetOrigin targetDomain targetClosure
           ) -> do
@@ -19876,24 +20578,31 @@ insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = d
 
     peel activeCtx currentType accumulated =
       forceM currentType >>= \case
-        VPiBoundM _ Impl quantity _ _ assumption domain closure -> do
-          placeholder <- freshMetaFor activeCtx domain
-          placeholderValue <- evalIn activeCtx placeholder
-          resultType <- clApp closure placeholderValue
-          nextCtx <-
-            extendLevelAssumptionFromSynthesized
-              site
-              activeCtx
-              assumption
-              placeholder
-          peel
-            nextCtx
-            resultType
-            (ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain True : accumulated)
+        binder@(VPiBoundM mode icit quantity _ _ assumption domain closure) -> do
+          omittedExplicit <-
+            if icit == Expl && mode == Parametric && quantity == Q0
+              then isKindLike (ctxLen activeCtx) domain
+              else pure False
+          if icit /= Impl && not omittedExplicit
+            then pure (reverse accumulated, binder)
+            else do
+              placeholder <- freshMetaFor activeCtx domain
+              placeholderValue <- evalIn activeCtx placeholder
+              resultType <- clApp closure placeholderValue
+              nextCtx <-
+                extendLevelAssumptionFromSynthesized
+                  site
+                  activeCtx
+                  assumption
+                  placeholder
+              peel
+                nextCtx
+                resultType
+                (ExpectedImplicitSlot activeCtx icit quantity placeholder placeholderValue domain True : accumulated)
         terminal -> pure (reverse accumulated, terminal)
 
     rebuild current [] = pure (Just current)
-    rebuild current (ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain dependent : rest) = do
+    rebuild current (ExpectedImplicitSlot activeCtx icit quantity placeholder placeholderValue domain dependent : rest) = do
       argument <-
         resolveReclassifiedImplicit
           activeCtx
@@ -19906,25 +20615,26 @@ insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = d
       case argument of
         Nothing -> pure Nothing
         Just selected ->
-          rebuild (CApp Impl current selected) rest
+          rebuild (CApp icit current selected) rest
 
     annotateDependencies slots terminal =
       forM (zip [0 :: Int ..] slots) $ \(index, slot) -> do
         let laterDomains =
               [ laterDomain
-              | ExpectedImplicitSlot _ _ _ _ laterDomain _ <-
+              | ExpectedImplicitSlot _ _ _ _ _ laterDomain _ <-
                   drop (index + 1) slots
               ]
         dependencies <-
           fmap concat (mapM unsolvedMetaIdsIn (terminal : laterDomains))
         pure $
           case slot of
-            ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain _ ->
+            ExpectedImplicitSlot activeCtx icit quantity placeholder placeholderValue domain _ ->
               let placeholderMeta = case placeholder of
                     CMeta meta -> Just meta
                     _ -> Nothing
                in ExpectedImplicitSlot
                     activeCtx
+                    icit
                     quantity
                     placeholder
                     placeholderValue
@@ -19933,6 +20643,7 @@ insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = d
 
 data ExpectedImplicitSlot = ExpectedImplicitSlot
   !Ctx
+  !Icit
   !Q
   !Term
   !Value
@@ -20037,6 +20748,636 @@ insertDeclarationConstraintImplicits ctx sp tm ty = do
       insertDeclarationConstraintImplicits nextCtx sp (CApp Impl tm proof) resultType
     _ -> pure (tm, forced)
 
+-- | Whether a bare derivation request has the rigid expected goal required by
+-- §16.3.2A. Ordinary and universe metavariables both make the request
+-- under-directed; an explicit @derive (G)@ is checked by the normal type
+-- elaborator and does not use this guard.
+deriveGoalRigid :: Ctx -> Value -> CheckM Bool
+deriveGoalRigid _ goal =
+  forceM goal >>= \case
+    VFlex {} -> pure False
+    _ -> pure True
+
+-- | The unified expression-level derivation entry point (§16.3.2A). This is
+-- deliberately built from the checker's existing semantic authorities:
+-- definitional conversion for exact lexical facts, ordinary trait evidence,
+-- checked proposition solvers, and the purpose-keyed inhabitance analysis.
+-- No source spelling is proof authority, and every selected local remains an
+-- ordinary Core variable so QTT/borrow checking sees its real use.
+synthesizeDerivation :: Ctx -> Span -> Value -> CheckM Term
+synthesizeDerivation = synthesizeDerivationWithFuel 32
+
+-- | Bounded derivation search.  Independently-unique evidence can itself
+-- contain trait-valued fields, so construction participates in the same
+-- search budget as Pi introduction.  Exhaustion is a normal fail-closed
+-- derivation failure, never permission to invent a field.
+synthesizeDerivationWithFuel :: Int -> Ctx -> Span -> Value -> CheckM Term
+synthesizeDerivationWithFuel fuel ctx site goal0
+  | fuel <= 0 = do
+      goal <- forceM goal0
+      goalTerm <- quoteIn ctx goal
+      errAt site "E_DERIVE_UNSOLVED" (Just "kappa.derive")
+        ("derivation search exhausted while solving " <> renderTerm goalTerm)
+      freshMetaFor ctx goal
+  | otherwise = synthesizeDerivationBody fuel ctx site goal0
+
+synthesizeDerivationBody :: Int -> Ctx -> Span -> Value -> CheckM Term
+synthesizeDerivationBody fuel ctx site goal0 = do
+  goal <- forceM goal0
+  exact <- exactDerivationLocals ctx goal
+  case exact of
+    [candidate] -> selectExact goal candidate
+    first : rest -> do
+      coherent <- derivationGoalCoherent ctx site goal
+      if coherent
+        then selectExact goal first
+        else do
+          equality <- isEqGoal goal
+          let code =
+                if equality
+                  then "E_DERIVE_PROOF_RELEVANT_CHOICE"
+                  else "E_DERIVE_AMBIGUOUS"
+              names = map (ceName . snd) (first : rest)
+          report $
+            withPayload
+              (withPayloadField "candidates" (T.intercalate ", " names) $
+                payloadKind "derive-ambiguous") $
+              diag SevError StageElaborate code (Just "kappa.derive") site
+                "derivation would have to choose observably among distinct local inhabitants (§16.3.2A)"
+          freshMetaFor ctx goal
+    [] -> deriveWithoutExact goal
+  where
+    selectExact goal (index, entry)
+      | ceName entry `elem` ["_", "_ev"] = pure (CVar index)
+      | otherwise = do
+          let expansion = EVar (Name (ceName entry) site)
+          modify' $ \state ->
+            state
+              { csExpansions =
+                  Map.insert site expansion (csExpansions state)
+              }
+          check ctx expansion goal
+
+    deriveWithoutExact goal = do
+      traitGoal <- isTraitGoal goal
+      existingEvidence <-
+        if traitGoal
+          then traitEvidence ctx site goal
+          else pure Nothing
+      case existingEvidence of
+        Just term -> pure term
+        Nothing -> do
+          structuralEvidence <-
+            if traitGoal
+              then
+                isPropClosure ctx site goal >>= \case
+                  Just evidence -> pure (Just evidence)
+                  Nothing ->
+                    hLevelProviderDerivation
+                      (synthesizeDerivationWithFuel (fuel - 1))
+                      ctx
+                      site
+                      goal
+              else pure Nothing
+          case structuralEvidence of
+            Just term -> pure term
+            Nothing -> do
+              constructed <-
+                if traitGoal
+                  then
+                    constructIndependentlyUniqueEvidence
+                      (synthesizeDerivationWithFuel (fuel - 1))
+                      ctx
+                      site
+                      goal
+                  else pure Nothing
+              maybe (deriveByIntroduction traitGoal goal) pure constructed
+
+    deriveByIntroduction traitGoal goal =
+      forceM goal >>= \case
+            VPiBoundM mode icit quantity borrowed name assumption domain closure -> do
+              withAssumption <- extendLevelAssumption site ctx assumption
+              let level = ctxLen ctx
+                  nextCtx =
+                    bindCtxMQB
+                      mode
+                      quantity
+                      name
+                      (icit == Impl)
+                      borrowed
+                      domain
+                      withAssumption
+              codomain <- clApp closure (VRigid level [])
+              body <- synthesizeDerivationWithFuel (fuel - 1) nextCtx site codomain
+              pure (CLamM mode icit quantity name body)
+            _ -> do
+              proved <- propProof ctx goal
+              case proved of
+                Just proof -> pure proof
+                Nothing
+                  | traitGoal -> unsolved goal
+                  | otherwise -> do
+                      representative <- inhabContractibleRepresentative ctx goal
+                      case representative of
+                        Just term -> pure term
+                        Nothing -> do
+                          environment <- mkInhabEnv ctx
+                          summary <-
+                            inhabitanceSummary environment SourceReachability goal
+                          case summary of
+                            Finite _ -> do
+                              errAt site "E_DERIVE_AMBIGUOUS" (Just "kappa.derive")
+                                "the derivation goal has several observable inhabitants (§16.3.2A)"
+                              freshMetaFor ctx goal
+                            _ -> unsolved goal
+
+    unsolved goal = do
+      goalTerm <- quoteIn ctx goal
+      errAt site "E_DERIVE_UNSOLVED" (Just "kappa.derive")
+        ("no admissible derivation plan solved " <> renderTerm goalTerm)
+      freshMetaFor ctx goal
+
+-- | Construct one complete dictionary only for a trait whose independently
+-- checked uniqueness certificate authorizes fresh evidence (§14.1.1A).  The
+-- certificate does not inhabit fields: every supertrait and member is solved
+-- in declaration order from its exact generated projection type.  Failure is
+-- transactional so ordinary derivation can issue the single root diagnostic.
+constructIndependentlyUniqueEvidence
+  :: (Ctx -> Span -> Value -> CheckM Term)
+  -> Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe Term)
+constructIndependentlyUniqueEvidence recurse ctx site goal = do
+  normalized <- forceM goal
+  state <- get
+  case normalized of
+    VGlobI trait traitUniverses arguments
+      | Just info <- Map.lookup trait (csTraits state)
+      , tiEvidenceConstructionMode info == IndependentlyUnique
+      , Just semanticArguments <- traitSemanticSpineIn state trait arguments -> do
+          baseline <- get
+          fields <-
+            constructSupers
+              trait
+              traitUniverses
+              semanticArguments
+              []
+              (tiSupers info)
+          result <- case fields of
+            Nothing -> pure Nothing
+            Just supers ->
+              constructMembers
+                info
+                trait
+                traitUniverses
+                semanticArguments
+                supers
+                (tiMembers info)
+          diagnostics <- gets csDiags
+          if isJust result && length diagnostics == length (csDiags baseline)
+            then pure (CRecordV . sortOn fst <$> result)
+            else put baseline >> pure Nothing
+    _ -> pure Nothing
+  where
+    constructSupers _ _ _ done [] = pure (Just done)
+    constructSupers trait traitUniverses semanticArguments done ((field, closedGoal) : rest) = do
+      evaluation <- ec_
+      specialized <- specializeDeclarationComponent trait traitUniverses closedGoal
+      function <- evalIn ctx specialized
+      superGoal <-
+        forceM
+          ( evalApp
+              evaluation
+              function
+              [(Expl, argument) | (_, argument) <- semanticArguments]
+          )
+      proof <- recurse ctx site superGoal
+      constructSupers trait traitUniverses semanticArguments (done ++ [(field, proof)]) rest
+
+    constructMembers _ _ _ _ done [] = pure (Just done)
+    constructMembers info trait traitUniverses semanticArguments done (member : rest) = do
+      memberType <-
+        instantiateTraitMemberType
+          ctx
+          site
+          trait
+          traitUniverses
+          member
+          (map snd semanticArguments)
+          done
+      proof <- recurse ctx site memberType
+      constructMembers info trait traitUniverses semanticArguments (done ++ [(member, proof)]) rest
+
+-- | Exact lexical candidates include explicit as well as implicit locals, as
+-- required by §16.3.2A. Conversion is a read-only query over the current
+-- semantic environment; shadowed spellings and mutable-cell roots are not
+-- silently turned into current-value reads.
+exactDerivationLocals :: Ctx -> Value -> CheckM [(Int, CtxEntry)]
+exactDerivationLocals ctx goal =
+  fmap catMaybes . forM visible $ \candidate@(_, entry) -> do
+    saved <- get
+    matches <- unify ctx (ceType entry) goal
+    put saved
+    pure (candidate <$ guard matches)
+  where
+    visible = go Set.empty 0 (ctxEntries ctx)
+    go _ _ [] = []
+    go shadowed index (entry : rest)
+      | ceName entry `Set.member` shadowed =
+          go shadowed (index + 1) rest
+      | otherwise =
+          let name = ceName entry
+              shadowed' =
+                if name `elem` ["_", "_ev"]
+                  then shadowed
+                  else Set.insert name shadowed
+              candidate =
+                isNothing (ceVarInfo entry)
+                  && name /= "this"
+           in (if candidate then [(index, entry)] else [])
+                ++ go shadowed' (index + 1) rest
+
+-- | Bounded focused elimination over lexical terms. A candidate is selected
+-- only by its checked Pi type: leading arguments are discharged by checked
+-- local values, and the resulting codomain must unify with the requested
+-- goal. The selected source application is then elaborated normally and
+-- recorded as the derive expansion, so QTT and borrow analysis account for
+-- every local use. This is the common leaf rule for structural providers such
+-- as pointwise h-level closure; neither candidate nor argument spelling is
+-- semantic authority.
+focusedLocalDerivation :: Int -> Ctx -> Span -> Value -> CheckM (Maybe Term)
+focusedLocalDerivation sourceDepth ctx site goal =
+  focusedDerivation sourceDepth ctx site goal localRoots
+  where
+    localRoots =
+      [ (CVar index, Just expression, dependencies, ceType entry)
+      | (index, entry) <- visibleDerivationLocals ctx
+      , let expression = EVar (Name (ceName entry) site)
+            dependencies =
+              [ expression
+              | ctxLen ctx - 1 - index < sourceDepth
+              ]
+      ]
+
+-- | Apply only compiler-owned structural providers, by resolved global
+-- identity and checked type. This is deliberately the same focused planner as
+-- lexical theorem application: provider names never participate in matching,
+-- and all source-local arguments remain visible to QTT/borrow analysis.
+hLevelProviderDerivation
+  :: (Ctx -> Span -> Value -> CheckM Term)
+  -> Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe Term)
+hLevelProviderDerivation recurse ctx site goal = do
+  normalized <- forceM goal
+  state <- get
+  case normalized of
+    VGlobI trait _ arguments
+      | trait == prelIsSet
+      , Just [(_, carrier)] <- traitSemanticSpineIn state trait arguments -> do
+          roots <- fmap catMaybes . forM providerIdentities $ \provider ->
+            globalTypeIn ctx site provider >>= \case
+              Just (term, ty) -> pure (Just (term, Nothing, [], ty))
+              Nothing -> pure Nothing
+          focusedDerivation (ctxLen ctx) ctx site goal roots >>= \case
+            Just evidence -> pure (Just evidence)
+            Nothing ->
+              derivePiClosure carrier >>= \case
+                Just evidence -> pure (Just evidence)
+                Nothing -> deriveEqHedbergClosure carrier
+    _ -> pure Nothing
+  where
+    providerIdentities =
+      [ gPrel "__deriveHedbergProvider"
+      , gPrel "__derivePiIsSetProvider"
+      , gPrel "__deriveSigmaIsSetProvider"
+      ]
+
+    -- The focused planner above consumes a complete pointwise proof when one
+    -- is already lexical.  Ordinary structural closure must also be able to
+    -- /construct/ that proof.  Do so only through the exact compiler-owned Pi
+    -- provider and its checked ABI: an ordinary, explicit, unrestricted,
+    -- unborrowed dependent function.  Other Pi modes remain outside this
+    -- provider's contract and fail closed rather than being coerced to it.
+    derivePiClosure carrier = do
+      carrier' <- forceM carrier
+      case carrier' of
+        VPiM Ordinary Expl QW False name domain closure -> do
+          let depth = ctxLen ctx
+              argument = VRigid depth []
+              pointwiseCtx =
+                bindCtxMQB Ordinary Q0 name True False domain ctx
+          codomain <- clApp closure argument
+          pointwiseGoal <-
+            unaryTraitGoalForCarrier pointwiseCtx prelIsSet codomain
+          case pointwiseGoal of
+            Nothing -> pure Nothing
+            Just fiberGoal -> do
+              beforeFiber <- get
+              diagnosticCount <- gets (length . csDiags)
+              fiberEvidence <- recurse pointwiseCtx site fiberGoal
+              diagnostics <- gets csDiags
+              if length diagnostics /= diagnosticCount
+                then put beforeFiber >> pure Nothing
+                else do
+                  ec <- ec_
+                  globalTypeIn ctx site (gPrel "__derivePiIsSetProvider") >>= \case
+                    Nothing -> pure Nothing
+                    Just (provider, _) -> do
+                      let domainTerm = quote ec depth domain
+                          familyTerm =
+                            quote ec depth
+                              (VLamM Ordinary Expl QW name closure)
+                          pointwiseTerm =
+                            CLamM Ordinary Impl Q0 name fiberEvidence
+                      pure . Just $
+                        CApp Expl
+                          (CApp Impl
+                            (CApp Impl provider domainTerm)
+                            familyTerm)
+                          pointwiseTerm
+        _ -> pure Nothing
+
+    -- A completed @Eq a@ dictionary contains precisely the data needed by
+    -- Hedberg: its checked comparator plus @eqSound@/@eqComplete@ construct a
+    -- @Reflects (x = y) (x == y)@ value through the ordinary @eqReflect@
+    -- theorem, and @reflectsDec@ turns that certificate into @Dec (x = y)@.
+    -- Compose those checked declarations with the existing compiler-owned
+    -- Hedberg provider.  No trait/member spelling is inspected: every global
+    -- and dictionary facet is selected by resolved identity and checked
+    -- against its telescope.  The candidate is transactional because an
+    -- incomplete Eq dictionary must not leave metas or diagnostics behind.
+    deriveEqHedbergClosure carrier = do
+      baseline <- get
+      diagnosticCount <- gets (length . csDiags)
+      result <- buildEqHedbergClosure carrier
+      diagnostics <- gets csDiags
+      if isJust result && length diagnostics == diagnosticCount
+        then pure result
+        else put baseline >> pure Nothing
+
+    buildEqHedbergClosure carrier = do
+      unaryTraitGoalForCarrier ctx (gPrel "Eq") carrier >>= \case
+        Nothing -> pure Nothing
+        Just eqGoal -> do
+          traitEvidence ctx site eqGoal >>= \case
+            Nothing -> pure Nothing
+            Just eqEvidence ->
+              globalTypeIn ctx site (gPrel "__deriveHedbergProvider") >>= \case
+                Nothing -> pure Nothing
+                Just (provider, providerType) -> do
+                  carrierTerm <- quoteIn ctx carrier
+                  typeValueClassifierLevel ctx carrier >>= \case
+                    Nothing -> pure Nothing
+                    Just carrierLevel -> do
+                      (providerAtCarrier, providerAtCarrierType) <-
+                        applyGeneratedCoreSpine
+                          ctx
+                          site
+                          provider
+                          providerType
+                          [(Impl, carrierTerm, VSort carrierLevel)]
+                      forceM providerAtCarrierType >>= \case
+                        VPiBoundM _ Expl _ _ _ _ decisionType resultClosure -> do
+                          buildEqDecision carrier eqGoal eqEvidence decisionType >>= \case
+                            Nothing -> pure Nothing
+                            Just decision -> do
+                              resultType <- clApp resultClosure =<< evalIn ctx decision
+                              (proof, actualType) <-
+                                applyGeneratedCoreSpine
+                                  ctx
+                                  site
+                                  providerAtCarrier
+                                  providerAtCarrierType
+                                  [(Expl, decision, decisionType)]
+                              exact <- unifyDefinitional ctx actualType resultType
+                              goalExact <- unifyDefinitional ctx actualType goal
+                              pure (proof <$ guard (exact && goalExact))
+                        _ -> pure Nothing
+
+    -- Build the decision procedure against the provider's exact checked
+    -- domain.  This validates modes, borrowed inputs, and result type before
+    -- constructing either lambda; a future prelude ABI change therefore
+    -- disables the candidate instead of manufacturing ill-typed Core.
+    buildEqDecision carrier eqGoal eqEvidence decisionType =
+      forceM decisionType >>= \case
+        VPiBoundM modeX Expl quantityX True nameX _ domainX closureX -> do
+          domainMatches <- unifyDefinitional ctx domainX carrier
+          if not domainMatches
+            then pure Nothing
+            else do
+              let depth = ctxLen ctx
+                  ctxX =
+                    bindCtxMQB
+                      modeX
+                      quantityX
+                      nameX
+                      False
+                      True
+                      domainX
+                      ctx
+                  xValue = VRigid depth []
+              clApp closureX xValue >>= forceM >>= \case
+                VPiBoundM modeY Expl quantityY True nameY _ domainY closureY -> do
+                  domainMatchesY <- unifyDefinitional ctxX domainY carrier
+                  if not domainMatchesY
+                    then pure Nothing
+                    else do
+                      let ctxY =
+                            bindCtxMQB
+                              modeY
+                              quantityY
+                              nameY
+                              False
+                              True
+                              domainY
+                              ctxX
+                          yValue = VRigid (depth + 1) []
+                      expectedResult <- clApp closureY yValue
+                      reflectedDecision
+                        ctxY
+                        carrier
+                        eqGoal
+                        (shiftTerm 2 0 eqEvidence)
+                        (CVar 1)
+                        (CVar 0) >>= \case
+                          Nothing -> pure Nothing
+                          Just (body, bodyType) -> do
+                            resultMatches <-
+                              unifyDefinitional ctxY bodyType expectedResult
+                            pure $
+                              if resultMatches
+                                then
+                                  Just
+                                    ( CLamM modeX Expl quantityX nameX
+                                        (CLamM modeY Expl quantityY nameY body)
+                                    )
+                                else Nothing
+                _ -> pure Nothing
+        _ -> pure Nothing
+
+    reflectedDecision activeCtx carrier eqGoal eqEvidence x y =
+      typeValueClassifierLevel activeCtx carrier >>= \case
+        Nothing -> pure Nothing
+        Just carrierLevel -> do
+          carrierTerm <- quoteIn activeCtx carrier
+          globalTypeIn activeCtx site (gPrel "eqReflect") >>= \case
+            Nothing -> pure Nothing
+            Just (reflect, reflectType) -> do
+              (reflected, reflectedType) <-
+                applyGeneratedCoreSpine
+                  activeCtx
+                  site
+                  reflect
+                  reflectType
+                  [ (Impl, carrierTerm, VSort carrierLevel)
+                  , (Impl, eqEvidence, eqGoal)
+                  , (Expl, x, carrier)
+                  , (Expl, y, carrier)
+                  ]
+              globalTypeIn activeCtx site (gPrel "reflectsDec") >>= \case
+                Nothing -> pure Nothing
+                Just (toDecision, toDecisionType) -> do
+                  forceM reflectedType >>= \case
+                    VGlobI reflects _ [(_, proposition), (_, boolean)]
+                      | reflects == gPrel "Reflects" -> do
+                          propositionTerm <- quoteIn activeCtx proposition
+                          booleanTerm <- quoteIn activeCtx boolean
+                          typeValueClassifierLevel activeCtx proposition >>= \case
+                            Nothing -> pure Nothing
+                            Just propositionLevel -> do
+                              booleanType <- globalValueM prelBool []
+                              (decision, decisionType) <-
+                                applyGeneratedCoreSpine
+                                  activeCtx
+                                  site
+                                  toDecision
+                                  toDecisionType
+                                  [ (Impl, propositionTerm, VSort propositionLevel)
+                                  , (Impl, booleanTerm, booleanType)
+                                  , (Expl, reflected, reflectedType)
+                                  ]
+                              pure (Just (decision, decisionType))
+                    _ -> pure Nothing
+
+-- | Shared typed application planner for lexical roots and exact
+-- compiler-owned providers. A root optionally carries source syntax; when it
+-- does, the final application is re-elaborated normally. Provider roots are
+-- already checked globals and are assembled directly from typed Core
+-- applications. In both cases every lexical argument is recorded as a source
+-- dependency before usage checking.
+focusedDerivation
+  :: Int
+  -> Ctx
+  -> Span
+  -> Value
+  -> [(Term, Maybe Expr, [Expr], Value)]
+  -> CheckM (Maybe Term)
+focusedDerivation sourceDepth ctx site goal roots = do
+  baseline <- get
+  select baseline roots >>= \case
+    Nothing -> put baseline >> pure Nothing
+    Just (term, expression, dependencies) -> do
+      selected <- maybe (pure term) (\source -> check ctx source goal) expression
+      forM_ (dependencyExpression dependencies) $ \expansion ->
+        modify' $ \state ->
+          state
+            { csExpansions = Map.insert site expansion (csExpansions state)
+            }
+      pure (Just selected)
+  where
+    select _ [] = pure Nothing
+    select baselineState ((term, expression, dependencies, candidateType) : rest) = do
+      put baselineState
+      plan 8 term expression dependencies candidateType >>= \case
+        Just selected -> pure (Just selected)
+        Nothing -> select baselineState rest
+
+    plan 0 _ _ _ _ = pure Nothing
+    plan fuel term expression dependencies candidateType = do
+      beforeGoal <- get
+      matches <- unify ctx candidateType goal
+      if matches
+        then pure (Just (term, expression, dependencies))
+        else do
+          put beforeGoal
+          forceM candidateType >>= \case
+            VPiBoundM _ icit _ _ _ _ domain closure ->
+              applyOne fuel icit term expression dependencies domain closure arguments
+            _ -> pure Nothing
+
+    arguments = visibleDerivationLocals ctx
+
+    applyOne _ _ _ _ _ _ _ [] = pure Nothing
+    applyOne fuel icit term expression dependencies domain closure ((argumentIndex, argumentEntry) : rest) = do
+      beforeArgument <- get
+      matches <- unify ctx (ceType argumentEntry) domain
+      if matches
+        then do
+          let argumentLevel = ctxLen ctx - 1 - argumentIndex
+              argumentExpression = EVar (Name (ceName argumentEntry) site)
+          codomain <- clApp closure (VRigid argumentLevel [])
+          let appliedTerm = CApp icit term (CVar argumentIndex)
+              appliedExpression =
+                fmap
+                  ( \source ->
+                      EApp source
+                        [ case icit of
+                            Impl -> ArgImplicit argumentExpression
+                            Expl -> ArgExplicit argumentExpression
+                        ]
+                  )
+                  expression
+              appliedDependencies =
+                dependencies
+                  ++ [ argumentExpression
+                     | argumentLevel < sourceDepth
+                     ]
+          plan (fuel - 1) appliedTerm appliedExpression appliedDependencies codomain >>= \case
+            Just selected -> pure (Just selected)
+            Nothing -> put beforeArgument >> applyOne fuel icit term expression dependencies domain closure rest
+        else put beforeArgument >> applyOne fuel icit term expression dependencies domain closure rest
+
+    dependencyExpression = \case
+      [] -> Nothing
+      [expression] -> Just expression
+      expressions -> Just (ETuple expressions site)
+
+visibleDerivationLocals :: Ctx -> [(Int, CtxEntry)]
+visibleDerivationLocals ctx = go Set.empty 0 (ctxEntries ctx)
+  where
+    go _ _ [] = []
+    go shadowed index (entry : rest)
+      | ceName entry `Set.member` shadowed =
+          go shadowed (index + 1) rest
+      | otherwise =
+          let name = ceName entry
+              referenceable =
+                name `notElem` ["_", "_ev", "this"]
+                  && isNothing (ceVarInfo entry)
+              shadowed' = Set.insert name shadowed
+           in (if referenceable then [(index, entry)] else [])
+                ++ go shadowed' (index + 1) rest
+
+-- | Multiple exact inhabitants may be merged only when the goal is already
+-- known coherent: authenticated trait evidence, direct h-level evidence, or
+-- the structural IsProp closure. The query never assumes UIP for arbitrary
+-- equality fibers.
+derivationGoalCoherent :: Ctx -> Span -> Value -> CheckM Bool
+derivationGoalCoherent ctx site goal = do
+  traitGoal <- isTraitGoal goal
+  if traitGoal
+    then pure True
+    else do
+      direct <- hLevelTraitEvidence ctx site prelIsProp goal
+      case direct of
+        Just _ -> pure True
+        Nothing -> do
+          propositionGoal <- globalValueM prelIsProp [(Expl, goal)]
+          isJust <$> isPropClosure ctx site propositionGoal
+
 -- | Synthesize a type for @expr@, elaborating it to a core 'Term' along the
 -- way. Used wherever the term determines its own type (a variable, literal,
 -- application, projection, …). The dual is 'check'. This is a long @case@
@@ -20045,6 +21386,15 @@ insertDeclarationConstraintImplicits ctx sp tm ty = do
 -- an expected type to proceed (a bare lambda, say) defer to 'check'.
 infer :: Ctx -> Expr -> CheckM (Term, Value)
 infer ctx expr = case expr of
+  EDerive Nothing sp -> do
+    errAt sp "E_DERIVE_EXPECTED_TYPE_REQUIRED" (Just "kappa.derive")
+      "bare 'derive' requires a rigid expected type (§16.3.2A)"
+    anyHole ctx
+  EDerive (Just goalExpression) sp -> do
+    (goalTerm, _) <- inferType ctx goalExpression
+    goal <- evalIn ctx goalTerm
+    term <- synthesizeDerivation ctx sp goal
+    pure (term, goal)
   EUniverseInstantiation base universes sp ->
     inferUniverseInstantiation False ctx base universes sp
   EApp (EVar n) arguments@[ArgExplicit levelExpr]
@@ -20346,12 +21696,6 @@ infer ctx expr = case expr of
             (functionTerm, functionType) <-
               infer ctx (EDot (EVar traitName) (DotName memberName))
             elabSpine ctx (nameSpan memberName) functionTerm functionType args
-  -- §21.6 convenience reflection queries in ordinary (non-Elab)
-  -- positions run at the call site ('elabReflQuery')
-  EApp (EVar qn) args
-    | nameText qn `elem` reflQueryNames
-    , Nothing <- lookupCtx (nameText qn) ctx ->
-        elabReflQuery ctx qn args Nothing
   -- carrier-prefixed comprehension (§20.9): a type-valued head applied
   -- to a comprehension literal selects a collection carrier
   EApp f args
@@ -20366,40 +21710,10 @@ infer ctx expr = case expr of
             put st0
             (fTm, fTy) <- infer ctx f
             elabSpine ctx (exprSpan f) fTm fTy args
-  EApp f args -> do
-    explicitRefFacetApp ctx f args >>= \case
-      Just r -> pure r
-      Nothing -> do
-        mproj <- projectionHead ctx f
-        mRecvProj <- maybe (projRecvApp ctx f args) (const (pure Nothing)) mproj
-        case (mproj, mRecvProj) of
-          (_, Just r) -> pure r
-          (Just (g, pj), _) -> elabProjApp ctx (exprSpan f) g pj args
-          _ -> withApplicationEvidenceScope $ do
-            n0 <- gets (length . csDiags)
-            (fTm, fTy) <- infer ctx f
-            recordMultishotOpApplication ctx f args (exprSpan expr)
-            headUnresolved <- case f of
-              EVar {} -> do
-                ds <- gets csDiags
-                pure (any ((== "E_NAME_UNRESOLVED") . dCode) (take (length ds - n0) ds))
-              _ -> pure False
-            if headUnresolved
-              -- recovery (§3.1.14): an application whose head does not
-              -- resolve reports the head once; the arguments cannot be
-              -- meaningfully typed against an unknown callee
-              then anyHole ctx
-              else do
-                (application, resultType) <-
-                  withArgFlatFor f
-                    (elabSpineWith ctx (exprSpan f) fTm fTy args)
-                canonical <-
-                  canonicalizeProviderEqualityProof
-                    ctx
-                    resultType
-                    resultType
-                    application
-                pure (canonical, resultType)
+  EApp f args ->
+    canonicalReflectionQuery ctx f >>= \case
+      Just query -> elabReflQuery ctx (exprSpan f) query args Nothing
+      Nothing -> inferOrdinaryApplication ctx f args
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -20686,6 +22000,83 @@ infer ctx expr = case expr of
 -- form with no rule for the @(expr, expected)@ pair falls through to
 -- 'infer', inserts any still-missing implicit arguments, then 'unify's the
 -- result against the expectation — the generic "switch direction" step.
+-- | Recover the nominal family identity from a checked semantic value while
+-- preserving explicit universe applications and proof-carrying lifts. This is
+-- shared by expected-constructor selection and branch-evidence classification;
+-- neither caller may infer nominal identity from source spelling.
+nominalFamilyValueHead :: Value -> Maybe GName
+nominalFamilyValueHead = \case
+  VGlobI family _ _ -> Just family
+  VGlobN family _ -> Just family
+  VUniverseLift _ _ _ value -> nominalFamilyValueHead value
+  VAppN _ function _ -> nominalFamilyValueHead function
+  _ -> Nothing
+
+-- | Resolve an unqualified spelling shared by several trait-member
+-- projections when the checking direction supplies a rigid expected type.
+-- Candidate viability is established by the ordinary checked projection
+-- type and implicit-evidence planner; source spelling alone grants no
+-- preference.  Exactly one viable semantic projection is required.
+checkExpectedTraitMember
+  :: Ctx
+  -> Name
+  -> Value
+  -> CheckM (Maybe Term)
+checkExpectedTraitMember ctx name expected = do
+  baseline <- get
+  let spelling = nameText name
+      candidates = fromMaybe [] (Map.lookup spelling (csScopeAmbig baseline))
+      traitCandidates =
+        [ candidate
+        | candidate <- candidates
+        , Map.member candidate (csTraitMemberOwners baseline)
+        ]
+  if null candidates || length traitCandidates /= length candidates
+    then pure Nothing
+    else do
+      attempts <- forM traitCandidates $ \candidate -> do
+        put baseline
+        result <- trySpec $ do
+          globalTermIn ctx (nameSpan name) candidate >>= \case
+            Nothing -> do
+              errAt (nameSpan name) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+                ("trait-member projection '" <> gKey candidate <> "' is unavailable")
+              freshMetaFor ctx expected
+            Just (headTerm, headType) ->
+              insertAllImplicitsAgainstExpected
+                ctx
+                (nameSpan name)
+                headTerm
+                headType
+                expected >>= \case
+                  Just term -> flushPending >> pure term
+                  Nothing -> do
+                    term <- coerceTerm ctx (nameSpan name) headTerm headType expected
+                    flushPending
+                    pure term
+        stateAfter <- get
+        pure ((candidate,, stateAfter) <$> result)
+      put baseline
+      case catMaybes attempts of
+        [(_, term, selectedState)] -> put selectedState >> pure (Just term)
+        [] -> pure Nothing
+        viable -> do
+          let names = map (gKey . \(candidate, _, _) -> candidate) viable
+          report $
+            withPayload
+              ( withPayloadField "name" spelling $
+                  withPayloadField "candidates" (T.intercalate ", " names) $
+                    payloadKind "name-ambiguous"
+              ) $
+              diag SevError StageElaborate "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous")
+                (nameSpan name)
+                ( "trait member '" <> spelling
+                    <> "' remains ambiguous at the expected type; viable projections are "
+                    <> T.intercalate " and " names
+                    <> " (qualify the member, Spec §7.1, §14.2.1)"
+                )
+          Just <$> freshMetaFor ctx expected
+
 check :: Ctx -> Expr -> Value -> CheckM Term
 check ctx expr expected0 = do
   expected <- forceM expected0
@@ -20700,7 +22091,31 @@ check ctx expr expected0 = do
             Just (constructor, _) -> pure (constructor == prelRefl)
             Nothing -> pure False
     _ -> pure False
+  canonicalSummon <- case expr of
+    EVar name
+      | nameText name == "summon"
+      , Nothing <- lookupCtx (nameText name) ctx ->
+          (== Just (gPrel "summon")) <$> lookupGlobalName (nameText name)
+    _ -> pure False
+  canonicalReflection <- case expr of
+    EApp function _ -> canonicalReflectionQuery ctx function
+    _ -> pure Nothing
   case (expr, expected) of
+    (EDerive explicitGoal sp, _) ->
+      case explicitGoal of
+        Nothing -> do
+          rigid <- deriveGoalRigid ctx expected
+          if rigid
+            then synthesizeDerivation ctx sp expected
+            else do
+              errAt sp "E_DERIVE_EXPECTED_TYPE_REQUIRED" (Just "kappa.derive")
+                "bare 'derive' requires a rigid expected type (§16.3.2A)"
+              freshMetaFor ctx expected
+        Just goalExpression -> do
+          (goalTerm, _) <- inferType ctx goalExpression
+          goal <- evalIn ctx goalTerm
+          term <- synthesizeDerivation ctx sp goal
+          coerceTerm ctx sp term goal expected
     (EVar n, VGlobN g [])
       | nameText n == "ω"
       , g == prelTypeLevel -> globalHeadM prelTypeLevelOmega
@@ -20720,6 +22135,14 @@ check ctx expr expected0 = do
                     insertAllImplicits ctx (exprSpan expr) headTerm headType
                   coerceTerm ctx (exprSpan expr) term actual expected
                 Nothing -> checkFallthrough expected
+    -- A bare @summon@ is expected-type directed, so it reaches checking
+    -- without an explicit 'EApp' node. Authenticate the resolved prelude
+    -- global before applying the same incomplete-self exclusion as the
+    -- application path below (§14.3.4A). Locals with this spelling remain
+    -- ordinary values.
+    (EVar _, _)
+      | canonicalSummon ->
+          withIncompleteSelfEvidenceForbidden (checkFallthrough expected)
     -- §16.3.2 a hole in checking position. The expected type is known, so
     -- the unsolved-hole diagnostic states it directly. A named hole shares
     -- one type metavariable across its occurrences: unifying that shared
@@ -20830,48 +22253,47 @@ check ctx expr expected0 = do
                     ELambda Nothing (map simpleBinder vars)
                       (EApp (EVar n) [ArgExplicit (EVar v) | v <- vars]) sp
               check ctx lam expected
-    -- §18.1.14: Eff r is a monadic carrier, so 'pure' in an Eff-typed
-    -- position injects via the Eff kernel (the prelude 'pure' is the IO
-    -- instance; carrier-polymorphic 'pure' is not modelled)
-    (EApp (EVar pn) [ArgExplicit pa], VGlobN g [(_, _), (_, aT)])
-      | g == prelEff
-      , nameText pn == "pure"
-      , Nothing <- lookupCtx "pure" ctx -> do
-          tm <- check ctx pa aT
-          generatedEffPureAtM ctx expected tm
-    -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
-    -- through the elaboration-time Applicative (the prelude 'pure' is
-    -- the IO instance; carrier-polymorphic 'pure' is not modelled)
-    (EApp (EVar pn) [ArgExplicit pa], VGlobI g universes [(_, aT)])
-      | nameText pn == "pure"
-      , g == prelElab
-      , Nothing <- lookupCtx "pure" ctx -> do
-          tm <- check ctx pa aT
-          elabPureAt ctx universes aT tm
-    -- Inside an arbitrary user-monad do block, canonical @pure@ denotes the
-    -- enclosing carrier's Applicative introduction. Authenticate the resolved
-    -- global before selecting evidence: a local/imported same-spelling
-    -- function remains an ordinary application.
+    -- §18.1.14: Eff r is a monadic carrier, so canonical Applicative.pure in
+    -- an Eff-typed position injects through the Eff kernel. Authenticate the
+    -- resolved projection identity; an imported same-spelling declaration is
+    -- an ordinary application.
+    (EApp _ [ArgExplicit _], _)
+      | Just (carrier, aT) <- monadActionViewValue expected
+      , nominalFamilyValueHead carrier == Just prelEff ->
+          canonicalApplicativePurePayload ctx expr >>= \case
+            Just payload -> do
+              tm <- check ctx payload aT
+              generatedEffPureAtM ctx expected tm
+            Nothing -> checkFallthrough expected
+    -- Inside any typed do block, canonical @pure@ denotes the enclosing
+    -- carrier's selected Applicative introduction. This includes IO and the
+    -- evidence-driven STM/user carriers: @pure@ is the trait member for those carriers too, and
+    -- routing them through generic application inference would discard the
+    -- already-known carrier before instance selection. Authenticate the
+    -- resolved global before selecting evidence; a local/imported
+    -- same-spelling function remains an ordinary application.
     (EApp pureHead [ArgExplicit payload], _)
       | ctxInDo ctx
-      , Just (carrier, resultType) <- monadActionViewValue expected
-      , not (isKernelDoCarrier carrier) -> do
-          saved <- get
-          (headTerm, _) <- infer ctx pureHead
-          if termHeadGlob headTerm == Just (gPrel "pure")
+      , Just (carrier, resultType) <- monadActionViewValue expected -> do
+          resolvedHead <- staticGlobalExpr ctx pureHead
+          if resolvedHead == Just (gPrel "pure")
             then do
-              put saved
               sourceType <-
                 carrierSourceArgument ctx (exprSpan expr) carrier resultType
               payloadTerm <- check ctx payload sourceType
-              generatedApplicativePureAtM
-                ctx
-                (exprSpan expr)
-                carrier
-                sourceType
-                payloadTerm
-                expected
-            else put saved >> checkFallthrough expected
+              if nominalFamilyValueHead carrier == Just prelElab
+                then do
+                  universes <- elabCarrierUniverses expected
+                  elabPureAt ctx universes sourceType payloadTerm
+                else
+                  generatedApplicativePureAtM
+                    ctx
+                    (exprSpan expr)
+                    carrier
+                    sourceType
+                    payloadTerm
+                    expected
+            else checkFallthrough expected
     -- §21.1: a quote checked against its Syntax index elaborates the
     -- payload at the index's object type
     (EQuote qe sp, VGlobN (GName pm "Syntax") [(_, tT)])
@@ -20978,12 +22400,26 @@ check ctx expr expected0 = do
     -- §21.6 convenience reflection queries: an 'Elab'-typed position
     -- keeps the ordinary action; any other position runs the
     -- elaboration-time query at the call site ('elabReflQuery')
-    (EApp (EVar qn) args, _)
-      | nameText qn `elem` reflQueryNames
-      , Nothing <- lookupCtx (nameText qn) ctx -> do
-          (tm, ty) <- elabReflQuery ctx qn args (Just expected)
+    (EApp f args, _)
+      | Just query <- canonicalReflection -> do
+          (tm, ty) <-
+            elabReflQuery ctx (exprSpan f) query args (Just expected)
           expectType ctx (exprSpan expr) ty expected
           pure tm
+    -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
+    -- through the elaboration-time Applicative (the prelude 'pure' is
+    -- the IO instance; carrier-polymorphic 'pure' is not modelled). Keep this
+    -- after reflection dispatch: the syntactic one-argument shape alone does
+    -- not authorize skipping another authenticated application rule.
+    (EApp _ [ArgExplicit _], _)
+      | Just (carrier, aT) <- monadActionViewValue expected
+      , nominalFamilyValueHead carrier == Just prelElab ->
+          canonicalApplicativePurePayload ctx expr >>= \case
+            Just payload -> do
+              tm <- check ctx payload aT
+              universes <- elabCarrierUniverses expected
+              elabPureAt ctx universes aT tm
+            Nothing -> checkFallthrough expected
     -- §16.1.7.1/§12.2.1: an all-explicit application checked against a
     -- known expected type pre-unifies its result type with the
     -- expectation, so arguments see solved domains (binder quantities
@@ -21123,9 +22559,10 @@ check ctx expr expected0 = do
     -- expected type's constructor is selected — constructors are
     -- static members of their data type (§7.2) and the unqualified
     -- spelling abbreviates that selection in checked position
-    (e, VGlobN dgName _)
+    (e, expectedFamily)
       | Just (hn, args) <- bareCtorHead e
-      , Nothing <- lookupCtx (nameText hn) ctx -> do
+      , Nothing <- lookupCtx (nameText hn) ctx
+      , Just dgName <- nominalFamilyValueHead expectedFamily -> do
           st0 <- get
           mExpectedConstructor <- case Map.lookup dgName (csDatas st0) of
             Just di
@@ -21161,6 +22598,15 @@ check ctx expr expected0 = do
       tryExpectedSchemaReification ctx (exprSpan expr) expr expected >>= \case
         Just reified -> pure reified
         Nothing -> do
+          overloaded <- case expr of
+            EVar name
+              | Nothing <- lookupCtx (nameText name) ctx ->
+                  checkExpectedTraitMember ctx name expected
+            _ -> pure Nothing
+          case overloaded of
+            Just selected -> pure selected
+            Nothing -> ordinaryFallthrough expected
+    ordinaryFallthrough expected = do
           saved <- get
           (tm, ty) <- infer ctx expr
           afterInfer <- get
@@ -22006,25 +23452,158 @@ checkExplicitArg ctx mode q e dom = do
         if q == Q0
           then withVarReadBlock VarReadStaticPosition ctx
           else ctx
-  let checkArgument =
-        withArgIndexRetag
-          (withDemand (demandOfQ q) (check ctx' e dom))
+  let underArgumentDemand =
+        withArgIndexRetag . withDemand (demandOfQ q)
+      checkArgument = underArgumentDemand (check ctx' e dom)
+      inferArgument = underArgumentDemand (infer ctx' e)
   -- Generic application uses the ordinary checking relation. In particular,
   -- §12.1.1 permits outer-Pi observation subsumption for a transparent
   -- higher-order/type-former argument. Exact higher-kinded matching is a
   -- separate §14.3.2 rule and remains confined to 'instCheckHeadArgs'.
-  aTm <- checkArgument
-  when (q == Q0) $
-    modify' $ \st ->
-      st {csErasedArgumentSpans = Set.insert (exprSpan e) (csErasedArgumentSpans st)}
-  when (mode == Ordinary) $ do
-    observation <- observationJudgmentForTerm ctx aTm domF
-    when (ojMode observation == Parametric) $
-      reportParametricPromotion (exprSpan e) "ordinary application argument" observation
+  -- A dependent application-planning meta must first see the operand's exact
+  -- synthesized type.  Using only the directed checking relation here can
+  -- discard information before a later evidence slot is selected: for
+  -- example, capture-set subsumption may check @T captures (r)@ at @T@ and
+  -- thereby ask for @DynamicType T@ instead of the capability-indexed
+  -- @DynamicType (T captures (r))@.  Pin only metas authenticated as members
+  -- of this application plan, and only when definitional conversion accepts
+  -- the exact inferred type.  All other cases retain the ordinary checked
+  -- path (including expected-type-directed literals and coercions).
+  stateBeforeExact <- get
+  planningFlexible <- do
+    state <- get
+    let domainTerm = quote (ecOf state) (ctxLen ctx) domF
+        unsolved = Set.fromList (unsolvedMetasOf state domainTerm)
+    pure
+      (not
+        ( Set.null
+            (Set.intersection unsolved (csApplicationPlanningMetas state))
+        ))
+  exactArgument <-
+    if planningFlexible && principalPlanningSynthesis e
+      then do
+        diagnosticsBeforeExact <- gets (length . csDiags)
+        (term, actual) <- inferArgument
+        actualShape <- peelCapturesM actual
+        let synthesizedIsCallable = case actualShape of
+              VPi {} -> True
+              _ -> False
+        exact <-
+          if synthesizedIsCallable
+            then pure False
+            else unifyDefinitional ctx actual dom
+        diagnosticsAfterExact <- gets (length . csDiags)
+        if exact && diagnosticsAfterExact == diagnosticsBeforeExact
+          then pure (Just term)
+          else put stateBeforeExact >> pure Nothing
+      else pure Nothing
+  aTm <- maybe checkArgument pure exactArgument
+  finishExplicitArgument ctx mode q e aTm domF
   case domF of
     VSort _ -> retagNewMismatches nBefore
     _ -> pure ()
   pure aTm
+
+-- | Whether an explicit operand may soundly pin an application-planning meta
+-- from its synthesized type. Unsuffixed overloaded literals have no principal
+-- carrier in isolation: inference applies the §6.1.5 default, while checking
+-- deliberately leaves @FromInteger ?a@ / @FromFloat ?a@ pending for later
+-- operands and the expected result. An ascription or suffix makes the carrier
+-- source-determined again and therefore follows the ordinary exact probe.
+principalPlanningSynthesis :: Expr -> Bool
+principalPlanningSynthesis = \case
+  EIntLit _ Nothing _ -> False
+  EFloatLit _ Nothing _ -> False
+  _ -> True
+
+-- | Record the observation/erasure obligations shared by ordinary checked
+-- arguments and the exact inferred arguments used in instance heads.
+finishExplicitArgument
+  :: Ctx
+  -> ObservationMode
+  -> Q
+  -> Expr
+  -> Term
+  -> Value
+  -> CheckM ()
+finishExplicitArgument ctx mode q expression term classifier = do
+  when (q == Q0) $
+    modify' $ \state ->
+      state
+        { csErasedArgumentSpans =
+            Set.insert (exprSpan expression) (csErasedArgumentSpans state)
+        }
+  when (mode == Ordinary) $ do
+    observation <- observationJudgmentForTerm ctx term classifier
+    when (ojMode observation == Parametric) $
+      reportParametricPromotion
+        (exprSpan expression)
+        "ordinary application argument"
+        observation
+
+-- | Instance-head higher-kinded arguments need both an exact check and the
+-- classifier that the argument actually synthesized.  Retaining only the
+-- expected trait-parameter classifier makes occurrence-local result ceilings
+-- look source-owned and can publish a spuriously polymorphic dictionary.
+--
+-- Inference is transactional because an expected-directed form may not
+-- synthesize on its own.  Such a form falls back to the established exact
+-- checker; an inferred form contributes only source-owned classifier levels
+-- that predate the probe.
+inferExactExplicitArg
+  :: Ctx
+  -> ObservationMode
+  -> Q
+  -> Expr
+  -> Value
+  -> CheckM (Term, Set LevelMeta)
+inferExactExplicitArg ctx mode q expression expected = do
+  before <- get
+  let preexistingMetaLimit = csNextMeta before
+  diagnosticsBefore <- gets (length . csDiags)
+  let ctx' =
+        if q == Q0
+          then withVarReadBlock VarReadStaticPosition ctx
+          else ctx
+      inferArgument =
+        withArgIndexRetag
+          (withDemand (demandOfQ q) (infer ctx' expression))
+  (_term, actual) <- inferArgument
+  compatible <- unifyDefinitional ctx actual expected
+  diagnosticsAfter <- gets (length . csDiags)
+  if compatible && diagnosticsAfter == diagnosticsBefore
+    then do
+      actualTerm <- quoteIn ctx actual >>= zonkTermM (ctxLen ctx)
+      let sourceClassifierLevels =
+            Set.filter (< preexistingMetaLimit)
+              (Set.fromList (levelMetasOfTerm actualTerm))
+      -- Classifier discovery is observational. Fresh global-occurrence metas
+      -- and constraints created by this probe are implementation choices,
+      -- never generated-dictionary schema parameters.
+      put before
+      checked <-
+        withDefinitionalEqualityOnly
+          (checkExplicitArg ctx mode q expression expected)
+      expectedClassifierLevels <- unresolvedExpectedClassifierLevels ctx expected
+      pure (checked, Set.union sourceClassifierLevels expectedClassifierLevels)
+    else do
+      put before
+      term' <-
+        withDefinitionalEqualityOnly
+          (checkExplicitArg ctx mode q expression expected)
+      expectedClassifierLevels <- unresolvedExpectedClassifierLevels ctx expected
+      pure (term', expectedClassifierLevels)
+
+-- | Preserve the unsolved part of a higher-kinded trait parameter's checked
+-- classifier.  Exact checking has already assigned every level forced by a
+-- monomorphic argument, so the residual metas are precisely the abstract
+-- classifier dimensions that the generated instance dictionary must own.
+-- Reading the expected classifier after checking avoids treating fresh
+-- occurrence metas from the observational inference probe as source schema.
+unresolvedExpectedClassifierLevels :: Ctx -> Value -> CheckM (Set LevelMeta)
+unresolvedExpectedClassifierLevels ctx expected = do
+  expectedTerm <- quoteIn ctx expected >>= zonkTermM (ctxLen ctx)
+  pure (Set.fromList (levelMetasOfTerm expectedTerm))
 
 checkObservedExpr
   :: Ctx
@@ -22081,6 +23660,72 @@ reportParametricPromotion sp demandedConstruct judgment =
       Just (ObservationType rho) -> Just rho
       _ -> Nothing
 
+-- | Infer an ordinary application after syntax-directed application forms
+-- (reflection queries, comprehensions, and associated static members) have
+-- already had their chance to intercept it. Keeping this path explicit lets a
+-- checked reflection query fall back to the ordinary action application
+-- without recursively re-entering the convenience query rule.
+inferOrdinaryApplication :: Ctx -> Expr -> [Arg] -> CheckM (Term, Value)
+inferOrdinaryApplication ctx function arguments = do
+  explicitRefFacetApp ctx function arguments >>= \case
+    Just result -> pure result
+    Nothing -> do
+      projection <- projectionHead ctx function
+      receiverProjection <-
+        maybe
+          (projRecvApp ctx function arguments)
+          (const (pure Nothing))
+          projection
+      case (projection, receiverProjection) of
+        (_, Just result) -> pure result
+        (Just (global, info), _) ->
+          elabProjApp ctx (exprSpan function) global info arguments
+        _ -> withApplicationEvidenceScope $ do
+          diagnosticsBefore <- gets (length . csDiags)
+          (functionTerm, functionType) <- infer ctx function
+          recordMultishotOpApplication
+            ctx
+            function
+            arguments
+            (exprSpan (EApp function arguments))
+          headUnresolved <- case function of
+            EVar {} -> do
+              diagnostics <- gets csDiags
+              pure
+                ( any
+                    ((== "E_NAME_UNRESOLVED") . dCode)
+                    (take (length diagnostics - diagnosticsBefore) diagnostics)
+                )
+            _ -> pure False
+          if headUnresolved
+            -- Recovery (§3.1.14): once the head is unresolved, argument types
+            -- are unknowable and must not emit a diagnostic cascade.
+            then anyHole ctx
+            else do
+              let elaborateApplication =
+                    withArgFlatFor function
+                      ( elabSpineWith
+                          ctx
+                          (exprSpan function)
+                          functionTerm
+                          functionType
+                          arguments
+                      )
+                  selectedSummon =
+                    termHeadGlob (stripIdentityWrappers functionTerm)
+                      == Just (gPrel "summon")
+              (application, resultType) <-
+                if selectedSummon
+                  then withIncompleteSelfEvidenceForbidden elaborateApplication
+                  else elaborateApplication
+              canonical <-
+                canonicalizeProviderEqualityProof
+                  ctx
+                  resultType
+                  resultType
+                  application
+              pure (canonical, resultType)
+
 -- | One planned argument slot of a checked application spine
 -- ('elabAppChecked'): a kind-like implicit placeholder, an evidence
 -- implicit resolved after result-type pre-unification, or an explicit
@@ -22097,6 +23742,7 @@ data AppSlot
     -- (O(1)) instead of unified (O(size)), since it never reaches the
     -- result type — see 'step'.
     SlotExpl ObservationMode Q Expr Value MetaId Value Bool
+  | SlotReady Icit Term
 
 data AppResultPreparation
   = AppResultDefinitionallyReady
@@ -22108,7 +23754,13 @@ data AppResultPreparation
 -- lambdas see refined domains; explicit arguments then settle any remaining
 -- placeholders, and the ordinary coercion path makes the final decision.
 -- Falls back to infer-then-coerce when the nominal shape does not match.
-elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
+elabAppChecked
+  :: Ctx
+  -> Expr
+  -> [Arg]
+  -> Value
+  -> Span
+  -> CheckM Term
 elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
   explicitRefFacetApp ctx f args >>= \case
     Just (tm, ty) -> do
@@ -22117,7 +23769,9 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
     Nothing ->
       checkedMonadRefMethodApp ctx f args expected sp >>= \case
         Just tm -> pure tm
-        Nothing -> do
+        Nothing -> checkedApplication
+  where
+    checkedApplication = do
           st0 <- get
           seeded <- expectedConstructorApplicationHead ctx f expected
           (fTm, fTy) <- maybe (infer ctx f) pure seeded
@@ -22131,11 +23785,15 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
               case preparation of
                 Nothing -> pure Nothing
                 Just resultPreparation -> do
-                  mtm <-
-                    foldM
-                      (\acc slot -> maybe (pure Nothing) (`step` slot) acc)
-                      (Just fTm)
-                      slots
+                  earlyEvidence <- earlyEvidenceDependencies slots
+                  prepared <- traverse (prepareSlot earlyEvidence) slots
+                  mtm <- case sequence prepared of
+                    Nothing -> pure Nothing
+                    Just readySlots ->
+                      foldM
+                        (\acc slot -> maybe (pure Nothing) (`step` slot) acc)
+                        (Just fTm)
+                        readySlots
                   case mtm of
                     Nothing -> pure Nothing
                     Just tm -> do
@@ -22160,7 +23818,6 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
               (tm, ty) <- infer ctx (EApp f args)
               (tm1, ty1) <- insertAllImplicits ctx sp tm ty
               coerceTerm ctx sp tm1 ty1 expected
-  where
     peel ty as0 acc = do
       tyF <- forceM ty
       case tyF of
@@ -22239,36 +23896,26 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       pure (Just (CApp Impl tm m))
     step tm (SlotInfer _ placeholder _) = do
       pure (Just (CApp Impl tm placeholder))
-    step tm (SlotEvid _ q dom m mV) = do
-      -- §3.2.3 proof obligations are postponed to the pending queue
-      -- even when fully solved: the boolean branch facts they reduce
-      -- under may themselves be stuck on evidence metas that only the
-      -- end-of-declaration flush solves
-      isEq <- isEqGoal dom
-      ev <-
-        if isEq
-          then resolveLocalOrPostponeEqualityEvidence ctx sp q dom
-          else resolveImplicitQ ctx sp q dom
-      evV <- evalIn ctx ev
-      mVf <- forceM mV
-      reconciled <- case (m, mVf) of
-        -- The slot placeholder was introduced by 'peel' for this evidence
-        -- argument.  When it is still unconstrained, solving it directly is
-        -- the same flex case that 'unify' would take, but without running
-        -- conversion on a proof obligation whose branch-local facts may not
-        -- be available until 'flushPending'.  This is important for checked
-        -- operations: evidence insertion must not normalize user terms just to
-        -- wire a placeholder to a delayed proof.
-        (CMeta mid, VFlex meta []) | meta == mid -> do
-          ok <- solveMetaAcyclic mid evV
-          if ok then pure True else unify ctx mVf evV
-        _ -> unify ctx mVf evV
-      pure
-        ( if reconciled
-            then Just (CApp Impl tm ev)
-            else Nothing
-        )
-    step tm (SlotImpl mode q expression dom mid placeholderValue) = do
+    step tm (SlotEvid _ q dom placeholder placeholderValue) =
+      resolveEvidenceSlot q dom placeholder placeholderValue >>= \case
+        Just evidence -> pure (Just (CApp Impl tm evidence))
+        Nothing -> pure Nothing
+    step tm (SlotReady icit argument) =
+      pure (Just (CApp icit tm argument))
+    step _ SlotImpl {} = pure Nothing
+    step _ SlotExpl {} = pure Nothing
+
+    prepareSlot _ slot@SlotKind {} = pure (Just slot)
+    prepareSlot _ slot@SlotInfer {} = pure (Just slot)
+    prepareSlot early slot@(SlotEvid _ q dom placeholder placeholderValue) =
+      case placeholder of
+        CMeta meta
+          | meta `Set.member` early ->
+              fmap (SlotReady Impl) <$>
+                resolveEvidenceSlot q dom placeholder placeholderValue
+        _ -> pure (Just slot)
+    prepareSlot _ slot@SlotReady {} = pure (Just slot)
+    prepareSlot _ (SlotImpl mode q expression dom mid placeholderValue) = do
       flushPendingDeclaration
       domain <- forceM dom
       diagnosticsBefore <- gets (length . csDiags)
@@ -22287,12 +23934,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                 then pure True
                 else unify ctx placeholder argumentValue
             _ -> unify ctx placeholder argumentValue
-      pure
-        ( if reconciled
-            then Just (CApp Impl tm argument)
-            else Nothing
-        )
-    step tm (SlotExpl mode q e dom mid mV dep) = do
+      pure (SlotReady Impl argument <$ guard reconciled)
+    prepareSlot _ (SlotExpl mode q e dom mid mV dep) = do
       aTm <- checkExplicitArg ctx mode q e dom
       aV <- checkedArgumentValue ctx (exprSpan e) dom aTm
       -- The placeholder meta 'mid' was substituted into the result type
@@ -22317,14 +23960,58 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
             -- case but avoids quoting the whole argument value.
             VFlex m [] | m == mid -> do
               ok <- solveMetaAcyclic mid aV
-              if ok then pure True else unify ctx mVf aV
+              if ok
+                then pure True
+                else unify ctx mVf aV
             _ | dep -> unify ctx mVf aV
             _ -> pure True
-      pure
-        ( if reconciled
-            then Just (CApp Expl tm aTm)
-            else Nothing
-        )
+      pure (SlotReady Expl aTm <$ guard reconciled)
+
+    resolveEvidenceSlot q dom placeholder placeholderValue = do
+      -- §3.2.3 proof obligations are postponed to the pending queue even when
+      -- fully solved: branch facts may themselves depend on evidence metas.
+      isEq <- isEqGoal dom
+      evidence <-
+        if isEq
+          then resolveLocalOrPostponeEqualityEvidence ctx sp q dom
+          else resolveImplicitQ ctx sp q dom
+      evidenceValue <- evalIn ctx evidence
+      placeholderForced <- forceM placeholderValue
+      reconciled <- case (placeholder, placeholderForced) of
+        -- The placeholder belongs to this evidence slot. Directly solving an
+        -- unconstrained occurrence avoids normalizing a delayed proof merely
+        -- to wire it into the checked application.
+        (CMeta expectedMeta, VFlex actualMeta [])
+          | expectedMeta == actualMeta -> do
+              solved <- solveMetaAcyclic expectedMeta evidenceValue
+              if solved
+                then pure True
+                else unify ctx placeholderForced evidenceValue
+        _ -> unify ctx placeholderForced evidenceValue
+      pure (evidence <$ guard reconciled)
+
+    -- A dictionary must move into the preparation phase only when a later
+    -- source operand's domain observes one of its associated projections.
+    -- Unrelated evidence retains the historical assembly order, avoiding
+    -- premature instance selection for ordinary parametric applications.
+    earlyEvidenceDependencies slots = do
+      state <- get
+      let domainMetas slot = case slot of
+            SlotImpl _ _ _ domain _ _ -> metasIn domain
+            SlotExpl _ _ _ domain _ _ _ -> metasIn domain
+            _ -> Set.empty
+          metasIn value =
+            Set.fromList
+              (unsolvedMetasOf state (quote (ecOf state) (ctxLen ctx) value))
+          go [] = (Set.empty, Set.empty)
+          go (slot : rest) =
+            let (early, later) = go rest
+                here = case slot of
+                  SlotEvid _ _ _ (CMeta meta) _
+                    | meta `Set.member` later -> Set.singleton meta
+                  _ -> Set.empty
+             in (Set.union here early, Set.union (domainMetas slot) later)
+      pure (fst (go slots))
 
     -- Kind-like implicits are inferred from later result/argument
     -- unification, but their inferred values must still inhabit their
@@ -22583,6 +24270,23 @@ retagNewMismatches nBefore = retagNew nBefore $ \d ->
   if dCode d == "E_TYPE_EQUALITY_MISMATCH"
     then d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument-mismatch"}
     else d
+
+-- | A @let? ... else@ expression arm is checked against the whole
+-- @m Void@ terminal contract (§18.2.1). Expected-directed checking is needed
+-- to select @m@ before resolving overloaded operations, but it can expose an
+-- inner numeric-literal witness failure for a branch such as @pure 42@. At
+-- this boundary the primary failure is that the completed action is not an
+-- @m Void@ action, so retain all unrelated diagnostics and reclassify only
+-- that contextual literal failure as the enclosing type mismatch.
+retagTerminalFailureArmMismatch :: Int -> CheckM ()
+retagTerminalFailureArmMismatch nBefore = retagNew nBefore $ \diagnostic ->
+  if dFamily diagnostic == Just "kappa.type.literal-domain-mismatch"
+    then
+      diagnostic
+        { dCode = "E_TYPE_EQUALITY_MISMATCH"
+        , dFamily = Just "kappa.type.mismatch"
+        }
+    else diagnostic
 
 -- | §3.1.4/§16.1.7.2: re-tag any error diagnostics reported since the
 -- marker with the portable @E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH@
@@ -23007,12 +24711,13 @@ settlePendingNumericComponents pendingEntries = do
            numeric <- pendingEntryIsNumericLiteral entry
            pure (if numeric then Just entry else Nothing)
         )
-  associatedProjectionEntries <-
+  improvementAnchorEntries <-
     Set.fromList . map pendingEntryMeta . catMaybes
       <$> forM pendingEntries
         (\entry -> do
            associated <- pendingEntryUsesAssociatedEvidenceProjection entry
-           pure (if associated then Just entry else Nothing)
+           rigidArgument <- pendingEntryHasRigidSemanticArgument entry
+           pure (if associated || rigidArgument then Just entry else Nothing)
         )
   components <- pendingEvidenceComponentsFromRoots numericRoots
   pending <- gets csPending
@@ -23032,7 +24737,7 @@ settlePendingNumericComponents pendingEntries = do
       ( length active > 1
           && length active <= 24
           && not
-               (Set.disjoint component associatedProjectionEntries)
+               (Set.disjoint component improvementAnchorEntries)
       )
       (settleUniquePendingTraitComponent component)
 
@@ -23066,6 +24771,38 @@ pendingEntryIsNumericLiteral entry =
       | trait == gPrel traitFromInteger
           || trait == gPrel traitFromFloat ->
           pure True
+    _ -> pure False
+
+-- | A rigid semantic trait argument is an ordinary instance-search input, not
+-- a guess from the ambient instance set.  It may therefore anchor bounded
+-- complete-component improvement.  For example,
+-- @Contains (NumericRange ?a) Nat@ has a rigid second argument that rules out
+-- the Integer instance and yields one principal assignment for @?a@.  Goals
+-- such as @FromInteger ?a@ or @Sized ?a@ have no such anchor and remain
+-- subject to the normal defaulting/ambiguity boundary.
+pendingEntryHasRigidSemanticArgument
+  :: PendingEvidenceEntry
+  -> CheckM Bool
+pendingEntryHasRigidSemanticArgument entry =
+  refreshPendingEntry entry >>= \case
+    VGlobI trait _ arguments -> do
+      state <- get
+      pure $ case traitSemanticSpineIn state trait arguments of
+        Nothing -> False
+        Just semanticArguments ->
+          any
+            ( \(_, argument) ->
+                null
+                  ( unsolvedMetasOf
+                      state
+                      ( quote
+                          (ecOf state)
+                          (ctxLen (pendingEntryCtx entry))
+                          argument
+                      )
+                  )
+            )
+            semanticArguments
     _ -> pure False
 
 -- | Does a pending goal depend on an authenticated associated static member
@@ -23305,31 +25042,92 @@ canonicalStandardBooleanOperation application =
     trueTerm = CCtorI prelTrue [] Nothing []
     falseTerm = CCtorI prelFalse [] Nothing []
 
--- | Retry type compatibility after replacing only fully authenticated
+-- | Retry proof-type compatibility after replacing only fully authenticated
 -- standard arithmetic operations with their canonical primitive semantics.
--- This is an expected-type boundary operation, not a new conversion law:
+-- This is proof-normalization authority, not a value conversion rule:
 -- selected dictionary identity and checked instance heads authorize every
 -- rewrite, while user operations and user equality families remain opaque.
--- As with ordinary compatibility, the attempt is transactional.
+-- Callers that move a value between the original types must still construct
+-- explicit equality transport. As with ordinary compatibility, the attempt is
+-- transactional.
 tryCanonicalStandardArithmeticCompatibility
   :: Ctx
   -> Span
   -> Value
   -> Value
   -> CheckM Bool
-tryCanonicalStandardArithmeticCompatibility ctx source actual expected = do
+tryCanonicalStandardArithmeticCompatibility ctx source actual expected =
+  tryCompatibilityAfterCanonicalization
+    ctx
+    source
+    (canonicalizeEqualityGoalUnderCheckedBranchFacts ctx)
+    (canonicalizeTermsUnderCheckedBranchFacts ctx)
+    actual
+    expected
+
+-- | Provider normalization may identify two checked propositions, but it is
+-- not a conversion rule for values indexed by those propositions. Restrict
+-- this compatibility path to proofs of the resolved built-in equality family;
+-- 'canonicalizeProviderEqualityProof' then replaces the fallback with a
+-- replayable checked certificate whenever the normalized endpoints differ.
+tryCanonicalStandardArithmeticProofCompatibility
+  :: Ctx
+  -> Span
+  -> Value
+  -> Value
+  -> CheckM Bool
+tryCanonicalStandardArithmeticProofCompatibility ctx source actual expected = do
+  actualIsEquality <- isEqGoal actual
+  expectedIsEquality <- isEqGoal expected
+  if actualIsEquality && expectedIsEquality
+    then tryCanonicalStandardArithmeticCompatibility ctx source actual expected
+    else pure False
+
+-- | Contextual conversion available to ordinary value checking. Unlike
+-- provider/arithmetic normalization, these rewrites are justified solely by
+-- the exact checked branch facts in lexical scope and are independently
+-- replayed by KCore verification of that branch. No selected operation is
+-- replaced by a canonical representative here.
+tryCheckedBranchCompatibility
+  :: Ctx
+  -> Span
+  -> Value
+  -> Value
+  -> CheckM Bool
+tryCheckedBranchCompatibility ctx source actual expected =
+  tryCompatibilityAfterCanonicalization
+    ctx
+    source
+    (canonicalizeEqualityGoalUnderCheckedBranchFactsOnly ctx)
+    (canonicalizeTermsUnderCheckedBranchFactsOnly ctx)
+    actual
+    expected
+
+tryCompatibilityAfterCanonicalization
+  :: Ctx
+  -> Span
+  -> (Term -> CheckM Term)
+  -> ([Term] -> CheckM [Term])
+  -> Value
+  -> Value
+  -> CheckM Bool
+tryCompatibilityAfterCanonicalization
+  ctx
+  source
+  canonicalizeEndpoint
+  canonicalizeTerms
+  actual
+  expected = do
   before <- get
   let depth = ctxLen ctx
   actualTerm <- quoteIn ctx actual >>= zonkTermM depth
   expectedTerm <- quoteIn ctx expected >>= zonkTermM depth
   actualEndpointCanonical <-
-    canonicalizeEqualityGoalUnderCheckedBranchFacts ctx actualTerm
+    canonicalizeEndpoint actualTerm
   expectedEndpointCanonical <-
-    canonicalizeEqualityGoalUnderCheckedBranchFacts ctx expectedTerm
+    canonicalizeEndpoint expectedTerm
   normalized <-
-    canonicalizeTermsUnderCheckedBranchFacts
-      ctx
-      [actualEndpointCanonical, expectedEndpointCanonical]
+    canonicalizeTerms [actualEndpointCanonical, expectedEndpointCanonical]
   case normalized of
     [actualCanonical, expectedCanonical] ->
       if actualCanonical == actualTerm && expectedCanonical == expectedTerm
@@ -23355,10 +25153,28 @@ canonicalizeEqualityGoalUnderCheckedBranchFacts
   -> Term
   -> CheckM Term
 canonicalizeEqualityGoalUnderCheckedBranchFacts ctx goal =
+  canonicalizeEqualityGoalWith
+    (canonicalizeTermsUnderCheckedBranchFacts ctx)
+    goal
+
+canonicalizeEqualityGoalUnderCheckedBranchFactsOnly
+  :: Ctx
+  -> Term
+  -> CheckM Term
+canonicalizeEqualityGoalUnderCheckedBranchFactsOnly ctx goal =
+  canonicalizeEqualityGoalWith
+    (canonicalizeTermsUnderCheckedBranchFactsOnly ctx)
+    goal
+
+canonicalizeEqualityGoalWith
+  :: ([Term] -> CheckM [Term])
+  -> Term
+  -> CheckM Term
+canonicalizeEqualityGoalWith canonicalize goal =
   case equalityExplicitEndpoints goal of
     Nothing -> pure goal
     Just (left, right) ->
-      canonicalizeTermsUnderCheckedBranchFacts ctx [left, right] >>= \case
+      canonicalize [left, right] >>= \case
         [left', right'] ->
           pure (replaceLastTwoExplicitArguments left' right' goal)
         _ -> pure goal
@@ -23392,32 +25208,20 @@ canonicalizeTermsUnderCheckedBranchFacts
   -> [Term]
   -> CheckM [Term]
 canonicalizeTermsUnderCheckedBranchFacts ctx terms = do
-  let depth = ctxLen ctx
   instances <- gets csInstances
-  branchFacts0 <- normalizeBoolFacts depth =<< gets csBoolFacts
-  let canonicalizeStandard =
-        canonicalizeStandardArithmeticOperations instances
-      branchFacts =
-        [ (canonicalizeStandard proposition, truth)
-        | (proposition, truth) <- branchFacts0
-        ]
-      normalizeOne fuel current
-        | fuel <= 0 = pure current
-        | otherwise = do
-            underFacts <-
-              normalizeCheckedBranchFacts
-                depth
-                canonicalizeStandard
-                branchFacts
-                (canonicalizeStandard current)
-            reduced <- transparentProofReduce depth 48 underFacts
-            let next =
-                  canonicalizeStandard
-                    (simplifyDecisionTermAt depth reduced)
-            if next == current
-              then pure next
-              else normalizeOne (fuel - 1) next
-  mapM (normalizeOne 24) terms
+  canonicalizeTermsUnderBranchFactsWith
+    24
+    normalizeBoolFacts
+    (canonicalizeStandardArithmeticOperations instances)
+    ctx
+    terms
+
+canonicalizeTermsUnderCheckedBranchFactsOnly
+  :: Ctx
+  -> [Term]
+  -> CheckM [Term]
+canonicalizeTermsUnderCheckedBranchFactsOnly =
+  canonicalizeTermsUnderBranchFactsWith 24 normalizeBoolFacts id
 
 -- | Substitute only branch propositions that are already present in the
 -- checked condition (including polarity-safe Boolean decomposition). This is
@@ -23430,21 +25234,88 @@ canonicalizeTermsUnderExactCheckedBranchFacts
   -> [Term]
   -> CheckM [Term]
 canonicalizeTermsUnderExactCheckedBranchFacts ctx terms = do
-  let depth = ctxLen ctx
   instances <- gets csInstances
-  branchFacts0 <- exactBoolFacts depth =<< gets csBoolFacts
-  let canonicalizeStandard =
-        canonicalizeStandardArithmeticOperations instances
-      branchFacts =
+  canonicalizeTermsUnderBranchFactsWith
+    0
+    exactBoolFacts
+    (canonicalizeStandardArithmeticOperations instances)
+    ctx
+    terms
+
+canonicalizeTermsUnderBranchFactsWith
+  :: Int
+  -> (Int -> [ScopedBoolFact] -> CheckM [(Term, Bool)])
+  -> (Term -> Term)
+  -> Ctx
+  -> [Term]
+  -> CheckM [Term]
+canonicalizeTermsUnderBranchFactsWith
+  reductionFuel
+  selectFacts
+  canonicalizeStandard
+  ctx
+  terms = do
+  let depth = ctxLen ctx
+  rigidFacts <- checkedRigidFactTerms ctx
+  branchFacts0 <- selectFacts depth =<< gets csBoolFacts
+  let branchFacts =
         [ (canonicalizeStandard proposition, truth)
         | (proposition, truth) <- branchFacts0
         ]
-  forM terms $ \term ->
-    normalizeCheckedBranchFacts
-      depth
-      canonicalizeStandard
-      branchFacts
-      (canonicalizeStandard term)
+      normalizeOne fuel current
+        | fuel <= 0 =
+            normalizeCheckedBranchFacts
+              depth
+              canonicalizeStandard
+              branchFacts
+              (canonicalizeStandard (substituteCheckedRigidFacts depth rigidFacts current))
+        | otherwise = do
+            let underRigidFacts =
+                  substituteCheckedRigidFacts depth rigidFacts current
+            underFacts <-
+              normalizeCheckedBranchFacts
+                depth
+                canonicalizeStandard
+                branchFacts
+                (canonicalizeStandard underRigidFacts)
+            reduced <- transparentProofReduce depth 48 underFacts
+            let next =
+                  canonicalizeStandard
+                    (simplifyDecisionTermAt depth reduced)
+            if next == current
+              then pure next
+              else normalizeOne (fuel - 1) next
+  mapM (normalizeOne reductionFuel) terms
+
+-- | Quote the positive constructor/index refinements established by the
+-- current checked patterns.  The map key is a rigid level, not a source name;
+-- negative constructor exclusions are intentionally not substitutions.
+checkedRigidFactTerms :: Ctx -> CheckM (Map Int Term)
+checkedRigidFactTerms ctx = do
+  facts <- gets csFacts
+  fmap Map.fromList . fmap catMaybes . forM (Map.toList facts) $ \case
+    (level, FactIs replacement)
+      | level >= 0
+      , level < ctxLen ctx -> do
+          term <- quoteIn ctx replacement >>= zonkTermM (ctxLen ctx)
+          pure (Just (level, term))
+    _ -> pure Nothing
+
+-- | Replay positive rigid facts in Core while preserving de Bruijn scope.
+-- At a node depth @d@, @CVar i@ denotes rigid level @d - 1 - i@. A quoted
+-- replacement lives at the enclosing depth and is weakened only across the
+-- binders traversed by this rewrite. This is the syntactic replay of the same
+-- certified facts already consumed by conversion-time evaluation.
+substituteCheckedRigidFacts :: Int -> Map Int Term -> Term -> Term
+substituteCheckedRigidFacts enclosingDepth facts =
+  mapTermWithDepth rewrite enclosingDepth
+  where
+    rewrite nodeDepth = \case
+      CVar index
+        | let level = nodeDepth - 1 - index
+        , Just replacement <- Map.lookup level facts ->
+            Just (shiftTerm (nodeDepth - enclosingDepth) 0 replacement)
+      _ -> Nothing
 
 -- | Normalize a term under the exact Boolean facts in the current branch.
 -- Facts are already scoped, zonked, and decomposed by 'normalizeBoolFacts'.
@@ -24033,6 +25904,30 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
         "call-site '~' marker requires resolved inout-parameter metadata at this argument position (§18.9.3)"
       anyHole ctx
+    -- An explicitly supplied implicit argument constrains an otherwise
+    -- unknown callee in the same way an ordinary argument below constrains it
+    -- to an explicit Pi. This is required for genuinely polymorphic higher-
+    -- order terms such as @\function -> function @x@: the surrounding call
+    -- may determine @function@'s complete type only after this lambda has
+    -- been checked. The source @-sign is direct evidence for implicitness;
+    -- its erased quantity is the ordinary §11.3 forall contract.
+    (ArgImplicit e, VFlex m []) -> do
+      (aTm0, aTy0) <- infer ctx e
+      (aTm, aTy) <- insertAllImplicits ctx (exprSpan e) aTm0 aTy0
+      aTyF <- forceM aTy
+      paramKind <- isParametricKind (ctxLen ctx) aTyF
+      let mode = if paramKind then Parametric else Ordinary
+          formation = if paramKind then FormationParametric else FormationOrdinary
+      codM <- freshMeta
+      domT <- quoteIn ctx aTyF
+      piV <- evalIn ctx (CPiFormedM mode formation Impl Q0 False "_a" domT codM)
+      solveMeta m piV
+      aV <- evalIn ctx aTm
+      case piV of
+        VPiM _ _ _ _ _ _ clo -> do
+          ty' <- clApp clo aV
+          elabSpineWith ctx sp (CApp Impl fTm aTm) ty' rest
+        _ -> anyHole ctx
     (ArgExplicit e, VFlex m []) -> do
       (aTm0, aTy0) <- infer ctx e
       (aTm, aTy) <- insertAllImplicits ctx (exprSpan e) aTm0 aTy0
@@ -25139,30 +27034,40 @@ elabDotUnqualified ctx e member mname = do
                         ("module '" <> base <> "' has no exported member '" <> nameText mname <> "' (Spec §8.5)")
                   anyHole ctx
             Nothing -> do
-              -- static member of a type: T.C selects constructor (§7.3)
+              -- Qualified trait member: @Trait.member@ denotes the generated
+              -- projection accessor.  This is a namespace selection by the
+              -- resolved trait identity, not method-call sugar on the trait
+              -- constructor value (§14.2.1).
               mg <- lookupGlobalName base
               stx <- get
-              mDataG <- case mg of
-                Just tyG
-                  | Map.member tyG (csDatas stx) -> pure (Just tyG)
-                  | Just gd <- Map.lookup tyG (csGlobals stx)
-                  , Just v <- gdValue gd -> do
-                      -- a rebound reified type object (§2.8.3): the
-                      -- binding's value names the data type
-                      v' <- forceM v
-                      pure $ case v' of
-                        VGlobN d _ | Map.member d (csDatas stx) -> Just d
-                        _ -> Nothing
-                _ -> pure Nothing
-              case mDataG of
-                Just tyG
-                  | Just di <- Map.lookup tyG (csDatas stx)
-                  , Just ctorG <- lookupCtorIn di (nameText mname) -> do
-                      mt <- globalTerm ctorG
-                      case mt of
-                        Just r -> pure r
+              case mg >>= \trait -> (trait,) <$> Map.lookup trait (csTraits stx) of
+                Just (trait, info)
+                  | nameText mname `elem` tiMembers info ->
+                      globalTerm (memberGlobal trait (nameText mname)) >>= \case
+                        Just result -> pure result
                         Nothing -> anyHole ctx
-                _ -> ordinary mname
+                _ -> do
+                  -- Static member of a type: @T.C@ selects a constructor
+                  -- (§7.3). A rebound reified type object follows the same
+                  -- resolved data identity.
+                  mDataG <- case mg of
+                    Just tyG
+                      | Map.member tyG (csDatas stx) -> pure (Just tyG)
+                      | Just gd <- Map.lookup tyG (csGlobals stx)
+                      , Just v <- gdValue gd -> do
+                          v' <- forceM v
+                          pure $ case v' of
+                            VGlobN d _ | Map.member d (csDatas stx) -> Just d
+                            _ -> Nothing
+                    _ -> pure Nothing
+                  case mDataG of
+                    Just tyG
+                      | Just di <- Map.lookup tyG (csDatas stx)
+                      , Just ctorG <- lookupCtorIn di (nameText mname) -> do
+                          globalTerm ctorG >>= \case
+                            Just result -> pure result
+                            Nothing -> anyHole ctx
+                    _ -> ordinary mname
               where
                 lookupCtorIn di nm =
                   case [c | c <- diCtors di, gnameText c == nm] of
@@ -25268,8 +27173,7 @@ elabDotUnqualified ctx e member mname = do
         VGlobI headG headUniverses spine -> do
           st <- get
           let semanticSpine = traitSemanticSpineIn st headG spine
-          -- a member INHERITED from a supertrait (e.g. 'mon.empty' where
-          -- 'empty' lives in the 'Pointed' supertrait of 'Monoid') is reached
+          -- a member INHERITED from a supertrait is reached
           -- through the dictionary's '__superN' evidence fields.
           msuper <-
             case (Map.lookup headG (csTraits st), semanticSpine) of
@@ -25500,8 +27404,9 @@ memberTypeOf ctx site parameterCount traitG member dictTm dictionaryType project
             Just (memberTerm, ty) -> do
               let args = map snd arguments
               argumentTerms <- mapM (quoteIn ctx) args
-              argumentTypes <- mapM (equandType ctx) args
-              case sequence argumentTypes of
+              argumentTypes <-
+                traitParameterClassifiers ctx site traitG traitUniverses arguments
+              case argumentTypes of
                 Nothing -> malformed
                   ("trait member '" <> member <> "' has an argument without a checked classifier")
                 Just classifiers ->
@@ -25526,6 +27431,111 @@ memberTypeOf ctx site parameterCount traitG member dictTm dictionaryType project
     malformed message = do
       errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler") message
       pure (projected, VSort LZero)
+
+-- | Recover a trait application's semantic parameter classifiers from the
+-- owning trait declaration itself. Re-inferring them from argument values is
+-- incomplete for higher-kinded aliases and stuck type formers; the checked
+-- Pi telescope is the authoritative classifier and is already specialized by
+-- the receiver's exact universe prefix.
+traitParameterClassifiers
+  :: Ctx
+  -> Span
+  -> GName
+  -> [Level]
+  -> [(Icit, Value)]
+  -> CheckM (Maybe [Value])
+traitParameterClassifiers ctx site trait universes arguments = do
+  state <- get
+  let definition = Map.lookup trait (csGlobals state)
+  case definition of
+    Nothing -> pure Nothing
+    Just global -> do
+      let parameterCount = dutParameterCount (gdUniverses global)
+          proofCount =
+            length
+              ( declarationUniverseConstraints
+                  parameterCount
+                  (globalCoreType (ecOf state) global)
+              )
+      (_, specializedType) <- specializeGlobalAt ctx trait global universes
+      peelProofs proofCount ctx specializedType >>= \case
+        Nothing -> pure Nothing
+        Just (activeCtx, semanticType) ->
+          peelArguments activeCtx semanticType arguments
+  where
+    peelProofs 0 activeCtx ty = pure (Just (activeCtx, ty))
+    peelProofs remaining activeCtx ty = do
+      forced <- forceM ty
+      case forced of
+        VPiBoundM _ Impl quantity _ _ assumption domain closure -> do
+          proof <- resolveImplicitQ activeCtx site quantity domain
+          proofValue <- checkedArgumentValue activeCtx site domain proof
+          codomain <- clApp closure proofValue
+          nextCtx <- extendLevelAssumption site activeCtx assumption
+          peelProofs (remaining - 1) nextCtx codomain
+        _ -> pure Nothing
+
+    peelArguments _ _ [] = pure (Just [])
+    peelArguments activeCtx ty ((actualIcit, argument) : rest) = do
+      forced <- forceM ty
+      case forced of
+        VPiBoundM _ expectedIcit _ _ _ assumption domain closure
+          | actualIcit == expectedIcit -> do
+              codomain <- clApp closure argument
+              nextCtx <- extendLevelAssumption site activeCtx assumption
+              fmap (domain :) <$> peelArguments nextCtx codomain rest
+        _ -> pure Nothing
+
+-- | Instantiate a trait member's checked projection telescope while a
+-- dictionary is still being assembled.  Unlike 'memberTypeOf', this boundary
+-- does not require every semantic trait argument to have a reifiable equand
+-- classifier: provisional universe/TypeLevel arguments may legitimately lack
+-- one until declaration closeout.  Generated declaration constraints are
+-- discharged by provenance, semantic parameters are applied in order, and the
+-- final dictionary binder receives exactly the preceding checked fields.
+instantiateTraitMemberType
+  :: Ctx
+  -> Span
+  -> GName
+  -> [Level]
+  -> Text
+  -> [Value]
+  -> [(Text, Term)]
+  -> CheckM Value
+instantiateTraitMemberType ctx site trait traitUniverses member arguments doneFields = do
+  globalTermWithUniversePrefix
+    ctx
+    site
+    (memberGlobal trait member)
+    traitUniverses >>= \case
+      Nothing -> pure (VSort LZero)
+      Just (_, projectionType) -> peelGenerated ctx projectionType arguments
+  where
+    peelGenerated activeCtx ty remaining = do
+      forced <- forceM ty
+      case forced of
+        VPiBoundM _ Impl quantity _ _ assumption@(Just _) domain closure -> do
+          proof <- resolveImplicitQ activeCtx site quantity domain
+          proofValue <- checkedArgumentValue activeCtx site domain proof
+          codomain <- clApp closure proofValue
+          nextCtx <- extendLevelAssumption site activeCtx assumption
+          peelGenerated nextCtx codomain remaining
+        _ -> peelSemantic activeCtx forced remaining
+
+    peelSemantic _ ty [] =
+      case ty of
+        VPi Impl _ _ _ _ closure -> do
+          fields <-
+            forM doneFields $ \(field, term) ->
+              (,) field <$> evalIn ctx term
+          clApp closure (VRecordV (sortOn fst fields))
+        _ -> pure ty
+    peelSemantic activeCtx ty (argument : rest) =
+      case ty of
+        VPi Impl _ _ _ _ closure -> do
+          codomain <- clApp closure argument
+          peelGenerated activeCtx codomain rest
+        _ -> pure ty
 
 -- | Specialize a declaration at an authenticated leading universe prefix.
 -- Trait-member accessors are the primary user: their owning trait occurrence
@@ -25757,7 +27767,7 @@ typeArgumentClassifier ctx site carrier value = do
     VFlex meta [] -> do
       classifier <- gets (Map.lookup meta . csMetaClassifiers)
       case classifier of
-        Just info | micDepth info == ctxLen ctx -> Just <$> evalIn ctx (micType info)
+        Just info -> traverse (evalIn ctx) (metaClassifierTermInContext ctx info)
         _ -> pure Nothing
     _ -> pure Nothing
   case fromCreationSite of
@@ -25765,7 +27775,19 @@ typeArgumentClassifier ctx site carrier value = do
     Nothing ->
       typeValueClassifierLevel ctx value' >>= \case
         Just level -> pure (VSort level)
-        Nothing -> carrierArgumentClassifier ctx site carrier
+        Nothing -> carrierArgumentClassifier ctx site carrier value'
+
+-- | Transport a metavariable's checked creation-site classifier through a
+-- lexical context extension. Context entries are de Bruijn binders prepended
+-- after the metavariable was created, so weakening by the exact depth delta
+-- preserves every reference to the original context. A shallower or
+-- unrelated context has no such transport and fails closed.
+metaClassifierTermInContext :: Ctx -> MetaClassifier -> Maybe Term
+metaClassifierTermInContext ctx classifier = do
+  let creationDepth = micDepth classifier
+      currentDepth = ctxLen ctx
+  guard (creationDepth <= currentDepth)
+  pure (shiftTerm (currentDepth - creationDepth) 0 (micType classifier))
 
 -- | Recover the source type argument whose cumulative image inhabits a
 -- carrier's input universe. Generalized Applicative/Monad members quantify
@@ -25806,13 +27828,18 @@ carrierSourceArgument _ctx _site _carrier argument = do
                     _ -> pure value
             _ -> pure value
 
-carrierArgumentClassifier :: Ctx -> Span -> Value -> CheckM Value
-carrierArgumentClassifier ctx site carrier =
+carrierArgumentClassifier :: Ctx -> Span -> Value -> Value -> CheckM Value
+carrierArgumentClassifier ctx site carrier sourceType =
   equandType ctx carrier >>= traverse forceM >>= \case
     Just (VPiBoundM _ _ _ _ _ _ domain _) -> pure domain
     _ -> do
-      errAt site "E_INTERNAL_GENERATED_APPLICATION" Nothing
-        "compiler-generated monadic application has no checked carrier argument domain"
+      carrierTerm <- tryQuoteIn ctx carrier
+      sourceTerm <- tryQuoteIn ctx sourceType
+      report $
+        maybe id (withNote . ("source type: " <>) . renderTerm) sourceTerm $
+          maybe id (withNote . ("carrier: " <>) . renderTerm) carrierTerm $
+            diag SevError StageElaborate "E_INTERNAL_GENERATED_APPLICATION" Nothing site
+              "compiler-generated monadic application has no checked carrier argument domain"
       freshMetaV ctx
 
 memberGlobal :: GName -> Text -> GName
@@ -25889,9 +27916,8 @@ knownTraitMemberProjection ctx site trait member dictionaryType dictionary = do
 -- to 'spineArgs' whose own 'tiMembers' lack 'member', search the trait's
 -- supertrait premises ('tiSupers') for one whose dictionary carries
 -- 'member' (directly or further up the chain) and build the projection
--- chain through the '__superN' evidence fields, e.g. 'mon.empty' on a
--- 'Monoid m' dictionary becomes 'mon.__super0.empty' (the 'Pointed m'
--- dict). Depth-bounded to match 'supertraitProject'. Returns the
+-- chain through the '__superN' evidence fields. Depth-bounded to match
+-- 'supertraitProject'. Returns the
 -- projection term and the member's instantiated type.
 supertraitMemberProject ::
   Ctx -> Int -> GName -> [Level] -> [Value] -> Term -> Text -> CheckM (Maybe (Term, Value))
@@ -30357,6 +32383,332 @@ elabEffDo ctx0 row aT items0 sp = do
       bindHead <- globalHeadM prelEffBind
       pure (CApp Expl (CApp Expl bindHead m) f)
 
+-- | Conservative Appendix G.2 applicability check. The dependency set is
+-- lexical, but the resulting term is elaborated normally: names do not select
+-- any operation, and every pattern still passes the ordinary irrefutability,
+-- exhaustiveness, quantity, and borrow judgments.
+applicativeDoShape
+  :: [DoItem]
+  -> Maybe ([(Pattern, Expr)], [LetBind], Expr, Set Text)
+applicativeDoShape = go Set.empty [] []
+  where
+    go bound actions lets = \case
+      [DoExpr finalExpression] ->
+        Just (reverse actions, reverse lets, finalExpression, bound)
+      DoBind binding : rest
+        | let dependencies =
+                Set.fromList
+                  (map nameText (freeVarOccurrencesScoped (lbExpr binding)))
+        , Set.null (Set.intersection bound dependencies) ->
+            let introduced =
+                  Set.fromList (map nameText (surfPatVars (lbPattern binding)))
+             in go
+                  (Set.union bound introduced)
+                  ((lbPattern binding, lbExpr binding) : actions)
+                  lets
+                  rest
+      DoLet binding : rest ->
+        let introduced =
+              Set.fromList (map nameText (surfPatVars (lbPattern binding)))
+         in go
+              (Set.union bound introduced)
+              actions
+              (binding : lets)
+              rest
+      _ -> Nothing
+
+-- | Whether any expression in a user-carrier do block requires semantic
+-- lifting. Independent binds remain eligible for Applicative lowering, but the
+-- fast path must not bypass mutable-current reads, explicit splices, generated
+-- reads, or reference-facet effects.
+doItemsRequireEffectAwareLifting :: Ctx -> [DoItem] -> Bool
+doItemsRequireEffectAwareLifting ctx = any go
+  where
+    exprNeedsLift e =
+      exprHasCurrentRead ctx e
+        || exprHasBang e
+        || exprHasGeneratedVarRead e
+        || not (Set.null (collectRefFacets e))
+    exprHasGeneratedVarRead = \case
+      EVarRead {} -> True
+      _ -> False
+    go = \case
+      DoBind binding -> exprNeedsLift (lbExpr binding)
+      DoVar _ _ rhs _ -> exprNeedsLift rhs
+      DoWhile _ condition body mElse _ ->
+        exprNeedsLift condition || any go body || maybe False (any go) mElse
+      DoFor _ _ src body mels _ ->
+        exprNeedsLift src || any go body || maybe False (any go) mels
+      DoIf alts mels _ ->
+        any (\(cnd, body) -> exprNeedsLift cnd || any go body) alts
+          || maybe False (any go) mels
+      DoExpr e -> exprNeedsLift e
+      DoLet lb -> exprNeedsLift (lbExpr lb)
+      DoLetQ _ rhs mElse _ ->
+        exprNeedsLift rhs || maybe False (exprNeedsLift . snd) mElse
+      DoAssign _ _ rhs _ -> exprNeedsLift rhs
+      DoUsing _ _ rhs _ -> exprNeedsLift rhs
+      DoDefer _ e _ -> exprNeedsLift e
+      _ -> False
+
+-- | The Monad lowering additionally owns sequencing forms whose typing depends
+-- on completed action boundaries, even if their expressions need no lifting.
+monadDoNeedsStructuredElaboration :: Ctx -> [DoItem] -> Bool
+monadDoNeedsStructuredElaboration ctx items =
+  doItemsRequireEffectAwareLifting ctx items
+    || any structurallyTyped items
+    || any isDiscardedExpression (dropLast items)
+  where
+    dropLast [] = []
+    dropLast [_] = []
+    dropLast (item : rest) = item : dropLast rest
+    isDiscardedExpression DoExpr {} = True
+    isDiscardedExpression DoIf {} = True
+    isDiscardedExpression _ = False
+    structurallyTyped = \case
+      DoBind {} -> True
+      DoVar {} -> True
+      DoWhile {} -> True
+      DoFor {} -> True
+      DoReturn {} -> True
+      DoBreak {} -> True
+      DoContinue {} -> True
+      _ -> False
+
+-- | Authenticate a source application as the canonical prelude
+-- @Applicative.pure@ projection. The source spelling only identifies a lookup
+-- candidate; the resolved Core head is the authority.
+canonicalApplicativePurePayload :: Ctx -> Expr -> CheckM (Maybe Expr)
+canonicalApplicativePurePayload ctx = \case
+  EApp headExpression [ArgExplicit payload] -> do
+    resolvedHead <- staticGlobalExpr ctx headExpression
+    pure (payload <$ guard (resolvedHead == Just (gPrel "pure")))
+  _ -> pure Nothing
+
+-- | Prefer the first expected-directed elaboration, but retry from the complete
+-- checker state when it emits errors and retain whichever branch emits fewer.
+-- Failed speculative checks may allocate metas, constraints, evidence, and
+-- diagnostics, so rolling back only a subset of 'CheckState' is unsound.
+preferCheckByErrors :: CheckM Term -> CheckM Term -> CheckM Term
+preferCheckByErrors primary fallback = do
+  checkpoint <- get
+  baselineErrors <- gets (length . filter isError . csDiags)
+  primaryTerm <- primary
+  primaryErrors <- gets (length . filter isError . csDiags)
+  if primaryErrors == baselineErrors
+    then pure primaryTerm
+    else do
+      primaryState <- get
+      put checkpoint
+      fallbackTerm <- fallback
+      fallbackErrors <- gets (length . filter isError . csDiags)
+      if fallbackErrors < primaryErrors
+        then pure fallbackTerm
+        else put primaryState >> pure primaryTerm
+
+-- | Elaborate one proven-independent user-carrier do block with Applicative
+-- operations only (§G.2). Actions are checked before their pattern lambdas are
+-- built, so pattern checking observes the exact carrier result types. The
+-- checked n-ary function is applied through the selected @liftA2@ member at
+-- every step; no tuple-shaped inference shortcut or hard-coded carrier is
+-- involved. The separately checked default @(<*>)@ remains available to user
+-- programs and instances but is not needed by this lowering.
+elabApplicativeDo
+  :: Ctx
+  -> Value
+  -> [(Pattern, Expr)]
+  -> [LetBind]
+  -> Expr
+  -> Set Text
+  -> Span
+  -> CheckM (Maybe (Term, Value))
+elabApplicativeDo ctx expected actions lets finalExpression boundNames site = do
+  purePayload <- canonicalApplicativePurePayload ctx finalExpression
+  let finalDependencies =
+        Set.fromList
+          (map nameText (freeVarOccurrencesScoped finalExpression))
+      finalIsIndependent =
+        Set.null (Set.intersection boundNames finalDependencies)
+      (carrier, resultType) =
+        fromMaybe (expected, expected) (monadActionViewValue expected)
+  case actions of
+    [] -> Just . (,expected) <$> check ctx (wrapLets finalExpression) expected
+    _ -> do
+      checkedActions <- mapM (checkUnknownAction carrier) actions
+      case purePayload of
+        Just payload ->
+          build carrier resultType checkedActions (wrapLets payload)
+        Nothing
+          | finalIsIndependent && null lets -> do
+              resultName <- pure (Name "__applicative_do_result" site)
+              finalAction <-
+                checkKnownAction
+                  carrier
+                  resultType
+                  (PVar resultName, finalExpression)
+              build
+                carrier
+                resultType
+                (checkedActions ++ [finalAction])
+                (EVar resultName)
+          | otherwise -> pure Nothing
+  where
+    wrapLets payload = case lets of
+      [] -> payload
+      orderedLets -> ELet orderedLets payload site
+
+    checkUnknownAction carrier (pattern', expression) = do
+      valueType <- freshMetaV ctx
+      checkKnownAction carrier valueType (pattern', expression)
+
+    checkKnownAction carrier valueType (pattern', expression) = do
+      actionType <-
+        case monadResultType carrier valueType of
+          Just ty -> pure ty
+          Nothing -> do
+            errAt site "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+              "this Applicative do block has a higher-order carrier shape this implementation cannot apply (§G.2)"
+            pure expected
+      term <- check ctx expression actionType
+      defaultPendingNumericGoals
+      valueType' <- forceM valueType
+      pure (pattern', term, valueType')
+
+    build carrier resultType checked body = do
+      unitType <- globalValueM prelUnit []
+      (prepared, argumentTypes) <-
+        case checked of
+          [single] -> do
+            unitTerm <- generatedCtorAtM ctx unitType prelUnit
+            unitActionType <-
+              case monadResultType carrier unitType of
+                Just ty -> pure ty
+                Nothing -> pure expected
+            unitAction <-
+              generatedApplicativePureAtM
+                ctx
+                site
+                carrier
+                unitType
+                unitTerm
+                unitActionType
+            pure
+              ( [single, (PWild site, unitAction, unitType)]
+              , [third single, unitType]
+              )
+          many -> pure (many, map third many)
+      function <- buildFunction ctx prepared body resultType
+      functionType <- applicativeFunctionType argumentTypes resultType
+      applicativeGoal <- globalValueM prelApplicative [(Expl, carrier)]
+      dictionary <- resolveImplicit ctx site applicativeGoal
+      (liftA2Member, liftA2Type) <-
+        knownTraitMemberProjection
+          ctx
+          site
+          prelApplicative
+          "liftA2"
+          applicativeGoal
+          dictionary
+      let firstAction = prepared !! 0
+          secondAction = prepared !! 1
+          suffixTypes = drop 2 argumentTypes
+      firstResultType <- applicativeFunctionType suffixTypes resultType
+      lifted <-
+        applyApplicativeMember
+          carrier
+          liftA2Member
+          liftA2Type
+          [third firstAction, third secondAction, firstResultType]
+          [ (function, functionType)
+          , (second firstAction, actionType carrier (third firstAction))
+          , (second secondAction, actionType carrier (third secondAction))
+          ]
+      (finalTerm, finalType) <-
+        foldM
+          (applyRemaining liftA2Member liftA2Type carrier resultType)
+          (lifted, actionType carrier firstResultType)
+          (zip (drop 2 prepared) (tailsAfter suffixTypes))
+      coerced <- coerceTerm ctx site finalTerm finalType expected
+      pure (Just (coerced, expected))
+
+    buildFunction current [] body resultType = check current body resultType
+    buildFunction current ((pattern', _, valueType) : rest) body resultType =
+      handlerClauseLam current QW pattern' valueType $ \next ->
+        buildFunction next rest body resultType
+
+    applicativeFunctionType argumentTypes resultType = do
+      resultTerm <- quoteIn ctx resultType
+      typeTerm <- go 0 argumentTypes resultTerm
+      evalIn ctx typeTerm
+      where
+        go depth [] resultTerm = pure (shiftTerm depth 0 resultTerm)
+        go depth (argumentType : rest) resultTerm = do
+          domain <- shiftTerm depth 0 <$> quoteIn ctx argumentType
+          codomain <- go (depth + 1) rest resultTerm
+          pure
+            ( CPiBoundFormedM
+                Ordinary
+                FormationOrdinary
+                Expl
+                QW
+                False
+                "__applicative_do_argument"
+                Nothing
+                domain
+                codomain
+            )
+
+    applyApplicativeMember carrier member memberType typeArguments explicitArguments = do
+      sources <- mapM (carrierSourceArgument ctx site carrier) typeArguments
+      classifiers <-
+        mapM (typeArgumentClassifier ctx site carrier) sources
+      sourceTerms <- mapM (quoteIn ctx) sources
+      let implicitArguments =
+            [ (Impl, term, classifier)
+            | (term, classifier) <- zip sourceTerms classifiers
+            ]
+          explicitSpine =
+            [ (Expl, term, ty)
+            | (term, ty) <- explicitArguments
+            ]
+      fst <$>
+        applyGeneratedCoreSpine
+          ctx
+          site
+          member
+          memberType
+          (implicitArguments ++ explicitSpine)
+
+    applyRemaining liftA2Member liftA2Type carrier resultType (current, _) ((_, action, valueType), suffixTypes) = do
+      nextResultType <- applicativeFunctionType suffixTypes resultType
+      currentValueType <- applicativeFunctionType (valueType : suffixTypes) resultType
+      applicationFunctionType <-
+        applicativeFunctionType
+          [currentValueType, valueType]
+          nextResultType
+      let applicationFunction =
+            CLamM Ordinary Expl QW "__applicative_do_function" $
+              CLamM Ordinary Expl QW "__applicative_do_value" $
+                CApp Expl (CVar 1) (CVar 0)
+      next <-
+        applyApplicativeMember
+          carrier
+          liftA2Member
+          liftA2Type
+          [currentValueType, valueType, nextResultType]
+          [ (applicationFunction, applicationFunctionType)
+          , (current, actionType carrier currentValueType)
+          , (action, actionType carrier valueType)
+          ]
+      pure (next, actionType carrier nextResultType)
+
+    actionType carrier valueType =
+      fromMaybe expected (monadResultType carrier valueType)
+
+    tailsAfter values = [drop index values | index <- [1 .. length values]]
+    second (_, value, _) = value
+    third (_, _, value) = value
+
 -- | A @do@ block whose result type is a user monad @m@ (one with a
 -- @Monad@ instance) that is not one of the kernel carriers IO\/STM\/Eff\/
 -- Elab. §18.8 specifies @do@ over an arbitrary enclosing monad; for a
@@ -30369,7 +32721,7 @@ elabEffDo ctx0 row aT items0 sp = do
 -- realized over @m@) are rejected here, exactly as in an Eff-typed do.
 elabMonadDo :: Ctx -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
 elabMonadDo ctx me items0 sp
-  | monadDoNeedsStructuredElaboration items0 = do
+  | monadDoNeedsStructuredElaboration ctx items0 = do
       tm <- direct items0
       pure (tm, me)
   | otherwise = do
@@ -30412,56 +32764,22 @@ elabMonadDo ctx me items0 sp
       DoLet lb@(LetBind _ _ _ _ _ bsp) -> (\r -> ELet [lb] r bsp) <$> desugar rest
       DoIf alts mels isp -> mkBind (PWild sp) (ifToExpr alts mels isp) <$> desugar rest
       -- a refutable `let? p = rhs [else rp -> fe]` is a match over the pure rhs:
-      -- the bound continuation on a match, the else (or the monad's `empty` =
-      -- the failure of the Alternative/Monoid) on a miss.  This also drives the
+      -- the bound continuation on a match, the else (or Alternative.empty) on
+      -- a miss. This also drives the
       -- §16.1 residue check on `p` (so a discarded relevant residue is rejected).
       DoLetQ pat rhs mElse dsp -> do
         rest' <- desugar rest
         let elseArm = case mElse of
               Just (rp, fe) -> MatchCase rp Nothing fe dsp
-              Nothing -> MatchCase (PWild dsp) Nothing (EVar (Name "empty" dsp)) dsp
+              Nothing ->
+                MatchCase (PWild dsp) Nothing
+                  (EDot (EVar (Name "Alternative" dsp)) (DotName (Name "empty" dsp)))
+                  dsp
         pure (EMatch (rhs) [MatchCase pat Nothing rest' dsp, elseArm] dsp)
       other -> do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in a user-monad do block by this implementation (§18.8)"
         desugar rest
-
-    monadDoNeedsStructuredElaboration items =
-      any go items || any isDiscardedExpression (dropLast items)
-      where
-        dropLast [] = []
-        dropLast [_] = []
-        dropLast (item : rest) = item : dropLast rest
-        isDiscardedExpression DoExpr {} = True
-        isDiscardedExpression DoIf {} = True
-        isDiscardedExpression _ = False
-        exprNeedsLift e =
-          exprHasCurrentRead ctx e
-            || exprHasBang e
-            || exprHasGeneratedVarRead e
-            || not (Set.null (collectRefFacets e))
-        exprHasGeneratedVarRead = \case
-          EVarRead {} -> True
-          _ -> False
-        go = \case
-          -- A monadic bind introduces a weak monomorphic result variable.
-          -- Keep subsequent statements in this typed elaborator so completed
-          -- action boundaries can commit literal defaulting before later uses.
-          DoBind {} -> True
-          DoVar {} -> True
-          DoWhile {} -> True
-          DoFor _ _ src body mels _ ->
-            exprNeedsLift src || any go body || maybe False (any go) mels
-          DoIf alts mels _ ->
-            any (\(cnd, body) -> exprNeedsLift cnd || any go body) alts
-              || maybe False (any go) mels
-          DoExpr e -> exprNeedsLift e
-          DoLet lb -> exprNeedsLift (lbExpr lb)
-          DoLetQ _ rhs mElse _ -> exprNeedsLift rhs || maybe False (exprNeedsLift . snd) mElse
-          DoAssign _ _ rhs _ -> exprNeedsLift rhs
-          DoUsing _ _ rhs _ -> exprNeedsLift rhs
-          DoDefer _ e _ -> exprNeedsLift e
-          _ -> False
 
     actionTy a =
       case monadResultType mTy a of
@@ -30514,22 +32832,8 @@ elabMonadDo ctx me items0 sp
       expectedAction <- actionTy a
       generatedApplicativePureAtM c sp mTy source val expectedAction
 
-    -- The source semantic interface names the operation @pure@ even though
-    -- the current bootstrap dictionary stores it as @pureA@ to avoid a
-    -- prelude-global collision.  Recognize only the resolved canonical
-    -- prelude declaration; a local or imported same-spelling function remains
-    -- an ordinary action expression.
-    canonicalPurePayload c = \case
-      EApp headExpr [ArgExplicit payload] -> do
-        saved <- get
-        (headTm, _) <- infer c headExpr
-        if termHeadGlob headTm == Just (gPrel "pure")
-          then pure (Just payload)
-          else put saved >> pure Nothing
-      _ -> pure Nothing
-
     checkAction c resultTy expression =
-      canonicalPurePayload c expression >>= \case
+      canonicalApplicativePurePayload c expression >>= \case
         Just payload -> do
           source <- carrierSourceArgument c sp mTy resultTy
           check c payload source >>= monadPure c resultTy
@@ -30570,29 +32874,18 @@ elabMonadDo ctx me items0 sp
     directGo target c [DoIf alts mels isp] = directGo target c [DoExpr (ifToExpr alts mels isp)]
     directGo target c [DoExpr e0] = do
       rewriteVarInoutStatement c e0 >>= \case
-        Just items -> directGo target c items
-        Nothing -> do
-          (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
-          if not (null pre)
-            then directGo target c (pre ++ [DoExpr e])
-            else do
-              st0 <- get
-              n0 <- gets (length . filter isError . csDiags)
-              tm0 <- checkAction c target e
-              n1 <- gets (length . filter isError . csDiags)
-              if n1 == n0
-                then pure tm0
-                else do
-                  stAction <- get
-                  put st0
+          Just items -> directGo target c items
+          Nothing -> do
+            (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
+            if not (null pre)
+              then directGo target c (pre ++ [DoExpr e])
+            else
+              preferCheckByErrors
+                (checkAction c target e)
+                (do
                   source <- carrierSourceArgument c sp mTy target
                   valTm <- check c e source
-                  nPure <- gets (length . filter isError . csDiags)
-                  if nPure < n1
-                    then monadPure c target valTm
-                    else do
-                      put stAction
-                      pure tm0
+                  monadPure c target valTm)
     directGo target c (item : rest) = case item of
       DoExpr e0 -> do
         rewriteVarInoutStatement c e0 >>= \case
@@ -30686,9 +32979,15 @@ elabMonadDo ctx me items0 sp
             refTy <- monadRefRefType c refDict rhsTyTm
             loweringW <- builtinIOMonadRefLowering c mTy refDict
             escapes <- escapedRefFacetsExpr c rhs
-            voidT <- globalValueM (GName preludeModule "Void") []
             let newAct = monadRefNewAction refDict rhsTyTm rhsTm
-                refInfo = VarRefInfo rhsTy rhsTyTm refDict mTy voidT loweringW
+                refInfo =
+                  VarRefInfo
+                    rhsTy
+                    rhsTyTm
+                    refDict
+                    mTy
+                    (monadRefDiagnosticRefType rhsTy)
+                    loweringW
                 cVar = foldr escapeVarCurrent (bindCtxVar (nameText n) refTy refInfo c) (Set.toList escapes)
             recordMutableBindingFields c (nameSpan n) refTy refInfo
             body <- directGo target cVar rest
@@ -30707,6 +33006,10 @@ elabMonadDo ctx me items0 sp
           Nothing -> directGo target c (DoExpr (ifToExpr alts mels isp) : rest)
       DoWhile ml cond0 body mels wsp ->
         directWhile target c ml cond0 body mels wsp rest
+      DoFor ml pat source body Nothing fsp
+        | doSuiteContainsReturn body
+        , not (doSuiteContainsLoopControl body) ->
+            directReturningFor target c ml pat source body fsp rest
       DoDecl declaration -> case declaration of
         -- Local type aliases are erased let-bindings and remain declaration
         -- boundaries inside a mutable user-monad do block. Reuse the same
@@ -30735,6 +33038,267 @@ elabMonadDo ctx me items0 sp
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in a mutable user-monad do block by this implementation (§18.8)"
         directGo target c rest
+
+    -- The return-only completion fragment used by an early-exit iterator
+    -- loop.  @None@ is normal fallthrough and @Some r@ is the enclosing
+    -- function's return completion.  Keeping this channel typed avoids a
+    -- Dynamic payload or a privileged exception path; every action is still
+    -- assembled through the selected Monad dictionary.
+    returningControlGo target c = go
+      where
+        controlType = globalValueM prelOption [(Expl, target)]
+        normal = do
+          ty <- controlType
+          none <- generatedCtorAtM c ty prelNone
+          monadPure c ty none
+        returned expression = do
+          payload <- check c expression target
+          ty <- controlType
+          some <- generatedCtorApplyAtM c ty prelSome [payload]
+          monadPure c ty some
+        go [] = normal
+        go (DoReturn label payload returnSpan : _) = do
+          forM_ label $ \name ->
+            unless (Just (nameText name) == ctxReturnTarget c) $
+              errAt
+                (nameSpan name)
+                "E_LABEL_UNRESOLVED"
+                (Just "kappa-hs.do.label-unresolved")
+                ( "return@" <> nameText name
+                    <> " does not target the enclosing named function or labeled lambda (\16718.5/\16718.5.1)"
+                )
+          case payload of
+            Just expression -> returned expression
+            Nothing -> do
+              unitType <- globalValueM prelUnit []
+              expectType c returnSpan unitType target
+              unitTerm <- generatedCtorAtM c unitType prelUnit
+              ty <- controlType
+              some <- generatedCtorApplyAtM c ty prelSome [unitTerm]
+              monadPure c ty some
+        go (DoIf alternatives fallback _ : rest) =
+          branch alternatives
+          where
+            branch [] = go (fromMaybe [] fallback ++ rest)
+            branch ((condition, body) : more) = do
+              boolType <- globalValueM prelBool []
+              conditionTerm <- check c condition boolType
+              trueAction <- go (body ++ rest)
+              falseAction <- branch more
+              pure (CIf conditionTerm trueAction falseAction)
+        go (DoExpr expression : rest) = do
+          valueType <- freshMetaV c
+          action <- checkAction c valueType expression
+          registerDiscardedResult c (exprSpan expression) valueType
+          ty <- controlType
+          continuation <- go rest
+          monadBind
+            c
+            valueType
+            ty
+            action
+            (CLamM Ordinary Expl QW "__returning_for_unit" (shiftTerm 1 0 continuation))
+        go (DoBind (LetBind _ _ pattern' annotation actionExpression bindSpan) : rest) = do
+          valueType <- case annotation of
+            Just typeExpression -> fst <$> inferType c typeExpression >>= evalIn c
+            Nothing -> freshMetaV c
+          action <- checkAction c valueType actionExpression
+          checkIrrefutable c pattern' valueType bindSpan
+          ty <- controlType
+          continuation <-
+            handlerClauseLam c QW pattern' valueType $ \next ->
+              returningControlGo target next rest
+          monadBind c valueType ty action continuation
+        go (DoLet binding : rest) =
+          fst <$>
+            elabLetItemsWith
+              c
+              [LocalLetBinding binding]
+              (\next -> (,target) <$> returningControlGo target next rest)
+        go (item : rest) = do
+          unsupportedAt
+            (doItemSpan item)
+            "this do-item form is not yet part of the typed return-completion fragment for an arbitrary-Monad iterator loop (\16718.8.5-\16718.8.14)"
+          go rest
+
+    directReturningFor target c _label pattern' source body loopSpan rest = do
+      (sourceTerm0, sourceType0) <- infer c source
+      (sourceTerm, sourceType) <-
+        insertAllImplicits c (exprSpan source) sourceTerm0 sourceType0
+      iteratorGoal <- globalValueM (gPrel "Iterator") [(Expl, sourceType)]
+      iteratorDictionary <- resolveImplicit c loopSpan iteratorGoal
+      let itemTypeTerm = CProjM Parametric iteratorDictionary "Item"
+          nextTerm = CProjM Ordinary iteratorDictionary "next"
+      itemType <- evalIn c itemTypeTerm
+      sourceTypeTerm <- quoteIn c sourceType
+      let stepPayloadTypeTerm =
+            CRecordT
+              [ ("item", itemTypeTerm)
+              , ("rest", sourceTypeTerm)
+              ]
+      stepPayloadType <- evalIn c stepPayloadTypeTerm
+      stepType <- globalValueM prelOption [(Expl, stepPayloadType)]
+      stepTypeTerm <- quoteIn c stepType
+      stepUniverses <- optionUniverses stepType
+      controlType <- globalValueM prelOption [(Expl, target)]
+      controlTypeTerm <- quoteIn c controlType
+      controlUniverses <- optionUniverses controlType
+      resultActionType <- actionTy controlType
+      resultActionTypeTerm <- quoteIn c resultActionType
+      loopActionType <- actionTy controlType
+      loopActionTypeTerm <- quoteIn c loopActionType
+      let loopTypeTerm =
+            CPiBoundFormedM
+              Ordinary
+              FormationOrdinary
+              Expl
+              Q1
+              False
+              "__iterator"
+              Nothing
+              sourceTypeTerm
+              (shiftTerm 1 0 loopActionTypeTerm)
+      loopType <- evalIn c loopTypeTerm
+      loopName <- freshNameM "__returning_for"
+      let cLoop = bindCtx loopName False loopType c
+          cIterator = bindCtxMQ Ordinary Q1 "__iterator" False sourceType cLoop
+          stepTerm = CApp Expl (shiftTerm 2 0 nextTerm) (CVar 0)
+          cStep = bindCtx "__step" False stepPayloadType cIterator
+          itemProjection = CProjM Ordinary (CVar 0) "item"
+          restProjectionUnderCompletion = CProjM Ordinary (CVar 1) "rest"
+          cItem = bindCtx "__item" False itemType cStep
+      (patternCore, cBody, patternRefinements) <-
+        elabPattern cItem pattern' itemType
+      bodyAction <-
+        withPatternRefinements patternRefinements $
+          returningControlGo target cBody body
+      itemTypeInStep <- quoteIn cStep itemType
+      actionTypeInItem <- quoteIn cItem loopActionType
+      let boundBody =
+            CLetM Ordinary QW "__item" itemTypeInStep itemProjection
+              ( CMatch
+                  (CVar 0)
+                  (Just (shiftTerm 1 0 itemTypeInStep))
+                  (Just actionTypeInItem)
+                  [CaseAlt patternCore Nothing bodyAction]
+              )
+          cCompletion = bindCtx "__completion" False controlType cStep
+          cReturned = bindCtx "__returned" False target cCompletion
+      propagateReturn <- monadPure cReturned controlType (CVar 1)
+      let recursiveCall = CApp Expl (CVar 3) restProjectionUnderCompletion
+      completionActionTypeInCompletion <- quoteIn cCompletion loopActionType
+      let continueOrReturn =
+            CMatch
+              (CVar 0)
+              (Just (shiftTerm 1 0 controlTypeTerm))
+              (Just completionActionTypeInCompletion)
+              [ CaseAlt
+                  (CPCtorM [] [] [] prelSome controlUniverses [CPVarM Ordinary "__returned"])
+                  Nothing
+                  propagateReturn
+              , CaseAlt
+                  (CPCtorM [] [] [] prelNone controlUniverses [])
+                  Nothing
+                  recursiveCall
+              ]
+      stepSomeBody <-
+        monadBind
+          cStep
+          controlType
+          controlType
+          boundBody
+          (CLamM Ordinary Expl QW "__completion" continueOrReturn)
+      normalAtEnd <- do
+        none <- generatedCtorAtM cIterator controlType prelNone
+        monadPure cIterator controlType none
+      let loopRhs =
+            CLamM Ordinary Expl Q1 "__iterator" $
+              CMatch
+                stepTerm
+                (Just (shiftTerm 2 0 stepTypeTerm))
+                (Just (shiftTerm 2 0 resultActionTypeTerm))
+                [ CaseAlt
+                    (CPCtorM [] [] [] prelSome stepUniverses [CPVarM Ordinary "__step"])
+                    Nothing
+                    stepSomeBody
+                , CaseAlt
+                    (CPCtorM [] [] [] prelNone stepUniverses [])
+                    Nothing
+                    normalAtEnd
+                ]
+          loopCall = CApp Expl (CVar 0) (shiftTerm 1 0 sourceTerm)
+          cDone = bindCtx "__completion" False controlType cLoop
+          cReturn = bindCtx "__returned" False target cDone
+      returnedAction <- monadPure cReturn target (CVar 0)
+      normalAction <- directGo target cDone rest
+      targetActionType <- actionTy target >>= quoteIn cDone
+      let consumeCompletion =
+            CMatch
+              (CVar 0)
+              (Just (shiftTerm 2 0 controlTypeTerm))
+              (Just targetActionType)
+              [ CaseAlt
+                  (CPCtorM [] [] [] prelSome controlUniverses [CPVarM Ordinary "__returned"])
+                  Nothing
+                  returnedAction
+              , CaseAlt
+                  (CPCtorM [] [] [] prelNone controlUniverses [])
+                  Nothing
+                  normalAction
+              ]
+      loopResult <-
+        monadBind
+          cLoop
+          controlType
+          target
+          loopCall
+          (CLamM Ordinary Expl QW "__completion" consumeCompletion)
+      pure (CLetRecM Ordinary QW loopName loopTypeTerm loopRhs loopResult)
+      where
+        optionUniverses value =
+          forceM value >>= \case
+            VGlobI global universes [_]
+              | global == prelOption -> pure universes
+            _ -> do
+              errAt
+                loopSpan
+                "E_INTERNAL_PRELUDE_INTERFACE"
+                (Just "kappa.internal.compiler")
+                "the compiler-generated return completion did not have the canonical Option identity"
+              pure []
+
+    doSuiteContainsReturn = any go
+      where
+        go = \case
+          DoReturn {} -> True
+          DoIf alternatives fallback _ ->
+            any (doSuiteContainsReturn . snd) alternatives
+              || maybe False doSuiteContainsReturn fallback
+          DoWhile _ _ nested fallback _ ->
+            doSuiteContainsReturn nested
+              || maybe False doSuiteContainsReturn fallback
+          DoFor _ _ _ nested fallback _ ->
+            doSuiteContainsReturn nested
+              || maybe False doSuiteContainsReturn fallback
+          DoExpr (EDo _ nested _) -> doSuiteContainsReturn nested
+          _ -> False
+
+    doSuiteContainsLoopControl = any go
+      where
+        go = \case
+          DoBreak {} -> True
+          DoContinue {} -> True
+          DoIf alternatives fallback _ ->
+            any (doSuiteContainsLoopControl . snd) alternatives
+              || maybe False doSuiteContainsLoopControl fallback
+          DoWhile _ _ nested fallback _ ->
+            doSuiteContainsLoopControl nested
+              || maybe False doSuiteContainsLoopControl fallback
+          DoFor _ _ _ nested fallback _ ->
+            doSuiteContainsLoopControl nested
+              || maybe False doSuiteContainsLoopControl fallback
+          DoExpr (EDo _ nested _) -> doSuiteContainsLoopControl nested
+          _ -> False
 
     directAssign target c n monadic rhs0 asp rest = do
       (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
@@ -31270,10 +33834,25 @@ activePatArgExpr = \case
   PVar n -> Just (EVar n)
   _ -> Nothing
 
+-- | Recover a lexical rigid through an explicit, proof-carrying universe
+-- coercion.  The wrapper changes only the classifier level and therefore
+-- preserves the term identity used by branch-local flow facts.  No other
+-- neutral/application shape is accepted.
+rigidLevelThroughUniverseLift :: Value -> Maybe Int
+rigidLevelThroughUniverseLift = \case
+  VRigid level [] -> Just level
+  VUniverseLift _ _ _ inner -> rigidLevelThroughUniverseLift inner
+  _ -> Nothing
+
 checkMatchPlain :: HasCallStack => Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
 checkMatchPlain ctx scrut cases sp resT = do
   (sTm, sTy) <- infer ctx scrut
   (sTm1, sTy1) <- insertAllImplicits ctx (exprSpan scrut) sTm sTy
+  sTyForced <- forceM sTy1
+  scrutineeBoolCondition <-
+    if nominalFamilyValueHead sTyForced == Just prelBool
+      then Just <$> normalizeBranchConditionTerm ctx sTm1
+      else pure Nothing
   -- Match annotations describe the eliminator at its enclosing scope. Quote
   -- them before checking any arm: branch facts may force an outer neutral to
   -- a constructor containing arm-local rigids, and such a value must never
@@ -31287,7 +33866,7 @@ checkMatchPlain ctx scrut cases sp resT = do
   let mLvl = case scrut of
         EVar n -> case lookupCtx (nameText n) ctx of
           Just (i, _) -> case drop i (ctxEnv ctx) of
-            (VRigid l [] : _) -> Just l
+            (value : _) -> rigidLevelThroughUniverseLift value
             _ -> Nothing
           Nothing -> Nothing
         _ -> Nothing
@@ -31305,7 +33884,20 @@ checkMatchPlain ctx scrut cases sp resT = do
             errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.proof.impossible-reachable")
               "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
           pure (accAlts, checkedCases, prior, covered)
-        MatchCase pat mguard body _ -> do
+        MatchCase (PWild patternSite) mguard body caseSite
+          | not (null [() | (_, Nothing) <- checkedCases]) -> do
+              state <- get
+              case residualCatchAllPatterns state sTy1 checkedCases patternSite of
+                Just residuals ->
+                  foldM
+                    goCase
+                    (accAlts, checkedCases, prior, covered)
+                    [MatchCase pattern' mguard body caseSite | pattern' <- residuals]
+                Nothing ->
+                  checkCase accAlts checkedCases prior covered (PWild patternSite) mguard body
+        MatchCase pat mguard body _ ->
+          checkCase accAlts checkedCases prior covered pat mguard body
+      checkCase accAlts checkedCases prior covered pat mguard body = do
           sVarF <- forceM sTy1
           (patC, ctx', patternRefinements) <- case (variantResidual pat, sVarF) of
             (Just restN, VVariantT members) -> do
@@ -31330,6 +33922,20 @@ checkMatchPlain ctx scrut cases sp resT = do
           let PatternRefinements branchRefinements = patternRefinements
           modify' $ \state ->
             state {csFacts = Map.union branchRefinements surroundingFacts}
+          -- Replay the checked, serialized constructor-result equations into
+          -- conversion facts for this branch.  The pattern certificate is the
+          -- durable authority here: transient elaboration facts may have been
+          -- created before existential pattern binders extended the context,
+          -- while each 'ConstructorForcedEquality' is quoted at exactly the
+          -- final branch depth.  This is generic GADT refinement, so a
+          -- user-defined @Equal a b@/@Refl : Equal a a@ follows the same path
+          -- as the standard equality family.
+          certifiedRefinements <- rootConstructorForcedRefinements ctx' patC
+          modify' $ \state ->
+            state
+              { csFacts =
+                  Map.union certifiedRefinements (csFacts state)
+              }
           -- §17.1.7: a variable scrutinee is flow-refined to this arm's
           -- constructor inside the arm, mirroring `if … is C`. This lets
           -- member projection on the scrutinee (`match b case Full v ->
@@ -31357,6 +33963,18 @@ checkMatchPlain ctx scrut cases sp resT = do
             _ -> pure Nothing
           forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
             modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
+          -- Matching a checked Bool expression establishes the same scoped
+          -- proposition as an if-condition. This must cover non-variable
+          -- scrutinees too: indexed result construction in the arm may need
+          -- the fact that the exact checked expression is True or False.
+          oldBool <- gets csBoolFacts
+          forM_ ((,) <$> scrutineeBoolCondition <*> boolPatternTruth patC) $ \(condition, truth) ->
+            modify' $ \state ->
+              state
+                { csBoolFacts =
+                    ScopedBoolFact (ctxLen ctx) condition truth
+                      : csBoolFacts state
+                }
           boolT <- globalValueM prelBool []
           gTm <- traverse (\g -> check ctx'' g boolT) mguard
           branchGuard <- traverse (normalizeBranchConditionTerm ctx'') gTm
@@ -31365,7 +33983,6 @@ checkMatchPlain ctx scrut cases sp resT = do
           -- conversion through 'csBoolFacts'); e.g. `case _ if y <= x ->
           -- x - y` discharges the checked-subtraction obligation. The
           -- if-expression and try-match paths already do this.
-          oldBool <- gets csBoolFacts
           forM_ branchGuard $ \gt ->
             modify' $ \st ->
               st {csBoolFacts = ScopedBoolFact (ctxLen ctx'') gt True : csBoolFacts st}
@@ -31395,6 +34012,11 @@ checkMatchPlain ctx scrut cases sp resT = do
                 Nothing -> accAlts
                 Just branch -> accAlts ++ [CaseAlt patC gTm branch]
           pure (alts', checkedCases ++ [(patC, gTm)], prior', covered')
+      boolPatternTruth = \case
+        CPCtor constructor _ []
+          | constructor == prelTrue -> Just True
+          | constructor == prelFalse -> Just False
+        _ -> Nothing
   nErrsBefore <- gets (length . filter isError . csDiags)
   (alts, checkedCases, _, _) <- foldM goCase ([], [], [], []) cases
   nErrsAfter <- gets (length . filter isError . csDiags)
@@ -31609,10 +34231,13 @@ termContainsAtScope needle =
             == shiftTerm depth 0 normalizedNeedle
         )
 
--- | Reconstruct the complete typed constructor occurrence established by a
--- plain constructor branch. The older branch fact retained only runtime
--- payload fields, which was enough for constructor-tag refinement but lost
--- hidden erased arguments. Consequently a valid constructor eta proof such as
+-- | Reconstruct the constructor occurrence established by a plain constructor
+-- branch. An ordinary constructor with no existential, bridge, or hidden
+-- source slots uses its exact runtime-shaped 'VCtor' value; this is the shape
+-- transparent recursive equations eliminate. Constructors with hidden erased
+-- arguments need the complete typed occurrence instead. Retaining only runtime
+-- payload fields for that second class loses information, so a valid
+-- constructor eta proof such as
 --
 -- @
 -- match x
@@ -31640,112 +34265,129 @@ constructorPatternFact outerCtx scrutineeType pattern' =
   case pattern' of
     CPCtorM existentialModes bridges hidden constructor patternUniverses fields
       | all plainPatternBinder fields -> do
-          constructors <- gets csCtors
-          case Map.lookup constructor constructors of
-            Nothing -> pure Nothing
-            Just constructorInfo -> do
-              (_freshUniverses, _constructorType, arguments, namedBinders, explicitFields) <-
-                instantiateConstructorForFields
-                  outerCtx
-                  constructor
-                  constructorInfo
-                  scrutineeType
-                  noSpan
-              let baseLevel = ctxLen outerCtx
-                  existentialValues =
-                    [ VRigid (baseLevel + index) []
-                    | index <- [0 .. length existentialModes - 1]
-                    ]
-                  sourceFieldCount = length (ciSourceFields constructorInfo)
-                  sourceStart = length namedBinders - sourceFieldCount
-                  (prefixBinders, sourceBinders)
-                    | sourceStart >= 0 = splitAt sourceStart namedBinders
-                    | otherwise = (namedBinders, [])
-                  sourceSlots =
-                    interleaveConstructorSourceBinders hidden fields
-                  sourceValues =
-                    [ VRigid
-                        ( baseLevel
-                            + length existentialModes
-                            + constructorBridgeBinderCount bridges
-                            + index
-                        )
-                        []
-                    | index <- [0 .. sourceFieldCount - 1]
-                    ]
-                  sourceByArgument = do
-                    slots <- sourceSlots
-                    guard (length slots == sourceFieldCount)
-                    guard (length sourceBinders == sourceFieldCount)
-                    guard (length sourceValues == sourceFieldCount)
-                    guard
-                      ( all
-                          ( \(argumentIndex, _, _, _, _) ->
-                              argumentIndex >= 0
-                                && argumentIndex < length arguments
+          let plainRuntimeShape =
+                null existentialModes
+                  && null bridges
+                  && null hidden
+                  && all plainPatternBinder fields
+          if plainRuntimeShape
+            then
+              pure
+                ( Just
+                    ( VCtor
+                        constructor
+                        [ VRigid (ctxLen outerCtx + index) []
+                        | index <- [0 .. length fields - 1]
+                        ]
+                    )
+                )
+            else do
+              constructors <- gets csCtors
+              case Map.lookup constructor constructors of
+                Nothing -> pure Nothing
+                Just constructorInfo -> do
+                  (_freshUniverses, _constructorType, arguments, namedBinders, explicitFields) <-
+                    instantiateConstructorForFields
+                      outerCtx
+                      constructor
+                      constructorInfo
+                      scrutineeType
+                      noSpan
+                  let baseLevel = ctxLen outerCtx
+                      existentialValues =
+                        [ VRigid (baseLevel + index) []
+                        | index <- [0 .. length existentialModes - 1]
+                        ]
+                      sourceFieldCount = length (ciSourceFields constructorInfo)
+                      sourceStart = length namedBinders - sourceFieldCount
+                      (prefixBinders, sourceBinders)
+                        | sourceStart >= 0 = splitAt sourceStart namedBinders
+                        | otherwise = (namedBinders, [])
+                      sourceSlots =
+                        interleaveConstructorSourceBinders hidden fields
+                      sourceValues =
+                        [ VRigid
+                            ( baseLevel
+                                + length existentialModes
+                                + constructorBridgeBinderCount bridges
+                                + index
+                            )
+                            []
+                        | index <- [0 .. sourceFieldCount - 1]
+                        ]
+                      sourceByArgument = do
+                        slots <- sourceSlots
+                        guard (length slots == sourceFieldCount)
+                        guard (length sourceBinders == sourceFieldCount)
+                        guard (length sourceValues == sourceFieldCount)
+                        guard
+                          ( all
+                              ( \(argumentIndex, _, _, _, _) ->
+                                  argumentIndex >= 0
+                                    && argumentIndex < length arguments
+                              )
+                              sourceBinders
                           )
-                          sourceBinders
-                      )
-                    guard
-                      ( and
-                          [ sourceSlotMatches
-                              (caIcit (arguments !! argumentIndex))
-                              slot
-                          | ((argumentIndex, _, _, _, _), slot) <-
-                              zip sourceBinders slots
-                          ]
-                      )
-                    pure
-                      ( Map.fromList
-                          [ (argumentIndex, value)
-                          | ((argumentIndex, _, _, _, _), value) <-
-                              zip sourceBinders sourceValues
-                          ]
-                      )
-                  unresolvedPrefixArguments =
-                    [ argumentIndex
-                    | (argumentIndex, _, _, _, _) <- prefixBinders
-                    , argumentIndex >= 0
-                    , Just argument <- [listToMaybe (drop argumentIndex arguments)]
-                    , CMeta _ <- [stripIdentityWrappers (caTerm argument)]
-                    ]
-                  step sourceArguments (remainingExistentials, built) (argumentIndex, argument) =
-                    case Map.lookup argumentIndex sourceArguments of
-                      Just sourceValue ->
+                        guard
+                          ( and
+                              [ sourceSlotMatches
+                                  (caIcit (arguments !! argumentIndex))
+                                  slot
+                              | ((argumentIndex, _, _, _, _), slot) <-
+                                  zip sourceBinders slots
+                              ]
+                          )
                         pure
-                          ( remainingExistentials
-                          , built ++ [constructorValueArg argument sourceValue]
+                          ( Map.fromList
+                              [ (argumentIndex, value)
+                              | ((argumentIndex, _, _, _, _), value) <-
+                                  zip sourceBinders sourceValues
+                              ]
                           )
-                      Nothing ->
-                        case stripIdentityWrappers (caTerm argument) of
-                          CMeta _
-                            | existentialValue : rest <- remainingExistentials ->
-                                pure
-                                  ( rest
-                                  , built ++ [constructorValueArg argument existentialValue]
-                                  )
-                          _ -> do
-                            argumentValue <- evalIn outerCtx (caTerm argument)
+                      unresolvedPrefixArguments =
+                        [ argumentIndex
+                        | (argumentIndex, _, _, _, _) <- prefixBinders
+                        , argumentIndex >= 0
+                        , Just argument <- [listToMaybe (drop argumentIndex arguments)]
+                        , CMeta _ <- [stripIdentityWrappers (caTerm argument)]
+                        ]
+                      step sourceArguments (remainingExistentials, built) (argumentIndex, argument) =
+                        case Map.lookup argumentIndex sourceArguments of
+                          Just sourceValue ->
                             pure
                               ( remainingExistentials
-                              , built ++ [constructorValueArg argument argumentValue]
+                              , built ++ [constructorValueArg argument sourceValue]
                               )
-              case sourceByArgument of
-                Nothing -> pure Nothing
-                Just sourceArguments
-                  | length explicitFields /= length fields
-                      || length unresolvedPrefixArguments /= length existentialModes ->
-                      pure Nothing
-                  | otherwise -> do
-                      (remainingExistentials, builtArguments) <-
-                        foldM
-                          (step sourceArguments)
-                          (existentialValues, [])
-                          (zip [0 :: Int ..] arguments)
-                      pure $ do
-                        guard (null remainingExistentials)
-                        guard (length builtArguments == length arguments)
-                        pure (VCtorI constructor patternUniverses builtArguments)
+                          Nothing ->
+                            case stripIdentityWrappers (caTerm argument) of
+                              CMeta _
+                                | existentialValue : rest <- remainingExistentials ->
+                                    pure
+                                      ( rest
+                                      , built ++ [constructorValueArg argument existentialValue]
+                                      )
+                              _ -> do
+                                argumentValue <- evalIn outerCtx (caTerm argument)
+                                pure
+                                  ( remainingExistentials
+                                  , built ++ [constructorValueArg argument argumentValue]
+                                  )
+                  case sourceByArgument of
+                    Nothing -> pure Nothing
+                    Just sourceArguments
+                      | length explicitFields /= length fields
+                          || length unresolvedPrefixArguments /= length existentialModes ->
+                          pure Nothing
+                      | otherwise -> do
+                          (remainingExistentials, builtArguments) <-
+                            foldM
+                              (step sourceArguments)
+                              (existentialValues, [])
+                              (zip [0 :: Int ..] arguments)
+                          pure $ do
+                            guard (null remainingExistentials)
+                            guard (length builtArguments == length arguments)
+                            pure (VCtorI constructor patternUniverses builtArguments)
     _ -> pure Nothing
   where
     constructorValueArg argument value =
@@ -33448,20 +36090,134 @@ wildUseful _ rows 0 = null rows
 wildUseful st rows n =
   let firsts = [p | row0 <- rows, (p : _) <- expandRow row0]
       keys = nub (mapMaybe (patKey st) firsts)
-      complete = case keys of
-        ((KTup _, _) : _) -> True
-        ks@((KCtor c, _) : _) ->
-          case Map.lookup c (csCtors st) >>= \ci -> Map.lookup (ciData ci) (csDatas st) of
-            Just di -> all (\dc -> KCtor dc `elem` map fst ks) (diCtors di)
-            Nothing -> False
-        _ -> False -- literals: never a complete signature here
-   in if complete
-        then
+      tupleKeys = [(key, arity) | (key@KTup {}, arity) <- keys]
+      constructorKeys = [(key, arity) | (key@KCtor {}, arity) <- keys]
+      completeSignature = case tupleKeys of
+        signature@((KTup arity, _) : _)
+          | all (\case (KTup otherArity, _) -> otherArity == arity; _ -> False) signature ->
+              Just signature
+        _ -> case constructorKeys of
+          signature@((KCtor constructor, _) : _) ->
+            case Map.lookup constructor (csCtors st) >>= \info ->
+              Map.lookup (ciData info) (csDatas st) of
+              Just dataInfo
+                | all (\dataConstructor -> KCtor dataConstructor `elem` map fst signature)
+                    (diCtors dataInfo) ->
+                    Just signature
+              _ -> Nothing
+          _ -> Nothing
+   in case completeSignature of
+        Just signature ->
           or
             [ wildUseful st (specializeRows st k a rows) (a + n - 1)
-            | (k, a) <- keys
+            | (k, a) <- signature
             ]
-        else wildUseful st (defaultRows st rows) (n - 1)
+        Nothing -> wildUseful st (defaultRows st rows) (n - 1)
+
+-- | Expand a binder-free catch-all into the finite constructor/product
+-- skeletons not covered by preceding unguarded rows. This is a typed pattern
+-- certificate, not an exhaustiveness guess: expansion is available only for
+-- closed nominal sums and structural products whose complete constructor
+-- signature is known, and is bounded to keep elaboration predictable. The
+-- resulting source patterns are re-elaborated normally, so nested branch
+-- refinements are serialized in the emitted Core alternatives.
+residualCatchAllPatterns
+  :: CheckState
+  -> Value
+  -> [(CorePat, Maybe Term)]
+  -> Span
+  -> Maybe [Pattern]
+residualCatchAllPatterns state scrutineeType preceding site = do
+  candidates <- finitePatternSkeletons state 64 scrutineeType
+  let covered = [pattern' | (pattern', Nothing) <- preceding]
+      residuals =
+        [ candidate
+        | candidate <- candidates
+        , not (any (`corePatternCovers` candidate) covered)
+        ]
+  mapM (skeletonSourcePattern state site) residuals
+
+finitePatternSkeletons :: CheckState -> Int -> Value -> Maybe [CorePat]
+finitePatternSkeletons state budget = go budget . force (ecOf state)
+  where
+    go remaining value
+      | remaining <= 0 = Nothing
+      | otherwise = case value of
+          VUniverseLift _ _ _ inner -> go remaining (force (ecOf state) inner)
+          VRecordTQ fields -> do
+            alternatives <- mapM (go remaining . rfType) fields
+            products <- boundedCartesian remaining alternatives
+            pure (map CPTuple products)
+          VRecordT fields -> do
+            alternatives <- mapM (go remaining . snd) fields
+            products <- boundedCartesian remaining alternatives
+            pure (map CPTuple products)
+          VGlobN family _ -> nominal remaining family
+          VGlobI family _ _ -> nominal remaining family
+          _ -> Nothing
+    nominal remaining family = do
+      dataInfo <- Map.lookup family (csDatas state)
+      guard (not (null (diCtors dataInfo)))
+      constructors <- mapM constructorSkeleton (diCtors dataInfo)
+      guard (length constructors <= remaining)
+      pure constructors
+    constructorSkeleton constructor = do
+      info <- Map.lookup constructor (csCtors state)
+      pure
+        ( CPCtorM
+            []
+            []
+            []
+            constructor
+            []
+            (replicate (length (ciFields info)) CPWild)
+        )
+
+boundedCartesian :: Int -> [[a]] -> Maybe [[a]]
+boundedCartesian budget alternatives =
+  let cardinality = product (map length alternatives)
+   in if cardinality > budget
+        then Nothing
+        else Just (sequence alternatives)
+
+corePatternCovers :: CorePat -> CorePat -> Bool
+corePatternCovers covering candidate = case covering of
+  CPWild -> True
+  CPVar _ -> True
+  CPAs _ nested -> corePatternCovers nested candidate
+  CPOr alternatives _ -> any (`corePatternCovers` candidate) alternatives
+  CPCtor constructor _ fields -> case candidate of
+    CPCtor candidateConstructor _ candidateFields ->
+      constructor == candidateConstructor
+        && length fields == length candidateFields
+        && and (zipWith corePatternCovers fields candidateFields)
+    _ -> False
+  CPTuple fields -> case candidate of
+    CPTuple candidateFields ->
+      length fields == length candidateFields
+        && and (zipWith corePatternCovers fields candidateFields)
+    _ -> False
+  CPLit literal -> case candidate of
+    CPLit candidateLiteral -> literal == candidateLiteral
+    _ -> False
+  _ -> False
+
+skeletonSourcePattern :: CheckState -> Span -> CorePat -> Maybe Pattern
+skeletonSourcePattern state site = \case
+  CPWild -> Just (PWild site)
+  CPTuple fields -> PTuple <$> mapM (skeletonSourcePattern state site) fields <*> pure site
+  CPCtor constructor _ fields -> do
+    info <- Map.lookup constructor (csCtors state)
+    nested <- mapM (skeletonSourcePattern state site) fields
+    let qualifier = Name (gnameText (ciData info)) site
+        constructorName = Name (gnameText constructor) site
+    pure
+      ( PCtor
+          (CtorRef (Just qualifier) constructorName)
+          nested
+          site
+      )
+  _ -> Nothing
 
 checkIrrefutable :: Ctx -> Pattern -> Value -> Span -> CheckM ()
 checkIrrefutable ctx pat ty sp = do
@@ -33686,16 +36442,16 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
                     "constructor pattern arity mismatch: expected explicit fields"
                 (_, hidden, ctx') <-
                   goCtorListSlots ctxEx [] sourceSlots 0
-                pure
-                  ( CPCtorM
-                      existentialModes
-                      refinements
-                      hidden
-                      constructor
-                      universes
-                      []
-                  , ctx'
-                  )
+                let constructorPattern =
+                      CPCtorM
+                        existentialModes
+                        refinements
+                        hidden
+                        constructor
+                        universes
+                        []
+                recordKnownConstructorRefinement ctx ty knownValue constructorPattern
+                pure (constructorPattern, ctx')
               [] -> do
                 recordPatternBinderFacts ctx (nameSpan n) slotQ ty
                 let ctx' = case knownValue of
@@ -33707,7 +36463,9 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
           compatible <- unify ctx ty unitType
           unless compatible $
             patternTypeMismatch ctx pat ty "the unit pattern requires a Unit scrutinee"
-          pure (CPCtorM [] [] [] prelUnit [] [], ctx)
+          let unitPattern = CPCtorM [] [] [] prelUnit [] []
+          recordKnownConstructorRefinement ctx ty knownValue unitPattern
+          pure (unitPattern, ctx)
         PLit l _ -> do
           -- §17.2.1: literal patterns are runtime scalar tests. Admit exactly
           -- the canonical scalar carrier identities (transparent aliases have
@@ -33983,10 +36741,10 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
                          | t <- padTys
                          ]
               (ps', hidden, ctx') <- goCtorListSlots ctxEx ps slots 0
-              pure
-                ( CPCtorM existentialModes refinements hidden g universes ps'
-                , ctx'
-                )
+              let constructorPattern =
+                    CPCtorM existentialModes refinements hidden g universes ps'
+              recordKnownConstructorRefinement ctx ty knownValue constructorPattern
+              pure (constructorPattern, ctx')
         PActive _ _ _ sp -> do
           unsupportedAt sp "active patterns are not supported by this implementation"
           pure (CPWild, ctx)
@@ -34196,6 +36954,24 @@ elabPatternFrom rootMode rootQ rootValue ctx0 pat0 ty0 = do
       PAs n _ -> Just (nameText n)
       PTyped p _ _ -> patternPrincipalBinder p
       _ -> Nothing
+
+    -- A nested constructor pattern refines the exact checked producer just as
+    -- a root constructor branch does. The producer identity comes from the
+    -- semantic value threaded by 'elabPatternFrom', while the replacement is
+    -- reconstructed from the checked constructor certificate. If either side
+    -- is not representable as a rigid substitution, retain no positive fact.
+    recordKnownConstructorRefinement activeCtx classifier known pattern' =
+      case known >>= rigidLevelThroughUniverseLift of
+        Nothing -> pure ()
+        Just rigid ->
+          constructorPatternFact activeCtx classifier pattern' >>= \case
+            Nothing -> pure ()
+            Just replacement ->
+              modify' $ \state ->
+                state
+                  { csFacts =
+                      Map.insert rigid (FactIs replacement) (csFacts state)
+                  }
 
     goListSlotsKnown ctx [] = pure ([], ctx)
     goListSlotsKnown ctx ((p0, slot@(_, q, _), known) : rest) = do
@@ -34738,6 +37514,66 @@ ctorFieldTypesCtx ctx ctorG ci scrutTy site = do
             )
         result -> pure (result, acc)
 
+-- | Orient a residual definitional equation toward an acyclic branch-local
+-- rigid substitution. Either source direction may expose the rigid.
+orientRigidRefinement
+  :: Ctx
+  -> Value
+  -> Value
+  -> CheckM (Maybe (Int, Value))
+orientRigidRefinement ctx left0 right0 = do
+  left <- forceM left0
+  right <- forceM right0
+  rightToLeft <- directedRigidRefinement ctx right left
+  case rightToLeft of
+    Just refinement -> pure (Just refinement)
+    Nothing -> directedRigidRefinement ctx left right
+
+directedRigidRefinement
+  :: Ctx
+  -> Value
+  -> Value
+  -> CheckM (Maybe (Int, Value))
+directedRigidRefinement ctx candidate0 replacement0 = do
+  candidate <- forceM candidate0
+  replacement <- forceM replacement0
+  ec <- ec_
+  pure (orient ec candidate replacement)
+  where
+    orient ec (VRigid rigid []) replacement
+      | rigid < ctxLen ctx
+      , not (rigidOccurs ec rigid replacement) =
+          Just (rigid, replacement)
+    orient _ _ _ = Nothing
+
+    rigidOccurs ec rigid value =
+      let depth = ctxLen ctx
+          index = depth - rigid - 1
+       in index >= 0 && mentionsVar index (quote ec depth value)
+
+-- | Recover the root constructor's checked definitional equations at the
+-- final pattern context depth.  Propositional bridges remain lexical proof
+-- binders and never become conversion facts; only equations already certified
+-- as 'ConstructorForcedEquality' may orient a rigid variable.
+rootConstructorForcedRefinements
+  :: Ctx
+  -> CorePat
+  -> CheckM (Map Int RigidFact)
+rootConstructorForcedRefinements ctx = \case
+  CPCtorM _ bridges _ _ _ _ ->
+    foldM addBridge Map.empty bridges
+  _ -> pure Map.empty
+  where
+    addBridge refinements = \case
+      ConstructorForcedEquality leftTerm rightTerm -> do
+        left <- evalIn ctx leftTerm
+        right <- evalIn ctx rightTerm
+        directedRigidRefinement ctx left right >>= \case
+          Nothing -> pure refinements
+          Just (rigid, replacement) ->
+            pure (Map.insert rigid (FactIs replacement) refinements)
+      ConstructorPropositionalBridge {} -> pure refinements
+
 -- | Align one constructor result with the demanded family instance from left
 -- to right. Successful unification solves ordinary constructor parameters.
 -- A remaining equation is admitted as an active constructor-index equality
@@ -34788,8 +37624,7 @@ alignConstructorResultIndices ctx result0 demanded0 = do
           put saved
           left <- forceM left0
           right <- forceM right0
-          ec <- ec_
-          case orientRigidEquality ec left right of
+          orientRigidRefinement ctx left right >>= \case
             Just (rigid, replacement) -> do
               modify' $ \state ->
                 state
@@ -34831,20 +37666,6 @@ alignConstructorResultIndices ctx result0 demanded0 = do
           , length leftArguments == length rightArguments ->
               alignPairs (zip leftArguments rightArguments)
         _ -> pure ([], False)
-
-    orientRigidEquality ec left right =
-      orient right left <|> orient left right
-      where
-        orient (VRigid rigid []) replacement
-          | rigid < ctxLen ctx
-          , not (rigidOccurs ec rigid replacement) =
-              Just (rigid, replacement)
-        orient _ _ = Nothing
-
-    rigidOccurs ec rigid value =
-      let depth = ctxLen ctx
-          index = depth - rigid - 1
-       in index >= 0 && mentionsVar index (quote ec depth value)
 
 -- | Build the portable-v1 fallback after definitional constructor-result
 -- alignment fails: one explicit equality bridge between corresponding
@@ -34925,6 +37746,14 @@ monadRefRefType ctx dictTm aTm = do
   mode <- traitMemberObservationMode prelMonadRef "Ref"
   evalIn ctx (CApp Expl (CProjM mode dictTm "Ref") aTm)
 
+-- | Source-facing associated-cell type for mutable-binding diagnostics.
+-- Type checking retains the exact selected dictionary projection above;
+-- diagnostics name the authenticated public MonadRef associated member so
+-- payloads remain stable across evidence-local projection binders.
+monadRefDiagnosticRefType :: Value -> Value
+monadRefDiagnosticRefType storedType =
+  VGlobN prelRef [(Expl, storedType)]
+
 -- | Read a selected trait member's checked observation mode from the trait
 -- declaration. Generated dictionary projections must use the same structural
 -- fact as source projections; defaulting a kind-valued member to 'Ordinary'
@@ -34962,6 +37791,22 @@ termHeadGlob = \case
   CGlobal g _ -> Just g
   CCtor g _ [] -> Just g
   CCtorI g _ _ [] -> Just g
+  _ -> Nothing
+
+-- | Recover a resolved declaration identity through the eta-expanded Core
+-- representation used for constructors and generated accessors. This is
+-- intentionally distinct from 'termHeadGlob': expected-type planning needs
+-- the semantic owner even after binders or checked arguments have been
+-- recorded around the global head.
+resolvedEtaTermHead :: Term -> Maybe GName
+resolvedEtaTermHead = \case
+  CLamM _ _ _ _ body -> resolvedEtaTermHead body
+  CApp _ function _ -> resolvedEtaTermHead function
+  CUniverseLift _ _ _ term -> resolvedEtaTermHead term
+  CGlob global -> Just global
+  CGlobal global _ -> Just global
+  CCtor constructor _ _ -> Just constructor
+  CCtorI constructor _ _ _ -> Just constructor
   _ -> Nothing
 
 isIOCarrierValue :: Value -> CheckM Bool
@@ -35119,13 +37964,51 @@ termMatchesValue ctx actual0 expected0 = do
 
 termMatchesTerm :: Ctx -> Term -> Term -> CheckM Bool
 termMatchesTerm ctx actual0 expected0 = do
-  expectedV <- forceM =<< evalIn ctx expected0
-  termMatchesValue ctx actual0 expectedV
+  actual <- zonkTermM (ctxLen ctx) actual0
+  expected <- zonkTermM (ctxLen ctx) expected0
+  go actual expected
+  where
+    go actual expected
+      | actual == expected = pure True
+      | otherwise =
+        case matchingResolvedApplications actual expected of
+          Just argumentPairs ->
+            and <$> mapM (uncurry go) argumentPairs
+          Nothing -> do
+            expectedV <- forceM =<< evalIn ctx expected
+            termMatchesValue ctx actual expectedV
+    matchingResolvedApplications actual expected =
+      let (actualHead, actualArguments) =
+            spineOfTerm (stripIdentityWrappers actual)
+          (expectedHead, expectedArguments) =
+            spineOfTerm (stripIdentityWrappers expected)
+       in case (actualHead, expectedHead) of
+            (CGlobal actualGlobal actualUniverses, CGlobal expectedGlobal expectedUniverses)
+              | actualGlobal == expectedGlobal
+              , map normalizeLevel actualUniverses == map normalizeLevel expectedUniverses
+              , map fst actualArguments == map fst expectedArguments
+              , length actualArguments == length expectedArguments ->
+                  Just (zip (map snd actualArguments) (map snd expectedArguments))
+            _ -> Nothing
 
 refEvidenceMatchesCarrierDict :: Ctx -> Value -> Term -> RefOpEvidence -> CheckM Bool
 refEvidenceMatchesCarrierDict ctx expectedCarrier expectedDict = \case
   RefOpBare -> pure True
-  RefOpCarrier actualCarrier -> termMatchesValue ctx actualCarrier expectedCarrier
+  RefOpCarrier actualCarrier -> do
+    carrierMatches <- termMatchesValue ctx actualCarrier expectedCarrier
+    if carrierMatches
+      then pure True
+      else do
+        -- A reducible carrier alias may preserve the selected MonadRef
+        -- dictionary even when direct carrier conversion is temporarily
+        -- blocked by occurrence-local universe evidence. Dictionary identity
+        -- is the stronger, coherence-checked proof needed by this lowering:
+        -- synthesize evidence for the explicit carrier and require it to be
+        -- convertible to the mutable binding's already selected evidence.
+        actualCarrierValue <- forceM =<< evalIn ctx actualCarrier
+        actualGoal <- globalValueM prelMonadRef [(Expl, actualCarrierValue)]
+        actualDict <- resolveImplicit ctx noSpan actualGoal
+        termMatchesTerm ctx actualDict expectedDict
   RefOpDict actualDict -> termMatchesTerm ctx actualDict expectedDict
 
 checkedMonadRefMethodApp :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM (Maybe Term)
@@ -35519,10 +38402,13 @@ resolveRefOpExpr ctx f headArgs = do
   n0 <- gets (length . csDiags)
   r <- do
     (headTerm, headType) <- infer ctx f
-    (tm, _) <-
+    (tm0, _) <-
       if null headArgs
         then pure (headTerm, headType)
         else elabSpine ctx (exprSpan f) headTerm headType headArgs
+    evidenceComponent <- pendingEvidenceComponentTerms ctx [tm0]
+    flushPendingSelected evidenceComponent
+    tm <- zonkTermM (ctxLen ctx) tm0
     refOpOfTerm ctx tm
   n1 <- gets (length . csDiags)
   case r of
@@ -35809,29 +38695,40 @@ elabDo ctx0 mlabel items0 _sp mexpected =
       -- elabDoIO; Eff/Elab above) elaborates by the classic monadic
       -- desugaring to (>>=)/pure.
       Just t
-        | Just (mV, _) <- monadActionViewValue t
-        , not (isKernelDoCarrier mV) ->
-            elabMonadDo ctx t items0 _sp
+        | Just (mV, _) <- monadActionViewValue t -> do
+            kernelCarrier <- isKernelDoCarrierM mV
+            if kernelCarrier
+              then elabDoIO ctx me items0
+              else
+                if doItemsRequireEffectAwareLifting ctx items0
+                  then elabMonadDo ctx t items0 _sp
+                  else
+                    case applicativeDoShape items0 of
+                      Just (actions, lets, finalExpression, boundNames) ->
+                        elabApplicativeDo
+                          ctx
+                          t
+                          actions
+                          lets
+                          finalExpression
+                          boundNames
+                          _sp >>= \case
+                            Just result -> pure result
+                            Nothing -> elabMonadDo ctx t items0 _sp
+                      Nothing -> elabMonadDo ctx t items0 _sp
       _ -> elabDoIO ctx me items0
   where
     elabDoIO = elabDoIOItems (nameText <$> mlabel) _sp
 
-valueGlobalHead :: Value -> Maybe GName
-valueGlobalHead = \case
-  VGlobI global _ _ -> Just global
-  _ -> Nothing
-
 ioCarrierErrorType :: Value -> Maybe Value
-ioCarrierErrorType = \case
-  carrier@(VGlobI global _ _)
-    | global == prelIO ->
-        snd <$> monadActionViewValue carrier
-  _ -> Nothing
+ioCarrierErrorType carrier = do
+  guard (nominalFamilyValueHead carrier == Just prelIO)
+  snd <$> monadActionViewValue carrier
 
-isKernelDoCarrier :: Value -> Bool
-isKernelDoCarrier = \case
-  VGlobN g _ -> g `elem` doKernelCarriers
-  _ -> False
+isKernelDoCarrierM :: Value -> CheckM Bool
+isKernelDoCarrierM carrier = do
+  forced <- forceM carrier
+  pure (maybe False (`elem` doKernelCarriers) (nominalFamilyValueHead forced))
 
 elabDoIOItems :: Maybe Text -> Span -> Ctx -> Maybe Value -> [DoItem] -> CheckM (Term, Value)
 elabDoIOItems mlabel _sp ctx mexp items = do
@@ -35840,13 +38737,6 @@ elabDoIOItems mlabel _sp ctx mexp items = do
       | Just (carrier, a) <- monadActionViewValue expd
       , Just e <- ioCarrierErrorType carrier ->
           pure (e, a, Nothing)
-    -- an STM-typed do sequences IO-shaped items (§18.1.13); the kernel
-    -- runs it as the underlying action
-    Just expd
-      | Just (carrier, a) <- monadActionViewValue expd
-      , valueGlobalHead carrier == Just prelSTM -> do
-          e <- freshMetaV ctx
-          pure (e, a, Just expd)
     -- pure-result do (corpus): a do block in a position expecting a
     -- known non-IO type sequences pure statements; the §18.8 kernel
     -- passes pure statement values through, so it runs unchanged
@@ -35863,20 +38753,13 @@ elabDoIOItems mlabel _sp ctx mexp items = do
   where
     expectedMonadType = fst <$> (mexp >>= monadActionViewValue)
 
-    -- §18.1.13: the monad an item of this do-scope is checked at. For an
-    -- STM-typed block, items are STM actions (the kernel still runs them as
-    -- the underlying IO at runtime); otherwise IO of the scope's error type.
+    -- The surviving kernel do carrier is IO. STM uses its selected Monad
+    -- evidence and is eliminated by 'elabMonadDo' before this point.
     wrapTy :: Value -> Value -> CheckM Value
     wrapTy errT x = case expectedMonadType >>= (`monadResultType` x) of
       Just actionType -> pure actionType
       Nothing -> ioTypeM errT x
 
-    -- whether this do-scope is STM-typed (its items are STM actions, not
-    -- IO) — the transparent nested-do path applies only to IO-shaped scopes
-    isStmExpected :: Maybe Value -> Bool
-    isStmExpected expected =
-      (expected >>= monadActionViewValue >>= valueGlobalHead . fst)
-        == Just prelSTM
     -- §18.8 pure-result do (corpus accommodation): a do-block elaborated at a
     -- KNOWN non-IO, non-STM, non-flex type sequences PURE statements (lets and a
     -- final pure expression) — the block's value IS that pure result.  Crucially
@@ -35914,9 +38797,9 @@ elabDoIOItems mlabel _sp ctx mexp items = do
       unless solved (put checkpoint)
       pure solved
     isKernelActionType :: Value -> CheckM Bool
-    isKernelActionType ty = forceM ty >>= \case
-      VGlobN global _ -> pure (global == prelIO || global == prelSTM)
-      _ -> pure False
+    isKernelActionType ty = do
+      forced <- forceM ty
+      pure (nominalFamilyValueHead forced == Just prelIO)
     projectionPatternFields :: Pattern -> Value -> CheckM (Maybe ([(Maybe Name, Text)], [(Text, Value)]))
     projectionPatternFields pat ty0 = do
       ty <- forceM ty0
@@ -36312,8 +39195,9 @@ elabDoIOItems mlabel _sp ctx mexp items = do
         -- inside it that targets an enclosing loop or function resolves and
         -- propagates outward. (A first-class do VALUE — `let x = do …`, or a
         -- spliced `!doVal` — stays opaque: it is elaborated through the
-        -- ordinary value path, which resets the completion context.) STM-typed
-        -- do-scopes keep the generic path.
+              -- ordinary value path, which resets the completion context.) STM
+              -- blocks are evidence-driven user-monad blocks and do not reach
+              -- this IO kernel.
         DoExpr e0 -> do
           rewriteVarInoutStatement c e0 >>= \case
             Just items -> goItems loops c errT resT (items ++ rest)
@@ -36322,8 +39206,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               if not (null pre)
                 then goItems loops c errT resT (pre ++ DoExpr e : rest)
                 else case e of
-                  EDo innerLbl innerItems _
-                    | not (isStmExpected mexp) -> do
+                  EDo innerLbl innerItems _ -> do
                         aT <- if lastItem then pure resT else freshMetaV c
                         subItems <-
                           goItemsWith
@@ -36362,12 +39245,23 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                         aT <- if lastItem then pure resT else freshMetaV c
                         let eD = e
                         ioT <- wrapTy errT aT
+                        canonicalPure <- canonicalApplicativePurePayload c eD
+                        let structuralAction = case eD of
+                              EIf {} -> True
+                              EMatch {} -> True
+                              _ -> False
                         -- statements are IO actions (§18.2); the corpus also
                         -- sequences pure expressions as statements, and the §18.8
                         -- kernel passes pure statement values through unchanged, so
                         -- an inferable statement may also check at the bare type
-                        tm <- case eD of
-                          _ | statementInferable eD -> do
+                        tm <- case () of
+                          _ | isJust canonicalPure -> check c eD ioT
+                            | structuralAction ->
+                                preferCheckByErrors
+                                  (check c eD ioT)
+                                  (check c eD aT)
+                            | otherwise -> case eD of
+                              _ | statementInferable eD -> do
                                 checkedMonadRefExpr c eD ioT >>= \case
                                   Just tm0 -> pure tm0
                                   Nothing -> do
@@ -36386,9 +39280,10 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                                           if okPure
                                             then pure True
                                             else do
-                                              -- a final action of unit-result do-scopes
+                                              -- A final action of a unit-result do-scope
                                               -- may have a non-unit result; it is
-                                              -- discarded (corpus accommodation)
+                                              -- discarded by the established completion
+                                              -- accommodation.
                                               unitT <- globalValueM prelUnit []
                                               isUnit <- tryUnify c aT unitT
                                               if allowFinalActionDiscard && isUnit && actionShaped
@@ -36402,7 +39297,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                                                 else pure False
                                         unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
                                         pure tm1
-                          _ -> check c eD ioT
+                              _ -> check c eD ioT
                         unless lastItem $
                           registerDiscardedResult c (exprSpan eD) aT
                         writes <- writtenRefFacetsExecutedExpr c eD
@@ -36430,35 +39325,11 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                       -- §18.8 pure-result do: there is no monadic carrier, so the IO-wrap
                       -- acceptance of the bind RHS is OFF (an @IO errT _@ action must NOT
                       -- satisfy a bind in a pure block — that was the §4.5 forge route:
-                      -- @do { tmp <- throwIO Unit; tmp } : Void@).  Only the genuine
-                      -- container bind (a non-IO container shape, below) remains valid here;
-                      -- a bare IO action falls through to the container probe, fails the
-                      -- @h /= "IO"@ guard, and is rejected.
+                      -- @do { tmp <- throwIO Unit; tmp } : Void@). A source bind requires
+                      -- a checked monadic carrier and selected evidence; arbitrary nominal
+                      -- application shape is not evidence of bind semantics.
                   bindRhsTy <- if pureResult then pure aT else wrapTy errT aT
-                  st0 <- get
-                  n0 <- gets (length . csDiags)
-                  rhsTm0 <- check c rhsD bindRhsTy
-                  n1 <- gets (length . csDiags)
-                  rhsTm <-
-                    if n1 == n0
-                      then pure rhsTm0
-                      else do
-                        -- container bind (§18.3 accommodation): a do block in a
-                        -- non-IO container position binds through that container
-                        put st0
-                        (tm0, ty0) <- infer c rhsD
-                        (tm1, ty1) <- insertAllImplicits c bsp tm0 ty0
-                        ty1F <- forceM ty1
-                        case ty1F of
-                          VGlobN (GName _ h) args
-                            | h /= "IO"
-                            , ((_, lastArg) : _) <- reverse args -> do
-                                expectType c bsp lastArg aT
-                                pure tm1
-                          _ -> do
-                            -- not container-shaped: restore the IO/STM diagnosis
-                            put st0
-                            check c rhsD bindRhsTy
+                  rhsTm <- check c rhsD bindRhsTy
                   writes <- writtenRefFacetsExecutedExpr c rhsD
                   escapes <- escapedRefFacetsExecutedExpr c rhsD
                   let cExec = applyVarCurrentEffects writes escapes c
@@ -36606,14 +39477,16 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                       _ -> do
                         voidT <- globalValueM (GName preludeModule "Void") []
                         fallbackTy <- wrapTy errT voidT
-                        (fallbackTm0, inferredFallbackTy0) <- infer c2 fe
-                        (fallbackTm, inferredFallbackTy) <-
-                          insertAllImplicits c2 (exprSpan fe) fallbackTm0 inferredFallbackTy0
-                        fallbackEvidence <-
-                          pendingEvidenceComponent c2 [inferredFallbackTy]
-                        flushPendingSelectedWithPolicy True fallbackEvidence
-                        expectType c2 (exprSpan fe) inferredFallbackTy fallbackTy
-                        pure fallbackTm
+                        -- The failure arm has an exact terminal contract.
+                        -- Checking it expected-first lets overloaded @pure@,
+                        -- @throwError@, and user operations select the
+                        -- enclosing carrier before evidence search; inferring
+                        -- first would report a spurious ambiguous carrier and
+                        -- only then discover the intended @m Void@ mismatch.
+                        diagnosticsBefore <- gets (length . csDiags)
+                        failureTerm <- check c2 fe fallbackTy
+                        retagTerminalFailureArmMismatch diagnosticsBefore
+                        pure failureTerm
                 pure (rpC, feTm)
               ks <-
                 withPatternRefinements patternRefinements $
@@ -36647,7 +39520,14 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   escapes <- escapedRefFacetsExpr c rhs
                   loweringW <- builtinIOMonadRefLowering c mTy refDict
                   let newAct = monadRefNewAction refDict rhsTyTm rhsTm1
-                      refInfo = VarRefInfo rhsTy1 rhsTyTm refDict mTy errT loweringW
+                      refInfo =
+                        VarRefInfo
+                          rhsTy1
+                          rhsTyTm
+                          refDict
+                          mTy
+                          (monadRefDiagnosticRefType rhsTy1)
+                          loweringW
                       c' = foldr escapeVarCurrent (bindCtxVar (nameText n) refTy refInfo c) (Set.toList escapes)
                   recordMutableBindingFields c (nameSpan n) refTy refInfo
                   ks <- goItems loops c' errT resT rest
@@ -38661,6 +41541,27 @@ trySpec act = do
   n1 <- gets (length . csDiags)
   if n1 == n0 then pure (Just r) else put st0 >> pure Nothing
 
+-- | Prefer an expected-directed elaboration, but admit a compatibility
+-- alternative when that alternative succeeds without diagnostics. If both
+-- paths fail, retain the primary result and its diagnostics. This is the
+-- diagnostic-preserving counterpart of 'trySpec': callers must not replace a
+-- precise checked failure with a noisier inference failure merely because a
+-- legacy accommodation was attempted second.
+preferPrimaryElaboration :: CheckM a -> CheckM a -> CheckM a
+preferPrimaryElaboration primary alternative = do
+  initial <- get
+  diagnosticCount <- gets (length . csDiags)
+  primaryResult <- primary
+  primaryState <- get
+  primaryDiagnosticCount <- gets (length . csDiags)
+  if primaryDiagnosticCount == diagnosticCount
+    then pure primaryResult
+    else do
+      put initial
+      trySpec alternative >>= \case
+        Just alternativeResult -> pure alternativeResult
+        Nothing -> put primaryState >> pure primaryResult
+
 syntaxTypeM :: Value -> CheckM Value
 syntaxTypeM t = globalValueM prelSyntax [(Expl, t)]
 
@@ -38838,6 +41739,25 @@ spliceSyntaxValue ctx sp tV sv = do
 reflQueryNames :: [Text]
 reflQueryNames = ["defEqSyntax", "headSymbolSyntax", "typeOfSyntax"]
 
+-- | Authenticate a convenience query by exact resolved declaration identity.
+-- A same-spelling local, alias declaration, or member is an ordinary value.
+-- An ascribed expression is deliberately excluded: its asserted type must be
+-- checked by the ordinary application path before any convenience behavior.
+canonicalReflectionQuery :: Ctx -> Expr -> CheckM (Maybe GName)
+canonicalReflectionQuery ctx expression
+  | staticQueryHead expression = do
+      resolved <- staticGlobalExpr ctx expression
+      pure $ do
+        global@(GName owner name) <- resolved
+        guard (owner == preludeModule && name `elem` reflQueryNames)
+        pure global
+  | otherwise = pure Nothing
+  where
+    staticQueryHead = \case
+      EVar {} -> True
+      EDot {} -> True
+      _ -> False
+
 -- | §21.6: delaborate a first-order TYPE term back to surface syntax (for
 -- 'typeOfSyntax'). Covers the type-expression forms — universes, type
 -- constructors/names, type application (implicit args inferred away),
@@ -38943,33 +41863,68 @@ delaborateTypeWithEnv ctx dsp initialEnv = go initialEnv
 -- at the call site and residualizes its result (the standardized
 -- queries consume only meta-phase 'Syntax' operands and answer with
 -- portable first-order results, so no §21.2 generic coercion arises).
-elabReflQuery :: Ctx -> Name -> [Arg] -> Maybe Value -> CheckM (Term, Value)
-elabReflQuery ctx qn args mexp = do
-  (fTm, fTy) <- infer ctx (EVar qn)
-  (tm0, ty0) <- elabSpine ctx (nameSpan qn) fTm fTy args
-  (tm1, ty1) <- insertAllImplicits ctx (nameSpan qn) tm0 ty0
-  ty1F <- forceM ty1
-  expElab <- case mexp of
-    Nothing -> pure False
-    Just e -> isElabHeaded <$> forceM e
-  case ty1F of
-    VGlobN g [(_, rT)]
-      | g == prelElab
-      , CGlob (GName fm _) <- fTm
-      , fm == preludeModule
-      , not expElab -> do
-          v <- evalRT ctx tm1
-          res <- runElab ctx (nameSpan qn) v
-          case res of
-            Left () -> (,rT) <$> freshMeta
-            Right rv -> do
-              rTm <- quoteIn ctx rv
-              pure (rTm, rT)
-    _ -> pure (tm1, ty1F)
+elabReflQuery :: Ctx -> Span -> GName -> [Arg] -> Maybe Value -> CheckM (Term, Value)
+elabReflQuery ctx querySpan canonicalQuery args mexp =
+  case mexp of
+    Just expected -> do
+      actionExpected <- expectedIsElab expected
+      if actionExpected
+        then ordinaryResolvedApplication expected
+        else inferAndResidualize
+    Nothing -> inferAndResidualize
   where
-    isElabHeaded = \case
-      VGlobN g _ | g == prelElab -> True
-      _ -> False
+    expectedIsElab expected = do
+      expectedTerm <- quoteIn ctx expected
+      pure
+        ( termHeadGlob (stripIdentityWrappers expectedTerm)
+            == Just prelElab
+        )
+
+    ordinaryResolvedApplication expected = do
+      (term, actual) <- inferQueryApplication
+      (saturated, saturatedType) <-
+        insertAllImplicits ctx querySpan term actual
+      checked <-
+        coerceTerm ctx querySpan saturated saturatedType expected
+      pure (checked, expected)
+
+    resolveQueryHead = do
+      gateUnsafeResolved canonicalQuery querySpan
+      globalTerm canonicalQuery >>= \case
+        Just (term, classifier) -> pure (term, classifier)
+        Nothing -> do
+          errAt
+            querySpan
+            "E_INTERNAL_MISSING_PRELUDE_DECLARATION"
+            Nothing
+            ( "the canonical reflection query '"
+                <> gnameText canonicalQuery
+                <> "' has no checked global interface"
+            )
+          anyHole ctx
+
+    inferQueryApplication = do
+      (fTm, fTy) <- resolveQueryHead
+      (term, resultType) <- elabSpine ctx querySpan fTm fTy args
+      resultTypeForced <- forceM resultType
+      pure (term, resultTypeForced)
+
+    inferAndResidualize = do
+      (tm1, ty1F) <- inferQueryApplication
+      residualizeQuery tm1 ty1F
+
+    residualizeQuery tm1 = \case
+      VGlobN g [(_, rT)]
+        | g == prelElab
+        , termHeadGlob (stripIdentityWrappers tm1) == Just canonicalQuery -> do
+            v <- evalRT ctx tm1
+            res <- runElab ctx querySpan v
+            case res of
+              Left () -> (,rT) <$> freshMeta
+              Right rv -> do
+                rTm <- quoteIn ctx rv
+                pure (rTm, rT)
+      ty -> pure (tm1, ty)
 
 -- | §21.6: elaborate a reflected syntax value at the current call site
 -- (shared by the convenience reflection queries). Ill-scoped or
@@ -40649,13 +43604,23 @@ globalCoreType ec definition =
 
 instanceUniverseInterfaceTerms :: CheckState -> GName -> [Term]
 instanceUniverseInterfaceTerms st global =
-  concat
-    [ map CSort (ieTraitUniverses entry)
-        ++ iePremises entry
-        ++ ieHead entry
-    | entry <- csInstances st
-    , ieDict entry == global
-    ]
+  Map.findWithDefault [] global (csInstanceUniverseInterfaces st)
+
+setCheckInstances :: [InstanceEntry] -> CheckState -> CheckState
+setCheckInstances entries st =
+  st
+    { csInstances = entries
+    , csInstanceUniverseInterfaces =
+        Map.fromListWith
+          (flip (++))
+          [ ( ieDict entry
+            , map CSort (ieTraitUniverses entry)
+                ++ iePremises entry
+                ++ ieHead entry
+            )
+          | entry <- entries
+          ]
+    }
 
 -- | A source type alias exposes its defining value as part of the static
 -- declaration interface. Levels occurring only in that value still need a
@@ -40955,6 +43920,7 @@ minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals s
         Map.filterWithKey
           (\g@(GName owner _) definition ->
              owner == currentModule
+               && g `Set.notMember` csFinalizedUniverseInterfaces st0
                -- A signed body may remain deferred, but a source-written
                -- universe schema is already a complete public interface.
                -- Close its checker-created occurrence levels before another
@@ -40996,6 +43962,8 @@ minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals s
                    maybe False (dutExplicit . gdUniverses)
                      (Map.lookup (ciData info) (csGlobals st0))
               in ciData info `Set.member` candidateNames
+                   && ctor `Set.notMember` csFinalizedUniverseInterfaces st0
+                   && ciData info `Set.notMember` csFinalizedUniverseInterfaces st0
                    && (ctor `Set.notMember` deferredGlobals || ownerExplicit)
                    && (ciData info `Set.notMember` deferredGlobals || ownerExplicit)
                    && (ctor `Set.notMember` preexistingCtors || ctor `Set.member` sourceCtors))
@@ -41130,9 +44098,6 @@ deriveUniverseReferenceProjectionToLevels assignments sourceMetas retainedLevels
       ]
     positionOf retained =
       List.findIndex (== normalizeLevel retained) sourceImages
-        <|> case retained of
-          LMeta meta -> List.findIndex (elem meta . levelMetas) sourceImages
-          _ -> Nothing
 
 uniqueUniverseReferenceProjections
   :: Ord key
@@ -41386,6 +44351,7 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
         Map.filterWithKey
           (\g@(GName owner _) _ ->
              owner == currentModule0
+               && g `Set.notMember` csFinalizedUniverseInterfaces st0
                && g `Set.notMember` deferredGlobals
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
           (csGlobals st0)
@@ -41393,6 +44359,8 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
         Map.filterWithKey
           (\g@(GName owner _) info ->
              owner == currentModule0
+               && g `Set.notMember` csFinalizedUniverseInterfaces st0
+               && ciData info `Set.notMember` csFinalizedUniverseInterfaces st0
                && g `Set.notMember` deferredGlobals
                && ciData info `Set.notMember` deferredGlobals
                && (g `Set.notMember` preexistingCtors || g `Set.member` sourceCtors))
@@ -41453,6 +44421,7 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
         Map.filterWithKey
           (\g@(GName owner _) _ ->
              owner == currentModule
+               && g `Set.notMember` csFinalizedUniverseInterfaces componentState
                && g `Set.notMember` deferredGlobals
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
           (csGlobals componentState)
@@ -41487,16 +44456,35 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
               (csCtors componentState)
           )
       ctors0ByData = constructorsByData ctors0
+      artifactTermsByOwner =
+        Map.unionsWith
+          (++)
+          [ Map.map pure rawGlobalTerms
+          , Map.map pure rawBodyTerms
+          , rawTraitInterfaceTerms
+          , rawInstanceInterfaceTerms
+          , rawConstructorTerms
+          , Map.map pure rawUniverseValueTerms
+          ]
+      artifactInstantiationOwners =
+        Map.fromListWith
+          Set.union
+          [ (meta, Set.singleton owner)
+          | (owner, terms) <- Map.toList artifactTermsByOwner
+          , meta <- Set.toList (Set.fromList (concatMap levelMetasOfTerm terms))
+          , meta `Set.member` csLevelInstantiationMetas componentState
+          ]
+      instantiationOwners =
+        Map.unionWith
+          Set.union
+          (csLevelInstantiationOwners componentState)
+          artifactInstantiationOwners
       generalizableByOwner =
         levelMetasByOwner
           (csLevelGeneralizableOwners componentState)
       instantiationByOwner =
         levelMetasByOwner
-          (csLevelInstantiationOwners componentState)
-      unownedInstantiationOrigins =
-        Set.difference
-          (csLevelInstantiationMetas componentState)
-          (Set.unions (Map.elems instantiationByOwner))
+          instantiationOwners
       dependencies g =
         Set.toList . Set.intersection candidateNames . Set.unions . map globalsOfTerm $
           Map.findWithDefault [] g rawTraitInterfaceTerms
@@ -41524,6 +44512,15 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
         | component <- components
         , let componentSet = Set.fromList component
         ]
+  unless (Map.null artifactInstantiationOwners) $
+    modify' $ \state ->
+      state
+        { csLevelInstantiationOwners =
+            Map.unionWith
+              Set.union
+              (csLevelInstantiationOwners state)
+              artifactInstantiationOwners
+        }
   forM_ components $ \component -> do
       st <- get
       let
@@ -41608,9 +44605,7 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
         generalizableOrigins =
           Set.intersection projectedGeneralizableOrigins schemaGeneralizable
         ownedInstantiationOrigins =
-          Set.union
-            unownedInstantiationOrigins
-            (levelMetasOwnedBy instantiationByOwner ownedSymbols)
+          levelMetasOwnedBy instantiationByOwner ownedSymbols
         instantiationOrigins = projectOrigins ownedInstantiationOrigins
         instantiationMetas =
           Set.intersection relevantMetas
@@ -41810,28 +44805,89 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
   do
   st <- get
   let currentModule = csModule st
-      belongsToCurrent g@(GName owner _) =
+      assignments = csLevelAssignments st
+      zonk = zonkLevels assignments
+      unresolved origin =
+        not . null . levelMetas $
+          normalizeLevel (substituteLevelMetas assignments (LMeta origin))
+      unresolvedOwnedOwners =
+        Set.unions
+          [ owners
+          | (origin, owners) <- Map.toList (csLevelInstantiationOwners st)
+          , unresolved origin
+          ]
+      unresolvedUnownedInstantiationOrigins =
+        Set.difference
+          (Set.filter unresolved (csLevelInstantiationMetas st))
+          (Map.keysSet (csLevelInstantiationOwners st))
+      eligible g@(GName owner _) =
         owner == currentModule
           && g `Set.notMember` deferredGlobals
           && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals)
-      assignments = csLevelAssignments st
+      eligibleGlobals =
+        Map.filterWithKey (\global _ -> eligible global) (csGlobals st)
+      projectedUnownedInstantiationMetas =
+        Set.fromList
+          [ projected
+          | origin <- Set.toList unresolvedUnownedInstantiationOrigins
+          , projected <-
+              levelMetas
+                (normalizeLevel (substituteLevelMetas assignments (LMeta origin)))
+          ]
+      artifactTerms global definition =
+        map zonk (globalUniverseInterfaceTerms st global definition)
+          ++ maybe [] (pure . zonk) (Map.lookup global (csCoreBodies st))
+      observableUnownedOwners
+        | Set.null projectedUnownedInstantiationMetas = Set.empty
+        | otherwise =
+            Set.fromList
+              [ global
+              | (global, definition) <- Map.toList eligibleGlobals
+              , let artifactMetas =
+                      Set.fromList
+                        (concatMap levelMetasOfTerm (artifactTerms global definition))
+              , not
+                  ( Set.null
+                      (Set.intersection artifactMetas projectedUnownedInstantiationMetas)
+                  )
+              ]
+      currentSymbols =
+        Set.union
+          observableUnownedOwners
+          (Set.intersection (Map.keysSet eligibleGlobals) unresolvedOwnedOwners)
+      belongsToCurrent global = global `Set.member` currentSymbols
       interfaceTerms =
-        [ zonkLevels assignments term
+        [ zonk term
         | (g, definition) <- Map.toList (csGlobals st)
         , belongsToCurrent g
         , term <- globalUniverseInterfaceTerms st g definition
         ]
       bodyTerms =
-        [ zonkLevels assignments body
+        [ zonk body
         | (g, body) <- Map.toList (csCoreBodies st)
         , belongsToCurrent g
         ]
       observableMetas =
         Set.fromList (concatMap levelMetasOfTerm (interfaceTerms ++ bodyTerms))
+      relevantInstantiationOrigins =
+        Set.filter
+          (\origin ->
+             let owners =
+                   Map.findWithDefault Set.empty origin (csLevelInstantiationOwners st)
+                 projected =
+                   Set.fromList
+                     ( levelMetas
+                         (normalizeLevel (substituteLevelMetas assignments (LMeta origin)))
+                     )
+              in not (Set.null (Set.intersection currentSymbols owners))
+                   || ( origin `Set.member` unresolvedUnownedInstantiationOrigins
+                          && not (Set.null (Set.intersection observableMetas projected))
+                      ))
+          (csLevelInstantiationMetas st)
       instantiationMetas =
         Set.fromList
           [ projected
-          | origin <- Set.toList (csLevelInstantiationMetas st)
+          | origin <- Set.toList relevantInstantiationOrigins
           , projected <-
               levelMetas
                 (normalizeLevel (substituteLevelMetas assignments (LMeta origin)))
@@ -41853,12 +44909,6 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
           , level <- puiFreshLevels occurrence
           , meta <- levelMetas
               (normalizeLevel (substituteLevelMetas assignments level))
-          ]
-      currentSymbols =
-        Set.fromList
-          [ global
-          | global <- Map.keys (csGlobals st)
-          , belongsToCurrent global
           ]
       currentConstraints =
         concat
@@ -42274,6 +45324,62 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
   unless (Map.null candidates && Map.null ctorCandidates) $ do
     let ec = ecOf st
         assignments = csLevelAssignments st
+        finalizedInterfaces = csFinalizedUniverseInterfaces st
+        publicationTargets =
+          Set.union (Map.keysSet candidates) (Map.keysSet ctorCandidates)
+        ownerTerms =
+          Map.unionsWith
+            (++)
+            [ Map.mapWithKey
+                (\owner definition ->
+                   globalCoreType ec definition
+                     : maybe [] pure (Map.lookup owner (csCoreBodies st)))
+                (csGlobals st)
+            , Map.map (map snd . tiSupers) (csTraits st)
+            , constructorInterfaceTermsByOwner (csCtors st)
+            , Map.fromListWith
+                (++)
+                [ ( ieDict entry
+                  , map CSort (ieTraitUniverses entry)
+                      ++ iePremises entry
+                      ++ ieHead entry
+                  )
+                | entry <- csInstances st
+                ]
+            , Map.fromListWith
+                (++)
+                [ ( piDictG entry
+                  , map teDomain (piFvTele entry)
+                      ++ piPremTms entry
+                      ++ piArgTms entry
+                  )
+                | Just entry <- Map.elems (csPreInstances st)
+                ]
+            , Map.mapWithKey
+                (\owner _ -> effectUniverseInterfaceTerms st owner)
+                (csEffectInterfaces st)
+            , Map.map
+                (\case
+                   PendingTraitNominalSummary _ _ clauses _ -> clauses
+                   PendingDataNominalSummary {} -> [])
+                (csNominalSummaryRequests st)
+            ]
+        publicationAffectedOwners =
+          Map.keysSet
+            ( Map.filter
+                (\terms ->
+                   not . Set.null . Set.intersection publicationTargets . Set.unions $
+                     map globalsOfTerm terms)
+                ownerTerms
+            )
+        ownerNeedsUniverseRewrite owner =
+          gnameInModule owner currentModule
+            && ( owner `Set.member` publicationTargets
+                   || owner `Set.member` publicationAffectedOwners
+               )
+        constructorNeedsUniverseRewrite constructor info =
+          ownerNeedsUniverseRewrite constructor
+            || ownerNeedsUniverseRewrite (ciData info)
         zonkRawLevel = normalizeLevel . substituteLevelMetas assignments
         zonkRawLevels =
           zonkTermWith
@@ -42919,7 +46025,9 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             (\g gd ->
                case Map.lookup g candidates of
                  Just candidate -> rebuild g candidate
-                 Nothing -> rewriteReferencedGlobal gd)
+                 Nothing
+                   | ownerNeedsUniverseRewrite g -> rewriteReferencedGlobal gd
+                   | otherwise -> gd)
             (csGlobals st)
         -- Derive the public call-spine delta from the rebuilt interfaces, not
         -- from one solver bookkeeping route.  A constraint may have entered
@@ -43037,40 +46145,46 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         globalsWithRepairedCoreTypes =
           Map.mapWithKey
             (\g gd ->
-               let coreType = globalCoreType ec gd
-                   completedType =
-                     replayPublishedGeneratedConstraintCallSpines
-                       GeneratedProofTelescope
-                       newGlobalConstraintTargets
-                       Map.empty
-                       (generatedConstraintBinders coreType)
-                       ( if Map.member prelRefl (csCtors st)
-                           then Just solverEstablishedLevelWitness
-                           else Nothing
-                       )
-                       coreType
-                   repairedType =
-                     replayPublishedGeneratedConstraintCallSpines
-                       GeneratedProofTelescope
-                       publishedGlobalReplayTargets
-                       publishedConstructorReplayTargets
-                       (generatedConstraintBinders coreType)
-                       ( if Map.member prelRefl (csCtors st)
-                           then Just solverEstablishedLevelWitness
-                           else Nothing
-                       )
-                       completedType
-                in if termScopedAt 0 repairedType
-                     then gd {gdCoreType = Just repairedType}
-                     else gd)
+               if not (ownerNeedsUniverseRewrite g)
+                 then gd
+                 else
+                   let coreType = globalCoreType ec gd
+                       completedType =
+                         replayPublishedGeneratedConstraintCallSpines
+                           GeneratedProofTelescope
+                           newGlobalConstraintTargets
+                           Map.empty
+                           (generatedConstraintBinders coreType)
+                           ( if Map.member prelRefl (csCtors st)
+                               then Just solverEstablishedLevelWitness
+                               else Nothing
+                           )
+                           coreType
+                       repairedType =
+                         replayPublishedGeneratedConstraintCallSpines
+                           GeneratedProofTelescope
+                           publishedGlobalReplayTargets
+                           publishedConstructorReplayTargets
+                           (generatedConstraintBinders coreType)
+                           ( if Map.member prelRefl (csCtors st)
+                               then Just solverEstablishedLevelWitness
+                               else Nothing
+                           )
+                           completedType
+                    in if termScopedAt 0 repairedType
+                         then gd {gdCoreType = Just repairedType}
+                         else gd)
             globalsRebuilt0
         repairedTypeContext =
           (ecOf st) {ecGlobals = Globals globalsWithRepairedCoreTypes}
         globalsRebuilt =
-          Map.map
-            (\gd ->
-               let coreType = globalCoreType repairedTypeContext gd
-                in gd {gdType = eval repairedTypeContext [] coreType})
+          Map.mapWithKey
+            (\g gd ->
+               if ownerNeedsUniverseRewrite g
+                 then
+                   let coreType = globalCoreType repairedTypeContext gd
+                    in gd {gdType = eval repairedTypeContext [] coreType}
+                 else gd)
             globalsWithRepairedCoreTypes
         -- The public generated member projections are the finalized checked
         -- authority for a trait dictionary's field telescope.  The opaque
@@ -43149,19 +46263,23 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         globalsWithTraitInterfaces =
           Map.mapWithKey
             (\global definition ->
-               fromMaybe definition $ do
-                 info <- Map.lookup global (csTraits st)
-                 rebuildTraitDictionaryInterface
-                   globalsRebuilt
-                   global
-                   info
-                   definition)
+               if not (ownerNeedsUniverseRewrite global)
+                 then definition
+                 else
+                   fromMaybe definition $ do
+                     info <- Map.lookup global (csTraits st)
+                     rebuildTraitDictionaryInterface
+                       globalsRebuilt
+                       global
+                       info
+                       definition)
             globalsRebuilt
         traits' =
           Map.mapWithKey
             (\g info ->
                case Map.lookup g globalMetas of
-                 Nothing ->
+                 Nothing
+                   | ownerNeedsUniverseRewrite g ->
                    info
                      { tiSupers =
                          [ ( field
@@ -43174,6 +46292,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                          | (field, term) <- tiSupers info
                          ]
                      }
+                   | otherwise -> info
                  Just metas ->
                    let existingParameterCount =
                          maybe 0 (dutParameterCount . gdUniverses) (Map.lookup g candidates)
@@ -43189,7 +46308,9 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         nominalSummaryRequests' =
           Map.mapWithKey
             (\family request ->
-               case request of
+               if not (ownerNeedsUniverseRewrite family)
+                 then request
+                 else case request of
                  PendingTraitNominalSummary sourceSchema saturationArity clauses site ->
                    let existingParameterCount =
                          maybe
@@ -43241,7 +46362,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           Map.mapWithKey
             (\g ci ->
                case Map.lookup g ctorCandidates of
-                 Nothing ->
+                 Nothing
+                   | constructorNeedsUniverseRewrite g ci ->
                    ci
                      { ciType =
                          zonkRawLevels
@@ -43250,6 +46372,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                                (zonkRawTerm (ciType ci))
                            )
                      }
+                   | otherwise -> ci
                  Just candidate ->
                    let family = ciData candidate
                        metas = Map.findWithDefault [] g ctorMetas
@@ -43287,63 +46410,66 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         coreBodies' =
           Map.mapWithKey
             (\g body ->
-               let body' =
-                     zonkRawLevels
-                       ( rewriteProvisionalUniverseReferences
-                           referenceProjections
-                           (zonkRawTerm body)
-                       )
-                   candidate = Map.lookup g candidates
-                   existingParameterCount =
-                     maybe 0 (dutParameterCount . gdUniverses) candidate
-                   transformed0 =
-                     case candidate of
-                       Just _ ->
-                         transformFor
-                           g
-                           existingParameterCount
-                           (Map.findWithDefault [] g globalMetas)
-                           body
-                       Nothing -> body'
-                   newlyOwnedConstraints =
-                     Map.findWithDefault [] g lateGeneratedConstraints
-                   pendingForOwner =
-                     Map.map pleConstraint
-                       ( Map.filter
-                           (\entry ->
-                              pleOwner entry == g
-                                && any
-                                  (equivalentUniverseConstraint (pleConstraint entry))
-                                  newlyOwnedConstraints
+               if not (ownerNeedsUniverseRewrite g)
+                 then body
+                 else
+                   let body' =
+                         zonkRawLevels
+                           ( rewriteProvisionalUniverseReferences
+                               referenceProjections
+                               (zonkRawTerm body)
                            )
-                           (csPendingLevelEvidence st)
-                       )
-                   -- Pending metas refer to the newly prepended owner delta.
-                   -- Target call spines are completed only after every proof
-                   -- lambda is present, using the finalized caller telescope.
-                   (evidenceRepaired, _) =
-                     rewriteGeneratedConstraintEvidence
-                       Map.empty
-                       newlyOwnedConstraints
-                       pendingForOwner
-                       transformed0
-                   callerType = globalCoreType ec <$> Map.lookup g globalsRebuilt
-                   proofNames = maybe [] generatedConstraintBinderNames callerType
-                   withProofLambdas =
-                     if isJust candidate
-                       then ensureGeneratedConstraintLambdas proofNames evidenceRepaired
-                       else evidenceRepaired
-                   callerConstraints = maybe [] generatedConstraintBinders callerType
-                in replayPublishedGeneratedConstraintCallSpines
-                     GeneratedProofLambdas
-                     newGlobalConstraintTargets
-                     Map.empty
-                     callerConstraints
-                     ( if Map.member prelRefl (csCtors st)
-                         then Just solverEstablishedLevelWitness
-                         else Nothing
-                     )
-                     withProofLambdas
+                       candidate = Map.lookup g candidates
+                       existingParameterCount =
+                         maybe 0 (dutParameterCount . gdUniverses) candidate
+                       transformed0 =
+                         case candidate of
+                           Just _ ->
+                             transformFor
+                               g
+                               existingParameterCount
+                               (Map.findWithDefault [] g globalMetas)
+                               body
+                           Nothing -> body'
+                       newlyOwnedConstraints =
+                         Map.findWithDefault [] g lateGeneratedConstraints
+                       pendingForOwner =
+                         Map.map pleConstraint
+                           ( Map.filter
+                               (\entry ->
+                                  pleOwner entry == g
+                                    && any
+                                      (equivalentUniverseConstraint (pleConstraint entry))
+                                      newlyOwnedConstraints
+                               )
+                               (csPendingLevelEvidence st)
+                           )
+                       -- Pending metas refer to the newly prepended owner delta.
+                       -- Target call spines are completed only after every proof
+                       -- lambda is present, using the finalized caller telescope.
+                       (evidenceRepaired, _) =
+                         rewriteGeneratedConstraintEvidence
+                           Map.empty
+                           newlyOwnedConstraints
+                           pendingForOwner
+                           transformed0
+                       callerType = globalCoreType ec <$> Map.lookup g globalsRebuilt
+                       proofNames = maybe [] generatedConstraintBinderNames callerType
+                       withProofLambdas =
+                         if isJust candidate
+                           then ensureGeneratedConstraintLambdas proofNames evidenceRepaired
+                           else evidenceRepaired
+                       callerConstraints = maybe [] generatedConstraintBinders callerType
+                    in replayPublishedGeneratedConstraintCallSpines
+                         GeneratedProofLambdas
+                         newGlobalConstraintTargets
+                         Map.empty
+                         callerConstraints
+                         ( if Map.member prelRefl (csCtors st)
+                             then Just solverEstablishedLevelWitness
+                             else Nothing
+                         )
+                         withProofLambdas
             )
             (csCoreBodies st)
         stateWithRebuiltGlobals =
@@ -43351,8 +46477,11 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         globals' =
           Map.mapWithKey
             (\global definition ->
-               maybe definition (\body -> globalDefWithCanonicalCoreBody stateWithRebuiltGlobals body definition)
-                 (Map.lookup global coreBodies'))
+               if ownerNeedsUniverseRewrite global
+                 then
+                   maybe definition (\body -> globalDefWithCanonicalCoreBody stateWithRebuiltGlobals body definition)
+                     (Map.lookup global coreBodies')
+                 else definition)
             globalsWithTraitInterfaces
         transformGlobalUniverseSpine transform global universes =
           case transform (CGlobal global universes) of
@@ -43363,7 +46492,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           map
             (\entry ->
                case Map.lookup (ieDict entry) globalMetas of
-                 Nothing ->
+                 Nothing
+                   | ownerNeedsUniverseRewrite (ieDict entry) ->
                    let rewrite =
                          zonkRawLevels
                            . rewriteProvisionalUniverseReferences referenceProjections
@@ -43377,6 +46507,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                          , iePremises = map rewrite (iePremises entry)
                          , ieHead = map rewrite (ieHead entry)
                          }
+                   | otherwise -> entry
                  Just metas ->
                    let existing = ieUniverses entry
                        existingParameterCount = dutParameterCount existing
@@ -43399,7 +46530,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           Map.map
             (fmap (\entry ->
                case Map.lookup (piDictG entry) globalMetas of
-                 Nothing ->
+                 Nothing
+                   | ownerNeedsUniverseRewrite (piDictG entry) ->
                    let rewrite =
                          zonkRawLevels
                              . rewriteProvisionalUniverseReferences referenceProjections
@@ -43412,6 +46544,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                          , piPremTms = map rewrite (piPremTms entry)
                          , piArgTms = map rewrite (piArgTms entry)
                          }
+                   | otherwise -> entry
                  Just metas ->
                    let existingParameterCount =
                          maybe 0 (dutParameterCount . gdUniverses) (Map.lookup (piDictG entry) candidates)
@@ -43429,7 +46562,9 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             (csPreInstances st)
         transformEffectLabel effectInfo =
           let owner = eliIface effectInfo
-           in case Map.lookup owner candidates of
+           in if not (ownerNeedsUniverseRewrite owner)
+                then effectInfo
+                else case Map.lookup owner candidates of
                 Nothing ->
                   let transform =
                         zonkRawLevels
@@ -43503,25 +46638,28 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           Map.withoutKeys
             ( Map.mapWithKey
                 (\global signature ->
-                   let preserved =
-                         Set.fromList
-                           ( concat
-                               ( Map.findWithDefault
-                                   []
-                                   global
-                                   (csProvisionalGlobalUniverseMetas st)
+                   if not (ownerNeedsUniverseRewrite global)
+                     then signature
+                     else
+                       let preserved =
+                             Set.fromList
+                               ( concat
+                                   ( Map.findWithDefault
+                                       []
+                                       global
+                                       (csProvisionalGlobalUniverseMetas st)
+                                   )
                                )
-                           )
-                       remainingAssignments =
-                         Map.withoutKeys assignments preserved
-                    in zonkTermWith
-                         (\_ _ -> Nothing)
-                         (substituteLevelMetas remainingAssignments)
-                         0
-                         ( rewriteProvisionalUniverseReferences
-                             referenceProjections
-                             (zonkRawTermPreserving preserved signature)
-                         )
+                           remainingAssignments =
+                             Map.withoutKeys assignments preserved
+                        in zonkTermWith
+                             (\_ _ -> Nothing)
+                             (substituteLevelMetas remainingAssignments)
+                             0
+                             ( rewriteProvisionalUniverseReferences
+                                 referenceProjections
+                                 (zonkRawTermPreserving preserved signature)
+                             )
                 )
                 (csCoreSignatures st)
             )
@@ -43530,34 +46668,37 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           map
             (\occurrence ->
                let owner = rsoCaller occurrence
-                   transform =
-                     case Map.lookup owner candidates of
-                       Just definition ->
-                         transformFor
-                           owner
-                           (dutParameterCount (gdUniverses definition))
-                           (Map.findWithDefault [] owner globalMetas)
-                       Nothing -> zonkRawLevels
-                   transformedLevels =
-                     case transform (CGlobal (rsoCallee occurrence) (rsoLevels occurrence)) of
-                       CGlobal _ levels -> levels
-                       _ -> map zonkRawLevel (rsoLevels occurrence)
-                   transformLevel level =
-                     case transform (CSort level) of
-                       CSort transformed -> transformed
-                       _ -> zonkRawLevel level
-                   transformedAssumptions =
-                     foldr
-                       (\(lower, upper) ->
-                          insertAssumption
-                            (transformLevel lower)
-                            (transformLevel upper))
-                       emptyAssumptions
-                       (assumptionsList (rsoAssumptions occurrence))
-                in occurrence
-                     { rsoLevels = transformedLevels
-                     , rsoAssumptions = transformedAssumptions
-                     })
+                in if not (ownerNeedsUniverseRewrite owner)
+                     then occurrence
+                     else
+                       let transform =
+                             case Map.lookup owner candidates of
+                               Just definition ->
+                                 transformFor
+                                   owner
+                                   (dutParameterCount (gdUniverses definition))
+                                   (Map.findWithDefault [] owner globalMetas)
+                               Nothing -> zonkRawLevels
+                           transformedLevels =
+                             case transform (CGlobal (rsoCallee occurrence) (rsoLevels occurrence)) of
+                               CGlobal _ levels -> levels
+                               _ -> map zonkRawLevel (rsoLevels occurrence)
+                           transformLevel level =
+                             case transform (CSort level) of
+                               CSort transformed -> transformed
+                               _ -> zonkRawLevel level
+                           transformedAssumptions =
+                             foldr
+                               (\(lower, upper) ->
+                                  insertAssumption
+                                    (transformLevel lower)
+                                    (transformLevel upper))
+                               emptyAssumptions
+                               (assumptionsList (rsoAssumptions occurrence))
+                        in occurrence
+                             { rsoLevels = transformedLevels
+                             , rsoAssumptions = transformedAssumptions
+                             })
             (csRecursiveSchemaOccurrences st)
         transformRetainedConstraint constraint =
           case Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st)
@@ -43611,13 +46752,13 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                 constraints
             )
     put . reindexLevelConstraints $
-      invalidateSemanticCaches
+      invalidateSemanticCaches $
+      setCheckInstances instances' $
         st
           { csGlobals = globals'
           , csTraits = traits'
           , csNominalSummaryRequests = nominalSummaryRequests'
           , csCtors = ctors'
-          , csInstances = instances'
           , csPreInstances = preInstances'
           , csModEffLabels = effectLabels'
           , csEffectInterfaces = effectInterfaces'
@@ -44339,6 +47480,8 @@ sourceDeclarationSymbols owner decls =
     traitMemberName = \case
       TraitSig name _ _ -> [nameText name]
       TraitDefault def _ -> namedLet def
+      TraitDerived name _ _ -> [nameText name]
+      TraitEvidenceUniqueness {} -> []
     expectName = \case
       ExpectTerm name _ -> nameText name
       ExpectType name _ _ -> nameText name
@@ -44667,7 +47810,6 @@ elabAliasBody params mkind rhs = do
           pure (term, Nothing, wasCoerced, Just domE)
         Nothing -> do
           meta <- freshMetaId
-          modify' $ \st -> st {csMetas = Map.insert meta Nothing (csMetas st)}
           pure (CMeta meta, Just meta, False, Nothing)
       domV <- evalIn ctx domTm
       let nm = maybe "_" nameText (bName b)
@@ -46922,10 +50064,21 @@ headerTrait (TraitDecl supers n params members) sp = do
   -- dictionary fields, projected by the compiler as ordinary evidence
   -- projections (§14.2.1); a parenthesized premise list (C1 a, C2 a)
   -- is several premises
-  let superList = concatMap (\sx -> case sx of ETuple es _ -> es; _ -> [sx]) supers
-  supPairs <- forM (zip [(0 :: Int) ..] superList) $ \(i, s) -> do
+  let superList =
+        concatMap
+          ( \item ->
+              case stiType item of
+                ETuple expressions _ ->
+                  [(stiDerived item, expression) | expression <- expressions]
+                expression -> [(stiDerived item, expression)]
+          )
+          supers
+  supEntries <- forM (zip [(0 :: Int) ..] superList) $ \(i, (derived, s)) -> do
     (sTm, _) <- inferType pctx s
-    pure (superFieldName i, sTm)
+    pure (superFieldName i, sTm, derived)
+  let supPairs = [(field, term) | (field, term, _) <- supEntries]
+      derivedSuperFields =
+        Set.fromList [field | (field, _, True) <- supEntries]
   -- member declarations in source order; earlier members are in scope
   -- for later member signatures as §13.2.1 siblings of the evidence
   -- record ("Inside the trait body, Item refers to the associated
@@ -46934,8 +50087,43 @@ headerTrait (TraitDecl supers n params members) sp = do
   let paramNames = map teName provisionalParamTele
       memberNames =
         nub $
-          [nameText mn | TraitSig mn _ _ <- members]
-            ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _ _) _ <- members]
+          [nameText mn | Just mn <- map Kappa.Syntax.traitMemberName members]
+      derivedMemberNames =
+        Set.fromList [nameText mn | TraitDerived mn _ _ <- members]
+  provisionalMemberFields <- forM memberNames $ \member ->
+    RecordField member Ordinary FormationOrdinary QW Nothing <$> freshMetaV pctx
+  let derivedMemberDeclarations =
+        [ (nameText member, memberType, memberSpan)
+        | TraitDerived member memberType memberSpan <- members
+        ]
+      derivedMemberGraph =
+        [ ( (member, memberSpan)
+          , member
+          , nub
+              [ dependency
+              | dependency <- freeLower memberType
+              , dependency `Set.member` derivedMemberNames
+              ]
+          )
+        | (member, memberType, memberSpan) <- derivedMemberDeclarations
+        ]
+      derivedMemberCycles =
+        [ cycleMembers
+        | CyclicSCC cycleMembers <- stronglyConnComp derivedMemberGraph
+        ]
+  forM_ derivedMemberCycles $ \cycleMembers ->
+    case cycleMembers of
+      [] -> pure ()
+      ((_, cycleSpan) : _) ->
+        report $
+          withPayload
+            ( withPayloadField "cycle"
+                (T.intercalate " -> " (map fst cycleMembers)) $
+                payloadKind "derive-cycle"
+            ) $
+            diag SevError StageElaborate "E_DERIVE_CYCLE" (Just "kappa.derive") cycleSpan
+              "the synthesized-member dependency graph contains an unproductive cycle (§14.3.4A)"
+  let
       -- §14.1.4: a member signature may name a SUPERTRAIT operation (e.g.
       -- a member of a 'C => D' subtrait mentions an operation from the
       -- supertrait 'C'). Such an operation's implicit dictionary argument is the
@@ -46967,9 +50155,15 @@ headerTrait (TraitDecl supers n params members) sp = do
         superVals <- forM supPairs $ \(fld, sTm) -> (,) fld <$> evalIn pctx sTm
         oldSupers <- gets csTraitSupers
         modify' $ \st -> st {csTraitSupers = superVals}
+        let availableMembers =
+              acc
+                ++ [ field
+                   | field <- provisionalMemberFields
+                   , rfName field `notElem` map rfName acc
+                   ]
         (mtyTm0raw, _) <-
           withNamedCallableInoutSignature mtyE $
-            withThis (Just (ThisTraitSibs (sortOn rfName acc))) (inferType mctx mtyE)
+            withThis (Just (ThisTraitSibs (sortOn rfName availableMembers))) (inferType mctx mtyE)
         -- Resolve any POSTPONED supertrait-operation dictionaries now, while
         -- 'csTraitSupers' is still in scope and the operations' explicit args
         -- have pinned their carriers, so each commits to its 'this.__superN'
@@ -47042,6 +50236,8 @@ headerTrait (TraitDecl supers n params members) sp = do
                 : done
             )
             rest
+        TraitDerived mn mtyE memberSpan ->
+          goMembers acc done (TraitSig mn mtyE memberSpan : rest)
         TraitDefault (LetDef (Just mn) _ _ _ _ _ mty _ _) _
           -- a default for an already-declared member supplies its
           -- definition only; the declaration owns the dictionary
@@ -47088,6 +50284,7 @@ headerTrait (TraitDecl supers n params members) sp = do
                 )
                 rest
         TraitDefault {} -> goMembers acc done rest
+        TraitEvidenceUniqueness {} -> goMembers acc done rest
   ms <- goMembers [] [] members
   paramTele <- finalizeSourceDeclarationTelescope emptyCtx (zip params provisionalParamTele)
   -- The member/supertrait uses above have now constrained every generated
@@ -47148,6 +50345,9 @@ headerTrait (TraitDecl supers n params members) sp = do
                     (Map.fromList [(mn, q) | (mn, _, _, _, _, q, _, _, _) <- ms])
                     defaults
                     supTms
+                    derivedMemberNames
+                    derivedSuperFields
+                    SealedCoherent
                 )
                 (csTraits st)
           }
@@ -47220,6 +50420,32 @@ headerTrait (TraitDecl supers n params members) sp = do
               Map.insert qualifiedMember g (csTraitMemberOwners state)
           }
 
+  let uniquenessClauses =
+        [ (proof, clauseSpan)
+        | TraitEvidenceUniqueness proof clauseSpan <- members
+        ]
+      independentlySubsingletonFields =
+        all
+          (\(_, _, _, _, _, _, _, runtimeErased, associatedStatic) -> runtimeErased || associatedStatic)
+          ms
+  constructionMode <-
+    validateTraitEvidenceUniqueness
+      g
+      traitUniverses
+      pctx
+      paramTele
+      supPairs
+      independentlySubsingletonFields
+      uniquenessClauses
+  modify' $ \state ->
+    state
+      { csTraits =
+          Map.adjust
+            (\info -> info {tiEvidenceConstructionMode = constructionMode})
+            g
+            (csTraits state)
+      }
+
   where
     provisionalTraitParam binder entry
       | isNothing (bType binder) =
@@ -47232,6 +50458,158 @@ headerTrait (TraitDecl supers n params members) sp = do
                   (bpQuantity prefix)
            in entry {teMode = mode, teQ = quantity}
       | otherwise = entry
+
+-- | Validate the declaration-owned authority for fresh trait-evidence
+-- construction (§14.1.1A).  Conventional certificates use a compact checked
+-- structural proof: each field must already be independently subsingleton and
+-- each supertrait must itself carry an independent certificate.  The embedded
+-- standard foundation has additional identity-authenticated providers for
+-- law-constrained fields such as @Eq.(==)@ and @IsContr.center@.  An explicit
+-- proof is checked against the generated extensional theorem while the exact
+-- trait is on 'csEvidenceUniquenessStack', disabling the forbidden
+-- @IsTrait G -> IsSubsingleton G@ cycle.
+validateTraitEvidenceUniqueness
+  :: GName
+  -> [Level]
+  -> Ctx
+  -> [TelescopeEntry]
+  -> [(Text, Term)]
+  -> Bool
+  -> [(Expr, Span)]
+  -> CheckM EvidenceConstructionMode
+validateTraitEvidenceUniqueness trait traitUniverses parameterCtx parameterTele supers fieldsIndependent clauses =
+  case clauses of
+    [] -> pure SealedCoherent
+    [(EDerive Nothing _, clauseSpan)] -> do
+      supersIndependent <- and <$> mapM superIsIndependent supers
+      foundation <- authenticatedFoundationProvider
+      if (fieldsIndependent && supersIndependent) || foundation
+        then pure IndependentlyUnique
+        else do
+          errAt clauseSpan "E_EVIDENCE_UNIQUENESS_INVALID"
+            (Just "kappa.evidence.uniqueness")
+            "the conventional evidence-uniqueness proof cannot establish independent equality of every evidence field (§14.1.1A)"
+          pure SealedCoherent
+    [(proofExpression, clauseSpan)] -> do
+      expected <- evidenceUniquenessTheorem
+      before <- gets (length . csDiags)
+      modify' $ \state ->
+        state
+          { csEvidenceUniquenessStack =
+              trait : csEvidenceUniquenessStack state
+          }
+      checkedProof <- check parameterCtx proofExpression expected
+      -- Implicit evidence in the certificate body is often postponed until
+      -- its endpoints are fixed.  Resolve it while the self-coherence guard
+      -- is still active; popping the guard first would let the forbidden
+      -- @IsTrait G@ edge enter through declaration closeout.
+      flushPending
+      modify' $ \state ->
+        state
+          { csEvidenceUniquenessStack =
+              dropOne trait (csEvidenceUniquenessStack state)
+          }
+      diagnostics <- gets csDiags
+      let added = take (length diagnostics - before) diagnostics
+          dependencies = globalsOfTerm checkedProof
+          coherenceCycle = prelTraitSubsingletonWitness `Set.member` dependencies
+          cycleReported =
+            coherenceCycle
+              || any ((== "E_EVIDENCE_UNIQUENESS_CYCLE") . dCode) added
+      when (coherenceCycle && not (any ((== "E_EVIDENCE_UNIQUENESS_CYCLE") . dCode) added)) $
+        errAt clauseSpan "E_EVIDENCE_UNIQUENESS_CYCLE"
+          (Just "kappa.evidence.uniqueness")
+          "an evidence-uniqueness certificate depends on compiler-generated coherence for the same trait (§14.1.1A)"
+      if null added && not coherenceCycle
+        then pure IndependentlyUnique
+        else do
+          unless cycleReported $
+            errAt clauseSpan "E_EVIDENCE_UNIQUENESS_INVALID"
+              (Just "kappa.evidence.uniqueness")
+              "the evidence-uniqueness expression does not prove the generated independent extensionality theorem (§14.1.1A)"
+          pure SealedCoherent
+    (_ : (_, duplicateSpan) : _) -> do
+      errAt duplicateSpan "E_EVIDENCE_UNIQUENESS_INVALID"
+        (Just "kappa.evidence.uniqueness")
+        "a trait may declare at most one evidence-uniqueness certificate (§14.1.1A)"
+      pure SealedCoherent
+  where
+    dropOne _ [] = []
+    dropOne target (candidate : rest)
+      | target == candidate = rest
+      | otherwise = candidate : dropOne target rest
+
+    superIsIndependent (_, closedSuper) = do
+      superFunction <- evalIn parameterCtx closedSuper
+      forceM superFunction >>= \case
+        VGlobI superTrait _ _ -> do
+          state <- get
+          pure $
+            maybe
+              False
+              ((== IndependentlyUnique) . tiEvidenceConstructionMode)
+              (Map.lookup superTrait (csTraits state))
+        _ -> pure False
+
+    authenticatedFoundationProvider = do
+      embedded <- gets csEmbeddedLoad
+      pure
+        ( embedded
+            && trait
+              `Set.member` Set.fromList
+                [ gPrel "IsEmpty"
+                , gPrel "IsContr"
+                , gPrel "IsSubsingleton"
+                , gPrel "IsProp"
+                , gPrel "IsSet"
+                , gPrel "IsGroupoid"
+                , gPrel "Eq"
+                ]
+        )
+
+    evidenceUniquenessTheorem = do
+      let parameterIndices = reverse [0 .. length parameterTele - 1]
+          evidenceTypeTerm =
+            foldl
+              (\function (entry, index) ->
+                CApp (teIcit entry) function (CVar index))
+              (CGlobI trait traitUniverses)
+              (zip parameterTele parameterIndices)
+      evidenceType <- evalIn parameterCtx evidenceTypeTerm
+      let leftLevel = ctxLen parameterCtx
+          leftCtx =
+            bindCtxMQ Ordinary QW "left" False evidenceType parameterCtx
+          rightLevel = ctxLen leftCtx
+          rightCtx =
+            bindCtxMQ Ordinary QW "right" False evidenceType leftCtx
+      equality <-
+        globalValueM
+          prelEqType
+          [ (Impl, evidenceType)
+          , (Expl, VRigid leftLevel [])
+          , (Expl, VRigid rightLevel [])
+          ]
+      equalityTerm <- quoteIn rightCtx equality
+      let theoremTerm =
+            CPiFormedM
+              Ordinary
+              FormationOrdinary
+              Expl
+              QW
+              False
+              "left"
+              evidenceTypeTerm
+              ( CPiFormedM
+                  Ordinary
+                  FormationOrdinary
+                  Expl
+                  QW
+                  False
+                  "right"
+                  (shiftTerm 1 0 evidenceTypeTerm)
+                  equalityTerm
+              )
+      evalIn parameterCtx theoremTerm
 
 installTraitNominalSummary :: GName -> Maybe UniverseSchema -> NominalSignatureClosure -> Span -> CheckM ()
 installTraitNominalSummary family sourceSchema closure site = do
@@ -47376,10 +50754,14 @@ headerExpect preexisting form sp = case form of
     tyV <- evalIn emptyCtx tyTm
     unless alreadyDef $ addGlobal g (GlobalDef tyV Nothing False)
     recordSignatureInoutParams g tyE
+    -- Portable foundation constants are authenticated by resolved identity
+    -- and an independently seeded Core schema.  They are neither ordinary
+    -- source companions nor spelling-based backend intrinsics.
+    byFoundation <- foundationProviderSatisfies g tyV sp
     -- §34.5/§9.4: a matching backend intrinsic of the selected profile
     -- satisfies this expectation when its signature matches.
     byIntrinsic <- backendIntrinsicSatisfies g tyV sp
-    let count = if definedInCompanion || byIntrinsic then 1 else 0
+    let count = if definedInCompanion || byFoundation || byIntrinsic then 1 else 0
     modify' $ \st -> st {csExpects = Map.insert g (sp, count) (csExpects st)}
   ExpectType n params _ -> abstractType n params
   ExpectData n params _ -> do
@@ -47414,6 +50796,31 @@ headerExpect preexisting form sp = case form of
           count = if satisfied then 1 else 0
       put st {csExpects = Map.insert g (sp, count) (csExpects st)}
       pure (not exists)
+
+-- | Check one mandatory portable-foundation provider.  A provider claim with
+-- the right identity but the wrong ABI is a precise signature error and does
+-- not also degrade into an unsatisfied-expectation cascade.
+foundationProviderSatisfies :: GName -> Value -> Span -> CheckM Bool
+foundationProviderSatisfies g tyV sp = do
+  providers <- gets csFoundationProviders
+  case Map.lookup g providers of
+    Nothing -> pure False
+    Just expectedTm -> do
+      expectedV <- evalIn emptyCtx expectedTm
+      matches <- withUniverseDiagnosticSpan sp (unify emptyCtx tyV expectedV)
+      if matches
+        then pure True
+        else do
+          ec <- ec_
+          let declared = renderTerm (quote ec 0 tyV)
+              required = renderTerm (quote ec 0 expectedV)
+          errAt sp "E_FOUNDATION_PROVIDER_SIGNATURE_MISMATCH"
+            (Just "kappa.internal.compiler")
+            ( "portable foundation provider '" <> gnameText g
+                <> "' does not match its required Core signature; declared: "
+                <> declared <> "; required: " <> required
+            )
+          pure True
 
 -- | §34.5/§9.4: decide whether a backend intrinsic of the selected profile
 -- satisfies the expectation @g@ with declared type @tyV@. An intrinsic is
@@ -48615,9 +52022,8 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ prefix binders mResTy mdec body) s
       earlyTerminationResult <-
         if participates && isFunction && recursive
           then do
-            termNames <- gets csTerminationNames
-            let termDeps = Set.intersection deps termNames
-            if termDeps == Set.singleton g
+            singletonReady <- singletonTerminationDependenciesReady g deps
+            if singletonReady
               then withSccOpaque [g] (verifyTerminationScc [termDecl])
               else pure TerminationUnverified
           else pure TerminationUnverified
@@ -48752,10 +52158,9 @@ expandedGlobalsOfTermM tm = do
 
 expandedGlobalsOfTerm :: CheckState -> Term -> Set GName
 expandedGlobalsOfTerm st =
-  Termination.expandedGlobalsOfTerm $
-    Map.mapWithKey
-      (\g gd -> (gdReducible gd, Map.lookup g (csCoreBodies st)))
-      (csGlobals st)
+  Termination.expandedGlobalsOfTerm $ \global -> do
+    definition <- Map.lookup global (csGlobals st)
+    pure (gdReducible definition, Map.lookup global (csCoreBodies st))
 
 -- Termination verification (§15.3/§15.11, SCC-level).
 --
@@ -51178,7 +54583,7 @@ checkAgainstSig retName sigTy binders body sp = do
       forM_ (binderTypeExpr b) $ \tyE -> do
         (tyTm, _) <- inferBinderDomainType ctx b tyE
         tyV <- evalIn ctx tyTm
-        expectType ctx (bSpan b) dom tyV
+        expectTypeAfterPendingEvidence ctx (bSpan b) dom tyV
       unless (ic == (if bImplicit b then Impl else Expl) || ic == Impl) $
         errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa-hs.type.binder")
           "binder implicitness does not match the signature"
@@ -51273,31 +54678,16 @@ planDerivedDeclarations declarations = do
                 , trait
                 , target
                 , targetTerm'
-                , renderStructuralTermKey targetTerm'
                 )
             )
         _ -> do
-          errAt sourceSpan "E_DERIVE_HEAD" (Just "kappa.derive.invalid-head")
+          errAt sourceSpan "E_DERIVE_HEAD" (Just "kappa.derive")
             "derive expects one supported trait applied to one target type (§14.5)"
           pure Nothing
     _ -> pure Nothing
-  existing <- gets csInstances
   let isSetTrait = gPrel "IsSet"
       eqTrait = gPrel "Eq"
-      explicitIsSetTargets =
-        Set.fromList
-          [ key
-          | (_, trait, _, _, key) <- requests
-          , trait == isSetTrait
-          ]
-      registeredIsSet targetKey =
-        any
-          ( \entry ->
-              ieTrait entry == isSetTrait
-                && map renderStructuralTermKey (ieHead entry) == [targetKey]
-          )
-          existing
-  forM_ requests $ \(sourceSpan, trait, target, targetTerm, targetKey) -> do
+  forM_ requests $ \(sourceSpan, trait, target, targetTerm) -> do
     generated <-
       if trait == isSetTrait
         then pure [derivedEmptyInstance sourceSpan 1 "IsSet" target]
@@ -51305,8 +54695,16 @@ planDerivedDeclarations declarations = do
           if trait == eqTrait
             then do
               eqDeclaration <- derivedEqDecl sourceSpan 2 target targetTerm
+              explicitIsSet <-
+                anyM
+                  (\(_, requestTrait, _, requestTarget) ->
+                     if requestTrait == isSetTrait
+                       then termsMatchTransactionally targetTerm requestTarget
+                       else pure False)
+                  requests
+              registeredIsSet <- matchingEvidenceExists isSetTrait targetTerm
               pure $
-                ( if targetKey `Set.member` explicitIsSetTargets || registeredIsSet targetKey
+                ( if explicitIsSet || registeredIsSet
                     then []
                     else [derivedEmptyInstance sourceSpan 1 "IsSet" target]
                 )
@@ -51317,13 +54715,39 @@ planDerivedDeclarations declarations = do
                 else
                   if trait == gPrel "ExactNaturalRepresentation"
                     then pure [derivedEmptyInstance sourceSpan 1 "ExactNaturalRepresentation" target]
-                    else do
-                      errAt sourceSpan "E_DERIVE_UNSUPPORTED" (Just "kappa.derive.unsupported")
-                        ("the compiler has no portable deriving rule for '" <> gnameText trait <> "' (§14.5)")
-                      pure []
+                    else pure [derivedWholeInstance sourceSpan trait target]
     modify' $ \state ->
       state {csDerivedDecls = Map.insert sourceSpan generated (csDerivedDecls state)}
     mapM_ instanceHeadPass generated
+  where
+    -- Paired derive requests are compared by checked Core under an isolated
+    -- solver state. Independently fresh universe occurrence metas therefore
+    -- do not manufacture duplicate evidence, while failed comparison cannot
+    -- constrain either declaration (§14.5.1, §33.2.1).
+    termsMatchTransactionally left right = do
+      saved <- get
+      matches <- termMatchesTerm emptyCtx left right
+      put saved
+      pure matches
+
+    -- Reuse ordinary, identity-backed instance selection to detect an IsSet
+    -- artifact already declared outside the derive request list. This keeps
+    -- target equivalence, universe specialization, and head normalization in
+    -- the same authority as every later evidence lookup.
+    matchingEvidenceExists trait target = do
+      saved <- get
+      targetValue <- evalIn emptyCtx target
+      goal <- globalValueM trait [(Expl, targetValue)]
+      found <- isJust <$> traitEvidence emptyCtx noSpan goal
+      put saved
+      pure found
+
+    anyM predicate = go
+      where
+        go [] = pure False
+        go (value : rest) = do
+          found <- predicate value
+          if found then pure True else go rest
 
 -- | Dependent refinement fibers can contain ordinary type/evidence metas that
 -- are finalized only after the complete module header and instance set has
@@ -51368,7 +54792,28 @@ derivedEmptyInstance :: Span -> Int -> Text -> Expr -> Decl
 derivedEmptyInstance sourceSpan discriminator trait target =
   let span' = derivedGeneratedSpan sourceSpan discriminator
    in DInstance
-        (InstanceDecl Nothing [] (derivedTraitHead span' trait target) [])
+        ( InstanceDecl
+            Nothing
+            []
+            (derivedTraitHead span' trait target)
+            (InstanceMembers [])
+        )
+        span'
+
+-- | Declaration-level @derive (Tr T)@ uses the same facet-completion mode as
+-- @instance Tr T = derive@ (§14.3.4A). Trait-specific structural generators
+-- may still produce a more explicit checked instance before reaching this
+-- fallback; this constructor is the uniform protocol for every other trait.
+derivedWholeInstance :: Span -> GName -> Expr -> Decl
+derivedWholeInstance sourceSpan trait target =
+  let span' = derivedGeneratedSpan sourceSpan 1
+   in DInstance
+        ( InstanceDecl
+            Nothing
+            []
+            (derivedTraitHead span' (gnameText trait) target)
+            InstanceDerive
+        )
         span'
 
 -- | The exact checked shape used to generate a 'RefinementView' dictionary.
@@ -51607,7 +55052,12 @@ derivedRefinementViewDecl
   -> Decl
 derivedRefinementViewDecl sourceSpan target shape =
   DInstance
-    (InstanceDecl Nothing [] (derivedTraitHead span' "RefinementView" target) members)
+    ( InstanceDecl
+        Nothing
+        []
+        (derivedTraitHead span' "RefinementView" target)
+        (InstanceMembers members)
+    )
     span'
   where
     span' = derivedGeneratedSpan sourceSpan 1
@@ -51727,120 +55177,1113 @@ derivedRefinementViewDecl sourceSpan target shape =
 
 derivedEqDecl :: Span -> Int -> Expr -> Term -> CheckM Decl
 derivedEqDecl sourceSpan discriminator target targetTerm = do
-  shape <- deriveNominalShape targetTerm
+  (shape, premises) <- deriveNominalShape emptyCtx sourceSpan targetTerm
   let span' = derivedGeneratedSpan sourceSpan discriminator
-      memberName = Name "==" span'
       xName = Name "__derive_x" span'
       yName = Name "__derive_y" span'
-      member =
+      member name binders body =
         DLet noMods
           ( LetDef
-              (Just memberName)
+              (Just (Name name span'))
               False
               Nothing
               Nothing
               emptyPrefix
-              [simpleBinder xName, simpleBinder yName]
+              binders
               Nothing
               Nothing
-              (derivedEqualityBody span' target shape xName yName)
+              body
           )
           span'
+      equalityBody =
+        derivedEqualityBody span' target shape xName yName
   pure $
     DInstance
-      (InstanceDecl Nothing [] (derivedTraitHead span' "Eq" target) [member])
+      ( InstanceDecl
+          Nothing
+          premises
+          (derivedTraitHead span' "Eq" target)
+          ( InstanceMembers
+              [ member "==" [simpleBinder xName, simpleBinder yName] equalityBody
+              ]
+          )
+      )
       span'
+
+data DerivedNominalField = DerivedNominalField
+  { dnfQuantity :: !Q
+  , dnfTypeTerm :: !Term
+  , dnfTypeExpression :: !Expr
+  }
+
+type DerivedNominalShape = [(GName, [DerivedNominalField])]
 
 -- | Stable, identity-backed source shape used only to generate ordinary
 -- pattern syntax. Constructor and target identities come from the checked
 -- header tables; textual names are emitted and then resolved by the ordinary
--- pattern checker.
-deriveNominalShape :: Term -> CheckM [(GName, [Q])]
-deriveNominalShape target = do
+-- pattern checker. The checked field term is retained so later law synthesis
+-- can authenticate the exact evidence selected by the checked comparator.
+deriveNominalShape
+  :: Ctx
+  -> Span
+  -> Term
+  -> CheckM (DerivedNominalShape, [Expr])
+deriveNominalShape ctx sourceSpan target = do
   state <- get
-  pure $ case nominalDataHead target >>= (`Map.lookup` csDatas state) of
-    Nothing -> []
-    Just info ->
-      [ (constructor, map fst (constructorFieldBinders constructorInfo))
-      | constructor <- diCtors info
-      , Just constructorInfo <- [Map.lookup constructor (csCtors state)]
+  case nominalDataHead target >>= (`Map.lookup` csDatas state) of
+    Nothing -> pure ([], [])
+    Just info -> do
+      targetValue <- evalIn ctx target
+      constructors <-
+        forM
+        [ (constructor, constructorInfo)
+        | constructor <- diCtors info
+        , Just constructorInfo <- [Map.lookup constructor (csCtors state)]
+        ] $ \(constructor, constructorInfo) -> do
+          instantiated <-
+            ctorFieldTypesWithQ
+              ctx
+              constructor
+              constructorInfo
+              targetValue
+              sourceSpan
+          let explicitSourceCount =
+                length
+                  [ ()
+                  | (icit, _) <- ciSourceFields constructorInfo
+                  , icit == Expl
+                  ]
+              sourceFields =
+                drop (length instantiated - explicitSourceCount) instantiated
+          fields <-
+            forM sourceFields $ \(_, quantity, fieldValue) -> do
+              fieldType <- quoteIn ctx fieldValue >>= zonkTermM (ctxLen ctx)
+              case delaborateType ctx sourceSpan fieldType of
+                Just fieldExpression ->
+                  pure
+                    ( DerivedNominalField
+                        quantity
+                        fieldType
+                        fieldExpression
+                    )
+                Nothing -> do
+                  errAt sourceSpan "E_DERIVE_UNSUPPORTED" (Just "kappa.derive")
+                    "derive Eq could not reify one checked field type as ordinary source syntax (§14.5.1)"
+                  pure
+                    ( DerivedNominalField
+                        quantity
+                        fieldType
+                        (EHole Nothing sourceSpan)
+                    )
+          pure (constructor, fields)
+      let self = nominalDataHead target
+          premiseCandidates =
+            [ (trait, fieldType, fieldExpression)
+            | (_, fields) <- constructors
+            , DerivedNominalField quantity fieldType fieldExpression <- fields
+            , let trait =
+                    if quantity == Q0
+                      then gPrel "IsProp"
+                      else gPrel "Eq"
+            , quantity == Q0 || nominalDataHead fieldType /= self
+            ]
+          uniquePremises =
+            nubBy
+              (\(leftTrait, leftType, _) (rightTrait, rightType, _) ->
+                 leftTrait == rightTrait && leftType == rightType)
+              premiseCandidates
+          premises =
+            [ derivedTraitHead sourceSpan (gnameText trait) fieldExpression
+            | (trait, _, fieldExpression) <- uniquePremises
+            ]
+          shape =
+            [ (constructor, fields)
+            | (constructor, fields) <- constructors
+            ]
+      pure (shape, premises)
+
+derivedEqualityBody
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualityBody span' target shape xName yName =
+  EMatch (ETuple [EVar xName, EVar yName] span')
+    ( [ MatchCase
+          (derivedEqualityPairPattern span' target constructor xFields constructor yFields)
+          Nothing
+          (compareFields fields xFields yFields)
+          span'
+      | (constructor, fields) <- shape
+      , let xFields = derivedEqualityFieldNames span' "__derive_x" constructor fields
+            yFields = derivedEqualityFieldNames span' "__derive_y" constructor fields
+      ]
+        ++ [MatchCase (PWild span') Nothing falseExpr span']
+    )
+    span'
+  where
+    compareFields [] [] [] = trueExpr
+    compareFields (field : fields) (left : lefts) (right : rights)
+      | dnfQuantity field == Q0 =
+          compareFields fields lefts rights
+      | not (hasRuntimeDerivedField fields) =
+          fieldEquality
+            span'
+            (dnfTypeExpression field)
+            left
+            right
+      | otherwise =
+          EIf
+            [ ( fieldEquality
+                  span'
+                  (dnfTypeExpression field)
+                  left
+                  right
+              , compareFields fields lefts rights
+              )
+            ]
+            (Just falseExpr)
+            span'
+    compareFields _ _ _ = falseExpr
+    trueExpr = EVar (Name "True" span')
+    falseExpr = EVar (Name "False" span')
+
+type DerivedEqEvidenceNames = Map GName [Maybe Name]
+
+data DerivedEqFieldMethod
+  = DerivedEqFieldEvidence !(Maybe Name)
+  | DerivedEqFieldRecursive
+  deriving stock (Eq)
+
+type DerivedEqFieldMethods = Map GName [DerivedEqFieldMethod]
+
+data DerivedFunctionalEquality = DerivedFunctionalEquality
+  { dfeIdentity :: !GName
+  , dfeBindingName :: !Name
+  , dfeTerm :: !Term
+  , dfeType :: !Value
+  , dfeDomain :: !Value
+  , dfeDomainExpr :: !Expr
+  , dfeShape :: !DerivedNominalShape
+  , dfeMethods :: !DerivedEqFieldMethods
+  }
+
+data DerivedEqEvidenceBinding = DerivedEqEvidenceBinding
+  { deebName :: !Name
+  , deebDictionary :: !Term
+  , deebDictionaryType :: !Value
+  }
+
+-- | Align each runtime-relevant nominal field with the exact @Eq@ dictionary
+-- selected by the already checked comparator. The comparator Core, dictionary
+-- classifier, trait identity, and carrier conversion all participate in the
+-- check; source spellings do not. A comparator with a different control-flow
+-- shape (including a call to a recursive helper) returns 'Nothing' for the
+-- functional-induction provider rather than guessing an alignment.
+derivedEqEvidenceForComparator
+  :: Ctx
+  -> Span
+  -> DerivedNominalShape
+  -> Term
+  -> CheckM (Maybe ([DerivedEqEvidenceBinding], DerivedEqEvidenceNames))
+derivedEqEvidenceForComparator ctx site shape comparator = do
+  runtimeFields <-
+    forM runtimeFieldTerms $ \(constructor, fieldIndex, fieldType) ->
+      (constructor, fieldIndex,) <$> evalIn ctx fieldType
+  evidenceComponent <-
+    pendingEvidenceComponentTerms ctx (map snd rawCandidates)
+  flushPendingSelected evidenceComponent
+  checkedCandidates <-
+    forM rawCandidates $ \(depth, dictionary) -> do
+      checked <- zonkTermM (ctxLen ctx + depth) dictionary
+      pure (shiftTerm (-depth) 0 checked)
+  candidates <- mapM authenticate checkedCandidates
+  case sequence candidates of
+    Nothing -> pure Nothing
+    Just exact
+      | length exact /= length runtimeFields -> pure Nothing
+      | otherwise -> do
+          let aligned = zip runtimeFields exact
+          beforeAlignment <- get
+          carrierMatches <-
+            forM aligned $ \((_, _, fieldType), (_, _, carrier)) ->
+              unify ctx fieldType carrier
+          let carriersMatch = and carrierMatches
+          if not carriersMatch
+            then put beforeAlignment >> pure Nothing
+            else do
+              let bindings =
+                    [ DerivedEqEvidenceBinding
+                        (evidenceName constructor fieldIndex ordinal)
+                        dictionary
+                        dictionaryType
+                    | ( ordinal
+                      , ( (constructor, fieldIndex, _)
+                        , (dictionary, dictionaryType, _)
+                        )
+                      ) <- zip [0 :: Int ..] aligned
+                    ]
+                  namesByField =
+                    Map.fromList
+                      [ ( constructor
+                        , [ if dnfQuantity field == Q0
+                              then Nothing
+                              else
+                                Just
+                                  ( evidenceName
+                                      constructor
+                                      fieldIndex
+                                      (runtimeOrdinal constructor fieldIndex)
+                                  )
+                          | (fieldIndex, field) <- zip [0 :: Int ..] fields
+                          ]
+                        )
+                      | (constructor, fields) <- shape
+                      ]
+              pure (Just (bindings, namesByField))
+  where
+    rawCandidates =
+      foldTermWithDepth collect 0 comparator
+
+    collect depth node =
+      case selectedEqOperation node of
+        Nothing -> []
+        Just (_, _, dictionaries) ->
+          [ (depth, dictionary)
+          | (_, dictionary) <- dictionaries
+          ]
+
+    runtimeFieldTerms =
+      [ (constructor, fieldIndex, dnfTypeTerm field)
+      | (constructor, fields) <- shape
+      , (fieldIndex, field) <- zip [0 :: Int ..] fields
+      , dnfQuantity field /= Q0
       ]
 
-derivedEqualityBody :: Span -> Expr -> [(GName, [Q])] -> Name -> Name -> Expr
-derivedEqualityBody span' target shape xName yName =
+    authenticate dictionary
+      | not (termScopedAt (ctxLen ctx) dictionary) = pure Nothing
+      | otherwise =
+          coreTermClassifierInCtx ctx dictionary >>= \case
+            Nothing -> pure Nothing
+            Just dictionaryType -> do
+              state <- get
+              forceM dictionaryType >>= \case
+                VGlobI trait _ arguments
+                  | trait == gPrel "Eq"
+                  , Just [(_, carrier)] <-
+                      traitSemanticSpineIn state trait arguments ->
+                      pure (Just (dictionary, dictionaryType, carrier))
+                _ -> pure Nothing
+
+    evidenceName constructor fieldIndex ordinal =
+      Name
+        ( "__derive_eq_evidence_"
+            <> gnameText constructor
+            <> "_"
+            <> T.pack (show fieldIndex)
+            <> "_"
+            <> T.pack (show ordinal)
+        )
+        site
+
+    runtimeOrdinal targetConstructor targetFieldIndex =
+      fromMaybe 0
+        ( List.findIndex
+            (\(constructor, fieldIndex, _) ->
+               constructor == targetConstructor
+                 && fieldIndex == targetFieldIndex)
+            runtimeFieldTerms
+        )
+
+bindDerivedEqEvidence
+  :: Ctx
+  -> [DerivedEqEvidenceBinding]
+  -> CheckM Ctx
+bindDerivedEqEvidence source = foldM bindOne source
+  where
+    bindOne active DerivedEqEvidenceBinding {..} = do
+      dictionaryValue <- evalIn source deebDictionary
+      pure
+        ( bindCtxLet
+            (nameText deebName)
+            False
+            deebDictionaryType
+            dictionaryValue
+            active
+        )
+
+closeDerivedEqEvidence
+  :: [DerivedEqEvidenceBinding]
+  -> Term
+  -> Term
+closeDerivedEqEvidence bindings body0 =
+  foldl'
+    (\body (index, binding) ->
+       substTopTermAt
+         0
+         (shiftTerm index 0 (deebDictionary binding))
+         body)
+    body0
+    (reverse (zip [0 :: Int ..] bindings))
+
+-- | Find the checked equation providers reached directly or transitively by
+-- a custom equality comparator, and independently certify their ordinary
+-- termination before a derivation may inspect those equations.  The result
+-- is keyed entirely by resolved globals and Core dependencies.  A missing
+-- body, an incomplete SCC, or an unverified decrease rejects the provider.
+checkedFunctionalEqualityHelpers :: Term -> CheckM [GName]
+checkedFunctionalEqualityHelpers comparator = do
+  baseline <- get
+  let declarations = csTerminationDecls baseline
+      declarationNames = Map.keysSet declarations
+      roots = Set.intersection declarationNames (globalsOfTerm comparator)
+      reachable = closeReachable declarations roots
+      selected = Map.restrictKeys declarations reachable
+      dependencies declaration =
+        Set.toList
+          ( Set.intersection
+              reachable
+              (globalsOfTerm (tdCoreBody declaration))
+          )
+      components =
+        stronglyConnComp
+          [ (declaration, identity, dependencies declaration)
+          | (identity, declaration) <- Map.toAscList selected
+          ]
+      members = \case
+        AcyclicSCC declaration -> [declaration]
+        CyclicSCC group -> group
+  result <- certify [] (map members components)
+  put baseline
+  pure result
+  where
+    closeReachable declarations = go Set.empty . Set.toAscList
+      where
+        go reached [] = reached
+        go reached (identity : pending)
+          | Set.member identity reached = go reached pending
+          | otherwise =
+              let discovered =
+                    maybe
+                      []
+                      ( Set.toAscList
+                          . Set.intersection (Map.keysSet declarations)
+                          . globalsOfTerm
+                          . tdCoreBody
+                      )
+                      (Map.lookup identity declarations)
+               in go (Set.insert identity reached) (discovered ++ pending)
+
+    certify accepted [] = pure (reverse accepted)
+    certify accepted (group : groups)
+      | null group = certify accepted groups
+      | otherwise = do
+          let identities = map tdName group
+          outcome <-
+            withTemporaryReducibleGlobals accepted $
+              withSccOpaque identities $
+                verifyTerminationSccIn emptyCtx group
+          if outcome == TerminationConversionSafe
+            then certify (reverse identities ++ accepted) groups
+            else pure []
+
+checkedFunctionalEqualityPlan
+  :: Ctx
+  -> Span
+  -> Term
+  -> [GName]
+  -> CheckM (Maybe DerivedFunctionalEquality)
+checkedFunctionalEqualityPlan ctx site comparator certified = do
+  plans <- catMaybes <$> mapM planFor occurrences
+  pure $ case plans of
+    [plan] -> Just plan
+    _ -> Nothing
+  where
+    certifiedSet = Set.fromList certified
+    occurrences =
+      nub
+        [ (identity, universes)
+        | (_, CGlobal identity universes) <- foldTermWithDepth (\depth term -> [(depth, term)]) 0 comparator
+        , Set.member identity certifiedSet
+        ]
+
+    planFor (identity, universes) = do
+      let helperTerm = CGlobal identity universes
+      coreTermClassifierInCtx ctx helperTerm >>= \case
+        Nothing -> pure Nothing
+        Just helperType ->
+          binaryBooleanDomain helperType >>= \case
+            Nothing -> pure Nothing
+            Just domain -> do
+              domainTerm <- quoteIn ctx domain
+              case delaborateType ctx site domainTerm of
+                Nothing -> pure Nothing
+                Just domainExpr -> do
+                  (shape, _) <- deriveNominalShape ctx site domainTerm
+                  methods <- derivedRecursiveFieldMethods ctx domain shape
+                  let hasRecursive =
+                        any
+                          (any (== DerivedEqFieldRecursive))
+                          (Map.elems methods)
+                  if null shape || not hasRecursive
+                    then pure Nothing
+                    else
+                      pure
+                        ( Just
+                            DerivedFunctionalEquality
+                              { dfeIdentity = identity
+                              , dfeBindingName = Name "__derive_functional_comparator" site
+                              , dfeTerm = helperTerm
+                              , dfeType = helperType
+                              , dfeDomain = domain
+                              , dfeDomainExpr = domainExpr
+                              , dfeShape = shape
+                              , dfeMethods = methods
+                              }
+                        )
+
+    binaryBooleanDomain helperType =
+      forceM helperType >>= \case
+        VPiM _ Expl _ _ _ firstDomain firstClosure -> do
+          secondType <- clApp firstClosure (VRigid (ctxLen ctx) [])
+          forceM secondType >>= \case
+            VPiM _ Expl _ _ _ _ secondClosure -> do
+              resultType <- clApp secondClosure (VRigid (ctxLen ctx + 1) [])
+              forceM resultType >>= \case
+                VGlobI boolean _ arguments
+                  | boolean == prelBool
+                  , null arguments -> pure (Just firstDomain)
+                _ -> pure Nothing
+            _ -> pure Nothing
+        _ -> pure Nothing
+
+derivedRecursiveFieldMethods
+  :: Ctx
+  -> Value
+  -> DerivedNominalShape
+  -> CheckM DerivedEqFieldMethods
+derivedRecursiveFieldMethods ctx recursiveDomain shape =
+  Map.fromList <$> mapM constructorMethods shape
+  where
+    constructorMethods (constructor, fields) =
+      (constructor,) <$> mapM fieldMethod fields
+
+    fieldMethod field
+      | dnfQuantity field == Q0 =
+          pure (DerivedEqFieldEvidence Nothing)
+      | otherwise = do
+          fieldType <- evalIn ctx (dnfTypeTerm field)
+          baseline <- get
+          recursive <- unify ctx fieldType recursiveDomain
+          put baseline
+          pure
+            ( if recursive
+                then DerivedEqFieldRecursive
+                else DerivedEqFieldEvidence Nothing
+            )
+
+-- | Temporarily expose already-certified equations while preserving every
+-- other state change made by the enclosed checker action.  Restoring just the
+-- reducibility bits is important for speculative derive candidates: metas and
+-- selected evidence from a successful ordinary check must survive, while the
+-- module-level termination pass remains the sole publisher of permanent
+-- conversion transparency.
+withTemporaryReducibleGlobals :: [GName] -> CheckM a -> CheckM a
+withTemporaryReducibleGlobals identities action = do
+  globals <- gets csGlobals
+  let saved =
+        Map.map gdReducible
+          (Map.restrictKeys globals (Set.fromList identities))
+  modify' $ \state ->
+    invalidateSemanticCaches
+      state
+        { csGlobals =
+            foldr
+              (Map.adjust (\definition -> definition {gdReducible = True}))
+              (csGlobals state)
+              identities
+        }
+  result <- action
+  modify' $ \state ->
+    invalidateSemanticCaches
+      state
+        { csGlobals =
+            Map.foldlWithKey'
+              (\globals identity reducible ->
+                 Map.adjust
+                   (\definition -> definition {gdReducible = reducible})
+                   identity
+                   globals)
+              (csGlobals state)
+              saved
+        }
+  pure result
+
+derivedEqualitySoundBody
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqEvidenceNames
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualitySoundBody span' target shape evidenceNames xName yName proofName =
+  derivedEqualitySoundBodyWithMethods
+    span'
+    target
+    shape
+    (Map.map (map DerivedEqFieldEvidence) evidenceNames)
+    Nothing
+    xName
+    yName
+    proofName
+
+derivedEqualitySoundBodyWithMethods
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqFieldMethods
+  -> Maybe (Name, Name)
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualitySoundBodyWithMethods span' target shape methods recursion xName yName proofName =
   EMatch (EVar xName)
     [ MatchCase
-        (ctorPattern constructor xFields)
+        (derivedEqualityCtorPattern span' target constructor xFields)
         Nothing
         ( EMatch (EVar yName)
             [ MatchCase
-                (ctorPattern other yFields)
+                (derivedEqualityCtorPattern span' target other yFields)
                 Nothing
                 ( if constructor == other
-                    then compareFields xFields yFields
-                    else falseExpr
+                    then
+                      proveFields
+                        fields
+                        (Map.findWithDefault defaultMethods constructor methods)
+                        xFields
+                        yFields
+                        (EVar proofName)
+                    else eliminateFalseProof (EVar proofName)
                 )
                 span'
-            | (other, otherQuantities) <- shape
+            | (other, otherFields) <- shape
             , let yFields =
-                    if constructor == other
-                      then fieldNames "__derive_y" other otherQuantities
-                      else replicate (length otherQuantities) Nothing
+                    derivedEqualityFieldNames
+                      span'
+                      "__derive_sound_y"
+                      other
+                      otherFields
             ]
             span'
         )
         span'
-    | (constructor, quantities) <- shape
-    , let xFields = fieldNames "__derive_x" constructor quantities
+    | (constructor, fields) <- shape
+    , let xFields =
+            derivedEqualityFieldNames span' "__derive_sound_x" constructor fields
     ]
     span'
   where
-    targetQualifier = case target of
-      EVar name -> Just name
-      EApp (EVar name) _ -> Just name
-      _ -> Nothing
-    ctorPattern constructor fields =
-      PCtor
-        (CtorRef targetQualifier (Name (gnameText constructor) span'))
-        [maybe (PWild span') PVar field | field <- fields]
-        span'
-    fieldNames prefix constructor quantities =
-      [ if quantity == Q0
-          then Nothing
-          else
-            Just
-              ( Name
-                  (prefix <> "_" <> gnameText constructor <> "_" <> T.pack (show index))
+    proveFields [] _ [] [] _ = reflExpr span'
+    proveFields
+      (field : fields)
+      (method : methods')
+      (left : lefts)
+      (right : rights)
+      proof
+        | dnfQuantity field == Q0 =
+            matchRefl
+              span'
+              (subsingletonEquality span' fieldType left right)
+              (proveFields fields methods' lefts rights proof)
+        | not (hasRuntimeDerivedField fields) =
+            let fieldProof =
+                  fieldSoundProof fieldType method left right proof
+             in matchRefl
                   span'
-              )
-      | (index, quantity) <- zip [0 :: Int ..] quantities
-      ]
-    compareFields [] [] = trueExpr
-    compareFields (Nothing : lefts) (Nothing : rights) =
-      compareFields lefts rights
-    compareFields (Just left : lefts) (Just right : rights) =
-      EIf
-        [ ( EApp
-              (EOpRef Nothing (Name "==" span') span')
-              [ArgExplicit (EVar left), ArgExplicit (EVar right)]
-          , compareFields lefts rights
-          )
+                  fieldProof
+                  (proveFields fields methods' lefts rights (reflExpr span'))
+        | otherwise =
+            let condition =
+                  fieldCondition fieldType method left right
+                remainder =
+                  fieldEqualityBodyWithMethods
+                    span'
+                    fields
+                    methods'
+                    recursion
+                    lefts
+                    rights
+                headProof =
+                  callNamed
+                    span'
+                    "boolGuardCondition"
+                    [condition, remainder, proof]
+                tailProof =
+                  callNamed
+                    span'
+                    "boolGuardBody"
+                    [condition, remainder, proof]
+                fieldProof =
+                  fieldSoundProof fieldType method left right headProof
+             in matchRefl
+                  span'
+                  fieldProof
+                  (proveFields fields methods' lefts rights tailProof)
+      where
+        fieldType = dnfTypeExpression field
+    proveFields _ _ _ _ proof = eliminateFalseProof proof
+    eliminateFalseProof proof =
+      matchRefl span' proof (EImpossible span')
+    defaultMethods = repeat (DerivedEqFieldEvidence Nothing)
+    fieldCondition fieldType method left right =
+      case method of
+        DerivedEqFieldEvidence evidence ->
+          fieldEqualityWithEvidence span' fieldType evidence left right
+        DerivedEqFieldRecursive ->
+          case recursion of
+            Just (comparator, _) ->
+              callNamed span' (nameText comparator) [EVar left, EVar right]
+            Nothing ->
+              fieldEqualityWithEvidence span' fieldType Nothing left right
+    fieldSoundProof fieldType method left right proof =
+      case (method, recursion) of
+        (DerivedEqFieldRecursive, Just (_, helper)) ->
+          callNamed span' (nameText helper) [EVar left, EVar right, proof]
+        (DerivedEqFieldEvidence evidence, _) ->
+          fieldEvidenceMemberCall
+            span'
+            fieldType
+            evidence
+            "eqSound"
+            [EVar left, EVar right, proof]
+        (DerivedEqFieldRecursive, Nothing) -> EImpossible span'
+
+derivedEqualityCompleteBody
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqEvidenceNames
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualityCompleteBody span' target shape evidenceNames xName yName proofName =
+  derivedEqualityCompleteBodyWithMethods
+    span'
+    target
+    shape
+    (Map.map (map DerivedEqFieldEvidence) evidenceNames)
+    Nothing
+    xName
+    yName
+    proofName
+
+derivedEqualityCompleteBodyWithMethods
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqFieldMethods
+  -> Maybe (Name, Name)
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualityCompleteBodyWithMethods span' target shape methods recursion xName _yName proofName =
+  matchRefl
+    span'
+    (EVar proofName)
+    ( EMatch (EVar xName)
+        [ MatchCase
+            (derivedEqualityCtorPattern span' target constructor fields)
+            Nothing
+            ( proveReflexive
+                constructorFields
+                (Map.findWithDefault defaultMethods constructor methods)
+                fields
+            )
+            span'
+        | (constructor, constructorFields) <- shape
+        , let fields =
+                derivedEqualityFieldNames
+                  span'
+                  "__derive_complete_x"
+                  constructor
+                  constructorFields
         ]
-        (Just falseExpr)
         span'
-    compareFields _ _ = falseExpr
-    trueExpr = EVar (Name "True" span')
-    falseExpr = EVar (Name "False" span')
+    )
+  where
+    proveReflexive [] _ [] = reflExpr span'
+    proveReflexive (fieldInfo : fields) (method : methods') (field : rest)
+      | dnfQuantity fieldInfo == Q0 =
+          proveReflexive fields methods' rest
+      | not (hasRuntimeDerivedField fields) =
+          fieldCompleteProof fieldType method field
+      | otherwise =
+          let condition =
+                fieldCondition fieldType method field field
+              remainder =
+                fieldEqualityBodyWithMethods
+                  span'
+                  fields
+                  methods'
+                  recursion
+                  rest
+                  rest
+              headProof =
+                fieldCompleteProof fieldType method field
+              tailProof = proveReflexive fields methods' rest
+           in callNamed
+                span'
+                "boolGuardComplete"
+                [condition, remainder, headProof, tailProof]
+      where
+        fieldType = dnfTypeExpression fieldInfo
+    proveReflexive _ _ _ = EImpossible span'
+    defaultMethods = repeat (DerivedEqFieldEvidence Nothing)
+    fieldCondition fieldType method left right =
+      case method of
+        DerivedEqFieldEvidence evidence ->
+          fieldEqualityWithEvidence span' fieldType evidence left right
+        DerivedEqFieldRecursive ->
+          case recursion of
+            Just (comparator, _) ->
+              callNamed span' (nameText comparator) [EVar left, EVar right]
+            Nothing ->
+              fieldEqualityWithEvidence span' fieldType Nothing left right
+    fieldCompleteProof fieldType method field =
+      case (method, recursion) of
+        (DerivedEqFieldRecursive, Just (_, helper)) ->
+          callNamed
+            span'
+            (nameText helper)
+            [EVar field, EVar field, reflExpr span']
+        (DerivedEqFieldEvidence evidence, _) ->
+          fieldEvidenceMemberCall
+            span'
+            fieldType
+            evidence
+            "eqComplete"
+            [EVar field, EVar field, reflExpr span']
+        (DerivedEqFieldRecursive, Nothing) -> EImpossible span'
+
+derivedFunctionalEqualityMemberBody
+  :: Bool
+  -> Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqFieldMethods
+  -> DerivedFunctionalEquality
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedFunctionalEqualityMemberBody sound span' target shape rootMethods functional xName yName proofName =
+  ELet
+    [ LetBind
+        False
+        emptyPrefix
+        (PVar helperProofName)
+        (Just helperProofType)
+        (ELambda Nothing (map simpleBinder [helperX, helperY, helperProof]) helperBody span')
+        span'
+    ]
+    rootBody
+    span'
+  where
+    comparatorName = dfeBindingName functional
+    helperProofName =
+      Name
+        (if sound then "__derive_functional_sound" else "__derive_functional_complete")
+        span'
+    helperX = Name "__derive_functional_x" span'
+    helperY = Name "__derive_functional_y" span'
+    helperProof = Name "__derive_functional_proof" span'
+    recursion = Just (comparatorName, helperProofName)
+    helperProofType =
+      derivedFunctionalEqualityProofType
+        sound
+        span'
+        (dfeDomainExpr functional)
+        comparatorName
+        helperX
+        helperY
+        helperProof
+    helperBody
+      | sound =
+          derivedEqualitySoundBodyWithMethods
+            span'
+            (dfeDomainExpr functional)
+            (dfeShape functional)
+            (dfeMethods functional)
+            recursion
+            helperX
+            helperY
+            helperProof
+      | otherwise =
+          derivedEqualityCompleteBodyWithMethods
+            span'
+            (dfeDomainExpr functional)
+            (dfeShape functional)
+            (dfeMethods functional)
+            recursion
+            helperX
+            helperY
+            helperProof
+    rootBody
+      | sound =
+          derivedEqualitySoundBodyWithMethods
+            span'
+            target
+            shape
+            rootMethods
+            recursion
+            xName
+            yName
+            proofName
+      | otherwise =
+          derivedEqualityCompleteBodyWithMethods
+            span'
+            target
+            shape
+            rootMethods
+            recursion
+            xName
+            yName
+            proofName
+
+derivedFunctionalEqualityProofType
+  :: Bool
+  -> Span
+  -> Expr
+  -> Name
+  -> Name
+  -> Name
+  -> Name
+  -> Expr
+derivedFunctionalEqualityProofType sound span' domain comparator xName yName proofName =
+  EArrow (typed xName domain) $
+    EArrow (typed yName domain) $
+      EArrow (typed proofName premise) conclusion
+  where
+    comparatorResult =
+      callNamed span' (nameText comparator) [EVar xName, EVar yName]
+    decisionTrue = equality comparatorResult (EVar (Name "True" span'))
+    endpointsEqual = equality (EVar xName) (EVar yName)
+    (premise, conclusion)
+      | sound = (decisionTrue, endpointsEqual)
+      | otherwise = (endpointsEqual, decisionTrue)
+    typed name ty = (simpleBinder name) {bType = Just ty}
+    equality left right =
+      EApp
+        (EOpRef Nothing (Name "=" span') span')
+        [ArgExplicit left, ArgExplicit right]
+
+derivedEqualityCtorPattern :: Span -> Expr -> GName -> [Name] -> Pattern
+derivedEqualityCtorPattern span' target constructor fields =
+  PCtor
+    (CtorRef (targetHeadName target) (Name (gnameText constructor) span'))
+    (map PVar fields)
+    span'
+
+derivedEqualityPairPattern
+  :: Span
+  -> Expr
+  -> GName
+  -> [Name]
+  -> GName
+  -> [Name]
+  -> Pattern
+derivedEqualityPairPattern span' target left leftFields right rightFields =
+  PTuple
+    [ derivedEqualityCtorPattern span' target left leftFields
+    , derivedEqualityCtorPattern span' target right rightFields
+    ]
+    span'
+
+derivedEqualityFieldNames
+  :: Span
+  -> Text
+  -> GName
+  -> [DerivedNominalField]
+  -> [Name]
+derivedEqualityFieldNames span' prefix constructor fields =
+  [ Name
+      (prefix <> "_" <> gnameText constructor <> "_" <> T.pack (show index))
+      span'
+  | (index, _) <- zip [0 :: Int ..] fields
+  ]
+
+fieldEqualityBody
+  :: Span
+  -> [DerivedNominalField]
+  -> [Maybe Name]
+  -> [Name]
+  -> [Name]
+  -> Expr
+fieldEqualityBody span' fields evidences =
+  fieldEqualityBodyWithMethods
+    span'
+    fields
+    (map DerivedEqFieldEvidence evidences)
+    Nothing
+
+fieldEqualityBodyWithMethods
+  :: Span
+  -> [DerivedNominalField]
+  -> [DerivedEqFieldMethod]
+  -> Maybe (Name, Name)
+  -> [Name]
+  -> [Name]
+  -> Expr
+fieldEqualityBodyWithMethods span' fields methods recursion = go fields methods
+  where
+    go [] _ [] [] = EVar (Name "True" span')
+    go (field : restFields) (method : restMethods) (left : lefts) (right : rights)
+      | dnfQuantity field == Q0 = go restFields restMethods lefts rights
+      | not (hasRuntimeDerivedField restFields) =
+          condition field method left right
+      | otherwise =
+          EIf
+            [ ( condition field method left right
+              , go restFields restMethods lefts rights
+              )
+            ]
+            (Just (EVar (Name "False" span')))
+            span'
+    go _ _ _ _ = EVar (Name "False" span')
+
+    condition field method left right =
+      case method of
+        DerivedEqFieldEvidence evidence ->
+          fieldEqualityWithEvidence
+            span'
+            (dnfTypeExpression field)
+            evidence
+            left
+            right
+        DerivedEqFieldRecursive ->
+          case recursion of
+            Just (comparator, _) ->
+              callNamed span' (nameText comparator) [EVar left, EVar right]
+            Nothing ->
+              fieldEqualityWithEvidence
+                span'
+                (dnfTypeExpression field)
+                Nothing
+                left
+                right
+
+hasRuntimeDerivedField :: [DerivedNominalField] -> Bool
+hasRuntimeDerivedField = any ((/= Q0) . dnfQuantity)
+
+fieldEquality :: Span -> Expr -> Name -> Name -> Expr
+fieldEquality span' fieldType left right =
+  fieldEqualityWithEvidence span' fieldType Nothing left right
+
+fieldEqualityWithEvidence
+  :: Span
+  -> Expr
+  -> Maybe Name
+  -> Name
+  -> Name
+  -> Expr
+fieldEqualityWithEvidence span' fieldType evidence left right =
+  fieldEvidenceMemberCall
+    span'
+    fieldType
+    evidence
+    "=="
+    [EVar left, EVar right]
+
+-- | Invoke one checked member of the exact selected @Eq@ dictionary. Keeping
+-- the dictionary projection in the generated term preserves the comparator's
+-- evidence identity and universe instantiation; routing through a freshly
+-- specialized @eqBoolean*@ convenience wrapper would create a second
+-- conversion obligation unrelated to the user's checked comparator.
+fieldEvidenceMemberCall
+  :: Span
+  -> Expr
+  -> Maybe Name
+  -> Text
+  -> [Expr]
+  -> Expr
+fieldEvidenceMemberCall span' fieldType evidence member arguments =
+  EApp
+    ( EDot
+        (fieldEvidenceExpression span' fieldType evidence)
+        (DotName (Name member span'))
+    )
+    (map ArgExplicit arguments)
+
+fieldEvidenceExpression :: Span -> Expr -> Maybe Name -> Expr
+fieldEvidenceExpression span' fieldType =
+  maybe
+    (traitEvidenceExpression span' "Eq" fieldType)
+    EVar
+
+subsingletonEquality :: Span -> Expr -> Name -> Name -> Expr
+subsingletonEquality span' fieldType left right =
+  EApp
+    ( EDot
+        (traitEvidenceExpression span' "IsSubsingleton" fieldType)
+        (DotName (Name "allEqual" span'))
+    )
+    [ArgExplicit (EVar left), ArgExplicit (EVar right)]
+
+traitEvidenceExpression :: Span -> Text -> Expr -> Expr
+traitEvidenceExpression span' trait fieldType =
+  callNamed
+    span'
+    "summon"
+    [EApp (EVar (Name trait span')) [ArgExplicit fieldType]]
+
+callNamed :: Span -> Text -> [Expr] -> Expr
+callNamed span' name arguments =
+  EApp
+    (EVar (Name name span'))
+    (map ArgExplicit arguments)
+
+matchRefl :: Span -> Expr -> Expr -> Expr
+matchRefl span' scrutinee body =
+  EMatch
+    scrutinee
+    [ MatchCase
+        (PCtor (CtorRef Nothing (Name "refl" span')) [] span')
+        Nothing
+        body
+        span'
+    ]
+    span'
+
+reflExpr :: Span -> Expr
+reflExpr span' = EVar (Name "refl" span')
+
+targetHeadName :: Expr -> Maybe Name
+targetHeadName = \case
+  EVar name -> Just name
+  EApp function _ -> targetHeadName function
+  _ -> Nothing
 
 validateDerivedDeclarations :: Span -> [Decl] -> CheckM Bool
 validateDerivedDeclarations _ [] = pure False
 validateDerivedDeclarations sourceSpan generated = do
   results <- forM generated $ \case
-    DInstance (InstanceDecl _ _ headExpression _) _ -> validateHead headExpression
+    -- Generic declaration-level derive is validated by the same typed facet
+    -- planner as source @instance G = derive@. The structural checks below
+    -- apply only to specialized generators that emit an explicit body.
+    DInstance (InstanceDecl _ _ _ InstanceDerive) _ -> pure True
+    DInstance (InstanceDecl _ _ headExpression (InstanceMembers _)) _ ->
+      validateHead headExpression
     _ -> pure False
   let valid = and results
   unless valid $
-    errAt sourceSpan "E_DERIVE_UNSUPPORTED" (Just "kappa.derive.unsupported")
+    errAt sourceSpan "E_DERIVE_UNSUPPORTED" (Just "kappa.derive")
       "the requested derivation is outside the checked conservative structural fragment (§14.5.1-§14.5.2)"
   pure valid
   where
@@ -51877,7 +56320,23 @@ validateStructuralDerive fieldTrait target = do
           fieldValue <- evalIn emptyCtx fieldType
           let requiredTrait = if quantity == Q0 then gPrel "IsProp" else fieldTrait
           goal <- globalValueM requiredTrait [(Expl, fieldValue)]
-          isJust <$> traitEvidence emptyCtx (exprSpan target) goal
+          derivationProbe emptyCtx (exprSpan target) goal
+
+-- | Ask the unified derivation engine whether a closed structural obligation
+-- is solvable without committing speculative metas, caches, expansions, or
+-- diagnostics.  Declaration eligibility and expression-level @derive@ must
+-- share one proof authority; otherwise a field can be accepted by one path
+-- and rejected by the other.  A failed or diagnostic-producing search is an
+-- ordinary conservative rejection.
+derivationProbe :: Ctx -> Span -> Value -> CheckM Bool
+derivationProbe ctx site goal = do
+  baseline <- get
+  diagnosticCount <- gets (length . csDiags)
+  _ <- synthesizeDerivationWithFuel 24 ctx site goal
+  diagnostics <- gets csDiags
+  let solved = length diagnostics == diagnosticCount
+  put baseline
+  pure solved
 
 validateExactNaturalDerive :: Expr -> CheckM Bool
 validateExactNaturalDerive target = do
@@ -52008,6 +56467,13 @@ registerInstanceHeadAs dictG premises hd sp = do
       -- uppercase parametric names (`instance BadReflect A`) while resolved
       -- constructors and trait heads remain globals, never binders.
       fvs <- instanceFreeVars (hd : premises)
+      compilerGeneratedDerive <-
+        gets
+          ( any
+              (any (generatedInstanceAt sp))
+              . Map.elems
+              . csDerivedDecls
+          )
       -- §14.3.5 instance-search termination (Paterson-style): every premise
       -- must be structurally smaller than the head, so resolution cannot
       -- loop. A premise is rejected if its constructor-and-variable size is
@@ -52029,7 +56495,10 @@ registerInstanceHeadAs dictG premises hd sp = do
                 -- even at equal size, so only the variable-occurrence
                 -- condition applies there.
                 sameTrait = constraintHead p == headName
-             in (sameTrait && length pOccs >= headSize)
+             in ( sameTrait
+                    && not compilerGeneratedDerive
+                    && length pOccs >= headSize
+                )
                   || any (\v -> occCount pOccs v > occCount headOccs v) fvs
       if any patersonViolation premises
         then do
@@ -52042,6 +56511,10 @@ registerInstanceHeadAs dictG premises hd sp = do
           pure Nothing
         else patersonOk explicitUniverseArguments g argEs
   where
+    generatedInstanceAt wanted = \case
+      DInstance _ generatedSpan -> generatedSpan == wanted
+      _ -> False
+
     patersonOk explicitUniverseArguments g argEs = do
       fvs <- instanceFreeVars (hd : premises)
       -- Infer each implicitly-universalized head variable's domain from the
@@ -52072,7 +56545,7 @@ registerInstanceHeadAs dictG premises hd sp = do
       -- types (so type constructors are valid arguments of
       -- higher-kinded traits, §14.1.2)
       traitDefinition <- gets (Map.lookup g . csGlobals)
-      (traitHead, traitUniverses, argTms) <- case traitDefinition of
+      (traitHead, traitUniverses, checkedArguments) <- case traitDefinition of
         Just definition -> do
           (headTerm, traitTy, universes) <- case explicitUniverseArguments of
             Nothing -> instantiateGlobal g definition
@@ -52088,24 +56561,27 @@ registerInstanceHeadAs dictG premises hd sp = do
               let actual = take expected (supplied ++ repeat LZero)
               (term, ty) <- specializeGlobalAt emptyCtx g definition actual
               pure (term, ty, actual)
-          arguments <- instCheckHeadArgs ctxP' traitTy argEs
-          pure (headTerm, universes, arguments)
+          checkedArguments <- instCheckHeadArgs ctxP' traitTy argEs
+          pure (headTerm, universes, checkedArguments)
         Nothing -> do
-          arguments <- mapM (\e -> fst <$> inferType ctxP' e) argEs
-          pure (CGlob g, [], arguments)
+          checkedArguments <-
+            forM argEs $ \argument -> do
+              (term, _level) <- inferType ctxP' argument
+              pure (term, Set.empty)
+          pure (CGlob g, [], checkedArguments)
       fvTele <- finalizeGeneratedTelescope emptyCtx fvTele0
+      let higherKindClassifierLevels = Set.unions (map snd checkedArguments)
       let teleLen = length fvTele + length premises
-      argVs <- mapM (evalIn ctxP') argTms
-      currentModule <- gets csModule
-      ownsTypeLevel <- or <$> mapM isTypeLevelValue argVs
-      if currentModule /= modTypeLevel
-          && g `elem` compilerOwnedTypeLevelTraits
-          && ownsTypeLevel
-        then do
-          errAt sp "E_UNIVERSE_LEVEL_EXPRESSION" (Just "kappa.universe.level-expression")
-            "instances for compiler-owned TypeLevel operations may only be provided by std.typelevel (§11.1.2.2)"
-          pure Nothing
-        else register g traitHead traitUniverses fvTele premTms argTms teleLen
+          argTms = map fst checkedArguments
+      register
+        g
+        traitHead
+        traitUniverses
+        fvTele
+        premTms
+        argTms
+        higherKindClassifierLevels
+        teleLen
       where
         bindHeadVariable context entry = do
           domain <- evalIn context (teDomain entry)
@@ -52120,19 +56596,36 @@ registerInstanceHeadAs dictG premises hd sp = do
                 domain
                 withBound
             )
-    register g traitHead traitUniverses fvTele premTms argTms teleLen = do
+    register g traitHead traitUniverses fvTele premTms argTms higherKindClassifierLevels teleLen = do
       -- register the instance before checking members so member bodies
       -- can use the instance being defined (recursive instances, §14.3)
       (dictTyTerm0, _) <- instDictTy fvTele premTms traitHead argTms
-      let protectedSourceLevels =
+      instantiationLevels <- gets csLevelInstantiationMetas
+      let sourceLevels =
             Set.fromList
-              [ meta
-              | entry <- fvTele
-              , meta <-
-                  levelMetasOfTerm (teDomain entry)
-                    ++ maybe [] (\(lower, upper) -> levelMetas lower ++ levelMetas upper)
-                         (teLevelAssumption entry)
-              ]
+                  [ meta
+                  | entry <- fvTele
+                  , meta <-
+                      levelMetasOfTerm (teDomain entry)
+                        ++ maybe [] (\(lower, upper) -> levelMetas lower ++ levelMetas upper)
+                             (teLevelAssumption entry)
+                  ]
+                  `Set.union` Set.unions
+                    (map schemaBearingLevelMetas (premTms ++ argTms))
+          -- An ordinary declaration occurrence is minimized before the
+          -- generated dictionary is published.  A higher-kinded trait
+          -- parameter is different: its checked classifier is part of the
+          -- instance head's public contract.  For example, the universe at
+          -- which @Applicative (IO e)@ accepts its result argument must remain
+          -- abstract even though the matching @IO@ occurrence introduced it.
+          -- Preserve exactly those levels authenticated by a Pi classifier;
+          -- a first-order head such as @Eq TypeLevel@ still has no protected
+          -- occurrence level and therefore retains its principal Type0
+          -- specialization.
+          protectedSourceLevels =
+            Set.union
+              (Set.difference sourceLevels instantiationLevels)
+              higherKindClassifierLevels
       dictTyTerm <-
         principalizeGeneratedInterfaceOccurrences
           dictG
@@ -52151,18 +56644,18 @@ registerInstanceHeadAs dictG premises hd sp = do
         )
       modify' $ \s ->
         invalidateSemanticCaches
-          ( s
-              { csInstances =
-                  InstanceEntry
-                    g
-                    traitUniverses
-                    schema
-                    teleLen
-                    (map (shiftTerm (length premises) 0) premTms)
-                    argTms
-                    dictG
-                    : csInstances s
-              }
+          ( setCheckInstances
+              ( InstanceEntry
+                  g
+                  traitUniverses
+                  schema
+                  teleLen
+                  (map (shiftTerm (length premises) 0) premTms)
+                  argTms
+                  dictG
+                  : csInstances s
+              )
+              s
           )
       pure (Just (PreInstance g fvTele premTms argTms dictG))
 
@@ -52198,7 +56691,11 @@ instBindPremises ctx0 = go (0 :: Int) ctx0
       pv <- evalIn c (shiftTerm i 0 p)
       go (i + 1) (bindCtx ("__prem" <> T.pack (show i)) True pv c) rest
 
-instCheckHeadArgs :: Ctx -> Value -> [Expr] -> CheckM [Term]
+-- | Check an instance head against its owning trait telescope and retain only
+-- authenticated source-owned classifier levels. Generated dictionary
+-- principalization may preserve those identities, but never fresh occurrence
+-- metas allocated by the observational inference probe.
+instCheckHeadArgs :: Ctx -> Value -> [Expr] -> CheckM [(Term, Set LevelMeta)]
 instCheckHeadArgs _ _ [] = pure []
 instCheckHeadArgs ctx ty (e : es) = do
   t <- forceM ty
@@ -52209,17 +56706,18 @@ instCheckHeadArgs ctx ty (e : es) = do
       -- parameter even when the dictionary's parameter quantity is not Q0;
       -- this does not expose the witness as an ordinary term value.
       domF <- forceM dom
-      let checkArgument = checkExplicitArg ctx mode q e dom
-      tm <- case domF of
-        VPiEvidenceM {} -> withDefinitionalEqualityOnly checkArgument
-        _ -> checkArgument
+      (tm, classifierLevels) <- case domF of
+        VPiEvidenceM {} -> inferExactExplicitArg ctx mode q e dom
+        _ -> do
+          checked <- checkExplicitArg ctx mode q e dom
+          pure (checked, Set.empty)
       v <- evalIn ctx tm
       rest <- clApp clo v >>= \cod -> instCheckHeadArgs ctx cod es
-      pure (tm : rest)
+      pure ((tm, classifierLevels) : rest)
     _ -> do
-      tm <- fst <$> inferType ctx e
+      (tm, _classifierLevel) <- inferType ctx e
       rest <- instCheckHeadArgs ctx t es
-      pure (tm : rest)
+      pure ((tm, Set.empty) : rest)
 
 instDictTy :: Telescope -> [Term] -> Term -> [Term] -> CheckM (Term, Value)
 instDictTy fvTele premTms traitHead argTms = do
@@ -52273,7 +56771,10 @@ instanceDictionaryTraitUniverses site dictionary expectedTrait = do
       pure []
 
 elabInstance :: InstanceDecl -> Span -> CheckM ()
-elabInstance (InstanceDecl _ premises hd members) sp = do
+elabInstance (InstanceDecl _ premises hd completion) sp = do
+  let (wholeDerived, members) = case completion of
+        InstanceMembers explicitMembers -> (False, explicitMembers)
+        InstanceDerive -> (True, [])
   flushPending
   stash <- gets (Map.lookup sp . csPreInstances)
   mpi <- case stash of
@@ -52291,6 +56792,7 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
         dictG = piDictG pinst
     traitUniverses <-
       instanceDictionaryTraitUniverses sp dictG g
+    diagnosticsBeforeBody <- gets (length . csDiags)
     withActiveUniverseDefinition dictG $ do
       ctx0 <- teleCtx fvTele
       ctxP' <- instBindPremises ctx0 premTms
@@ -52308,11 +56810,13 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
         mEv <- traitEvidence ctxP' sp supGoal
         case mEv of
           Just tm -> pure (Just (fn, tm))
-          Nothing -> do
-            gT <- quoteIn ctxP' supGoal
-            errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa-hs.trait.supertrait-unsatisfied")
-              ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
-            pure Nothing
+          Nothing
+            | wholeDerived || fn `Set.member` tiDerivedSupers ti -> pure Nothing
+            | otherwise -> do
+                gT <- quoteIn ctxP' supGoal
+                errAt sp "E_DERIVE_SUPERTRAIT_UNSOLVED" (Just "kappa.derive")
+                  ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
+                pure Nothing
       -- member definitions checked against member types, in declaration
       -- order; already-checked members (associated static members in
       -- particular) instantiate the dict binder of later member types
@@ -52331,7 +56835,7 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
                     argTms
                     ctxP'
                     (catMaybes superFields ++ reverse done)
-                (tm, terminationBody) <-
+                checked <-
                   checkInstanceMember
                     g
                     traitUniverses
@@ -52346,6 +56850,7 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
                     mResTy
                     mbody
                     msp
+                let (tm, terminationBody) = checked
                 pure
                   ( Just
                       ( (mn, tm)
@@ -52400,14 +56905,123 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
                         )
                     )
                 Nothing -> do
-                  errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa-hs.trait.member-missing")
-                    ("instance does not define member '" <> mn <> "'")
-                  pure Nothing
+                  memberTyV <-
+                    memberSigInstance
+                      g
+                      traitUniverses
+                      mn
+                      argTms
+                      ctxP'
+                      (catMaybes superFields ++ reverse done)
+                  let declaredDerived =
+                        wholeDerived || mn `Set.member` tiDerivedMembers ti
+                  structural <-
+                    if declaredDerived
+                      then
+                        deriveStructuralInstanceMember
+                          g
+                          dictG
+                          traitUniverses
+                          ti
+                          argTms
+                          ctxP'
+                          (catMaybes superFields)
+                          (reverse done)
+                          memberMode
+                          mn
+                          memberTyV
+                          sp
+                      else pure Nothing
+                  completed <- case structural of
+                    Just result -> pure (Just result)
+                    Nothing ->
+                      completeOmittedMember
+                        declaredDerived
+                        mn
+                        g
+                        traitUniverses
+                        ti
+                        argTms
+                        ctxP'
+                        (catMaybes superFields)
+                        (reverse done)
+                        memberTyV
+                        sp
+                        >>= \case
+                          Just proof -> pure (Just (proof, proof))
+                          Nothing -> pure Nothing
+                  case completed of
+                      Just (proof, terminationBody) ->
+                        pure
+                          ( Just
+                              ( (mn, proof)
+                              , InstanceMemberTermination
+                                  mn
+                                  memberTyV
+                                  []
+                                  Nothing
+                                  terminationBody
+                                  sp
+                              )
+                          )
+                      Nothing -> do
+                        unless declaredDerived $
+                          errAt sp "E_DERIVE_MEMBER_MISSING" (Just "kappa.derive")
+                            ("instance does not define member '" <> mn <> "'")
+                        pure Nothing
             case mfield of
               Nothing -> goFields done terminations rest
               Just (field, termination) ->
                 goFields (field : done) (termination : terminations) rest
       (dictFields, memberTerminations) <- goFields [] [] (tiMembers ti)
+      -- Derived supertraits are facets of the completed dictionary, not
+      -- prerequisites for checking unrelated explicit/derived members. Retry
+      -- unresolved derived slots with the completed member dictionary exposed
+      -- as an ordinary implicit candidate. The resulting proof is then
+      -- substituted with the checked record value; no incomplete evidence
+      -- escapes this local derivation scope (§14.3.4A).
+      completedDerivedSupers <-
+        fmap catMaybes . forM (tiSupers ti) $ \(fn, supClosed) ->
+          if not wholeDerived && fn `Set.notMember` tiDerivedSupers ti
+              || isJust (lookup fn (catMaybes superFields))
+            then pure Nothing
+            else do
+              ec <- ec_
+              argVs <- mapM (evalIn ctxP') argTms
+              specializedSuper <- specializeDeclarationComponent g traitUniverses supClosed
+              supFunction <- evalIn ctxP' specializedSuper
+              supGoal <- forceM (evalApp ec supFunction [(Expl, argument) | argument <- argVs])
+              let selfTerm = foldl (CApp Expl) (CGlobal g traitUniverses) argTms
+              selfGoal <- evalIn ctxP' selfTerm
+              let selfCtx = bindCtxMQ Ordinary QW "__derived_self" True selfGoal ctxP'
+                  partialDictionary =
+                    CRecordV
+                      ( sortOn fst
+                          (catMaybes superFields ++ dictFields)
+                      )
+              baseline <- get
+              modify' $ \state ->
+                state
+                  { csBlockedSupertraitProjections =
+                      Set.insert (g, fn) (csBlockedSupertraitProjections state)
+                  }
+              proof <- synthesizeDerivation selfCtx sp supGoal
+              modify' $ \state ->
+                state
+                  { csBlockedSupertraitProjections =
+                      Set.delete (g, fn) (csBlockedSupertraitProjections state)
+                  }
+              diagnostics <- gets csDiags
+              if length diagnostics == length (csDiags baseline)
+                then
+                  pure
+                    ( Just
+                        ( fn
+                        , substTopTermAt 0 partialDictionary proof
+                        )
+                    )
+                else pure Nothing
+      let allSuperFields = catMaybes superFields ++ completedDerivedSupers
       -- §14.3.4: an instance member the trait does not declare is
       -- undeclared — an associated static member must be declared in the
       -- trait body before an instance may define it.
@@ -52420,7 +57034,7 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
       flushPending
       settleActiveUniverseRequirements
       checkInstanceMemberTerminationSccs ctxP' g dictG memberTerminations
-      let fields = sortOn fst (catMaybes superFields ++ dictFields)
+      let fields = sortOn fst (allSuperFields ++ dictFields)
           dictBody = CRecordV fields
           -- order: fvs outermost, then premises
           wrapped =
@@ -52441,18 +57055,55 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
       -- §14.1.1: trait evidence lowers to a runtime record of the member
       -- implementations; capture its KCore body for the native backend.
       recordCoreBody dictG wrapped'
-      -- §14.3/§33.2.1: program-level coherence — an overlapping pair of
-      -- instances is rejected at declaration unless the instantiated
-      -- evidence artifacts are equivalent (structural coherence mode),
-      -- whether or not any use site resolves through them. Only
-      -- already-elaborated instances (registered before this one) are
-      -- compared here: the later member of a pair judges the overlap
-      -- when its own dictionary value is complete.
+      -- §14.3/§33.2.1: program-level coherence is a declaration-level
+      -- validity condition. Member checking must run first because structural
+      -- coherence compares completed evidence artifacts. A body-invalid,
+      -- non-overlapping artifact is unpublished so recovery cannot poison
+      -- later instance bodies. An overlapping artifact is still judged:
+      -- generated-law recovery errors are replaced by the coherence root, and
+      -- a body-valid incoherent artifact remains visible to resolution so an
+      -- attempted selection also reports the non-deferrable use-site error
+      -- required by §3.1.15.
       stPost <- get
+      let diagnosticsAfterBody = length (csDiags stPost)
+          bodyDiagnosticCount =
+            max 0 (diagnosticsAfterBody - diagnosticsBeforeBody)
+          bodyHasErrors =
+            any isError (take bodyDiagnosticCount (csDiags stPost))
+          unpublishInvalid state =
+            invalidateSemanticCaches
+              ( setCheckInstances
+                  (filter ((/= dictG) . ieDict) (csInstances state))
+                  state
+              )
       case dropWhile ((/= dictG) . ieDict) (csInstances stPost) of
-        (newIe : priors) ->
-          forM_ [ie | ie <- priors, ieTrait ie == g] $ \prior ->
-            checkInstanceOverlap sp g newIe prior
+        (newIe : priors) -> do
+          let sameTraitPriors = [ie | ie <- priors, ieTrait ie == g]
+          incoherentPriors <-
+            filterM (instanceOverlapIsIncoherent newIe) sameTraitPriors
+          case incoherentPriors of
+            [] -> when bodyHasErrors (modify' unpublishInvalid)
+            _ -> do
+              priorSites <- mapM (instanceDeclSite . ieDict) incoherentPriors
+              modify' $ \state ->
+                let withoutRecoveryDiagnostics =
+                      state {csDiags = drop bodyDiagnosticCount (csDiags state)}
+                 in if bodyHasErrors
+                      then unpublishInvalid withoutRecoveryDiagnostics
+                      else withoutRecoveryDiagnostics
+              let relateds =
+                    related RoleInstanceDeclarationSite sp "this overlapping instance"
+                      : [ related RoleInstanceDeclarationSite priorSite
+                            "conflicts with this instance"
+                        | Just priorSite <- priorSites
+                        ]
+              report $
+                withRelateds relateds $
+                  diag SevError StageElaborate "E_INSTANCE_INCOHERENT"
+                    (Just "kappa-hs.trait.incoherent") sp
+                    ( "overlapping instances of trait '" <> gnameText g
+                        <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)"
+                    )
         [] -> pure ()
       settleActiveUniverseRequirements
   where
@@ -52623,45 +57274,15 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
               "this instance-member SCC has no checked well-founded decrease and is rejected because Kappa is total by default (§15.1–§15.2)"
 
     memberSigInstance traitG traitUniverses mn argTms ctx doneFields = do
-      mt <-
-        globalTermWithUniversePrefix
-          ctx
-          sp
-          (memberGlobal traitG mn)
-          traitUniverses
-      case mt of
-        Just (_, projTy) -> do
-          argVs <- mapM (evalIn ctx) argTms
-          peelArgs ctx projTy argVs
-        Nothing -> pure (VSort LZero)
-      where
-        peelArgs activeCtx ty remaining = do
-          t <- forceM ty
-          case t of
-            VPiBoundM _ Impl q _ _ assumption@(Just _) dom clo -> do
-              proof <- resolveImplicitQ activeCtx sp q dom
-              proofValue <- checkedArgumentValue activeCtx sp dom proof
-              codomain <- clApp clo proofValue
-              nextCtx <- extendLevelAssumption sp activeCtx assumption
-              peelArgs nextCtx codomain remaining
-            _ -> peelOrdinary activeCtx t remaining
-
-        peelOrdinary _ t [] =
-          case t of
-            VPi Impl _ _ _ _ clo -> do
-              -- the dict binder: instantiate with the partial dictionary
-              -- being defined, so member types that project earlier
-              -- members — associated static members above all — see the
-              -- instance's definitions (§14.3.4)
-              fvs <- forM doneFields $ \(fn, ftm) -> (,) fn <$> evalIn ctx ftm
-              clApp clo (VRecordV (sortOn fst fvs))
-            _ -> pure t
-        peelOrdinary activeCtx t (a : as) =
-          case t of
-            VPi Impl _ _ _ _ clo -> do
-              r <- clApp clo a
-              peelArgs activeCtx r as
-            _ -> pure t
+      arguments <- mapM (evalIn ctx) argTms
+      instantiateTraitMemberType
+        ctx
+        sp
+        traitG
+        traitUniverses
+        mn
+        arguments
+        doneFields
 
     checkMemberAgainst memberMode ctx memberTy mbinders mResTy mbody msp =
       case mbinders of
@@ -52689,6 +57310,194 @@ elabInstance (InstanceDecl _ premises hd members) sp = do
         withThis (Just (ThisTraitSibs siblingTypes)) $
           checkMemberAgainst memberMode ctx memberTy mbinders mResTy mbody msp
       pure (substThisTm partialDictionary checked, checked)
+
+    deriveStructuralInstanceMember trait _dictionary traitUniverses info argTms ctx supers done memberMode member memberTy site
+      | trait /= gPrel "Eq" = pure Nothing
+      | memberIdentity /= memberGlobal (gPrel "Eq") "eqSound"
+          && memberIdentity /= memberGlobal (gPrel "Eq") "eqComplete" = pure Nothing
+      | [targetTerm] <- argTms
+      , Just target <- delaborateType ctx site targetTerm = do
+          (shape, _) <- deriveNominalShape ctx site targetTerm
+          case (shape, lookup "==" done) of
+            ([], _) -> pure Nothing
+            (_, Nothing) -> pure Nothing
+            (_, Just comparator) ->
+              derivedEqEvidenceForComparator
+                ctx
+                site
+                shape
+                comparator >>= \case
+                Just exact -> Just <$> checkGenerated target shape exact
+                Nothing ->
+                  checkedFunctionalEqualityHelpers comparator >>= \case
+                    [] -> pure Nothing
+                    helpers -> attemptFunctional comparator target shape helpers
+      | otherwise = pure Nothing
+      where
+        memberIdentity = memberGlobal trait member
+
+        checkGenerated target shape (evidenceBindings, evidenceNames) = do
+          let generatedSpan = derivedGeneratedSpan site 43
+              xName = Name "__derive_member_x" generatedSpan
+              yName = Name "__derive_member_y" generatedSpan
+              proofName = Name "__derive_member_proof" generatedSpan
+              body
+                | memberIdentity == memberGlobal (gPrel "Eq") "eqSound" =
+                    derivedEqualitySoundBody
+                      generatedSpan
+                      target
+                      shape
+                      evidenceNames
+                      xName
+                      yName
+                      proofName
+                | otherwise =
+                    derivedEqualityCompleteBody
+                      generatedSpan
+                      target
+                      shape
+                      evidenceNames
+                      xName
+                      yName
+                      proofName
+          evidenceCtx <- bindDerivedEqEvidence ctx evidenceBindings
+          checked <- checkGeneratedBody evidenceCtx body
+          pure
+            ( closeDerivedEqEvidence evidenceBindings (fst checked)
+            , closeDerivedEqEvidence evidenceBindings (snd checked)
+            )
+
+        checkGeneratedBody activeCtx body = do
+          let generatedSpan = derivedGeneratedSpan site 43
+              xName = Name "__derive_member_x" generatedSpan
+              yName = Name "__derive_member_y" generatedSpan
+              proofName = Name "__derive_member_proof" generatedSpan
+          siblingTypes <-
+            instanceMemberSiblingTypes
+              trait
+              traitUniverses
+              info
+              argTms
+              ctx
+              supers
+              done
+          let partialDictionary = CRecordV (sortOn fst (supers ++ done))
+          checked <-
+            withThis (Just (ThisTraitSibs siblingTypes)) $
+              checkMemberAgainst
+                memberMode
+                activeCtx
+                memberTy
+                [simpleBinder xName, simpleBinder yName, simpleBinder proofName]
+                Nothing
+                body
+                generatedSpan
+          pure
+            ( substThisTm partialDictionary checked
+            , checked
+            )
+
+        -- A custom comparator may delegate to a transparent recursive helper
+        -- instead of projecting the selected field dictionaries directly.
+        -- In that case propose the ordinary structural proof under the
+        -- helper's checked equations.  This is deliberately speculative: the
+        -- normal checker must establish that the helper is definitionally the
+        -- same decision procedure, and a failed proposal leaves no metas or
+        -- diagnostics behind.
+        attemptFunctional comparator target shape helpers = do
+          baseline <- get
+          let errors state =
+                length
+                  [ ()
+                  | diagnostic <- csDiags state
+                  , dSeverity diagnostic == SevError
+                  ]
+          checkedFunctionalEqualityPlan ctx site comparator helpers >>= \case
+            Nothing -> put baseline >> pure Nothing
+            Just functional -> do
+              rootMethods <-
+                derivedRecursiveFieldMethods ctx (dfeDomain functional) shape
+              helperValue <- evalIn ctx (dfeTerm functional)
+              let helperCtx =
+                    bindCtxLet
+                      (nameText (dfeBindingName functional))
+                      False
+                      (dfeType functional)
+                      helperValue
+                      ctx
+                  generatedSpan = derivedGeneratedSpan site 43
+                  xName = Name "__derive_member_x" generatedSpan
+                  yName = Name "__derive_member_y" generatedSpan
+                  proofName = Name "__derive_member_proof" generatedSpan
+                  sound =
+                    memberIdentity == memberGlobal (gPrel "Eq") "eqSound"
+                  body =
+                    derivedFunctionalEqualityMemberBody
+                      sound
+                      generatedSpan
+                      target
+                      shape
+                      rootMethods
+                      functional
+                      xName
+                      yName
+                      proofName
+                  close = substTopTermAt 0 (dfeTerm functional)
+              generated <-
+                withTemporaryReducibleGlobals helpers $
+                  checkGeneratedBody helperCtx body
+              current <- get
+              if errors current == errors baseline
+                then
+                  pure
+                    ( Just
+                        (close (fst generated), close (snd generated))
+                    )
+                else put baseline >> pure Nothing
+
+    completeOmittedMember declaredDerived member trait traitUniverses info argTms ctx supers done memberTy site = do
+      admissible <-
+        if declaredDerived
+          then pure True
+          else do
+            propositionGoal <- globalValueM prelIsProp [(Expl, memberTy)]
+            isJust <$> isPropClosure ctx site propositionGoal
+      if not admissible
+        then pure Nothing
+        else do
+          baseline <- get
+          siblingTypes <-
+            instanceMemberSiblingTypes
+              trait
+              traitUniverses
+              info
+              argTms
+              ctx
+              supers
+              done
+          let partialDictionary = CRecordV (sortOn fst (supers ++ done))
+          proof <-
+            withThis (Just (ThisTraitSibs siblingTypes)) $
+              synthesizeDerivation ctx site memberTy
+          diagnostics <- gets csDiags
+          let added = length diagnostics - length (csDiags baseline)
+          if added == 0
+            then pure (Just (substThisTm partialDictionary proof))
+            else do
+              when declaredDerived $
+                retagNew (length (csDiags baseline)) $ \diagnostic ->
+                  if dCode diagnostic == "E_DERIVE_AMBIGUOUS"
+                    then
+                      diagnostic
+                        { dMessage =
+                            dMessage diagnostic
+                              <> " while completing member '"
+                              <> member
+                              <> "'"
+                        }
+                    else diagnostic
+              unless declaredDerived (put baseline)
+              pure Nothing
 
     instanceMemberSiblingTypes trait traitUniverses info argTms ctx supers = go []
       where
@@ -52755,7 +57564,8 @@ traitEvidence ctx sp goal = do
 -- dictionary fields.
 superCandidate :: Ctx -> Span -> Value -> CheckM (Maybe Term)
 superCandidate ctx site goal = do
-  matches <- fmap catMaybes . forM implicitEntries $ \(index, entry) -> do
+  localEntries <- filterM (isLocalEvidenceCandidate . snd) indexedEntries
+  matches <- fmap catMaybes . forM localEntries $ \(index, entry) -> do
     saved <- get
     projected <- supertraitProject ctx 4 (CVar index) (ceType entry) goal
     solvedGoal <- traverse (const (forceM goal >>= quoteIn ctx)) projected
@@ -52790,11 +57600,7 @@ superCandidate ctx site goal = do
       let innerLevel = ctxLen ctx - 1 - inner
           outerLevel = ctxLen ctx - 1 - outer
        in not (any (\barrier -> outerLevel < barrier && barrier <= innerLevel) (ctxBarriers ctx))
-    implicitEntries =
-      [ (index, entry)
-      | (index, entry) <- zip [0 ..] (ctxEntries ctx)
-      , ceImplicitLocal entry
-      ]
+    indexedEntries = zip [0 ..] (ctxEntries ctx)
 
 -- §14.3.3 conformance paths (depth-bounded): evidence 'evTm' of type
 -- 'evTy' (a trait application) yields the trait goal 'goal' through
@@ -52812,20 +57618,24 @@ supertraitProject ctx depth evTm evTy goal = do
           where
             anyPath _ [] = pure Nothing
             anyPath semanticArguments ((fn, supClosed) : rest) = do
-              ec <- ec_
-              specializedSuper <- specializeDeclarationComponent tg traitUniverses supClosed
-              supF <- evalIn ctx specializedSuper
-              supV <- forceM (evalApp ec supF [(Expl, a) | (_, a) <- semanticArguments])
-              st0 <- get
-              ok <- unify ctx supV goal
-              if ok
-                then pure (Just (CProjM Ordinary evTm fn))
+              blocked <- gets (Set.member (tg, fn) . csBlockedSupertraitProjections)
+              if blocked
+                then anyPath semanticArguments rest
                 else do
-                  put st0
-                  found <- supertraitProject ctx (depth - 1) (CProjM Ordinary evTm fn) supV goal
-                  case found of
-                    Just tm -> pure (Just tm)
-                    Nothing -> anyPath semanticArguments rest
+                  ec <- ec_
+                  specializedSuper <- specializeDeclarationComponent tg traitUniverses supClosed
+                  supF <- evalIn ctx specializedSuper
+                  supV <- forceM (evalApp ec supF [(Expl, a) | (_, a) <- semanticArguments])
+                  st0 <- get
+                  ok <- unify ctx supV goal
+                  if ok
+                    then pure (Just (CProjM Ordinary evTm fn))
+                    else do
+                      put st0
+                      found <- supertraitProject ctx (depth - 1) (CProjM Ordinary evTm fn) supV goal
+                      case found of
+                        Just tm -> pure (Just tm)
+                        Nothing -> anyPath semanticArguments rest
         _ -> pure Nothing
     _ -> pure Nothing
 

@@ -3989,7 +3989,7 @@ verifyRepresentationLawTerms
                 <> "' must be a term"
             )
     liftKCore = mapLeft kcteMessage
-    same env = sameKCoreTypeIn env context
+    same env = sameKCoreTypeUnderIn assumptions env context
     verifyType term = do
       classifier <-
         inferSimple context universes assumptions environment term
@@ -4898,7 +4898,7 @@ verifyTermScoped context universes assumptions env = \case
               True
               (`Map.member` vcNominalFamilies context)
               (\ref -> Map.member (lrId ref) env)
-              (sameKCoreTypeIn env context)
+              (sameKCoreTypeUnderIn assumptions env context)
               parameters
               Map.empty
               constructorResult
@@ -4943,7 +4943,7 @@ verifyTermScoped context universes assumptions env = \case
       where
         checkCaseBindings envHere [] [] [] = pure envHere
         checkCaseBindings envHere expected (equation : equations) (KCaseBridge bridge : rest) = do
-          unless (constructorBridgeMatchesEquation context envHere equation bridge) $
+          unless (constructorBridgeMatchesEquation assumptions context envHere equation bridge) $
             Left
               ( invalid
                   ( "case constructor bridge does not prove the required index equation"
@@ -5049,7 +5049,7 @@ verifyTermScoped context universes assumptions env = \case
 
     verifyConstructorBridges envHere [] [] = pure envHere
     verifyConstructorBridges envHere (equation : equations) (bridge : bridges) = do
-      unless (constructorBridgeMatchesEquation context envHere equation bridge) $
+      unless (constructorBridgeMatchesEquation assumptions context envHere equation bridge) $
         Left (invalid "nested constructor bridge does not prove the required index equation")
       envNext <- verifyConstructorBridge envHere bridge
       verifyConstructorBridges envNext equations bridges
@@ -5085,7 +5085,7 @@ verifyTermScoped context universes assumptions env = \case
                 True
                 (`Map.member` vcNominalFamilies context)
                 (\ref -> Map.member (lrId ref) envHere)
-                (sameKCoreTypeIn envHere context)
+                (sameKCoreTypeUnderIn assumptions envHere context)
                 parameters
                 Map.empty
                 constructorResult
@@ -6430,10 +6430,10 @@ checkTermObservedAtBoundary enforceBoundary observation context universes assump
         Left (invalid "lift target does not match the expected classifier")
       verifyEvidence context universes (localEvidenceAssumptions assumptions env) env from to evidence
       inferred <- inferSimple context universes assumptions env value
-      unless (maybe False (\ty -> sameKCoreTypeIn env context ty (KTType from)) inferred) $
+      unless (maybe False (\ty -> sameKCoreTypeUnderIn assumptions env context ty (KTType from)) inferred) $
         Left (invalid "lift source classifier does not match the lifted term")
     (KTAscribe value ty, _) -> do
-      unless (sameKCoreTypeIn env context ty expected') (Left (invalid "ascription does not match expected type"))
+      unless (sameKCoreTypeUnderIn assumptions env context ty expected') (Left (invalid "ascription does not match expected type"))
       checkTermObservedAtBoundary False observation context universes assumptions env value ty
     (KTLiteral literal, _) ->
       unless (literalChecksAt context literal expected') compareInferred
@@ -6546,7 +6546,8 @@ checkTermObservedAtBoundary enforceBoundary observation context universes assump
     compareInferred = do
       inferred <- inferSimple context universes assumptions env actual
       case inferred of
-        Just ty | sameKCoreTypeIn env context ty expected' -> pure ()
+        Just ty
+          | sameKCoreTypeUnderIn assumptions env context ty expected' -> pure ()
         Just ty ->
           Left
             ( invalid
@@ -6936,14 +6937,15 @@ alignKConstructorResult allowRefinements allowPropositional nominalFamily localA
 -- endpoints here prevents a valid but unrelated erased proof from admitting a
 -- constructor branch.
 constructorBridgeMatchesEquation
-  :: VerifyContext
+  :: Assumptions
+  -> VerifyContext
   -> LocalEnv
   -> (KTerm, KTerm)
   -> KConstructorBridge
   -> Bool
-constructorBridgeMatchesEquation context env (expectedLeft, expectedRight) bridge =
+constructorBridgeMatchesEquation assumptions context env (expectedLeft, expectedRight) bridge =
   constructorBridgeMatchesEquationWith
-    (sameKCoreTypeIn env context)
+    (sameKCoreTypeUnderIn assumptions env context)
     (expectedLeft, expectedRight)
     bridge
 
@@ -7048,7 +7050,7 @@ installKConstructorRefinements context universes assumptions =
                 env
             )
         Just (LocalDefinition mode [] ty prior)
-          | sameKCoreTypeIn env context prior replacement ->
+          | sameKCoreTypeUnderIn assumptions env context prior replacement ->
               pure
                 ( Map.insert
                     (lrId ref)
@@ -7224,7 +7226,8 @@ inferSimpleScoped context universes assumptions env = \case
         env
         elseBranch
     pure $ case (thenType, elseType) of
-      (Just lhs, Just rhs) | sameKCoreTypeIn env context lhs rhs -> Just lhs
+      (Just lhs, Just rhs)
+        | sameKCoreTypeUnderIn assumptions env context lhs rhs -> Just lhs
       _ -> Nothing
   KTGeneric tag fields
     | tag `Set.member` decodedBuiltinTermTags -> do

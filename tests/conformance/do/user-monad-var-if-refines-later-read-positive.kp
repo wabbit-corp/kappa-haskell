@@ -12,7 +12,7 @@ data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
-    let pureA x = MkWrap (pureIO x)
+    let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkWrap ioa ->

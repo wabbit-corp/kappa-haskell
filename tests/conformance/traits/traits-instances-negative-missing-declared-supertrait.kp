@@ -12,4 +12,4 @@ trait Monoid a => Expose a =
 instance Expose Int =
     let expose = ()
 
---! assertDiagnosticCodes E_TRAIT_SUPERTRAIT_UNSATISFIED
+--! assertDiagnosticCodes E_DERIVE_SUPERTRAIT_UNSOLVED

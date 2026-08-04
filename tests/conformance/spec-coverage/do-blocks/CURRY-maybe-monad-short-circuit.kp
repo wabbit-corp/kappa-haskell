@@ -21,7 +21,7 @@ let shortCircuit =
         let x <- Some True
         let _ <- (None : Option Int)
         let y <- Some 42
-        pureA (x, y)
+        pure (x, y)
 
 isNone : Option (Bool, Int) -> Bool
 let isNone o =
@@ -42,7 +42,7 @@ let threadsThrough =
     do
         let x <- Some True
         let y <- Some 42
-        pureA (x, y)
+        pure (x, y)
 
 pairScore : Option (Bool, Int) -> Int
 let pairScore o =
@@ -64,7 +64,7 @@ let threeStep =
         let a <- Some 1
         let b <- Some 2
         let c <- Some (a + b)
-        pureA (c + 100)
+        pure (c + 100)
 
 intScore : Option Int -> Int
 let intScore o =

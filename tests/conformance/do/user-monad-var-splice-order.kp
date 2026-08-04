@@ -7,7 +7,7 @@ data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
-    let pureA x = MkWrap (pureIO x)
+    let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkWrap ioa ->
@@ -38,7 +38,7 @@ let foo = do
     var x = 42
     let before = addInt x !(setTo (ref x) 10 1)
     let after = addInt !(setTo (ref x) 20 2) x
-    pureA (addInt before after)
+    pure (addInt before after)
 
 main : UIO Int
 let main =

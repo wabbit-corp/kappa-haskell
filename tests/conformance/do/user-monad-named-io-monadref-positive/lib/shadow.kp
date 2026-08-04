@@ -4,7 +4,7 @@ data IO (0 a : Type) : Type =
     MkIO (runShadowIO : UIO a)
 
 instance Applicative IO =
-    let pureA x = MkIO (pureIO x)
+    let pure x = MkIO (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkIO ioa ->

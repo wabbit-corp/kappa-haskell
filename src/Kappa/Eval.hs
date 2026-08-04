@@ -546,10 +546,15 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
             go (fuel - 1) (evalApp ctx sol sp)
       VUniverseLift _ _ _ inner ->
         go (fuel - 1) inner
-      -- branch-local dependent-match solution for a rigid (§7.4.1)
-      VRigid l []
+      -- Branch-local dependent-match solution for a rigid (§7.4.1).  A
+      -- neutral rigid retains its complete application spine, so replay that
+      -- spine after substitution.  Restricting this rule to an empty spine
+      -- loses generic GADT refinements under application (notably implicit
+      -- dependent-function application) even though the constructor-result
+      -- certificate established the head equation.
+      VRigid l sp
         | Just (FactIs sol) <- Map.lookup l (ecFacts ctx) ->
-            go (fuel - 1) sol
+            go (fuel - 1) (evalApp ctx sol sp)
       VGlobI g universes sp
         | Just gd <- lookupGlobal ctx g
         , Just body <- gdValue gd

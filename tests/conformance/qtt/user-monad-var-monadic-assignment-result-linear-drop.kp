@@ -14,7 +14,7 @@ data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
-    let pureA x = MkWrap (pureIO x)
+    let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkWrap ioa ->
@@ -37,10 +37,10 @@ instance MonadRef Wrap =
     let writeRef r x = MkWrap (__ioWriteRef r x)
 
 makeFull : Wrap Cell
-let makeFull = pureA (Full Token)
+let makeFull = pure (Full Token)
 
 bad : Wrap Unit
 let bad = do
     var cell : Cell = Empty
     cell <- makeFull
-    pureA ()
+    pure ()

@@ -363,6 +363,8 @@ registry =
       "A kind-qualified name expression's selector does not agree with the named declaration's facet (e.g. 'trait' on a data type)."
   , ent "E_QTT_BORROW_ESCAPE" (Just "kappa.borrow.escape")
       "A closure or value capturing a borrowed binding (or a reified BorrowView) escapes the borrow's scope through the result."
+  , ent "E_BORROW_ESCAPE" (Just "kappa.borrow.escape")
+      "Portable diagnostic-code alias for a borrowed value escaping the region that makes the borrow valid."
   , ent "E_CAPTURE_SET_MISMATCH" (Just "kappa.capture.mismatch")
       "A value's inferred hidden region environment is not contained in the demanded capture annotation (§3.2.7, §12.3.1)."
   , ent "E_REFUTABLE_LET_PATTERN" (Just "kappa-hs.pattern.refutable-binding")
@@ -742,10 +744,44 @@ registry =
       "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a data-layout inconsistency: two constructors of one datatype share a runtime tag id (non-injective assignment), a constructor a datatype lists does not point back to it, or a constructor declares more explicit fields than its type's runtime arity (so its layout would under-reserve slots) — Spec §34.3.3 layout-consistency, §§31.3-31.4. This warning surfaces it without changing codegen."
   , ent "E_BACKENDIR_ERASED_RUNTIME_TERM" (Just "kappa-hs.backendir.erased-runtime-term")
       "KCore-to-KBackendIR lowering found an erased source entity (type/proof term, erased binder, erased index, or unsolved compile-time meta) that would still be needed by a runtime-relevant backend value. Native emission rejects this rather than silently substituting a unit placeholder (§31.2, §34.3)."
-  , ent "E_DERIVE_HEAD" (Just "kappa.derive.invalid-head")
+  , ent "E_DERIVE_HEAD" (Just "kappa.derive")
       "A derive declaration does not name a supported derivable trait applied to exactly one target type (§14.5.1-§14.5.2)."
-  , ent "E_DERIVE_UNSUPPORTED" (Just "kappa.derive.unsupported")
+  , ent "E_DERIVE_UNSUPPORTED" (Just "kappa.derive")
       "A well-formed derive declaration requests a trait or checked target shape outside the portable derivation fragment (§14.5.1-§14.5.2)."
+  , ent "E_DERIVE_EXPECTED_TYPE_REQUIRED" (Just "kappa.derive")
+      "A bare derivation expression needs a rigid expected goal. Add a type annotation or write an explicit goal as 'derive (G)' (§16.3.2A)."
+  , ent "E_DERIVE_UNSOLVED" (Just "kappa.derive")
+      "The unified derivation judgment exhausted its admissible checked plans without constructing the requested goal (§16.3.2A)."
+  , ent "E_DERIVE_AMBIGUOUS" (Just "kappa.derive")
+      "Several observable inhabitants remain and no checked coherence fact permits the derivation engine to select one (§16.3.2A)."
+  , ent "E_DERIVE_CYCLE" (Just "kappa.derive")
+      "The derivation obligation graph contains an unproductive cycle; no incomplete evidence value may be used to close it (§14.3.4A, §16.3.2A)."
+  , ent "E_DERIVE_BUDGET_EXHAUSTED" (Just "kappa.derive")
+      "Derivation exhausted its deterministic logical-cost budget before producing a checked proof (§14.5.10-§14.5.11)."
+  , ent "E_DERIVE_PROVIDER_INVALID" (Just "kappa.derive")
+      "A derivation provider returned an ill-scoped, ill-typed, forged, or wrong-goal result; the result is rejected at the checked reconstruction boundary (§14.5)."
+  , ent "E_DERIVE_PROOF_RELEVANT_CHOICE" (Just "kappa.derive")
+      "Several equality proofs or other proof-relevant inhabitants remain, and no applicable h-level evidence proves that the choice is unobservable (§16.3.2A)."
+  , ent "E_DERIVE_INCOMPLETE_SELF" (Just "kappa.derive")
+      "A synthesized member or supertrait attempted to use its enclosing evidence value before every required facet was complete (§14.3.4A)."
+  , ent "E_DERIVE_MEMBER_MISSING" (Just "kappa.derive")
+      "Instance completion left a required member facet unresolved after explicit, default, and admissible synthesized providers were tried (§14.3.4A)."
+  , ent "E_DERIVE_SUPERTRAIT_UNSOLVED" (Just "kappa.derive")
+      "Instance completion left a required or synthesized supertrait facet unresolved (§14.3.4A)."
+  , ent "E_EVIDENCE_UNIQUENESS_INVALID" (Just "kappa.evidence.uniqueness")
+      "An evidence-uniqueness clause does not independently prove equality of arbitrary complete evidence values for its trait (§14.1.1A)."
+  , ent "E_EVIDENCE_UNIQUENESS_CYCLE" (Just "kappa.evidence.uniqueness")
+      "An evidence-uniqueness proof depends on trait coherence, generated subsingleton evidence, artifact identity, or the uniqueness fact currently being established (§14.1.1A)."
+  , ent "E_EVIDENCE_CONSTRUCTION_SEALED" (Just "kappa.evidence.uniqueness")
+      "Expression-level derivation attempted to construct fresh evidence for a sealed-coherent trait; only existing accepted evidence may be reused (§14.1.1A, §16.3.2A)."
+  , ent "E_EVIDENCE_PROVENANCE_UNREPRESENTABLE" (Just "kappa.evidence.uniqueness")
+      "An escaping evidence value depends on construction provenance that cannot be represented at the escape boundary (§14.1.1A, §33.2.1)."
+  , ent "E_INSTANCE_FALLBACK_AMBIGUOUS" (Just "kappa.instance.fallback")
+      "No ordinary instance applies and multiple surviving fallback instances cannot be shown semantically coherent (§14.3.1B)."
+  , ent "E_INSTANCE_LOCAL_ORPHAN" (Just "kappa.instance.local-orphan")
+      "A local instance satisfies neither the ordinary local-head rule nor the independently-unique evidence exception (§30.1.1)."
+  , ent "E_FOUNDATION_PROVIDER_SIGNATURE_MISMATCH" (Just "kappa.internal.compiler")
+      "A compiler-supplied portable-foundation provider does not match the independently declared Core ABI for its resolved semantic identity. Compilation fails closed instead of satisfying the expectation with an incompatible proof constant (§9.4, §16.3.3)."
   , ent "E_BACKENDIR_RETURN_CONTRACT" (Just "kappa-hs.backendir.return-contract")
       "KCore-to-KBackendIR lowering found a return value that does not satisfy the finalized function return contract. Native emission rejects the body rather than changing the declared result representation."
   , ent "E_BACKEND_REQUIRED_REPRESENTATION_MISSING" (Just "kappa.backend.required-representation")

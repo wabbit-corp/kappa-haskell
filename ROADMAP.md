@@ -814,8 +814,8 @@ dependencies, structural level certificates, nominal role inference and closures
 The 47 ordinary/parametric/KCoreText suites, 71 package/schema suites, 17 strengthening suites,
 and all 42 variance suites are active; `scripts/validate_universe_contract.py` reports a clean
 `47 + 71 + 17 pre-variance, 34 current variance, 8 gated future` ledger. U-E and U-F therefore
-have clean focused owner gates. The current full conformance result is also clean at 3,834
-passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,844 total):
+have clean focused owner gates. The 2026-08-03 full conformance result is clean at 3,888
+passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,898 total):
 eight future variance suites and two optional compact Nat/Fin layout suites.
 
 The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
@@ -1019,9 +1019,9 @@ conservative profile and the two optional compact-layout suites report
 `rt-unboxed-refinement`.
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
-The 2026-07-30 aggregate recheck passed `cabal test all` and the complete active
-conformance corpus at 3,834 passed, zero failed, and the same ten declared
-optional/future capability skips.
+The 2026-07-30 aggregate recheck passed `cabal test all`. A fresh 2026-08-03
+active-conformance run passed 3,888 cases with zero failures and the same ten
+declared optional/future capability skips.
 
 - [x] **NFR-0 - contract and harness observability.** Implement every new Appendix T
       arithmetic/inhabitance/representation directive through production queries,
@@ -1126,6 +1126,42 @@ revision invalidates are rewritten and staged under
 MSI-7 -> MSI-8, with MSI-0 first for observability. This revision is the
 prerequisite for the future higher/quotient/coinductive nominal features
 reserved by §10.5; it deliberately does not deliver them.
+
+## Track: Unified derive / canonical evidence ([`DERIVE-AUTOMATION-PLAN.md`](docs/DERIVE-AUTOMATION-PLAN.md))
+
+**Specification applied 2026-08-02; implementation pending.**
+`docs/Spec.md` now defines the unified `derive` elaboration protocol
+(expressions, synthesized members/supertraits, whole-instance and
+declaration-level deriving), independent `evidence uniqueness` certificates
+beside sealed-coherent evidence, `fallback instance` resolution with negative
+absence dependencies (the `Eq -> Equiv` bridge is the standard fallback),
+portable binder-aware function extensionality + `Reflects` + Hedberg, the
+rebuilt `Preorder`/`PartialOrder`/total-`Ord` hierarchy (no `compareTotal`),
+lawful `Alternative` under `Applicative`, the proof-automation provider
+engine with deterministic logical budgets, and the two-level evidence
+identity model of §33.2.1, plus five capabilities and ~30 Appendix T
+directives.
+
+The exact 109-suite contract is staged under
+`tests/pending-import/derive-automation/` (validated by
+`scripts/validate_derive_automation_contract.py`; per-suite
+`-- STATUS(3014a0d9)` baselines: 0 pass / 0 fail / 20 unsupported / 89
+harness errors). Invalidated conformance fixtures are staged under
+`tests/pending-import/derive-automation/retargeted/`.
+
+- [ ] **DA-0 - contract freeze + harness observability.**
+- [ ] **DA-1 - grammar + expression forms.**
+- [ ] **DA-2 - extensionality foundation, `Reflects`, h-level closure.**
+- [ ] **DA-3 - evidence uniqueness + construction modes.**
+- [ ] **DA-4 - instance facet completion + synthesized members.**
+- [ ] **DA-5 - fallback instances + `Eq -> Equiv` bridge.**
+- [ ] **DA-6 - revised standard traits (h-level, relations, orders, Alternative).**
+- [ ] **DA-7 - the derivation engine (providers, induction, helpers, profiles).**
+- [ ] **DA-8 - pipeline, KCore, interfaces, incremental.**
+- [ ] **DA-9 - promotion + adversarial closeout.**
+
+**Planned ordering:** DA-0; DA-1 -> DA-2 -> DA-3 -> DA-4 -> DA-5 -> DA-6;
+DA-7 grows incrementally from DA-2; DA-8 after DA-3/DA-5/DA-7; DA-9 last.
 
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 

@@ -15,8 +15,9 @@ commutative natural-sum `TypeLevel`, finite observation dependencies, parametric
 sealing, standard schema families, replayable structural level evidence, nominal role
 inference, schema action summaries, explicit `CSchemaLift`, and the complete KCoreText grammar.
 The focused universe ledger, full conformance/unit gate, native parity, RC detector lanes,
-package builds, and performance gate are green. The current full conformance result is 3,834
-passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,844 total):
+package builds, and performance gate were green at the recorded closeout. A fresh 2026-08-03
+working-tree conformance run passed 3,888 cases with zero failures and ten explicitly
+unsupported optional/future capabilities (3,898 total):
 eight future variance suites and two optional compact Nat/Fin layout suites.
 The focused owner gates are
 47/47 ordinary/parametric/KCoreText, 88/88 package/schema (71 imported plus 17 strengthening),
@@ -34,7 +35,7 @@ while revisiting only affected term metas; the same Delve build remains finite a
 zero Perceus findings.
 
 The 2026-07-30 aggregate recheck rebuilt the executable, passed `cabal test all`, and
-reconfirmed the 3,844-case full conformance result above. The complete CLI conformance run
+reconfirmed the then-current 3,844-case full conformance result. The complete CLI conformance run
 finished in 8m51s with continuous progress; no compiler nontermination was observed.
 
 The preceding clean historical closeout recorded 2,715/2,715 active conformance cases, 43 universe

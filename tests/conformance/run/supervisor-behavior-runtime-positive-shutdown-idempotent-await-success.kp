@@ -7,7 +7,9 @@ import std.supervisor.(term startSupervisor, term shutdownSupervisor, term await
 
 main : UIO Unit
 let main = do
-    let sup <- startSupervisor OneForOne (RestartIntensity 0 (millis 0)) Nil
+    -- The empty child list does not determine the supervisor's error carrier.
+    -- Fix it explicitly; §11.1.3 forbids defaulting an arbitrary type meta.
+    let sup <- startSupervisor @Void OneForOne (RestartIntensity 0 (millis 0)) Nil
     shutdownSupervisor sup
     shutdownSupervisor sup
     let exit <- awaitSupervisor sup

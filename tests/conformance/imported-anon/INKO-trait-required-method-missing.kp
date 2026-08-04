@@ -22,7 +22,7 @@ instance Displayable Point =
 -- NEGATIVE: the instance for Measurable is declared but provides
 -- no implementation of the required 'size' method.
 -- The compiler rejects the declaration because the required member is absent.
-instance Measurable Point =   --!! E_INSTANCE_MEMBER_MISSING
+instance Measurable Point =   --!! E_DERIVE_MEMBER_MISSING
     let unrelatedHelper = 0   --!! E_ASSOCIATED_MEMBER_UNDECLARED
 
 --! assertErrorCount 2

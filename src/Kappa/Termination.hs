@@ -188,11 +188,15 @@ strongerChange ChStrict _ = ChStrict
 strongerChange _ ChStrict = ChStrict
 strongerChange ChWeak ChWeak = ChWeak
 
--- | Expand direct global references through known-reducible bodies.  The caller
--- supplies only reducibility and body data so this remains independent of the
--- checker state record.
-expandedGlobalsOfTerm :: Map GName (Bool, Maybe Term) -> Term -> Set GName
-expandedGlobalsOfTerm globals = go Set.empty
+-- | Expand direct global references through known-reducible bodies. The caller
+-- supplies a point lookup rather than a materialized environment so this stays
+-- independent of checker state without forcing incremental callers to rebuild
+-- their complete global map for every dependency query.
+expandedGlobalsOfTerm
+  :: (GName -> Maybe (Bool, Maybe Term))
+  -> Term
+  -> Set GName
+expandedGlobalsOfTerm lookupGlobal = go Set.empty
   where
     go seen tm =
       Set.unions [expand seen g | g <- Set.toList (globalsOfTerm tm)]
@@ -201,7 +205,7 @@ expandedGlobalsOfTerm globals = go Set.empty
       | Set.member g seen = Set.singleton g
       | otherwise =
           Set.insert g $
-            case Map.lookup g globals of
+            case lookupGlobal g of
               Just (True, Just body) -> go (Set.insert g seen) body
               _ -> Set.empty
 

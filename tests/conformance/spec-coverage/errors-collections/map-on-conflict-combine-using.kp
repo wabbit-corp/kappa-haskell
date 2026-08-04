@@ -16,10 +16,8 @@ let unBag b =
     match b
     case MkBag xs -> xs
 
-instance Pointed Bag =
-    let empty = MkBag Nil
-
 instance Monoid Bag =
+    let empty = MkBag Nil
     let append a b = MkBag (listAppend (unBag a) (unBag b))
     let appendAssoc @x @y @z =
         match x

@@ -634,7 +634,7 @@ basePrims =
     -- value) is rejected on BOTH backends identically ('compilePrimValue' here,
     -- 'emitPrim' in C) — it does not arise in elaborated programs.
     `Set.union` Set.fromList
-      [ "stmBind", "stmPure", "newTVar", "readTVar", "writeTVar", "atomically"
+      [ "stmBind", "stmPure", "stmOrElse", "newTVar", "readTVar", "writeTVar", "atomically"
       , "__race", "__timeout", "withScope", "__interruptWait", "__interruptNoWait"
       , "__interruptForkAny"
       ]
@@ -2081,7 +2081,7 @@ backendSpineHeadSuspendsLL susp t = case fst (backendSpineOf t) of
         , "__race", "__timeout", "withScope", "__interruptWait", "__interruptNoWait"
         , "blocking", "uninterruptible", "__mask", "poll"
         , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
-        , "atomically", "stmBind"
+        , "atomically", "stmBind", "stmOrElse"
         , "onExit", "onInterrupt", "finallyIO", "catchIO"
         , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef", "locallyFiberRef"
         , "pollPromise", "isDonePromise"
@@ -4892,6 +4892,7 @@ ioNodeBuilder = \case
   -- NOT a node-builder here.)
   "stmBind" -> Just ("krt2_stm_bind", 2)
   "stmPure" -> Just ("krt2_stm_pure", 1)
+  "stmOrElse" -> Just ("krt2_or_else", 2)
   "newTVar" -> Just ("krt2_new_tvar", 1)
   "readTVar" -> Just ("krt2_read_tvar", 1)
   "writeTVar" -> Just ("krt2_write_tvar", 2)

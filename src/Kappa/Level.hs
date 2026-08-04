@@ -730,7 +730,7 @@ reconcileLevelAssignmentUpdates old requested =
                     conflictEntry : _ -> conflictEntryResult conflictEntry
             _ -> conflict firstConflict installed wanted
   where
-    additions = Map.withoutKeys requested (Map.keysSet old)
+    additions = Map.difference requested old
     base = Map.union additions old
     zonkWith assignments =
       normalizeLevel . substituteLevelMetas assignments

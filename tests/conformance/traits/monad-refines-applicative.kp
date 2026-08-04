@@ -3,12 +3,12 @@
 
 -- §14.1.4 / Spec 13923: in std.prelude `Monad` is declared with
 -- supertrait `Applicative`. Generic code constrained only by `Monad m`
--- may therefore use `pureA` — the `Applicative m` evidence is projected
+-- may therefore use `pure` — the `Applicative m` evidence is projected
 -- from the in-scope `Monad m` evidence.
 module main
 
 wrap : forall (m : (0 A : Type) -> Type). (@_ : Monad m) -> Int -> m Int
-let wrap n = pureA n
+let wrap n = pure n
 
 main : UIO Unit
 let main =

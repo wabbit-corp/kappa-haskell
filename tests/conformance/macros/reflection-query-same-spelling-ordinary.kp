@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType action Elab (Syntax Type)
+--! assertType sum Int
+--! assertType qualified Syntax Type
+--! assertType shadow Int -> Elab (Syntax Type)
+--! assertType renamed Syntax Type
+
+-- §21.6 convenience behavior belongs to the resolved prelude declarations,
+-- not these spellings. Same-spelling user declarations retain the complete
+-- ordinary expected-directed application path.
+module main
+
+import std.prelude.(typeOfSyntax as tos)
+
+let typeOfSyntax = std.prelude.typeOfSyntax
+
+action : Elab (Syntax Type)
+let action =
+    typeOfSyntax '{ \x -> addInt x 1 }
+
+defEqSyntax : Int -> Int -> Int
+let defEqSyntax x y = addInt x y
+
+sum : Int
+let sum = defEqSyntax 1 2
+
+-- Qualification changes source syntax, not semantic identity: the canonical
+-- query still runs immediately in an ordinary result position.
+qualified : Syntax Type
+let qualified =
+    std.prelude.typeOfSyntax '{ 42 }
+
+-- Once the unqualified head has resolved to the prelude declaration, a local
+-- module-root spelling must not be able to redirect its ordinary action path.
+shadow : Int -> Elab (Syntax Type)
+let shadow std =
+    typeOfSyntax '{ \x -> addInt x 1 }
+
+-- A selective import alias retains the imported declaration's identity.
+renamed : Syntax Type
+let renamed =
+    tos '{ 42 }

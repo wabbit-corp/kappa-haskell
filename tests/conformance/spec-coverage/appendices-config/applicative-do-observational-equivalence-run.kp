@@ -115,4 +115,4 @@ let main = do
         equivalent polymorphicFalse polymorphicTrue
     printlnString ("equivalent:" ++ renderBool allEquivalent)
 
--- STATUS(80bcd11d): FAIL — the implementation still requires stale Applicative.pureA rather than the Spec member `pure`; both the concrete Trace False do and polymorphic `someProgram` incorrectly demand Monad evidence instead of elaborating from the generic Applicative instance alone (Appendix G.2)
+-- STATUS(80bcd11d): FAIL — the implementation still requires stale Applicative.pure rather than the Spec member `pure`; both the concrete Trace False do and polymorphic `someProgram` incorrectly demand Monad evidence instead of elaborating from the generic Applicative instance alone (Appendix G.2)

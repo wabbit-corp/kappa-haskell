@@ -7,7 +7,7 @@ foo : S.IO Int
 let foo = do
     var x = 1
     x = addInt x 1
-    pureA x
+    pure x
 
 runShadow : forall (a : Type). S.IO a -> UIO a
 let runShadow m =

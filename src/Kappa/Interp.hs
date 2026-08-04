@@ -1225,6 +1225,9 @@ runPrimIO' rt p args = case (p, args) of
     a <- runIOValue rt m
     runIOValue rt (vapp ec k Expl a)
   ("stmPure", [v]) -> pure v
+  ("stmOrElse", [left, right]) -> do
+    first <- try (runIOValue rt left) :: IO (Either RetrySignal Value)
+    either (const (runIOValue rt right)) pure first
   _ ->
     throwIO . KappaError . VLit . LitStr $
       "unhandled IO primitive: " <> p <> "/" <> T.pack (show (length args))

@@ -994,11 +994,11 @@ pTraitDecl = do
   pure (TraitDecl supers n params members)
 
 -- Heads: [C1, ..., Cn =>] Name params
-pTraitHead :: P ([Expr], Name, [Binder], Bool)
+pTraitHead :: P ([SupertraitItem], Name, [Binder], Bool)
 pTraitHead = withSupers <|> plain
   where
     withSupers = try $ do
-      supers <- sepBy1 pAppExpr (token TokComma)
+      supers <- sepBy1 pSupertraitItem (token TokComma)
       pOperatorNamed "=>"
       (n, ps, continued) <- nameParams
       pure (supers, n, ps, continued)
@@ -1009,6 +1009,26 @@ pTraitHead = withSupers <|> plain
       n <- pSigName
       (ps, continued) <- pDeclParamBinders
       pure (n, ps, continued)
+
+pSupertraitItem :: P SupertraitItem
+pSupertraitItem = try parenthesizedDerived <|> try derived <|> ordinary
+  where
+    parenthesizedDerived = do
+      start <- currentSpan
+      token TokLParen
+      pKeyword "derive"
+      ty <- pAppExpr
+      token TokRParen
+      SupertraitItem True ty <$> spanFrom start
+    derived = do
+      start <- currentSpan
+      pKeyword "derive"
+      ty <- pAppExpr
+      SupertraitItem True ty <$> spanFrom start
+    ordinary = do
+      start <- currentSpan
+      ty <- pAppExpr
+      SupertraitItem False ty <$> spanFrom start
 
 pTraitMembers :: P [TraitMember]
 pTraitMembers = do
@@ -1029,8 +1049,23 @@ pTraitMembersContinued = do
 pTraitMember :: P TraitMember
 pTraitMember = do
   start <- currentSpan
-  defMember start <|> sigMember start
+  try (uniquenessMember start)
+    <|> try (derivedMember start)
+    <|> defMember start
+    <|> sigMember start
   where
+    uniquenessMember start = do
+      pKeyword "evidence"
+      pKeyword "uniqueness"
+      token TokEquals
+      proof <- pExprIndented
+      TraitEvidenceUniqueness proof <$> spanFrom start
+    derivedMember start = do
+      pKeyword "derive"
+      n <- pSigName
+      token TokColon
+      ty <- pExprIndented
+      TraitDerived n ty <$> spanFrom start
     defMember start = do
       pKeyword "let"
       d <- pLetDef
@@ -1047,12 +1082,14 @@ pInstanceDecl = do
   pKeyword "instance"
   schema <- optionMaybe pUniverseSchema
   (premises, hd) <- pInstanceHead
-  members <-
+  completion <-
     optionMaybe (token TokEquals) >>= \case
-      Nothing -> pure []
+      Nothing -> pure (InstanceMembers [])
       -- an empty member suite is permitted: `instance Shareable Cell =`
-      Just () -> pInstanceMembers <|> pure []
-  pure (InstanceDecl schema premises hd members)
+      Just () ->
+        (pKeyword "derive" >> pure InstanceDerive)
+          <|> (InstanceMembers <$> (pInstanceMembers <|> pure []))
+  pure (InstanceDecl schema premises hd completion)
 
 pInstanceHead :: P ([Expr], Expr)
 pInstanceHead = withPremises <|> plain
@@ -2489,6 +2526,16 @@ pAtom = do
       pKeyword "moduleSig"
       n <- pIdent
       EModuleSig n <$> spanFrom start
+    TokIdent "derive" -> do
+      pKeyword "derive"
+      goal <- do
+        next <- peekToken
+        case next of
+          TokLParen -> do
+            parenStart <- currentSpan
+            Just <$> inBrackets (pParenExpr parenStart)
+          _ -> pure Nothing
+      EDerive goal <$> spanFrom start
     TokIdent "ref" -> refFacet start <|> (EVar <$> pIdent)
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent

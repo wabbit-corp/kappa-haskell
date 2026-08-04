@@ -1,3 +1,13 @@
+-- Retargeted from tests/conformance/spec-coverage/do-blocks/CURRY-do-refutable-pattern-monad-failure.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- The old scaffolding spelled the Alternative member `emptyA` and routed the desugared
+-- `empty` through a `Pointed` instance; the revised §28.2 `trait Applicative f =>
+-- Alternative` requires members `empty` and `(<|>)` directly (only `orElse` is
+-- defaulted), and `Pointed` is not a prelude trait at HEAD, so as pinned the file
+-- rejected (unresolved `Pointed` head per §14.3; `instance Alternative Option` missing
+-- required runtime member `empty`, never synthesized per §14.2). The instances are
+-- rewritten to the canonical surface (`Pointed` deleted, `emptyA` renamed to `empty`),
+-- restoring the original accept pins.
+--
 -- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDoList.curry
 --   (do (True,x) <- return (False,42); return x =-= []).
 -- Spec: §18.2 (bind `let pat <- expr` requires an IRREFUTABLE pattern),
@@ -6,21 +16,17 @@
 --       or an equivalent structure providing `empty`).
 --
 -- Pins: refutable monadic destructuring uses the dedicated `let?` form,
--- which short-circuits through `empty` on failure. The instances below
--- give Option the required short-circuiting structure. (§28.2's
--- Alternative declares `empty` directly; this implementation's prelude
--- names the Alternative member `emptyA` and resolves the desugared
--- `empty` through its Pointed trait — both are provided as scaffolding.)
+-- which short-circuits through `empty` on failure. The instance below
+-- gives Option the required short-circuiting structure: §28.2's
+-- Alternative declares `empty` and `(<|>)` as its required members, and
+-- the prelude supplies the `Applicative Option` supertrait evidence.
 
 module test
 
 --! mode check
 
-instance Pointed (Option a) =
-    let empty = None
-
 instance Alternative Option =
-    let emptyA = None
+    let empty = None
     let (<|>) x y =
         match x
         case None -> y
@@ -33,7 +39,7 @@ sampleIrrefutable : Option Int
 let sampleIrrefutable =
     do
         let x <- Some 42
-        pureA x
+        pure x
 
 intScore : Option Int -> Int
 let intScore o =
@@ -53,7 +59,7 @@ sampleRefutableSucceeds : Option Int
 let sampleRefutableSucceeds =
     do
         let? (True, x) = (True, 42)
-        pureA x
+        pure x
 
 succeedsScore : Int
 let succeedsScore = intScore sampleRefutableSucceeds
@@ -67,7 +73,7 @@ sampleRefutableFails : Option Int
 let sampleRefutableFails =
     do
         let? (True, x) = (False, 42)
-        pureA x
+        pure x
 
 failsScore : Int
 let failsScore = intScore sampleRefutableFails
@@ -76,4 +82,4 @@ let failsScore = intScore sampleRefutableFails
 --! assertType sampleRefutableFails (Option Int)
 --! assertEval failsScore -1
 
--- STATUS(a0497523): PASS
+-- STATUS(3014a0d9): FAIL — E_INSTANCE_MEMBER_MISSING

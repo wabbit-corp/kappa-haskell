@@ -1581,7 +1581,22 @@ globalsOfTerm = foldTerm here (const Set.empty)
     here = \case
       CGlob g -> Set.singleton g
       CCtorI g _ _ _ -> Set.singleton g
+      CMatch _ _ _ alternatives ->
+        Set.unions [globalsOfPattern (caPat alternative) | alternative <- alternatives]
       _ -> Set.empty
+
+    globalsOfPattern = \case
+      CPWild -> Set.empty
+      CPVarM {} -> Set.empty
+      CPLit {} -> Set.empty
+      CPCtorM _ _ _ constructor _ fields ->
+        Set.insert constructor (Set.unions (map globalsOfPattern fields))
+      CPTuple fields -> Set.unions (map globalsOfPattern fields)
+      CPRecordM fields _ -> Set.unions (map (globalsOfPattern . snd) fields)
+      CPInject _ field -> globalsOfPattern field
+      CPInjectRestM {} -> Set.empty
+      CPOr alternatives _ -> Set.unions (map globalsOfPattern alternatives)
+      CPAsM _ _ pattern' -> globalsOfPattern pattern'
 
 -- | Split a left-associated application spine into its head and ordered
 -- arguments.

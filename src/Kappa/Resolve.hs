@@ -379,14 +379,24 @@ rData env (DataDecl n ps k cs) =
 
 rTrait :: FixityEnv -> TraitDecl -> RW TraitDecl
 rTrait env (TraitDecl sups n ps ms) =
-  TraitDecl <$> mapM (rExpr env) sups <*> pure n <*> mapM (rBinder env) ps <*> mapM rMember ms
+  TraitDecl <$> mapM rSuper sups <*> pure n <*> mapM (rBinder env) ps <*> mapM rMember ms
   where
+    rSuper (SupertraitItem derived ty sp) =
+      SupertraitItem derived <$> rExpr env ty <*> pure sp
     rMember (TraitSig mn ty sp) = TraitSig mn <$> rExpr env ty <*> pure sp
     rMember (TraitDefault d sp) = TraitDefault <$> rLetDef env d <*> pure sp
+    rMember (TraitDerived mn ty sp) = TraitDerived mn <$> rExpr env ty <*> pure sp
+    rMember (TraitEvidenceUniqueness proof sp) =
+      TraitEvidenceUniqueness <$> rExpr env proof <*> pure sp
 
 rInstance :: FixityEnv -> InstanceDecl -> RW InstanceDecl
-rInstance env (InstanceDecl schema prems hd ms) =
-  InstanceDecl schema <$> mapM (rExpr env) prems <*> rExpr env hd <*> mapM (rDecl env) ms
+rInstance env (InstanceDecl schema prems hd completion) =
+  InstanceDecl schema
+    <$> mapM (rExpr env) prems
+    <*> rExpr env hd
+    <*> case completion of
+      InstanceMembers members -> InstanceMembers <$> mapM (rDecl env) members
+      InstanceDerive -> pure InstanceDerive
 
 rEffect :: FixityEnv -> EffectDecl -> RW EffectDecl
 rEffect env (EffectDecl n ps ops lbl lty) =
@@ -517,6 +527,7 @@ rExpr env = go
       ESplice e sp -> ESplice <$> go e <*> pure sp
       ESpliceInQuote e sp -> ESpliceInQuote <$> go e <*> pure sp
       e@EQuoteHole {} -> pure e
+      EDerive goal sp -> EDerive <$> mapM go goal <*> pure sp
       e@EImpossible {} -> pure e
       e@EKindQualified {} -> pure e
       e@EModuleSig {} -> pure e

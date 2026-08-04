@@ -39,9 +39,12 @@ premise collapses at concrete carriers), split the linear-refinement claim
 into an elimination positive plus a construction negative, converted the
 supertrait-incoherence negative the canonicalization amendment flipped, and
 renamed the unsafe-assert probe to a direct IsProp demand, bringing the tree
-to 103. All 103 suites are active. The conservative profile passes 101 and
-reports the two compact-layout-only suites as `Unsupported` because it does
-not advertise their optional representation capabilities.
+to 103. The 2026-08-02 unified-derive revision retargeted two negatives
+(handwritten-eq-missing-laws, derive-isset-function-field) into
+`tests/pending-import/derive-automation/retargeted/`, leaving **102 active
+suites**. The conservative profile passes the active tree except the two
+compact-layout-only suites, which report `Unsupported` because it does not
+advertise their optional representation capabilities.
 
 The implementation retains the exact `Integer` substrate and now supplies the
 language and evidence contract around it: source-visible logical `Nat`, checked

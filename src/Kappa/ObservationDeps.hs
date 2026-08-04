@@ -101,7 +101,7 @@ data ObservationOracle = ObservationOracle
   , ooMetaMode :: MetaId -> Maybe ObservationMode
   , ooInferType :: Int -> [ObservationBinding] -> Term -> Maybe Value
   , ooProjectionMode :: Value -> Text -> Maybe ObservationMode
-  , ooProjectionType :: Int -> Value -> Text -> Maybe Value
+  , ooProjectionType :: Int -> Term -> Value -> Text -> Maybe Value
   , ooProjectionTrait :: Value -> Text -> Maybe GName
   , ooConstructorType :: GName -> Maybe [Level] -> Maybe Value
   , ooProvisionalUniverseMetadata :: !Bool
@@ -659,11 +659,11 @@ observationDependencies oracle bindings expected = go [] bindings expected
 
     projectedLevelDependencies path env index fields =
       case drop index env of
-        ObservationBinding {obType = Just rootType} : _ -> walk rootType fields
+        ObservationBinding {obType = Just rootType} : _ -> walk (CVar index) rootType fields
         _ -> analysisFailure path "a projected level root has no authenticated classifier"
       where
-        walk _ [] = Set.empty
-        walk receiverType (field : rest) =
+        walk _ _ [] = Set.empty
+        walk receiver receiverType (field : rest) =
           let mode = ooProjectionMode oracle receiverType field
               here = case mode of
                 Just Parametric ->
@@ -674,8 +674,8 @@ observationDependencies oracle bindings expected = go [] bindings expected
                   ("observation mode is unavailable for TypeLevel projection '" <> field <> "'")
            in if not (Set.null here) || null rest
                 then here
-                else case projectionType (length env) receiverType field of
-                  Just nextType -> walk nextType rest
+                else case projectionType (length env) receiver receiverType field of
+                  Just nextType -> walk (CProjM Ordinary receiver field) nextType rest
                   Nothing -> analysisFailure path
                     ("classifier is unavailable for nested TypeLevel projection '" <> field <> "'")
 
@@ -777,10 +777,10 @@ observationDependencies oracle bindings expected = go [] bindings expected
       | global == prelThis = ooThisType oracle
     inferStructural env (CProjM _ receiver field) = do
       receiverType <- inferAt env receiver
-      projectionType (length env) receiverType field
+      projectionType (length env) receiver receiverType field
     inferStructural env (CProjAtM _ receiver field _) = do
       receiverType <- inferAt env receiver
-      projectionType (length env) receiverType field
+      projectionType (length env) receiver receiverType field
     inferStructural env (CCtorI _ _ (Just annotation) arguments)
       | termScopedAt (length env) annotation =
           applyConstructorType env
@@ -793,13 +793,19 @@ observationDependencies oracle bindings expected = go [] bindings expected
       inferAt env solutionTerm
     inferStructural _ _ = Nothing
 
-    projectionType depth receiverType field =
+    projectionType depth receiver receiverType field =
       case force ctx receiverType of
         VRecordTQ fields -> rfType <$> find ((== field) . rfName) fields
-        VSigT _ inner -> projectionType depth inner field
-        _ -> ooProjectionType oracle depth receiverType field
+        VSigT _ inner -> projectionType depth receiver inner field
+        _ -> ooProjectionType oracle depth receiver receiverType field
 
     betaApply _ term [] = Just term
+    betaApply depth (CProjM _ receiver field) arguments
+      | Just value <- recordProjectionValue field Nothing receiver =
+          betaApply depth value arguments
+    betaApply depth (CProjAtM _ receiver field index) arguments
+      | Just value <- recordProjectionValue field (Just index) receiver =
+          betaApply depth value arguments
     betaApply depth (CLamM _ expectedIcit _ _ body) ((actualIcit, argument) : rest)
       | actualIcit == expectedIcit =
           betaApply depth (substTopTermAt depth argument body) rest
@@ -1026,6 +1032,24 @@ observationDependencies oracle bindings expected = go [] bindings expected
             -- the lambda-shaped presentation here loses the domain of record
             -- arguments because Core lambdas do not duplicate Pi annotations.
             Just reduced@CCtorI {} -> go path env wanted reduced
+            -- A selected field of a concrete record literal is the same
+            -- definitional presentation detail.  Unlike an arbitrary global
+            -- body this reduction is finite, identity-free, and cannot cross
+            -- an opacity or recursion boundary.  Analyze the applied field
+            -- value so a checked default member keeps the lambda domains that
+            -- were established at its projection call site.
+            Just reduced
+              | literalRecordProjection headTerm -> go path env wanted reduced
+            -- Checked Core can expose a syntactic lambda application after a
+            -- preceding beta/projection reduction.  If no Pi classifier is
+            -- recoverable at that interior node, introducing untyped
+            -- observation binders would fail closed on a well-typed redex.
+            -- The finite syntactic beta-reduct is the authoritative
+            -- dependency equation in that case; sets make duplicated
+            -- argument occurrences observationally idempotent.
+            Just reduced
+              | CLamM {} <- headTerm
+              , isNothing headType -> go path env wanted reduced
             _ -> case headTerm of
               CLamM {} -> lambdaApplicationDependencies path env env headType headTerm arguments 0
               CGlobal global _
@@ -1100,6 +1124,11 @@ observationDependencies oracle bindings expected = go [] bindings expected
               evidenceRelativeCallableDependencies
                 ctx (length env) callable rawDependencies)
             headType
+
+    literalRecordProjection = \case
+      CProjM _ CRecordV {} _ -> True
+      CProjAtM _ CRecordV {} _ _ -> True
+      _ -> False
 
     -- __handleEff is a checked KCore form represented as an internal primitive
     -- application. Its public primitive signature is intentionally only an
@@ -1418,7 +1447,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
       where
         typedNominalField classifier (name, _) = do
           mode <- ooProjectionMode oracle classifier name
-          pure (mode, ooProjectionType oracle (length env) classifier name)
+          pure (mode, ooProjectionType oracle (length env) (CRecordV fields) classifier name)
 
     -- Record projection is a definitional reduction. Analyzing the complete
     -- literal receiver is both imprecise and violates beta/zeta invariance:

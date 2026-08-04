@@ -27,12 +27,7 @@ trait MyOp (0 a : Type) =
 useOp : forall (a : Type). (@_ : MyOp a) -> (x : a) -> (y : a) -> (@_ : opDefined x y = True) -> a
 let useOp x y @p = opRun x y @p
 
--- STATUS(a0497523): FAIL — both bodies are rejected. `divide x y @p` dies with
--- E_APPLICATION_ARGUMENT_MISMATCH ("an explicit implicit argument was
--- supplied, but the callee has no implicit parameter here"); `opRun x y @p`
--- dies with E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH whose expected type
--- prints as "= Bool (__stuck_app _.opDefined @2 @1) True": the synthesized
--- evidence implicit is left as an unsolved meta instead of being substituted
--- through the later proof binder before the explicit @p is aligned. The
--- existing conformance test stdlib-prelude-positive-checked-div-mod.kp FAILS
--- against this same clean binary with the first error shape.
+-- Regression status: active and passing. The application planner records
+-- which synthesized evidence slots are observed by later supplied arguments,
+-- resolves those slots before checking the dependent proof payload, and then
+-- substitutes the selected evidence through the remaining spine.

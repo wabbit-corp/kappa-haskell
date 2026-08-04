@@ -186,6 +186,73 @@ toSeverity = \case
   SNote -> SevNote
   SInfo -> SevInfo
 
+data DeriveOutcomeTag
+  = DeriveSolved
+  | DeriveRefuted
+  | DeriveCounterexample
+  | DeriveAmbiguous
+  | DeriveBlocked
+  | DeriveBudgetExhausted
+  | DeriveCycle
+  | DeriveUnsupported
+  deriving stock (Eq, Show)
+
+newtype DeriveProviderKind = DeriveProviderKind Text
+  deriving stock (Eq, Show)
+
+data MemberCompletionMode
+  = MemberExplicit
+  | MemberOrdinaryDefault
+  | MemberDerived
+  | MemberAutoProposition
+  deriving stock (Eq, Show)
+
+data SupertraitCompletionMode = SupertraitDirect | SupertraitDerived
+  deriving stock (Eq, Show)
+
+data EvidenceUniquenessMode = EvidenceIndependent | EvidenceSealed
+  deriving stock (Eq, Show)
+
+data EvidenceConstructionMode
+  = EvidenceExisting
+  | EvidenceFreshIndependent
+  | EvidenceInstanceArtifact
+  | EvidenceIntrinsic
+  deriving stock (Eq, Show)
+
+data DeriveAssertion
+  = DeriveOutcome !Text !DeriveOutcomeTag
+  | DeriveProviderUsed !Bool !Text !DeriveProviderKind
+  | DeriveInductionSubject !Text !Int
+  | DeriveHelperCount !Text !Text !Int
+  | DeriveProofChecks !Text
+  | DeriveProofMutationsReject !Text
+  | DeriveCounterexamplePresent !Text
+  | DeriveCycleContains !Text !Text
+  | DerivedInstance !Text
+  | DerivedInstanceProviderUsed !DeriveProviderKind !Text
+  | DerivedMember !Text !Text
+  | DerivedMemberCompletionMode !Text !Text !MemberCompletionMode
+  | DerivedSupertrait !Text !Text
+  | DerivedSupertraitCompletionMode !Text !Text !SupertraitCompletionMode
+  | SharedDerivedEvidence !Text
+  | EvidenceUniquenessModeIs !Text !EvidenceUniquenessMode
+  | EvidenceUniquenessCertificateValid !Text
+  | EvidenceUniquenessCertificateMutationsReject !Text
+  | EvidenceConstructionModeIs !Text !EvidenceConstructionMode
+  | EvidenceSemanticIdentityComparison !Bool !Text !Text
+  | EvidenceArtifactFingerprintComparison !Bool !Text !Text
+  | FallbackSelected !Text !Text
+  | FallbackNotSelected !Text
+  | OrdinaryInstanceSelected !Text !Text
+  deriving stock (Eq, Show)
+
+data DeriveCheckpointAssertion
+  = DeriveRecordPresent !Text !Text
+  | EvidenceUniquenessRecordPresent !Text !Text
+  | FallbackSelectionRecordPresent !Text !Text
+  deriving stock (Eq, Show)
+
 data Assertion
   = ANoErrors
   | ANoWarnings
@@ -269,6 +336,8 @@ data Assertion
   | ARefinementRepresentation !Text !Text
   | ARepresentationClass !Text !Text
   | ARuntimeFieldAbsent !Text !Text
+  | ADeriveQuery !DeriveAssertion
+  | ADeriveCheckpointQuery !DeriveCheckpointAssertion
   | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
@@ -341,6 +410,64 @@ traceSubjectNames =
 
 traceRelops :: [Text]
 traceRelops = ["=", "!=", "<", "<=", ">", ">="]
+
+parseDeriveOutcomeTag :: Text -> Maybe DeriveOutcomeTag
+parseDeriveOutcomeTag = \case
+  "Solved" -> Just DeriveSolved
+  "Refuted" -> Just DeriveRefuted
+  "Counterexample" -> Just DeriveCounterexample
+  "Ambiguous" -> Just DeriveAmbiguous
+  "Blocked" -> Just DeriveBlocked
+  "BudgetExhausted" -> Just DeriveBudgetExhausted
+  "Cycle" -> Just DeriveCycle
+  "Unsupported" -> Just DeriveUnsupported
+  _ -> Nothing
+
+deriveProviderKinds :: [Text]
+deriveProviderKinds =
+  [ "exact", "contractible", "focused-introduction", "normalization"
+  , "logical-evaluation", "reflection", "no-confusion", "hlevel"
+  , "hedberg", "arithmetic", "universe", "quantity", "row", "capture"
+  , "set-congruence", "path-congruence", "function-extensionality"
+  , "theorem-search", "structural-induction", "indexed-induction"
+  , "mutual-induction", "functional-induction", "helper-lemma"
+  , "dependent-inhabitation", "superposition", "hammer", "parametricity"
+  , "proof-transfer", "finite-enumeration", "external-certificate"
+  , "fallback-instance"
+  ]
+
+parseDeriveProviderKind :: Text -> Maybe DeriveProviderKind
+parseDeriveProviderKind provider
+  | provider `elem` deriveProviderKinds = Just (DeriveProviderKind provider)
+  | otherwise = Nothing
+
+parseMemberCompletionMode :: Text -> Maybe MemberCompletionMode
+parseMemberCompletionMode = \case
+  "explicit" -> Just MemberExplicit
+  "ordinary-default" -> Just MemberOrdinaryDefault
+  "derived" -> Just MemberDerived
+  "auto-proposition" -> Just MemberAutoProposition
+  _ -> Nothing
+
+parseSupertraitCompletionMode :: Text -> Maybe SupertraitCompletionMode
+parseSupertraitCompletionMode = \case
+  "direct" -> Just SupertraitDirect
+  "derived" -> Just SupertraitDerived
+  _ -> Nothing
+
+parseEvidenceUniquenessMode :: Text -> Maybe EvidenceUniquenessMode
+parseEvidenceUniquenessMode = \case
+  "independent" -> Just EvidenceIndependent
+  "sealed" -> Just EvidenceSealed
+  _ -> Nothing
+
+parseEvidenceConstructionMode :: Text -> Maybe EvidenceConstructionMode
+parseEvidenceConstructionMode = \case
+  "existing" -> Just EvidenceExisting
+  "fresh-independent" -> Just EvidenceFreshIndependent
+  "instance-artifact" -> Just EvidenceInstanceArtifact
+  "intrinsic" -> Just EvidenceIntrinsic
+  _ -> Nothing
 
 -- | Scan all directive lines and inline markers. Returns scanned
 -- directives in file order and harness errors.
@@ -677,6 +804,115 @@ parseDirective allLines lno body =
           | not (T.null declaration), not (T.null field) ->
               ok (SAssert (ARuntimeFieldAbsent declaration field))
         _ -> bad "malformed 'assertRuntimeFieldAbsent' directive"
+      -- Unified derive and canonical-evidence queries (§T.5.2).  These are
+      -- parsed into typed requests even when the compiler does not yet
+      -- publish the corresponding record.  Query availability is decided
+      -- during assertion evaluation, where absence is Unsupported (§T.8),
+      -- not a harness syntax error and never a guessed pass.
+      "assertDeriveOutcome" -> case args of
+        [declaration, outcomeText]
+          | Just outcome <- parseDeriveOutcomeTag outcomeText ->
+              deriveQuery (DeriveOutcome declaration outcome)
+        _ -> malformedDerive name
+      "assertDeriveProviderUsed" -> deriveProviderAssertion True args
+      "assertDeriveProviderNotUsed" -> deriveProviderAssertion False args
+      "assertDeriveInductionSubject" -> case args of
+        [declaration, indexText]
+          | Just index <- parseNat indexText ->
+              deriveQuery (DeriveInductionSubject declaration index)
+        _ -> malformedDerive name
+      "assertDeriveHelperCount" -> case args of
+        [declaration, relop, countText]
+          | relop `elem` traceRelops
+          , Just count <- parseNat countText ->
+              deriveQuery (DeriveHelperCount declaration relop count)
+        _ -> malformedDerive name
+      "assertDeriveProofChecks" -> unaryDerive DeriveProofChecks args
+      "assertDeriveProofMutationsReject" -> unaryDerive DeriveProofMutationsReject args
+      "assertDeriveCounterexample" -> unaryDerive DeriveCounterexamplePresent args
+      "assertDeriveCycleContains" -> case args of
+        declaration : fragment
+          | not (null fragment) ->
+              deriveQuery (DeriveCycleContains declaration (T.unwords fragment))
+        _ -> malformedDerive name
+      "assertDerivedInstance"
+        | not (T.null rest) -> deriveQuery (DerivedInstance rest)
+        | otherwise -> malformedDerive name
+      "assertDerivedInstanceProviderUsed" -> case args of
+        providerText : "for" : goal
+          | Just provider <- parseDeriveProviderKind providerText
+          , not (null goal) ->
+              deriveQuery (DerivedInstanceProviderUsed provider (T.unwords goal))
+        _ -> malformedDerive name
+      "assertDerivedMember" -> case args of
+        member : "for" : goal | not (null goal) ->
+          deriveQuery (DerivedMember member (T.unwords goal))
+        _ -> malformedDerive name
+      "assertMemberCompletionMode" -> case args of
+        member : "for" : goalAndMode
+          | Just (goal, modeText) <- splitLastWord (T.unwords goalAndMode)
+          , Just completionMode <- parseMemberCompletionMode modeText ->
+              deriveQuery (DerivedMemberCompletionMode member goal completionMode)
+        _ -> malformedDerive name
+      "assertDerivedSupertrait" ->
+        case splitDirectiveInfix " from " rest of
+          Just (parent, child)
+            | nonempty parent, nonempty child ->
+                deriveQuery (DerivedSupertrait parent child)
+          _ -> malformedDerive name
+      "assertSupertraitCompletionMode" ->
+        case splitLastWord rest of
+          Just (goals, modeText)
+            | Just completionMode <- parseSupertraitCompletionMode modeText
+            , Just (parent, child) <- splitDirectiveInfix " from " goals
+            , nonempty parent, nonempty child ->
+                deriveQuery (DerivedSupertraitCompletionMode parent child completionMode)
+          _ -> malformedDerive name
+      "assertSharedDerivedEvidence" -> case args of
+        "for" : goal | not (null goal) ->
+          deriveQuery (SharedDerivedEvidence (T.unwords goal))
+        _ -> malformedDerive name
+      "assertEvidenceUniquenessMode" ->
+        case splitLastWord rest of
+          Just (goal, modeText)
+            | Just uniquenessMode <- parseEvidenceUniquenessMode modeText ->
+                deriveQuery (EvidenceUniquenessModeIs goal uniquenessMode)
+          _ -> malformedDerive name
+      "assertEvidenceUniquenessCertificateValid" ->
+        unaryDerive EvidenceUniquenessCertificateValid args
+      "assertEvidenceUniquenessCertificateMutationsReject" ->
+        unaryDerive EvidenceUniquenessCertificateMutationsReject args
+      "assertEvidenceConstructionMode" -> case args of
+        [declaration, modeText]
+          | Just constructionMode <- parseEvidenceConstructionMode modeText ->
+              deriveQuery (EvidenceConstructionModeIs declaration constructionMode)
+        _ -> malformedDerive name
+      "assertEvidenceSemanticIdentityEquals" ->
+        binaryDerive (EvidenceSemanticIdentityComparison True) args
+      "assertEvidenceSemanticIdentityDiffers" ->
+        binaryDerive (EvidenceSemanticIdentityComparison False) args
+      "assertEvidenceArtifactFingerprintEquals" ->
+        binaryDerive (EvidenceArtifactFingerprintComparison True) args
+      "assertEvidenceArtifactFingerprintDiffers" ->
+        binaryDerive (EvidenceArtifactFingerprintComparison False) args
+      "assertFallbackSelected" ->
+        case splitLastWord rest of
+          Just (goal, instanceName) | nonempty goal ->
+            deriveQuery (FallbackSelected goal instanceName)
+          _ -> malformedDerive name
+      "assertFallbackNotSelected"
+        | nonempty rest -> deriveQuery (FallbackNotSelected rest)
+        | otherwise -> malformedDerive name
+      "assertOrdinaryInstanceSelected" ->
+        case splitLastWord rest of
+          Just (goal, instanceName) | nonempty goal ->
+            deriveQuery (OrdinaryInstanceSelected goal instanceName)
+          _ -> malformedDerive name
+      "assertDeriveRecordPresent" -> checkpointQuery DeriveRecordPresent args
+      "assertEvidenceUniquenessRecordPresent" ->
+        checkpointQuery EvidenceUniquenessRecordPresent args
+      "assertFallbackSelectionRecordPresent" ->
+        checkpointQuery FallbackSelectionRecordPresent args
       "assertDiagnosticMatch"
         | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
         | otherwise -> case compileRegex rest of
@@ -748,6 +984,14 @@ parseDirective allLines lno body =
           , subj `elem` traceSubjectNames ->
               unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
         _ -> bad "malformed 'assertStepTraceCount' directive"
+      "assertStepSemanticHashEquals" -> unavailableStepAssertion name args
+      "assertStepSemanticHashDiffers" -> unavailableStepAssertion name args
+      "assertStepInterfaceHashEquals" -> unavailableStepAssertion name args
+      "assertStepInterfaceHashDiffers" -> unavailableStepAssertion name args
+      "assertStepArtifactFingerprintEquals" -> unavailableStepAssertion name args
+      "assertStepArtifactFingerprintDiffers" -> unavailableStepAssertion name args
+      "assertStepEvidenceSemanticIdentityEquals" -> unavailableStepAssertion name args
+      "assertStepEvidenceSemanticIdentityDiffers" -> unavailableStepAssertion name args
       -- compatibility extensions for the external fixture corpus
       "assertDiagnosticCodes" ->
         let codes = map T.strip (T.splitOn "," rest)
@@ -895,6 +1139,31 @@ parseDirective allLines lno body =
           | length args == n && all (\a -> parseNat a /= Nothing) args =
               unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
           | otherwise = bad ("malformed '" <> name <> "' directive")
+        nonempty = not . T.null . T.strip
+        deriveQuery = ok . SAssert . ADeriveQuery
+        malformedDerive directive = bad ("malformed '" <> directive <> "' directive")
+        unaryDerive constructor = \case
+          [subject] -> deriveQuery (constructor subject)
+          _ -> malformedDerive name
+        binaryDerive constructor = \case
+          [left, right] -> deriveQuery (constructor left right)
+          _ -> malformedDerive name
+        deriveProviderAssertion used = \case
+          [declaration, providerText]
+            | Just provider <- parseDeriveProviderKind providerText ->
+                deriveQuery (DeriveProviderUsed used declaration provider)
+          _ -> malformedDerive name
+        checkpointQuery constructor = \case
+          checkpoint : subject
+            | not (null subject) ->
+                ok (SAssert (ADeriveCheckpointQuery (constructor checkpoint (T.unwords subject))))
+          _ -> malformedDerive name
+        unavailableStepAssertion directive = \case
+          [stepA, stepB, _subject]
+            | Just _ <- parseNat stepA
+            , Just _ <- parseNat stepB ->
+                unsup ("'" <> directive <> "' needs capability 'incremental', which is not provided (§T.7)")
+          _ -> bad ("malformed '" <> directive <> "' directive")
 
 parseKindList :: Text -> Maybe [Text]
 parseKindList t =
@@ -1608,13 +1877,17 @@ executeSuite unsafeCfg packageMode label root files mode entries asserts preDiag
           asserts
       let fails = [d | AssertFail d <- results]
           herrs = [d | AssertHarnessError d <- results]
+          unsupported = [d | AssertUnsupported d <- results]
       pure $
         if not (null herrs)
           then TestReport label HarnessError (T.intercalate "; " herrs)
           else
-            if null fails
-              then TestReport label Pass ""
-              else TestReport label Fail (T.intercalate "; " fails)
+            if not (null unsupported)
+              then TestReport label Unsupported (T.intercalate "; " unsupported)
+              else
+                if null fails
+                  then TestReport label Pass ""
+                  else TestReport label Fail (T.intercalate "; " fails)
   where
     doRun cu diags
       | hasErrors diags =
@@ -1694,13 +1967,18 @@ runTimeoutMicros = 30 * 1000 * 1000
 
 -- ── Assertion evaluation ─────────────────────────────────────────────
 
-data AssertResult = AssertOk | AssertFail !Text | AssertHarnessError !Text
+data AssertResult
+  = AssertOk
+  | AssertFail !Text
+  | AssertUnsupported !Text
+  | AssertHarnessError !Text
 
 -- force an 'AssertResult' (and its message) to normal form
 forceResult :: AssertResult -> AssertResult
 forceResult r = case r of
   AssertOk -> r
   AssertFail t -> T.length t `seq` r
+  AssertUnsupported t -> T.length t `seq` r
   AssertHarnessError t -> T.length t `seq` r
 
 assertKCoreRoundTripText :: (Text -> Either KCoreTextError KCoreFile) -> Text -> Text -> AssertResult
@@ -1725,6 +2003,10 @@ checkAssertion ::
 checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
   ANoErrors ->
     countErrorsIs 0
+  ADeriveQuery _ ->
+    pure (AssertUnsupported "derive assertion requires a compiler-published DeriveRecord/evidence/fallback query")
+  ADeriveCheckpointQuery _ ->
+    pure (AssertUnsupported "derive checkpoint assertion requires retained compiler provenance metadata")
   ANoWarnings ->
     countIs "warnings" 0 (length warnings)
   AErrorCount n ->
@@ -2960,8 +3242,23 @@ assertEval cu mmod nm expected =
         let st = cuState cu
             ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
             rendered = renderEvalValue ec v
-         in if rendered == T.strip expected
-              || renderEvalValueWith True ec v == T.strip expected
+            renderedQualified =
+              renderEvalValueWithNames
+                False
+                (qualifiedConstructorName st)
+                ec
+                v
+            expectedText = T.strip expected
+            renderings =
+              [ rendered
+              , renderEvalValueWith True ec v
+              , renderedQualified
+              , renderEvalValueWithNames True (qualifiedConstructorName st) ec v
+              ]
+            agrees rendering =
+              rendering == expectedText
+                || "(" <> rendering <> ")" == expectedText
+         in if any agrees renderings
               then AssertOk
               else
                 AssertFail
@@ -3037,7 +3334,26 @@ renderEvalValue = renderEvalValueWith False
 -- argument position (the external corpus' formatter writes
 -- @Some 1 :: Nil@ for @Some (1 :: Nil)@).
 renderEvalValueWith :: Bool -> EvalCtx -> Value -> Text
-renderEvalValueWith looseCons ec = go (32 :: Int) RTop
+renderEvalValueWith looseCons = renderEvalValueWithNames looseCons gnameText
+
+-- | Render a constructor through its authenticated nominal owner when an
+-- assertion uses a qualified spelling such as @Option.Some@.  The harness
+-- still accepts the established unqualified rendering; this additional form
+-- prevents a semantically resolved constructor from failing a text-only
+-- assertion merely because the fixture retained its type qualifier.
+qualifiedConstructorName :: CheckState -> GName -> Text
+qualifiedConstructorName state constructor =
+  case Map.lookup constructor (csCtors state) of
+    Just info -> gnameText (ciData info) <> "." <> gnameText constructor
+    Nothing -> gnameText constructor
+
+renderEvalValueWithNames
+  :: Bool
+  -> (GName -> Text)
+  -> EvalCtx
+  -> Value
+  -> Text
+renderEvalValueWithNames looseCons constructorName ec = go (32 :: Int) RTop
   where
     go :: Int -> RenderPos -> Value -> Text
     go 0 _ _ = "…"
@@ -3053,14 +3369,14 @@ renderEvalValueWith looseCons ec = go (32 :: Int) RTop
       VLit (LitScalar c) -> tshow c
       VCtor (GName _ "Unit") [] -> "()"
       VRecordV [] -> "()"
-      VCtor g [] -> gnameText g
+      VCtor g [] -> constructorName g
       -- list cells render infix: 1 :: 2 :: Nil, parenthesized when an
       -- application argument or a left operand (precedence-aware)
       VCtor (GName _ "::") [h, t] ->
         parenIf (not looseCons && pos /= RTop) (go (fuel - 1) ROpLeft h <> " :: " <> go (fuel - 1) RTop t)
       VCtor g args ->
         -- constructor applications need parens only in argument position
-        parenIf (pos == RArg) (T.unwords (gnameText g : map (go (fuel - 1) RArg) args))
+        parenIf (pos == RArg) (T.unwords (constructorName g : map (go (fuel - 1) RArg) args))
       VRecordV fs ->
         "(" <> T.intercalate ", " [n <> " = " <> go (fuel - 1) RTop x | (n, x) <- fs] <> ")"
       VInject _ x -> go (fuel - 1) pos x
@@ -3547,7 +3863,7 @@ assertTraitMembers path src tn expected =
       case [td | DTrait _ td _ <- modDecls m, nameText (trName td) == tn] of
         [] -> AssertFail ("x-assertTraitMembers: no trait '" <> tn <> "' in this file")
         (td : _) ->
-          let actual = dedupe [n | Just n <- map memberName (trMembers td)]
+          let actual = dedupe [nameText n | Just n <- map traitMemberName (trMembers td)]
            in if actual == expected
                 then AssertOk
                 else
@@ -3557,9 +3873,6 @@ assertTraitMembers path src tn expected =
                         <> "], expected [" <> T.intercalate ", " expected <> "]"
                     )
   where
-    memberName = \case
-      TraitSig n _ _ -> Just (nameText n)
-      TraitDefault ld _ -> nameText <$> ldName ld
     dedupe = foldr (\x acc -> x : filter (/= x) acc) []
 
 -- | Decl descriptor rendering for @x-assertDeclDescriptors@: explicit

@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Kappa.SemanticHash
   ( sha256Hex
   , canonicalIdentityHex
@@ -12,8 +14,11 @@ import Data.Bits
   , (.&.)
   , (.|.)
   )
+import Control.Monad (forM_)
+import Control.Monad.ST (ST, runST)
+import Data.Array.ST (STUArray, newArray, readArray, writeArray)
+import Data.Array.Unboxed (UArray, (!), listArray)
 import qualified Data.ByteString as BS
-import Data.List (foldl')
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -24,7 +29,7 @@ import Numeric (showHex)
 -- that decide equality must retain and compare the canonical identity bytes.
 sha256Hex :: Text -> Text
 sha256Hex =
-  T.concat . map word32Hex . sha256Words . TE.encodeUtf8
+  renderHash . sha256State . TE.encodeUtf8
 
 -- | Lossless hexadecimal serialization of a domain-separated UTF-8 identity.
 -- Unlike a digest this is injective and is therefore suitable as authority
@@ -36,54 +41,78 @@ canonicalIdentityHex domain payload =
     | byte <- BS.unpack (TE.encodeUtf8 ("KAPPA:v1:" <> domain <> "\0" <> payload))
     ]
 
-sha256Words :: BS.ByteString -> [Word32]
-sha256Words input =
-  foldl' compress initialHash (chunksOf 64 (pad input))
+type HashState =
+  (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
 
-pad :: BS.ByteString -> [Word8]
+sha256State :: BS.ByteString -> HashState
+sha256State input = go initialHash 0
+  where
+    bytes = pad input
+    byteCount = BS.length bytes
+    go !state !offset
+      | offset >= byteCount = state
+      | otherwise = go (compress bytes offset state) (offset + 64)
+
+pad :: BS.ByteString -> BS.ByteString
 pad bytes =
-  BS.unpack bytes
-    ++ [0x80]
-    ++ replicate zeroCount 0
-    ++ word64Bytes bitLength
+  BS.concat
+    [ bytes
+    , BS.singleton 0x80
+    , BS.replicate zeroCount 0
+    , BS.pack (word64Bytes bitLength)
+    ]
   where
     bitLength = fromIntegral (BS.length bytes) * 8 :: Word64
     zeroCount = (56 - ((BS.length bytes + 1) `mod` 64)) `mod` 64
 
-compress :: [Word32] -> [Word8] -> [Word32]
-compress state block =
-  zipWith (+) state [a, b, c, d, e, f, g, h]
+compress :: BS.ByteString -> Int -> HashState -> HashState
+compress bytes blockOffset initial@(h0, h1, h2, h3, h4, h5, h6, h7) =
+  addState initial final
   where
-    schedule0 = map word32FromBytes (chunksOf 4 block)
-    schedule = extendSchedule schedule0 16
-    [a, b, c, d, e, f, g, h] =
-      foldl' roundStep state (zip roundConstants schedule)
+    final = runST $ do
+      schedule <- buildSchedule bytes blockOffset
+      let rounds !index !state
+            | index >= 64 = pure state
+            | otherwise = do
+                word <- readArray schedule index
+                rounds (index + 1) (roundStep state (roundConstants ! index) word)
+      rounds 0 (h0, h1, h2, h3, h4, h5, h6, h7)
 
-    roundStep [a0, b0, c0, d0, e0, f0, g0, h0] (constant, word) =
-      [ temp1 + temp2
-      , a0
-      , b0
-      , c0
-      , d0 + temp1
-      , e0
-      , f0
-      , g0
-      ]
-      where
-        temp1 = h0 + bigSigma1 e0 + choose e0 f0 g0 + constant + word
-        temp2 = bigSigma0 a0 + majority a0 b0 c0
-    roundStep _ _ = error "sha256: invalid compression state"
+buildSchedule :: BS.ByteString -> Int -> ST s (STUArray s Int Word32)
+buildSchedule bytes blockOffset = do
+  schedule <- newArray (0, 63) 0
+  forM_ [0 .. 15] $ \index ->
+    writeArray schedule index
+      (word32FromBytesAt bytes (blockOffset + index * 4))
+  forM_ [16 .. 63] $ \index -> do
+    word2 <- readArray schedule (index - 2)
+    word7 <- readArray schedule (index - 7)
+    word15 <- readArray schedule (index - 15)
+    word16 <- readArray schedule (index - 16)
+    writeArray schedule index
+      (smallSigma1 word2 + word7 + smallSigma0 word15 + word16)
+  pure schedule
 
-extendSchedule :: [Word32] -> Int -> [Word32]
-extendSchedule words0 index
-  | index >= 64 = words0
-  | otherwise =
-      let next =
-            smallSigma1 (words0 !! (index - 2))
-              + words0 !! (index - 7)
-              + smallSigma0 (words0 !! (index - 15))
-              + words0 !! (index - 16)
-       in extendSchedule (words0 ++ [next]) (index + 1)
+roundStep :: HashState -> Word32 -> Word32 -> HashState
+roundStep (!a, !b, !c, !d, !e, !f, !g, !h) !constant !word =
+  (temp1 + temp2, a, b, c, d + temp1, e, f, g)
+  where
+    temp1 = h + bigSigma1 e + choose e f g + constant + word
+    temp2 = bigSigma0 a + majority a b c
+
+addState :: HashState -> HashState -> HashState
+addState
+  (!a0, !b0, !c0, !d0, !e0, !f0, !g0, !h0)
+  (!a1, !b1, !c1, !d1, !e1, !f1, !g1, !h1) =
+    ( a0 + a1
+    , b0 + b1
+    , c0 + c1
+    , d0 + d1
+    , e0 + e1
+    , f0 + f1
+    , g0 + g1
+    , h0 + h1
+    )
 
 choose, majority :: Word32 -> Word32 -> Word32 -> Word32
 choose x y z = (x .&. y) `xor` (complement x .&. z)
@@ -95,13 +124,17 @@ bigSigma1 x = rotateR x 6 `xor` rotateR x 11 `xor` rotateR x 25
 smallSigma0 x = rotateR x 7 `xor` rotateR x 18 `xor` shiftR x 3
 smallSigma1 x = rotateR x 17 `xor` rotateR x 19 `xor` shiftR x 10
 
-word32FromBytes :: [Word8] -> Word32
-word32FromBytes [a, b, c, d] =
+word32FromBytesAt :: BS.ByteString -> Int -> Word32
+word32FromBytesAt bytes offset =
   shiftL (fromIntegral a) 24
     .|. shiftL (fromIntegral b) 16
     .|. shiftL (fromIntegral c) 8
     .|. fromIntegral d
-word32FromBytes _ = error "sha256: invalid word"
+  where
+    a = BS.index bytes offset
+    b = BS.index bytes (offset + 1)
+    c = BS.index bytes (offset + 2)
+    d = BS.index bytes (offset + 3)
 
 word64Bytes :: Word64 -> [Word8]
 word64Bytes word =
@@ -119,15 +152,13 @@ byteHex byte = T.pack (replicate (2 - length digits) '0' ++ digits)
   where
     digits = showHex byte ""
 
-chunksOf :: Int -> [a] -> [[a]]
-chunksOf _ [] = []
-chunksOf size values =
-  let (chunk, rest) = splitAt size values
-   in chunk : chunksOf size rest
+renderHash :: HashState -> Text
+renderHash (a, b, c, d, e, f, g, h) =
+  T.concat (map word32Hex [a, b, c, d, e, f, g, h])
 
-initialHash :: [Word32]
+initialHash :: HashState
 initialHash =
-  [ 0x6a09e667
+  ( 0x6a09e667
   , 0xbb67ae85
   , 0x3c6ef372
   , 0xa54ff53a
@@ -135,10 +166,11 @@ initialHash =
   , 0x9b05688c
   , 0x1f83d9ab
   , 0x5be0cd19
-  ]
+  )
 
-roundConstants :: [Word32]
+roundConstants :: UArray Int Word32
 roundConstants =
+  listArray (0, 63)
   [ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5
   , 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5
   , 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3

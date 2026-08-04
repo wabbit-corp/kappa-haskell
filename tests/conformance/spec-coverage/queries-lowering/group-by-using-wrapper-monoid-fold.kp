@@ -13,10 +13,8 @@ module main
 data Tally : Type =
     MkTally (entries : List Int)
 
-instance Pointed Tally =
-    let empty = MkTally Nil
-
 instance Monoid Tally =
+    let empty = MkTally Nil
     let append x y =
         match x
         case MkTally a ->

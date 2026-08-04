@@ -7,7 +7,7 @@ data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
-    let pureA x = MkWrap (pureIO x)
+    let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkWrap ioa ->
@@ -34,7 +34,7 @@ let countToThree = do
     var x = 0
     while ltInt x 3 do
         x = addInt x 1
-    pureA x
+    pure x
 
 main : UIO Int
 let main =

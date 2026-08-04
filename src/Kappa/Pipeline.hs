@@ -1197,9 +1197,9 @@ moduleExportNames m =
         | vis mods ->
             nameText (trName td)
               : nub
-                  ( [nameText mn | TraitSig mn _ _ <- trMembers td]
-                      ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _ _) _ <- trMembers td]
-                  )
+                  [ nameText mn
+                  | Just mn <- map traitMemberName (trMembers td)
+                  ]
       DExpect mods form _ -> [nameText (expectName form) | vis mods]
       -- §8.4 re-exports: `export M.(x [as y], ...)` exports the items
       -- under their (aliased) spellings

@@ -1,0 +1,11 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- §21.6 convenience execution is selected by resolved identity, but it must
+-- not erase ordinary source typing. This false ascription is rejected before
+-- the query can run.
+module main
+
+bad : Syntax Type
+let bad =
+    (typeOfSyntax : Int -> Int) '{ 42 }

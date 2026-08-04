@@ -1,0 +1,26 @@
+-- Spec 11.4.1 / 17.1.2: constructor-result refinement is structural.
+-- A user-defined reflexive equality family must refine neutral implicit
+-- applications exactly like the standard (=)/refl declaration.
+module main
+
+data Equal.{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+    Refl : Equal x x
+
+implicitHapply :
+    forall (A : Type)
+           (parametric 0 B : A -> Type)
+           (f : forall (x : A). B x)
+           (g : forall (x : A). B x).
+    Equal f g ->
+    forall (x : A). Equal (f @x) (g @x)
+let implicitHapply equality x =
+    match equality
+    case Refl -> Refl
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

@@ -9,7 +9,7 @@ module main
 -- `instance IsSet String`) and `List a` (its laws PROVEN by honest structural
 -- induction, element-agnostic).  The effect carriers `IO e a` / `STM a` are NOT
 -- `Monoid`s — their equality is not an h-prop, so the laws cannot be asserted;
--- they carry the law-less `Pointed` trait instead (see
+-- effectful choice belongs to `Alternative STM`, not to `Monoid` (see
 -- lawful-monoid-effect-carrier-lawless.kp).
 
 -- The set carriers resolve the (lawful) `Monoid`:

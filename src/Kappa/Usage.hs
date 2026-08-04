@@ -3312,6 +3312,9 @@ walkERaw env e0 = case e0 of
   EKindQualified {} -> pure rNone
   EModuleSig {} -> pure rNone
   EQuotedLit {} -> pure rNone
+  EDerive _ sp -> case Map.lookup sp (eExpansions env) of
+    Just expansion -> walkE env expansion
+    Nothing -> pure rNone
   EReceiverSection _ args sp -> do
     rs <- mapM (walkE env) [e | ArgExplicit e <- args]
     let (u, t) = foldr (\r (au, at) -> let (u', t') = flatR r in (u' `seqU` au, firstJust (catMaybes [t', at]))) (Map.empty, Nothing) rs
@@ -5041,6 +5044,7 @@ multishotOpsInExecutedExpr env = go
       ESplice e _ -> go e
       ESpliceInQuote {} -> []
       EQuoteHole {} -> []
+      EDerive goal _ -> maybe [] go goal
       EImpossible {} -> []
       EKindQualified {} -> []
       EModuleSig {} -> []

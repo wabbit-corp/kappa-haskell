@@ -1,10 +1,24 @@
--- §11.1.2.2: all operation evidence at TypeLevel is compiler-owned. Source
--- instances are rejected by resolved trait/type identity, independently of
--- method bodies or duplicate-instance ordering.
+-- Retargeted from tests/conformance/universes/typelevel-source-instances-rejected.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- Diagnostic changed: duplicate TypeLevel operation instances are rejected by
+-- ordinary instance coherence (§33.2.1, §28.2), not E_UNIVERSE_LEVEL_EXPRESSION.
+--
+-- §28.2: the standard TypeLevel operation instances (defined by §11.1.2.2)
+-- "remain actual source-visible instances rather than intrinsic-only
+-- evidence", and additional source instances for Eq/Preorder/PartialOrder/Ord
+-- TypeLevel and for FromInteger/Zero/One/Successor/Add/Max TypeLevel "are
+-- rejected by ordinary instance coherence". §11.1.1 reserves
+-- E_UNIVERSE_LEVEL_EXPRESSION for ill-typed, unstable, non-total, ill-scoped,
+-- meta-bearing, or otherwise unrepresentable level terms; every level term
+-- below is well-formed. None of the eight candidates is semantically identical
+-- to its standard artifact (§33.2.1 compares instantiated evidence artifacts:
+-- the literal bodies of Zero/One elaborate through typeLevelFromInteger,
+-- distinct from the standard typeLevelZero/typeLevelOne, and the other six
+-- have observably different bodies), so each duplicate head is one
+-- incoherent-overlap error, independently of duplicate-instance ordering.
 --! mode check
 --! assertErrorCount 8
---! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
---! assertDiagnosticFamily error kappa.universe.level-expression
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+--! assertDiagnosticFamily error kappa-hs.trait.incoherent
 
 instance Zero TypeLevel =
     let zero = 0
@@ -28,5 +42,7 @@ instance Eq TypeLevel =
     let (==) u v = True
 
 instance Ord TypeLevel =
-    let compare u v = Equal
+    let compare u v = EQ
+
+-- STATUS(3014a0d9): FAIL — E_INSTANCE_INCOHERENT
 

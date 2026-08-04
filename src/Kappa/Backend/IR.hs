@@ -817,18 +817,23 @@ validateObservationModeFlows st =
                   <|> (fst <$> nominalHiddenProjectionInfo st ctx 1 (CVar 0) receiverType field)
               _ ->
                 fst <$> nominalHiddenProjectionInfo st ctx 1 (CVar 0) receiverType field
-        , ooProjectionType = \depth receiverType field ->
+        , ooProjectionType = \depth receiver receiverType field ->
             case force ctx receiverType of
               VGlobI trait universes spine -> do
                 ( do
                     info <- Map.lookup trait (csTraits st)
                     guard (field `elem` tiMembers info)
-                    traitMemberType globals ctx (depth + 1) []
-                      (tiParamCount info) trait universes field (map snd spine) (CVar 0)
+                    case receiver of
+                      CRecordV _ ->
+                        traitMemberStorageType globals ctx depth
+                          (tiParamCount info) trait universes field (map snd spine) receiver
+                      _ ->
+                        traitMemberType globals ctx depth []
+                          (tiParamCount info) trait universes field (map snd spine) receiver
                   )
-                  <|> (snd <$> nominalHiddenProjectionInfo st ctx (depth + 1) (CVar 0) receiverType field)
+                  <|> (snd <$> nominalHiddenProjectionInfo st ctx depth receiver receiverType field)
               _ ->
-                snd <$> nominalHiddenProjectionInfo st ctx (depth + 1) (CVar 0) receiverType field
+                snd <$> nominalHiddenProjectionInfo st ctx depth receiver receiverType field
         , ooProjectionTrait = \receiverType field ->
             case force ctx receiverType of
               VGlobN trait _ -> do
@@ -1024,18 +1029,20 @@ validateObservationModeFlows st =
       _ -> Nothing
 
     checkApplication owner depth scopes modes _expected app =
-      case coreEtaCtorApp app of
-        Just (constructor, universes, annotation, _arity, arguments) ->
-          constructorChecks owner depth scopes modes constructor universes annotation False arguments
-        Nothing ->
-          let (headTerm, args) = spineOfTerm app
-           in case headTerm of
-                CLamM {} -> walkLambda headTerm (0 :: Int) args
-                _ ->
-                  checkTerm owner depth scopes modes Nothing headTerm
-                    ++ case termTypeAt globals (csTraits st) ctx depth scopes headTerm of
-                      Nothing -> concatMap (checkTerm owner depth scopes modes Nothing . snd) args
-                      Just headTy -> walk headTerm (0 :: Int) headTy args
+      case betaReduceLiteralProjectionApplication depth app of
+        Just reduced -> checkTerm owner depth scopes modes _expected reduced
+        Nothing -> case coreEtaCtorApp depth app of
+          Just (constructor, universes, annotation, _arity, arguments) ->
+            constructorChecks owner depth scopes modes constructor universes annotation False arguments
+          Nothing ->
+            let (headTerm, args) = spineOfTerm app
+             in case headTerm of
+                  CLamM {} -> walkLambda headTerm (0 :: Int) args
+                  _ ->
+                    checkTerm owner depth scopes modes Nothing headTerm
+                      ++ case termTypeAt globals (csTraits st) ctx depth scopes headTerm of
+                        Nothing -> concatMap (checkTerm owner depth scopes modes Nothing . snd) args
+                        Just headTy -> walk headTerm (0 :: Int) headTy args
       where
         walkLambda reduced _ [] =
           checkTerm owner depth scopes modes _expected reduced
@@ -1098,17 +1105,28 @@ validateObservationModeFlows st =
         ]
       Just (VGlobI traitG universes spine)
         | Just trait <- Map.lookup traitG (csTraits st) ->
-            let traitArguments = take (tiParamCount trait) spine
+            let dictionaryTerm = CRecordV fields
+                arguments = map snd spine
+                traitArguments = take (tiParamCount trait) spine
                 permitted =
                   traitParametricDependencies scopes modes depth traitG universes traitArguments
-             in concatMap (traitFieldCheck permitted trait) fields
+             in concatMap
+                  (traitFieldCheck traitG universes dictionaryTerm arguments permitted trait)
+                  fields
       _ -> []
       where
-        traitFieldCheck permitted trait (name, value)
+        traitFieldCheck traitG universes dictionaryTerm arguments permitted trait (name, value)
           | name `notElem` tiMembers trait = []
           | Just memberMode <- Map.lookup name (tiMemberModes trait) =
-              let dependencies = termDependencies scopes modes Nothing value
-                  unjustified = dependencies `Set.difference` permitted
+              let memberExpected =
+                    traitMemberStorageType globals ctx depth
+                      (tiParamCount trait) traitG universes name arguments dictionaryTerm
+                  dependencies = termDependencies scopes modes memberExpected value
+                  relative =
+                    maybe dependencies
+                      (\classifier -> relativeDependencies scopes modes depth classifier dependencies)
+                      memberExpected
+                  unjustified = relative `Set.difference` permitted
                in [ promotionWithDependencies owner ("trait dictionary field '" <> name <> "'") unjustified
                   | memberMode == Ordinary
                   , not (Set.null unjustified)
@@ -1132,16 +1150,7 @@ validateObservationModeFlows st =
                     [ let memberExpected =
                             traitMemberStorageType globals ctx depth
                               (tiParamCount trait) traitG universes name arguments dictionaryTerm
-                          permitted =
-                            traitParametricDependencies scopes modes depth traitG universes
-                              (take (tiParamCount trait) spine)
-                          dependencies = termDependencies scopes modes Nothing value
-                          parentOwnsPromotion =
-                            Map.lookup name (tiMemberModes trait) == Just Ordinary
-                              && not (Set.null (dependencies `Set.difference` permitted))
-                       in checkTerm owner depth scopes modes
-                            (if parentOwnsPromotion then Nothing else memberExpected)
-                            value
+                       in checkTerm owner depth scopes modes memberExpected value
                     | (name, value) <- fields
                     ]
         _ -> concatMap (checkTerm owner depth scopes modes Nothing . snd) fields
@@ -1246,11 +1255,8 @@ validateObservationModeFlows st =
             observationDependencies observationOracle
               (observationBindings scopes modes) Nothing
               (quote ctx currentDepth classifier)
-          relative =
-            classifierRelativeDependencies observationOracle
-              (observationBindings scopes modes) currentDepth classifier dependencies
           unjustified =
-            evidenceRelativeCallableDependencies ctx currentDepth classifier relative
+            relativeDependencies scopes modes currentDepth classifier dependencies
        in [ BackendIRViolation owner (BackendNodeId (-1)) "E_PARAMETRIC_TYPE_PROMOTION"
               ("finalized typed Core passes a parametric witness to ordinary " <> site)
               [ ("dependencies", T.pack (show (Set.toAscList unjustified)))
@@ -1260,6 +1266,12 @@ validateObservationModeFlows st =
           | demanded == Ordinary
           , not (Set.null unjustified)
           ]
+
+    relativeDependencies scopes modes currentDepth classifier dependencies =
+      let relative =
+            classifierRelativeDependencies observationOracle
+              (observationBindings scopes modes) currentDepth classifier dependencies
+       in evidenceRelativeCallableDependencies ctx currentDepth classifier relative
 
     checkAlt owner depth scopes modes expectedMode expectedType (CaseAlt pat guard body) =
       let patSites = reverse (patternSites depth expectedType pat)
@@ -3787,7 +3799,24 @@ lowerTermExpected expected term depth scopes = case term of
             "a universe-polymorphic local recursive member was referenced without an explicit universe instantiation"
         lowerRuntimeLocalAlias meta scopes alias
       ScopeSlot (Just _) _ _ : _ -> pure (BVar meta Nothing runtimeIdx)
-      ScopeSlot Nothing _ _ : _ -> erasedRuntimeAt meta "erased variable occurrence reached a runtime BackendIR value position"
+      ScopeSlot Nothing classifier _ : _ -> do
+        ctx <- asks lsCtx
+        let classifierDetail = case classifier of
+              Nothing -> ""
+              Just value ->
+                "; classifier " <> renderTerm (quote ctx depth value)
+        erasedRuntimeAt meta
+          ( "erased variable occurrence reached a runtime BackendIR value position"
+              <> " (de Bruijn index " <> T.pack (show i)
+              <> "; scope erasure mask "
+              <> T.pack
+                   [ case slot of
+                       ScopeSlot (Just _) _ _ -> 'R'
+                       ScopeSlot Nothing _ _ -> 'E'
+                   | slot <- scopes
+                   ]
+              <> classifierDetail <> ")"
+          )
       _ -> erasedRuntimeAt meta "out-of-scope variable occurrence reached a runtime BackendIR value position"
   CLocal i universes -> do
     meta <- metaAt
@@ -3847,7 +3876,12 @@ lowerTermExpected expected term depth scopes = case term of
   CArithmeticProof _ -> BUnit <$> metaAt
   CSort {} -> metaAt >>= \meta -> erasedRuntimeAt meta "sort/type term reached a runtime BackendIR value position"
   CLevel {} -> metaAt >>= \meta -> erasedRuntimeAt meta "declaration universe identity reached a runtime BackendIR value position"
-  CPiEvidenceM {} -> metaAt >>= \meta -> erasedRuntimeAt meta "function type reached a runtime BackendIR value position"
+  CPiEvidenceM {} ->
+    metaAt >>= \meta ->
+      erasedRuntimeAt meta
+        ( "function type reached a runtime BackendIR value position: "
+            <> renderTerm term
+        )
   CRecordTQ {} -> metaAt >>= \meta -> erasedRuntimeAt meta "record type reached a runtime BackendIR value position"
   CVariantT {} -> metaAt >>= \meta -> erasedRuntimeAt meta "variant type reached a runtime BackendIR value position"
   CSigT {} -> metaAt >>= \meta -> erasedRuntimeAt meta "signature type reached a runtime BackendIR value position"
@@ -4068,7 +4102,7 @@ lowerApp expected term depth scopes = do
   ctx <- asks lsCtx
   case selectedBuiltinIntegerLiteral builtinIntegerLiteralDicts term of
     Just literal -> pure (BLit meta (LitInt literal))
-    Nothing -> case coreEtaCtorApp term of
+    Nothing -> case coreEtaCtorApp depth term of
       Just (g, _universes, ann, _k, picks) -> do
         lowerCtorTerm meta g ann
           [caTerm argument | (_, argument) <- picks, caPayload argument]
@@ -4084,9 +4118,9 @@ lowerApp expected term depth scopes = do
               _ ->
                 termTypeAt globals traits ctx depth scopes hd >>= \ty ->
                   Repr.argPlanSelectForArgsAt ctx depth ty actualIcs
-            flags = case hd of
-              CGlob g -> Repr.erasedSpinePositionsForArgs globals ctx g actualIcs
-              _ -> maybe (replicate k False) (map fst) localPlan
+            flags =
+              applicationErasureFlags
+                globals traits ctx depth scopes hd args localPlan
             convs = case hd of
               CGlob g -> fromMaybe (replicate k Nothing) (Repr.argConvSelectGlobalForArgs ctx g actualIcs)
               _ -> maybe (replicate k Nothing) (map snd) localPlan
@@ -4448,12 +4482,47 @@ sourceArgErased globals ctx = \case
   CSigT {} -> True
   CMeta {} -> True
   CQuote {} -> True
+  CUniverseLift _ _ _ inner -> sourceArgErased globals ctx inner
+  CSchemaLift _ _ _ _ _ _ _ _ inner -> sourceArgErased globals ctx inner
   CSealE _ e -> sourceArgErased globals ctx e
   CApp _ f _ -> sourceArgErased globals ctx f
   CGlob g ->
     Repr.resultIsProofGlobal globals ctx g
       || maybe False (typeKindValue ctx 0 . gdType) (Map.lookup g globals)
   _ -> False
+
+-- | Runtime erasure for an application argument has two independent checked
+-- authorities.  The callee telescope proves which parameter positions are
+-- erased; the argument term itself can prove that it is a type, kind, erased
+-- local, or proof value.  Trait-member projections and other dependent heads
+-- can temporarily lack a reconstructible telescope during final lowering, so
+-- defaulting solely from that missing plan would reintroduce static terms at
+-- runtime.  The term judgment is one-way and conservative: it can erase a
+-- statically classified argument, but it never turns an ordinary argument
+-- into an erased one based on spelling.
+applicationErasureFlags
+  :: Map GName GlobalDef
+  -> Map GName TraitInfo
+  -> EvalCtx
+  -> Int
+  -> ScopeStack
+  -> Term
+  -> [(Icit, Term)]
+  -> Maybe [(Bool, Maybe ArgConv)]
+  -> [Bool]
+applicationErasureFlags globals traits ctx depth scopes headTerm arguments localPlan =
+  zipWith (||) telescopeFlags termFlags
+  where
+    actualIcs = map fst arguments
+    telescopeFlags = case headTerm of
+      CGlob global ->
+        Repr.erasedSpinePositionsForArgs globals ctx global actualIcs
+          ++ repeat False
+      _ -> maybe (repeat False) ((++ repeat False) . map fst) localPlan
+    termFlags =
+      map
+        (sourceTermErased globals traits ctx depth scopes . snd)
+        arguments
 
 sourceTermErased :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> Bool
 sourceTermErased globals traits ctx depth scopes = \case
@@ -4463,6 +4532,10 @@ sourceTermErased globals traits ctx depth scopes = \case
   CLocal i _ -> case drop i scopes of
     ScopeSlot Nothing _ _ : _ -> True
     _ -> False
+  CUniverseLift _ _ _ inner ->
+    sourceTermErased globals traits ctx depth scopes inner
+  CSchemaLift _ _ _ _ _ _ _ _ inner ->
+    sourceTermErased globals traits ctx depth scopes inner
   CSealE _ e -> sourceTermErased globals traits ctx depth scopes e
   CLam _ q _ body ->
     let mb = if q == Q0 then Nothing else Just (BackendBinderId (-1))
@@ -4497,16 +4570,15 @@ sourceProofApplicationErased globals traits ctx depth scopes term =
   case termTypeAt globals traits ctx depth scopes term of
     Just ty | Repr.resultIsProofBodyValue ctx depth ty || sourceProofHeadErased hd ->
       let (headTerm, args) = spineOfTerm term
-          k = length args
           actualIcs = map fst args
           localPlan = case headTerm of
             CGlob {} -> Nothing
             _ ->
               termTypeAt globals traits ctx depth scopes headTerm >>= \tyH ->
                 Repr.argPlanSelectForArgsAt ctx depth tyH actualIcs
-          flags = case headTerm of
-            CGlob g -> Repr.erasedSpinePositionsForArgs globals ctx g actualIcs
-            _ -> maybe (replicate k False) (map fst) localPlan
+          flags =
+            applicationErasureFlags
+              globals traits ctx depth scopes headTerm args localPlan
           runtimeArgs =
             [ a
             | ((_, a), erased) <- zip args (flags ++ repeat False)
@@ -4582,7 +4654,7 @@ termTypeAt :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> Sc
 termTypeAt globals traits ctx depth scopes = go
   where
     go term
-      | Just (_, _, Just constructorType, _, pickedArguments) <- coreEtaCtorApp term =
+      | Just (_, _, Just constructorType, _, pickedArguments) <- coreEtaCtorApp depth term =
           applyArgs
             (evalTypeAt ctx depth constructorType)
             [(caIcit argument, caTerm argument) | (_, argument) <- pickedArguments]
@@ -4869,8 +4941,8 @@ schemaLiftInstanceErrors ctx depth assumptions endpoint family recordedLevels re
       CSchemaLift _ _ _ _ _ _ _ _ inner -> stripIdentity inner
       term -> term
 
-coreEtaCtorApp :: Term -> Maybe (GName, [Level], Maybe Term, Int, [(Int, ConstructorArg)])
-coreEtaCtorApp term =
+coreEtaCtorApp :: Int -> Term -> Maybe (GName, [Level], Maybe Term, Int, [(Int, ConstructorArg)])
+coreEtaCtorApp depth term =
   case spineOfTerm term of
     (hd, sargs)
       | (binders, body) <- coreFuncBinders hd
@@ -4879,7 +4951,7 @@ coreEtaCtorApp term =
       , k >= 1
       , supplied <= k
       , all ((== Q0) . snd) (drop supplied binders) ->
-          case betaReduceEtaHead hd sargs of
+          case betaReduceAppliedHeadAt depth hd sargs of
             Just (CCtorI g universes ann constructorArgs)
               | supplied == k ->
                   Just
@@ -4896,14 +4968,6 @@ coreEtaCtorApp term =
             _ -> Nothing
     _ -> Nothing
   where
-    betaReduceEtaHead = go
-      where
-        go function [] = Just function
-        go (CLamM _ expectedIcit _ _ body) ((actualIcit, argument) : rest)
-          | expectedIcit == actualIcit =
-              go (substTopTermAt 0 argument body) rest
-        go _ _ = Nothing
-
     pick args k (argumentIndex, argument) = case caTerm argument of
       CVar j
         | j >= 0
@@ -4913,6 +4977,30 @@ coreEtaCtorApp term =
             Just [(argumentIndex, argument {caTerm = args !! binderIndex})]
         | not (caPayload argument) -> Just []
       _ -> Nothing
+
+-- | Reduce an application whose head is a selected field of a concrete
+-- record literal. This is the backend validator's counterpart of the
+-- observation calculus's projection/beta equation: the selected field is the
+-- only evaluated value, and the finite syntactic reduction cannot cross an
+-- opacity or recursion boundary.
+betaReduceLiteralProjectionApplication :: Int -> Term -> Maybe Term
+betaReduceLiteralProjectionApplication depth application = do
+  let (headTerm, arguments) = spineOfTerm application
+  selected <- case headTerm of
+    CProjM _ (CRecordV fields) field -> lookup field fields
+    CProjAtM _ (CRecordV fields) field index -> do
+      (storedField, value) <- indexMaybeLocal index fields
+      guard (storedField == field)
+      pure value
+    _ -> Nothing
+  betaReduceAppliedHeadAt depth selected arguments
+
+betaReduceAppliedHeadAt :: Int -> Term -> [(Icit, Term)] -> Maybe Term
+betaReduceAppliedHeadAt _ function [] = Just function
+betaReduceAppliedHeadAt depth (CLamM _ expectedIcit _ _ body) ((actualIcit, argument) : rest)
+  | expectedIcit == actualIcit =
+      betaReduceAppliedHeadAt depth (substTopTermAt depth argument body) rest
+betaReduceAppliedHeadAt _ _ _ = Nothing
 
 coreFuncBinders :: Term -> ([(Icit, Q)], Term)
 coreFuncBinders = go []

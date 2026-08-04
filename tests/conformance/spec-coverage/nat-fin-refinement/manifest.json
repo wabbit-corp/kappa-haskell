@@ -8,7 +8,7 @@
   "sourceAppendixSha256": "05a13050cafc77360a2acfb79fb74eac46c9037e1a20067ec2b042ffe4be9b13",
   "sourcePseudotests": "docs/Kappa-Nat-Fin-Refinement-Patch-Bundle/Additional-Backend-and-Certificate-Pseudotests.md",
   "sourcePseudotestsSha256": "76f676e6c6ae0b7b39e0151b0242143f7b0d9fef1b8494e29ae4061c49a21ff0",
-  "suiteCount": 103,
+  "suiteCount": 104,
   "suites": [
     {
       "path": "analysis/erased-impossible-field-empty",
@@ -331,9 +331,9 @@
       "provenance": "post-import addition (2026-07-26 catalog-gap and verdict-application pass)"
     },
     {
-      "path": "negative/derive-isset-function-field",
-      "category": "negative",
-      "expectedOutcome": "reject",
+      "path": "positive/derive-isset-function-field",
+      "category": "positive",
+      "expectedOutcome": "accept",
       "currentStatus": "active",
       "ownerStage": "NFR-2",
       "appendixSections": [
@@ -343,7 +343,22 @@
       "files": [
         "main.kp"
       ],
-      "description": "Derived IsSet rejects an unsupported function field without exact field evidence."
+      "description": "Function extensionality and pointwise IsSet closure permit structural IsSet derivation through an ordinary function field."
+    },
+    {
+      "path": "positive/handwritten-eq-missing-laws",
+      "category": "positive",
+      "expectedOutcome": "accept",
+      "currentStatus": "active",
+      "ownerStage": "NFR-2",
+      "appendixSections": [
+        "T.12.2"
+      ],
+      "capabilities": [],
+      "files": [
+        "main.kp"
+      ],
+      "description": "A lawful handwritten comparator may omit synthesized Eq reflection laws and reuse explicit IsSet evidence under unified derive completion."
     },
     {
       "path": "negative/eq-reflection-equiv-boundary",

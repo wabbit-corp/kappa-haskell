@@ -1,0 +1,34 @@
+-- Retargeted from tests/conformance/spec-coverage/nat-fin-refinement/negative/handwritten-eq-missing-laws/main.kp (an uncommitted working-tree addition; unified derive / canonical evidence revision, 2026-08-02).
+-- Flips to accept: eqSound/eqComplete are now `derive` synthesized members
+-- (§14.1, §14.2) and IsSet is a `derive` supertrait slot (§14.1.4), so an
+-- instance supplying only (==) is complete.
+--
+-- §14.1 declares `trait derive IsSet a => Eq (parametric 0 a : Type)` with
+-- `derive eqSound` / `derive eqComplete`. Omitting them creates typed
+-- per-instance derivation obligations that the instance may override (§14.2),
+-- not missing-required-member errors. For this correct 2-value enum comparator
+-- the mandatory baseline engine discharges both obligations via the §14.5.1
+-- structural provider (a Reflects (x = y) (x == y) certificate from uniquely
+-- forced case analysis, finite visible enumeration, and constructor
+-- disjointness/no-confusion; §14.5.5 items 1/3/4). The `derive IsSet a`
+-- supertrait slot resolves against the explicit `derive IsSet Bit` (§14.1.4:
+-- explicit or directly resolved evidence has priority over synthesis).
+module main
+
+data Bit : Type =
+    Off
+    On
+
+derive IsSet Bit
+
+instance Eq Bit =
+    let (==) x y =
+        match (x, y)
+        case (Off, Off) -> True
+        case (On, On) -> True
+        case _ -> False
+
+--! mode check
+--! assertNoErrors
+
+-- STATUS(3014a0d9): PASS

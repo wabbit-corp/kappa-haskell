@@ -9,8 +9,8 @@ trait Label (a : Type) =
 instance Label Integer =
     let label n = "first"
 
-instance Label Integer =
+instance Label Integer = --!! E_INSTANCE_INCOHERENT
     let label n = "second"
 
 use : String
-let use = label 5 --!! E_INSTANCE_INCOHERENT
+let use = label 5

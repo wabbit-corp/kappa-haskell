@@ -7,7 +7,7 @@ data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
 instance Applicative Wrap =
-    let pureA x = MkWrap (pureIO x)
+    let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =
         match ma
         case MkWrap ioa ->
@@ -31,13 +31,13 @@ instance MonadRef Wrap =
 
 bump : (inout v : Int) -> Wrap (1 v : Int,)
 let bump (inout v : Int) : Wrap (1 v : Int,) =
-    pureA (v = addInt v 1,)
+    pure (v = addInt v 1,)
 
 foo : Wrap Int
 let foo = do
     var x = 1
     bump ~x
-    pureA x
+    pure x
 
 main : UIO Int
 let main =

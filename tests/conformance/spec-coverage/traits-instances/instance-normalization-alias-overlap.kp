@@ -19,10 +19,10 @@ type AliasedInt = Int
 instance Tag Int =
     let tag n = 1
 
-instance Tag AliasedInt =
+instance Tag AliasedInt = --!! E_INSTANCE_INCOHERENT
     let tag n = 2
 
 use : Int
-let use = tag 7 --!! E_INSTANCE_INCOHERENT
+let use = tag 7
 
 -- STATUS(a51e1bf): PASS

@@ -32,9 +32,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Builtins
   ( prelBorrowRegionOf
+  , prelEqType
   , prelNat
   , prelNatSucc
   , prelNatZero
+  , prelThis
   , prelTypeLevel
   )
 import Kappa.Check
@@ -167,6 +169,7 @@ builtinState =
       -- every user module's ledger). The pipeline clears this for user modules.
       csEmbeddedLoad = True
     , csGlobals = Map.fromList (types ++ prims ++ testingPrims)
+    , csFoundationProviders = Map.fromList foundationProviders
     , csCtors = Map.fromList ctors
     , csDatas = Map.fromList datas
     , csPositivity = Map.fromList positivity
@@ -331,6 +334,9 @@ builtinState =
                 )
             )
         )
+      , compilerOpaque (prel "__deriveHedbergProvider") (tyV deriveHedbergProviderType)
+      , compilerOpaque (prel "__derivePiIsSetProvider") (tyV derivePiIsSetProviderType)
+      , compilerOpaque (prel "__deriveSigmaIsSetProvider") (tyV deriveSigmaIsSetProviderType)
       ]
     coreUniverses = DeclarationUniverseTelescope 1 False
     coreEqUniverses = DeclarationUniverseTelescope 2 False
@@ -436,11 +442,169 @@ builtinState =
     tRat = tcon "Rational"
     tStr = tcon "String"
     tBool = tcon "Bool" -- defined by prelude source; fine as neutral
+    eqAt level carrier left right =
+      CApp Expl
+        (CApp Expl
+          (CApp Impl (CGlobI prelEqType [level]) carrier)
+          left)
+        right
+    -- §11.4.1 portable-foundation ABI.  These schemas are constructed as
+    -- Core independently of the embedded source expectations below.  The
+    -- checker requires exact resolved identity plus definitional agreement
+    -- with these terms before an expectation is considered satisfied.
+    foundationProviders =
+      [ (prel "funExt", extensionalityType Expl QW False Expl)
+      , (prel "forallExt", extensionalityType Impl Q0 False Impl)
+      , (prel "borrowFunExt", extensionalityType Expl QW True Expl)
+      ]
+
+    -- §14.5.6 compiler-owned structural providers. These are exact typed
+    -- KCore interfaces, not theorem-name search: the derive planner below
+    -- selects the resolved identities only after their checked Pi telescope
+    -- can be instantiated from lexical evidence. The evidence results are
+    -- runtime-erased by the ordinary h-level rules, so the providers require
+    -- no backend primitive or value-level fallback.
+    isSetAt level carrier =
+      CApp Expl (CGlobI (prel "IsSet") [level]) carrier
+    decAt level proposition =
+      CApp Expl (CGlobI (prel "Dec") [level]) proposition
+    deriveHedbergProviderType =
+      piM Parametric Impl Q0 False "a" (CSort (LParam 0)) $
+        piM Ordinary Expl QW False "decision" decisionType $
+          isSetAt (LParam 0) (CVar 1)
+      where
+        decisionType =
+          piM Ordinary Expl QW True "x" (CVar 0) $
+            piM Ordinary Expl QW True "y" (CVar 1) $
+              decAt
+                (LParam 0)
+                (eqAt (LParam 0) (CVar 2) (CVar 1) (CVar 0))
+    derivePiIsSetProviderType =
+      piM Parametric Impl Q0 False "a" (CSort (LParam 0)) $
+        piM Parametric Impl Q0 False "b"
+          (piM Ordinary Expl QW False "x" (CVar 0) (CSort (LParam 1))) $
+          piM Ordinary Expl QW False "pointwise" pointwiseType resultType
+      where
+        pointwiseType =
+          piM Ordinary Impl Q0 False "x" (CVar 1) $
+            isSetAt
+              (LParam 1)
+              (CApp Expl (CVar 1) (CVar 0))
+        resultType =
+          isSetAt
+            (levelMax (LParam 0) (LParam 1))
+            ( piM Ordinary Expl QW False "x" (CVar 2) $
+                CApp Expl (CVar 2) (CVar 0)
+            )
+    deriveSigmaIsSetProviderType =
+      piM Parametric Impl Q0 False "a" (CSort (LParam 0)) $
+        piM Parametric Impl Q0 False "b"
+          (piM Ordinary Expl QW False "x" (CVar 0) (CSort (LParam 1))) $
+          piM Ordinary Expl QW False "base" (isSetAt (LParam 0) (CVar 1)) $
+            piM Ordinary Expl QW False "fibers" fibersType resultType
+      where
+        fibersType =
+          piM Ordinary Impl Q0 False "x" (CVar 2) $
+            isSetAt
+              (LParam 1)
+              (CApp Expl (CVar 2) (CVar 0))
+        resultType =
+          isSetAt
+            (levelMax (LParam 0) (LParam 1))
+            ( CRecordTQ
+                [ RecordField "first" Ordinary FormationOrdinary QW Nothing (CVar 3)
+                , RecordField
+                    "second"
+                    Ordinary
+                    FormationOrdinary
+                    QW
+                    Nothing
+                    ( CApp Expl (CVar 2) $
+                        CProjM Ordinary (CGlob prelThis) "first"
+                    )
+                ]
+            )
+    extensionalityType argumentIcit argumentQuantity argumentBorrowed applicationIcit =
+      piM Parametric Impl Q0 False "a" (CSort (LParam 0)) $
+        piM Parametric Impl Q0 False "b"
+          (piM Ordinary Expl QW False "_" (CVar 0) (CSort (LParam 1))) $
+          piM Ordinary Impl Q0 False "f" (functionType 1 0) $
+            piM Ordinary Impl Q0 False "g" (functionType 2 1) $
+              piM Ordinary Expl QW False "_" pointwiseType resultType
+      where
+        functionType aIndex bIndex =
+          piM Ordinary argumentIcit argumentQuantity argumentBorrowed "x"
+            (CVar aIndex)
+            (CApp Expl (CVar (bIndex + 1)) (CVar 0))
+        pointwiseType =
+          piM Ordinary Impl Q0 False "x" (CVar 3) $
+            eqAt
+              (LParam 1)
+              (CApp Expl (CVar 3) (CVar 0))
+              (CApp applicationIcit (CVar 2) (CVar 0))
+              (CApp applicationIcit (CVar 1) (CVar 0))
+        resultType =
+          eqAt
+            (levelMax (LParam 0) (LParam 1))
+            (functionType 4 3)
+            (CVar 2)
+            (CVar 1)
+    primitiveEqSoundType carrier comparison =
+      piM Ordinary Expl QW False "left" carrier $
+        piM Ordinary Expl QW False "right" carrier $
+          piM Ordinary Expl Q0 False "proof"
+            ( eqAt
+                LZero
+                tBool
+                (CApp Expl (CApp Expl comparison (CVar 1)) (CVar 0))
+                (tcon "True")
+            )
+            (eqAt LZero carrier (CVar 2) (CVar 1))
+    primitiveEqCompleteType carrier comparison =
+      piM Ordinary Expl QW False "left" carrier $
+        piM Ordinary Expl QW False "right" carrier $
+          piM Ordinary Expl Q0 False "proof"
+            (eqAt LZero carrier (CVar 1) (CVar 0))
+            ( eqAt
+                LZero
+                tBool
+                (CApp Expl (CApp Expl comparison (CVar 2)) (CVar 1))
+                (tcon "True")
+            )
+    primitiveEqLaws label carrier comparison =
+      [ prim ("__" <> label <> "Sound") (tyV (primitiveEqSoundType carrier comparison))
+      , prim ("__" <> label <> "Complete") (tyV (primitiveEqCompleteType carrier comparison))
+      ]
+    arrayExtType =
+      piM Parametric Impl Q0 False "a" (tTypeAt 0) $
+        piM Ordinary Expl QW False "left" (arrayT (CVar 0)) $
+          piM Ordinary Expl QW False "right" (arrayT (CVar 1)) $
+            piM Ordinary Expl Q0 False "proof"
+              ( eqAt
+                  (LParam 0)
+                  (listT (CVar 2))
+                  ( CApp Expl
+                      ( CApp Impl
+                          (CGlobI (prel "__arrayToList") [LParam 0])
+                          (CVar 2)
+                      )
+                      (CVar 1)
+                  )
+                  ( CApp Expl
+                      ( CApp Impl
+                          (CGlobI (prel "__arrayToList") [LParam 0])
+                          (CVar 2)
+                      )
+                      (CVar 0)
+                  )
+              )
+              (eqAt (LParam 0) (arrayT (CVar 3)) (CVar 2) (CVar 1))
     tScalar = tcon "UnicodeScalar"
     tGrapheme = tcon "Grapheme"
     tByte = tcon "Byte"
     tBytes = tcon "Bytes"
     tUnit = tcon "Unit"
+    tOrdering = tcon "Ordering"
     io e a = CApp Expl (CApp Expl (tcon "IO") e) a
     optionT a = CApp Expl (tcon "Option") a
     codeT a = CApp Expl (tcon "Code") a
@@ -953,6 +1117,10 @@ builtinState =
           (CApp Expl (tcon "STM") (CVar 1)
             ~> (CVar 2 ~> CApp Expl (tcon "STM") (CVar 2))
             ~> CApp Expl (tcon "STM") (CVar 2)))))
+      , prim "stmOrElse" (tyV (piI Q0 "a" tType
+          (CApp Expl (tcon "STM") (CVar 0)
+            ~> CApp Expl (tcon "STM") (CVar 1)
+            ~> CApp Expl (tcon "STM") (CVar 2))))
       , -- §18.11 one-shot promises. newPromise : forall e a. UIO (Promise e a)
         prim "newPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (io (tcon "Void") (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0))))))
@@ -1009,6 +1177,10 @@ builtinState =
       , prim "__setToList" (tyV (piI Q0 "a" tType (setT (CVar 0) ~> listT (CVar 1))))
       , prim "__arrayFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> arrayT (CVar 1))))
       , prim "__arrayToList" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> listT (CVar 1))))
+      , -- Exact immutable-array extensionality over the canonical list view.
+        -- The checked type fixes both endpoints and the projection identity;
+        -- this is not a generic equality certificate.
+        prim "__arrayExt" (tyV arrayExtType)
       , -- §28.2 total in-bounds index: traps at runtime if out of bounds.
         -- Codomain 'CVar 2' = the element type 'a': the two '~>' arrows (Array a,
         -- Int) each introduce a binder, so 'a' (bound by 'piI') sits at index 2 in
@@ -1050,8 +1222,11 @@ builtinState =
       , prim "withSyntaxOrigin" (tyV (piI Q0 "t" (tTypeAt 0) (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
       , prim "whnfSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT (CVar 1)))))
       , -- §21.6 'typeOfSyntax': the type of a quoted expression, reified as
-        -- 'Syntax Type' (forall t. Syntax t -> Elab (Syntax Type))
-        prim "typeOfSyntax" (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT tType))))
+        -- 'Syntax Type'. The result's bare 'Type' has its own generalized
+        -- declaration level, exactly as it does in the normative source
+        -- signature; it is not fixed to Type0 by this hand-built prelude.
+        prim "typeOfSyntax"
+          (tyV (piI Q0 "t" (tTypeAt 0) (synT (CVar 0) ~> elabT (synT (tTypeAt 1)))))
       , -- §21.6 semantic-reflection convenience queries (elaboration-time;
         -- interpreted by 'Kappa.Check.runElab')
         prim "defEqSyntax"
@@ -1108,6 +1283,19 @@ builtinState =
       , prim "__boolSyntax" (tyV (tBool ~> elabT (synT tBool)))
       , prim "__unitSyntax" (tyV (elabT (synT tUnit)))
       ]
+        ++ concat
+          [ primitiveEqLaws "eqInt" tInt (tcon "eqInt")
+          , primitiveEqLaws "eqTypeLevel" tLevel (tcon "__eqTypeLevel")
+          , primitiveEqLaws "eqDouble" tDouble (tcon "eqDouble")
+          , primitiveEqLaws "eqRat" tRat (tcon "eqRat")
+          , primitiveEqLaws "eqStr" tStr (tcon "eqStr")
+          , primitiveEqLaws "eqScalar" tScalar (tcon "eqScalar")
+          , primitiveEqLaws "eqByte" tByte (tcon "eqByte")
+          , primitiveEqLaws "eqBytes" tBytes (tcon "eqBytes")
+          , primitiveEqLaws "eqGrapheme" tGrapheme (tcon "eqGrapheme")
+          , primitiveEqLaws "orderingEq" tOrdering (tcon "orderingEq")
+          , primitiveEqLaws "natEq" tNat (tcon "natEq")
+          ]
 
 -- Evaluate a closed type term without globals (only built-in structure).
 evalClosed :: Term -> Value
@@ -1321,11 +1509,9 @@ stdTypeLevelSource =
     , "    let max x y = typeLevelMax x y"
     , ""
     , "instance Eq TypeLevel ="
-    , "    let (==) x y ="
-    , "        match typeLevelCompare x y"
-    , "        case EQ -> True"
-    , "        case LT -> False"
-    , "        case GT -> False"
+    , "    let (==) x y = __eqTypeLevel x y"
+    , "    let eqSound x y proof = __eqTypeLevelSound x y proof"
+    , "    let eqComplete x y proof = __eqTypeLevelComplete x y proof"
     , ""
     , "instance Ord TypeLevel ="
     , "    let compare x y = typeLevelCompare x y"
@@ -1438,6 +1624,13 @@ preludeSource =
     , "data Bool : Type ="
     , "    True"
     , "    False"
+    , ""
+    , "data Reflects.{u}"
+    , "    (parametric 0 proposition : Type u)"
+    , "    (0 decision : Bool)"
+    , "    : Type u ="
+    , "    IsTrue : proposition -> Reflects proposition True"
+    , "    IsFalse : (proposition -> Void) -> Reflects proposition False"
     , ""
     , "data Ordering : Type ="
     , "    LT"
@@ -1591,33 +1784,47 @@ preludeSource =
       -- Eq's revised contract carries IsSet as an ordinary supertrait.
       "trait IsEmpty (0 t : Type) ="
     , "    absurdT : t -> Void"
+    , "    evidence uniqueness = derive"
     , ""
     , "trait IsContr (0 t : Type) ="
     , "    center : t"
     , "    contract : (x : t) -> center = x"
+    , "    evidence uniqueness = derive"
     , ""
     , "trait IsSubsingleton (0 t : Type) ="
     , "    allEqual : (x : t) -> (y : t) -> x = y"
+    , "    evidence uniqueness = derive"
     , ""
-    , "trait IsSubsingleton p => IsProp (0 p : Type)"
+    , "trait IsSubsingleton p => IsProp (0 p : Type) ="
+    , "    evidence uniqueness = derive"
     , ""
     , "trait IsSet (0 a : Type) ="
     , "    pathIsProp : forall (x : a) (y : a). IsProp (x = y)"
     , "    let pathIsProp @x @y = __eqProof"
+    , "    evidence uniqueness = derive"
     , ""
     , "trait IsGroupoid (0 a : Type) ="
     , "    pathIsSet : forall (x : a) (y : a). IsSet (x = y)"
     , "    let pathIsSet @x @y = __eqProof"
+    , "    evidence uniqueness = derive"
     , ""
     , "trait Show (0 a : Type) ="
     , "    show : a -> String"
     , ""
-    , "trait IsSet a => Eq (0 a : Type) ="
+    , "trait derive IsSet a => Eq (0 a : Type) ="
     , "    (==) : a -> a -> Bool"
-    , "    eqSound : (x : a) -> (y : a) -> (0 proof : (x == y) = True) -> x = y"
-    , "    let eqSound x y proof = __eqProof"
-    , "    eqComplete : (x : a) -> (y : a) -> (0 proof : x = y) -> (x == y) = True"
-    , "    let eqComplete x y proof = __eqProof"
+    , "    derive eqSound : (x : a) -> (y : a) -> (0 proof : (x == y) = True) -> x = y"
+    , "    derive eqComplete : (x : a) -> (y : a) -> (0 proof : x = y) -> (x == y) = True"
+    , "    evidence uniqueness = derive"
+    , ""
+    , "eqBoolean.{u} : forall (a : Type u). Eq a -> a -> a -> Bool"
+    , "let eqBoolean.{u} @a evidence x y = evidence.(==) x y"
+    , ""
+    , "eqBooleanSound.{u} : forall (a : Type u). (evidence : Eq a) -> (x : a) -> (y : a) -> (0 proof : eqBoolean.{u} evidence x y = True) -> x = y"
+    , "let eqBooleanSound.{u} @a evidence x y proof = evidence.eqSound x y proof"
+    , ""
+    , "eqBooleanComplete.{u} : forall (a : Type u). (evidence : Eq a) -> (x : a) -> (y : a) -> (0 proof : x = y) -> eqBoolean.{u} evidence x y = True"
+    , "let eqBooleanComplete.{u} @a evidence x y proof = evidence.eqComplete x y proof"
     , ""
     , -- §14.1.4 (Spec 13921): in std.prelude Ord refines Eq, and its
       -- equality classes MUST agree with (==).
@@ -1686,16 +1893,18 @@ preludeSource =
     , "        (forall (A : Type). G (F A)) ->"
     , "        G (forall (A : Type). F A)"
     , ""
-    , "trait Applicative (0 f : (0 A : Type) -> Type) ="
-    , "    pureA : forall (a : Type). a -> f a"
+    , "trait Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) ="
+    , "    pure : forall (a : Type). a -> f a"
     , "    liftA2 : forall (a : Type) (b : Type) (c : Type). (a -> b -> c) -> f a -> f b -> f c"
+    , "    let (<*>) : forall (a : Type) (b : Type). f (a -> b) -> f a -> f b ="
+    , "        \\ff fa -> liftA2 (\\function value -> function value) ff fa"
     , ""
     , -- §14.1.4 (Spec 13923): in std.prelude Monad refines Applicative.
-      "trait Applicative m => Monad (0 m : (0 A : Type) -> Type) =" -- §28.2.2 (operational subset)
+      "trait Applicative m => Monad (parametric 0 m : (parametric 0 A : Type) -> Type) =" -- §28.2.2 (operational subset)
     , "    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b"
     , ""
     , "instance Applicative Option ="
-    , "    let pureA x = Some x"
+    , "    let pure x = Some x"
     , "    let liftA2 f oa ob ="
     , "        match oa"
     , "        case None -> None"
@@ -1707,7 +1916,7 @@ preludeSource =
     , "        case None -> None"
     , "        case Some x -> f x"
     , ""
-    , "trait Releasable (0 m : (0 A : Type) -> Type) (0 a : Type) =" -- §29.x resources
+    , "trait Releasable (parametric 0 m : (parametric 0 A : Type) -> Type) (0 a : Type) =" -- §29.x resources
     , "    release : a -> m Unit"
     , ""
     , "trait Shareable (0 a : Type)" -- §12.3 marker: shared-borrow-safe
@@ -1715,36 +1924,9 @@ preludeSource =
     , "trait Lift (0 a : Type) =" -- §23.3 lift-based cross-stage persistence
     , "    liftCode : a -> Code a"
     , ""
-    , -- §18.1.13 Pointed: the minimal carrier of a distinguished 'empty'
-      -- element, with NONE of the monoid laws. It is the supertrait of 'Monoid'
-      -- (so every 'Monoid' supplies 'empty' through it), AND it is what the
-      -- effect carriers 'IO e a' / 'STM a' carry on their OWN — their equality is
-      -- not an h-prop, so they cannot be lawful 'Monoid's, but they still need an
-      -- 'empty' for the §18.1.13 'let?'/STM 'empty' desugaring (the
-      -- refutable-miss continuation, and STM's aborted alternative). The
-      -- desugarer emits a bare 'empty' reference whose implicit dictionary
-      -- resolves through 'Pointed'.
-      --
-      -- 'empty' lives in EXACTLY ONE trait. A second value member named 'empty'
-      -- (e.g. duplicating it in 'Monoid') would overwrite this bare-name global
-      -- and mis-route every 'empty' use to the wrong trait's dictionary; so
-      -- 'Monoid' INHERITS 'empty' from 'Pointed' rather than re-declaring it.
-      "trait Pointed (0 a : Type) ="
-    , "    empty : a"
-    , ""
-    , -- §28.2.2 Monoid. The spec's 'Monoid' is LAWFUL BY DEFAULT: it carries
-      -- 'append' AND the three monoid LAWS
-      -- (appendAssoc/appendLeftIdentity/appendRightIdentity) as mandatory
-      -- members, and inherits 'empty' from its 'Pointed' supertrait. Every
-      -- 'Monoid' instance therefore DISCHARGES the laws — 'String' through the
-      -- gated 'unsafeAssertProof' escape ('instance IsSet String' makes each law
-      -- an h-prop), 'List a' through the HONEST structural induction lemmas
-      -- ('listAppendAssoc'/'listAppendRightIdentity', sound for every element
-      -- type). Each carrier provides its 'empty' via a sibling 'instance Pointed'.
-      --
-      -- The laws are written in prefix '(=)' form (an infix '(x = y)' in member
-      -- position mis-parses as a binder group). 'append' comes from THIS trait
-      -- and 'empty' from the 'Pointed' supertrait (NO explicit dict parameters):
+    , -- §28.2.2 Monoid is lawful by default.  Its canonical dictionary owns
+      -- both the distinguished element and the operation/law fields; effectful
+      -- choice uses the separate Alternative.empty projection.
       -- the elaborator threads the instance's own dictionary (and the supertrait
       -- 'this.__super0' field for 'empty'), so inside e.g. 'instance Monoid
       -- (List a)' they reduce to the concrete 'listAppend'/'Nil' and the proofs
@@ -1753,32 +1935,28 @@ preludeSource =
       -- 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
       -- EXPLICITLY and recurse; an instance body does not re-bind 'x y z'.
       --
-      -- SOUNDNESS / effect carriers: because the laws are MANDATORY, a type can
-      -- be a 'Monoid' only if it can honestly discharge them. 'IO e a' / 'STM a'
-      -- CANNOT — their propositional equality is not an h-prop (no 'IsSet (IO e
-      -- a)'), and fabricating one is exactly the unsoundness this avoids. They
-      -- are therefore 'Pointed' but NOT 'Monoid'.
-      "trait Pointed a => Monoid (0 a : Type) =" -- §28.2.2
+      "trait Monoid (0 a : Type) =" -- §28.2.2
+    , "    empty : a"
     , "    append : a -> a -> a"
     , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
     , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
     , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
     , ""
-    , "trait Functor (0 f : (0 A : Type) -> Type) =" -- §28.2.2 containers
+    , "trait Functor (parametric 0 f : (parametric 0 A : Type) -> Type) =" -- §28.2.2 containers
     , "    map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b"
     , ""
-    , "trait Foldable (0 t : (0 A : Type) -> Type) ="
+    , "trait Foldable (parametric 0 t : (parametric 0 A : Type) -> Type) ="
     , "    foldr : forall (a : Type) (b : Type). (a -> b -> b) -> b -> t a -> b"
     , "    foldl : forall (a : Type) (b : Type). (b -> a -> b) -> b -> t a -> b"
     , "    foldMap : forall (a : Type) (m : Type). (@_ : Monoid m) -> (a -> m) -> t a -> m"
     , ""
-    , "trait Filterable (0 t : (0 A : Type) -> Type) ="
+    , "trait Filterable (parametric 0 t : (parametric 0 A : Type) -> Type) ="
     , "    filter : forall (a : Type). (a -> Bool) -> t a -> t a"
     , ""
-    , "trait FilterMap (0 t : (0 A : Type) -> Type) ="
+    , "trait FilterMap (parametric 0 t : (parametric 0 A : Type) -> Type) ="
     , "    filterMap : forall (a : Type) (b : Type). (a -> Option b) -> t a -> t b"
     , ""
-    , "trait Traversable (0 t : (0 A : Type) -> Type) ="
+    , "trait Traversable (parametric 0 t : (parametric 0 A : Type) -> Type) ="
     , "    traverse : forall (f : (0 A : Type) -> Type) (a : Type) (b : Type). (@_ : Applicative f) -> (a -> f b) -> t a -> f (t b)"
     , ""
     , -- Algebraic law signatures below use the standard order relation. These
@@ -1877,9 +2055,11 @@ preludeSource =
       "instance Eq a => Equiv a ="
     , "    let (~=) x y = x == y"
     , ""
-    , -- §28.2 Alternative (the empty/orElse choice structure)
-      "trait Alternative (0 f : (0 A : Type) -> Type) ="
-    , "    emptyA : forall (a : Type). f a"
+    , -- §28.2 Alternative refines Applicative and owns the overloaded choice
+      -- projection 'empty'. Expected-type/evidence-directed member selection
+      -- distinguishes it from Monoid.empty.
+      "trait Applicative f => Alternative (parametric 0 f : (parametric 0 A : Type) -> Type) ="
+    , "    empty : forall (a : Type). f a"
     , "    (<|>) : forall (a : Type). f a -> f a -> f a"
     , ""
     , -- §28.2 Iterator: the associated 'Item' type and the one-shot step
@@ -1892,21 +2072,28 @@ preludeSource =
     , "    Item : Type"
     , "    next : (1 this : it) -> Option (item : Item, rest : it)"
     , ""
+    , "instance Iterator (List a) ="
+    , "    Item = a"
+    , "    let next this ="
+    , "        match this"
+    , "          case Nil -> None"
+    , "          case x :: xs -> Some (item = x, rest = xs)"
+    , ""
     , -- §29.x runtime-effect / resource traits (§18.1.25, §18.6.1,
       -- §19.1-19.5). Operational subset: the IO carrier instances below
       -- and the prelude wrappers delegate to the IO primitives.
-      "trait MonadFinally (0 m : (0 A : Type) -> Type) ="
+      "trait MonadFinally (parametric 0 m : (parametric 0 A : Type) -> Type) ="
     , "    finally : forall (a : Type). m a -> m Unit -> m a"
     , ""
-    , "trait MonadError (0 m : (0 A : Type) -> Type) ="
+    , "trait MonadError (parametric 0 m : (parametric 0 A : Type) -> Type) ="
     , "    Error : Type"
     , "    throwError : forall (a : Type). Error -> m a"
     , "    catchError : forall (a : Type). m a -> (Error -> m a) -> m a"
     , ""
-    , "trait MonadResource (0 m : (0 A : Type) -> Type) ="
+    , "trait MonadResource (parametric 0 m : (parametric 0 A : Type) -> Type) ="
     , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
     , ""
-    , "trait MonadRef (0 m : (0 A : Type) -> Type) ="
+    , "trait MonadRef (parametric 0 m : (parametric 0 A : Type) -> Type) ="
     , "    Ref : (0 A : Type) -> Type"
     , "    newRef : forall (a : Type). a -> m (Ref a)"
     , "    readRef : forall (a : Type). Ref a -> m a"
@@ -1934,7 +2121,19 @@ preludeSource =
     , -- §14.4 set-truncation witnesses. Primitive carriers have canonical
       -- equality, while recursive containers below require IsSet evidence for
       -- every element carrier; no unconditional container instance is sound.
-      "instance IsSet String"
+      "instance IsEmpty Void ="
+    , "    let absurdT value = match value case impossible"
+    , "instance IsSubsingleton Void ="
+    , "    let allEqual x y = match x case impossible"
+    , "instance IsProp Void"
+    , "instance IsContr Unit ="
+    , "    let center = Unit"
+    , "    let contract value = match value case Unit -> refl"
+    , "instance IsSubsingleton Unit ="
+    , "    let allEqual x y = match x case Unit -> match y case Unit -> refl"
+    , "instance IsProp Unit"
+    , ""
+    , "instance IsSet String"
     , "instance IsSet Bool"
     , "instance IsSet Double"
     , "instance IsSet Unit"
@@ -1990,6 +2189,8 @@ preludeSource =
     , ""
     , "instance Eq Integer ="
     , "    let (==) x y = eqInt x y"
+    , "    let eqSound x y proof = __eqIntSound x y proof"
+    , "    let eqComplete x y proof = __eqIntComplete x y proof"
     , ""
     , "instance Ord Integer ="
     , "    let compare x y = if ltInt x y then LT elif eqInt x y then EQ else GT"
@@ -2038,6 +2239,8 @@ preludeSource =
     , ""
     , "instance Eq Double ="
     , "    let (==) x y = eqDouble x y"
+    , "    let eqSound x y proof = __eqDoubleSound x y proof"
+    , "    let eqComplete x y proof = __eqDoubleComplete x y proof"
     , ""
     , "instance Show Double ="
     , "    let show x = showDouble x"
@@ -2050,6 +2253,8 @@ preludeSource =
     , ""
     , "instance Eq String ="
     , "    let (==) x y = eqStr x y"
+    , "    let eqSound x y proof = __eqStrSound x y proof"
+    , "    let eqComplete x y proof = __eqStrComplete x y proof"
     , ""
     , "instance Show String ="
     , "    let show x = x"
@@ -2057,8 +2262,35 @@ preludeSource =
     , "instance Add String ="
     , "    let add x y = stringAppend x y"
     , ""
+    , "boolEq : Bool -> Bool -> Bool"
+    , "let boolEq x y = if x then y else not y"
+    , ""
+    , "boolEqSound : (x : Bool) -> (y : Bool) -> (0 proof : boolEq x y = True) -> x = y"
+    , "let boolEqSound x y proof ="
+    , "    match x"
+    , "    case False ->"
+    , "        match y"
+    , "        case False -> refl"
+    , "        case True ->"
+    , "            match proof"
+    , "            case refl -> impossible"
+    , "    case True ->"
+    , "        match y"
+    , "        case False ->"
+    , "            match proof"
+    , "            case refl -> impossible"
+    , "        case True -> refl"
+    , ""
+    , "boolEqComplete : (x : Bool) -> (y : Bool) -> (0 proof : x = y) -> boolEq x y = True"
+    , "let boolEqComplete x y proof ="
+    , "    match x"
+    , "    case False -> sym (cong (boolEq False) proof)"
+    , "    case True -> sym (cong (boolEq True) proof)"
+    , ""
     , "instance Eq Bool ="
-    , "    let (==) x y = if x then y else not y"
+    , "    let (==) x y = boolEq x y"
+    , "    let eqSound x y proof = boolEqSound x y proof"
+    , "    let eqComplete x y proof = boolEqComplete x y proof"
     , ""
     , "instance Show Bool ="
     , "    let show b = if b then \"True\" else \"False\""
@@ -2066,8 +2298,23 @@ preludeSource =
     , "instance Ord Bool ="
     , "    let compare x y = if x then (if y then EQ else GT) else (if y then LT else EQ)"
     , ""
+    , "unitEq : Unit -> Unit -> Bool"
+    , "let unitEq x y = True"
+    , ""
+    , "unitEqSound : (x : Unit) -> (y : Unit) -> (0 proof : unitEq x y = True) -> x = y"
+    , "let unitEqSound x y proof ="
+    , "    match x"
+    , "    case () ->"
+    , "        match y"
+    , "        case () -> refl"
+    , ""
+    , "unitEqComplete : (x : Unit) -> (y : Unit) -> (0 proof : x = y) -> unitEq x y = True"
+    , "let unitEqComplete x y proof = refl"
+    , ""
     , "instance Eq Unit ="
-    , "    let (==) x y = True"
+    , "    let (==) x y = unitEq x y"
+    , "    let eqSound x y proof = unitEqSound x y proof"
+    , "    let eqComplete x y proof = unitEqComplete x y proof"
     , ""
     , "instance Show Unit ="
     , "    let show u = \"()\""
@@ -2080,6 +2327,8 @@ preludeSource =
     , ""
     , "instance Eq UnicodeScalar ="
     , "    let (==) x y = eqScalar x y"
+    , "    let eqSound x y proof = __eqScalarSound x y proof"
+    , "    let eqComplete x y proof = __eqScalarComplete x y proof"
     , ""
     , "instance Ord UnicodeScalar ="
     , "    let compare x y = if ltScalar x y then LT elif eqScalar x y then EQ else GT"
@@ -2092,6 +2341,8 @@ preludeSource =
       -- Ord (§29.x: no portable grapheme ordering)
       "instance Eq Byte ="
     , "    let (==) x y = eqByte x y"
+    , "    let eqSound x y proof = __eqByteSound x y proof"
+    , "    let eqComplete x y proof = __eqByteComplete x y proof"
     , ""
     , "instance Ord Byte ="
     , "    let compare x y = if ltByte x y then LT elif eqByte x y then EQ else GT"
@@ -2101,6 +2352,8 @@ preludeSource =
     , ""
     , "instance Eq Bytes ="
     , "    let (==) x y = eqBytes x y"
+    , "    let eqSound x y proof = __eqBytesSound x y proof"
+    , "    let eqComplete x y proof = __eqBytesComplete x y proof"
     , ""
     , "instance Ord Bytes ="
     , "    let compare x y = if ltBytes x y then LT elif eqBytes x y then EQ else GT"
@@ -2110,6 +2363,8 @@ preludeSource =
     , ""
     , "instance Eq Grapheme ="
     , "    let (==) x y = eqGrapheme x y"
+    , "    let eqSound x y proof = __eqGraphemeSound x y proof"
+    , "    let eqComplete x y proof = __eqGraphemeComplete x y proof"
     , ""
     , "instance Show Grapheme ="
     , "    let show g = showGrapheme g"
@@ -2169,8 +2424,13 @@ preludeSource =
     , "    case EQ -> 1"
     , "    case GT -> 2"
     , ""
+    , "orderingEq : Ordering -> Ordering -> Bool"
+    , "let orderingEq x y = eqInt (orderingCode x) (orderingCode y)"
+    , ""
     , "instance Eq Ordering ="
-    , "    let (==) x y = eqInt (orderingCode x) (orderingCode y)"
+    , "    let (==) x y = orderingEq x y"
+    , "    let eqSound x y proof = __orderingEqSound x y proof"
+    , "    let eqComplete x y proof = __orderingEqComplete x y proof"
     , ""
     , "instance Ord Ordering ="
     , "    let compare x y = if ltInt (orderingCode x) (orderingCode y) then LT elif eqInt (orderingCode x) (orderingCode y) then EQ else GT"
@@ -2182,8 +2442,13 @@ preludeSource =
     , "        case EQ -> \"EQ\""
     , "        case GT -> \"GT\""
     , ""
+    , "natEq : Nat -> Nat -> Bool"
+    , "let natEq x y = eqInt (natToInt x) (natToInt y)"
+    , ""
     , "instance Eq Nat ="
-    , "    let (==) x y = eqInt (natToInt x) (natToInt y)"
+    , "    let (==) x y = natEq x y"
+    , "    let eqSound x y proof = __natEqSound x y proof"
+    , "    let eqComplete x y proof = __natEqComplete x y proof"
     , ""
     , "instance Ord Nat ="
     , "    let compare x y = natCompare x y"
@@ -2212,7 +2477,9 @@ preludeSource =
     , "instance IsSet a => IsSet (Refined a predicate)"
     , ""
     , "instance Eq a => Eq (Refined a predicate) ="
-    , "    let (==) x y = x.value == y.value"
+    , "    let (==) x y = eqBoolean (summon (Eq a)) x.value y.value"
+    , "    let eqSound x y proof = refinedExt (eqBooleanSound (summon (Eq a)) x.value y.value proof)"
+    , "    let eqComplete x y proof = eqBooleanComplete (summon (Eq a)) x.value y.value (cong refinedValue proof)"
     , ""
     , "instance Ord a => Ord (Refined a predicate) ="
     , "    let compare x y = compare x.value y.value"
@@ -2283,7 +2550,9 @@ preludeSource =
     , "instance IsSet (Fin n)"
     , ""
     , "instance Eq (Fin n) ="
-    , "    let (==) x y = x.value == y.value"
+    , "    let (==) x y = eqBoolean (summon (Eq Nat)) x.value y.value"
+    , "    let eqSound x y proof = finExt (eqBooleanSound (summon (Eq Nat)) x.value y.value proof)"
+    , "    let eqComplete x y proof = eqBooleanComplete (summon (Eq Nat)) x.value y.value (cong finValue proof)"
     , ""
     , "instance Ord (Fin n) ="
     , "    let compare x y = compare x.value y.value"
@@ -2323,9 +2592,6 @@ preludeSource =
       "printInt : forall (e : Type). Int -> IO e Unit"
     , "let printInt n = printlnString (showInt n)"
     , ""
-    , "pure : forall (e : Type) (a : Type). a -> IO e a"
-    , "let pure x = ioPure x"
-    , ""
     , -- §28.2.2 computation-carrier helpers and the IO e instances
       "pureIO : forall (e : Type) (a : Type). a -> IO e a"
     , "let pureIO x = ioPure x"
@@ -2337,7 +2603,7 @@ preludeSource =
     , "    let map f m = ioBind m (\\x -> ioPure (f x))"
     , ""
     , "instance Applicative (IO e) ="
-    , "    let pureA x = ioPure x"
+    , "    let pure x = ioPure x"
     , "    let liftA2 f a b = ioBind a (\\x -> ioBind b (\\y -> ioPure (f x y)))"
     , ""
     , "instance Monad (IO e) ="
@@ -2349,11 +2615,15 @@ preludeSource =
     , "    let map f m = stmBind m (\\x -> stmPure (f x))"
     , ""
     , "instance Applicative STM ="
-    , "    let pureA x = stmPure x"
+    , "    let pure x = stmPure x"
     , "    let liftA2 f a b = stmBind a (\\x -> stmBind b (\\y -> stmPure (f x y)))"
     , ""
     , "instance Monad STM ="
     , "    let (>>=) m f = stmBind m f"
+    , ""
+    , "instance Alternative STM ="
+    , "    let empty = retry"
+    , "    let (<|>) left right = stmOrElse left right"
     , ""
     , -- §18.6.1: STM supports surface `var` through TVar-backed MonadRef.
       "instance MonadRef STM ="
@@ -2365,19 +2635,6 @@ preludeSource =
     , -- check c: succeed if c, else retry the transaction (§18.1.13).
       "check : Bool -> STM Unit"
     , "let check c = if c then stmPure Unit else retry"
-    , ""
-    , -- §18.1.13: `empty` (the aborted alternative) resolves through the
-      -- law-less `Pointed` trait (NOT `Monoid`, whose mandatory laws this
-      -- carrier cannot honestly discharge — its equality is not an h-prop), so
-      -- IO-shaped do-scopes can sequence it as an action.
-      "instance Pointed (IO e a) ="
-    , "    let empty = stmAbort"
-    , ""
-    , -- §18.1.13 STM alternative: `empty` retries the transaction. Lets
-      -- `let?`/refutable forms desugar in STM. `Pointed`, not `Monoid`: STM
-      -- equality is not an h-prop, so the monoid laws cannot be asserted.
-      "instance Pointed (STM a) ="
-    , "    let empty = retry"
     , ""
     , -- RC4 / §28: the mandated `IO e` error-handling instances.  Their
       -- members ARE the §18.1.25 / §19.1 surface operations, delegating to
@@ -2486,6 +2743,38 @@ preludeSource =
       "data Dec.{u} (parametric 0 p : Type u) : Type u ="
     , "    Yes p"
     , "    No (p -> Void)"
+    , ""
+    , "reflectsDec.{u} : forall (p : Type u) (b : Bool). Reflects p b -> Dec p"
+    , "let reflectsDec.{u} reflected ="
+    , "    match reflected"
+    , "    case IsTrue proof -> Yes proof"
+    , "    case IsFalse refute -> No refute"
+    , ""
+    , "reflectsSound.{u} : forall (p : Type u) (b : Bool). Reflects p b -> b = True -> p"
+    , "let reflectsSound.{u} reflected isTrue ="
+    , "    match reflected"
+    , "    case IsTrue proof -> proof"
+    , "    case IsFalse refute ->"
+    , "        match isTrue"
+    , "        case refl -> impossible"
+    , ""
+    , "reflectsComplete.{u} : forall (p : Type u) (b : Bool). Reflects p b -> p -> b = True"
+    , "let reflectsComplete.{u} reflected proof ="
+    , "    match reflected"
+    , "    case IsTrue existing -> refl"
+    , "    case IsFalse refute ->"
+    , "        match refute proof"
+    , "        case impossible"
+    , ""
+    , "eqReflect.{u} : forall (a : Type u). Eq a => (& x : a) -> (& y : a) -> Reflects (x = y) (x == y)"
+    , "let eqReflect.{u} @a @evidence x y ="
+    , "    match evidence.(==) x y"
+    , "    case True ->"
+    , "        IsTrue (evidence.eqSound x y refl)"
+    , "    case False ->"
+    , "        IsFalse (\\equal ->"
+    , "            match evidence.eqComplete x y equal"
+    , "            case impossible)"
     , ""
     , "fork : forall (e : Type) (a : Type) (r : Type). (IO e a captures ()) -> IO r (Fiber e a)"
     , "let fork action = __forkRun action"
@@ -2688,8 +2977,8 @@ preludeSource =
     , "arrayFromList : forall (a : Type). List a -> Array a"
     , "let arrayFromList xs = __arrayFromList xs"
     , ""
-    , "arrayToList : forall (a : Type). Array a -> List a"
-    , "let arrayToList xs = __arrayToList xs"
+    , "arrayToList.{u} : forall (a : Type u). Array a -> List a"
+    , "let arrayToList.{u} xs = __arrayToList xs"
     , ""
     , "arrayLength : forall (a : Type). Array a -> Nat"
     , "let arrayLength xs = natOfInt (listLength (__arrayToList xs))"
@@ -2915,6 +3204,8 @@ preludeSource =
       -- divDefined x y = (y /= zero).
       "instance Eq Rational ="
     , "    let (==) x y = eqRat x y"
+    , "    let eqSound x y proof = __eqRatSound x y proof"
+    , "    let eqComplete x y proof = __eqRatComplete x y proof"
     , ""
     , "instance Ord Rational ="
     , "    let compare x y = if ltRat x y then LT elif eqRat x y then EQ else GT"
@@ -2988,22 +3279,13 @@ preludeSource =
     , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
       -- under raw-bit Eq. They keep only the operation traits above.
       --
-      -- The 'empty' element of each lawful 'Monoid' lives in its sibling
-      -- 'Pointed' instance (the 'Monoid' supertrait), separate from the 'append'
-      -- + laws below. 'String'/'List a' supply both halves here.
-      "instance Pointed String ="
-    , "    let empty = \"\""
-    , ""
-    , "instance Pointed (List a) ="
-    , "    let empty = Nil"
-    , ""
-    , -- LAWFUL Monoid: 'String' is a set ('instance IsSet String'), so its
+      -- LAWFUL Monoid: 'String' is a set ('instance IsSet String'), so its
       -- equational laws are honestly h-props and discharge through the gated
       -- 'unsafeAssertProof' escape; the §11.4 IsProp-under-Pi solver resolves the
       -- 'IsProp (forall xs. l = r)' obligation by recovering the carrier 'String'
-      -- and threading its 'IsSet'. 'empty' comes from the 'Pointed String'
-      -- supertrait above.
+      -- and threading its 'IsSet'. 'empty' is the Monoid operation member.
       "instance Monoid String ="
+    , "    let empty = \"\""
     , "    let append x y = stringAppend x y"
     , "    let appendAssoc = unsafeAssertProof \"Monoid String: append is associative\""
     , "    let appendLeftIdentity = unsafeAssertProof \"Monoid String: empty is a left identity\""
@@ -3017,10 +3299,11 @@ preludeSource =
       -- element type 'a' and needs no 'IsSet' and no 'unsafeAssertProof'. The
       -- law params are IMPLICIT ('forall (x y z : a).'), bound here with the
       -- '@'-implicit binder form; 'append' reduces to the concrete 'listAppend'
-      -- and 'empty' to 'Nil' (from the 'Pointed (List a)' supertrait), so each
+      -- and 'empty' to 'Nil', so each
       -- proof typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
       -- listAppend Nil x ≡ x'), hence 'refl'.
       "instance Monoid (List a) ="
+    , "    let empty = Nil"
     , "    let append x y = listAppend x y"
     , "    let appendLeftIdentity @x = refl"
     , "    let appendRightIdentity @x = listAppendRightIdentity x"
@@ -3032,10 +3315,10 @@ preludeSource =
     , "        case Nil -> Nil"
     , "        case x :: rest -> f x :: map f rest"
     , ""
-    , -- §28.2.2: List is the standard nondeterminism monad — `pureA` is the
+    , -- §28.2.2: List is the standard nondeterminism monad — `pure` is the
       -- singleton list and bind is `concatMap` (Cartesian sequencing).
       "instance Applicative List ="
-    , "    let pureA x = x :: Nil"
+    , "    let pure x = x :: Nil"
     , "    let liftA2 f xs ys = concatMap (\\x -> map (f x) ys) xs"
     , ""
     , "instance Monad List ="
@@ -3093,14 +3376,14 @@ preludeSource =
     , "instance Traversable List ="
     , "    let traverse f xs ="
     , "        match xs"
-    , "        case Nil -> pureA Nil"
+    , "        case Nil -> pure Nil"
     , "        case x :: rest -> liftA2 (\\h -> \\t -> h :: t) (f x) (traverse f rest)"
     , ""
     , "instance Traversable Option ="
     , "    let traverse f o ="
     , "        match o"
-    , "        case None -> pureA None"
-    , "        case Some x -> liftA2 (\\v -> \\u -> Some v) (f x) (pureA True)"
+    , "        case None -> pure None"
+    , "        case Some x -> liftA2 (\\v -> \\u -> Some v) (f x) (pure True)"
     , ""
     , "(++) : forall (a : Type). (@_ : Monoid a) -> a -> a -> a"
     , "let (++) x y = append x y"
@@ -3120,14 +3403,71 @@ preludeSource =
     , "instance IsSet a => IsSet (Option a)"
     , "instance (IsSet e, IsSet a) => IsSet (Result e a)"
     , ""
-    , "instance Eq a => Eq (List a) ="
-    , "    let (==) xs ys ="
+    , "boolGuardCondition : (condition : Bool) -> (body : Bool) -> (0 proof : (if condition then body else False) = True) -> condition = True"
+    , "let boolGuardCondition condition body proof ="
+    , "    match condition"
+    , "    case False ->"
+    , "        match proof"
+    , "        case refl -> impossible"
+    , "    case True -> refl"
+    , ""
+    , "boolGuardBody : (condition : Bool) -> (body : Bool) -> (0 proof : (if condition then body else False) = True) -> body = True"
+    , "let boolGuardBody condition body proof ="
+    , "    match condition"
+    , "    case False ->"
+    , "        match proof"
+    , "        case refl -> impossible"
+    , "    case True -> proof"
+    , ""
+    , "boolGuardComplete : (condition : Bool) -> (body : Bool) -> (0 conditionTrue : condition = True) -> (0 bodyTrue : body = True) -> (if condition then body else False) = True"
+    , "let boolGuardComplete condition body conditionTrue bodyTrue ="
+    , "    match conditionTrue"
+    , "    case refl -> bodyTrue"
+    , ""
+    , "listEq.{u} : forall (a : Type u). Eq a -> List a -> List a -> Bool"
+    , "let listEq.{u} @a elementEq xs ys ="
     , "        match xs"
     , "        case Nil -> (match ys case Nil -> True case z :: zs -> False)"
     , "        case x :: xrest ->"
     , "          match ys"
     , "          case Nil -> False"
-    , "          case y :: yrest -> if x == y then xrest == yrest else False"
+    , "          case y :: yrest -> if eqBoolean.{u} elementEq x y then listEq.{u} elementEq xrest yrest else False"
+    , ""
+    , "listEqSound.{u} : forall (a : Type u). (elementEq : Eq a) -> (xs : List a) -> (ys : List a) -> (0 proof : listEq.{u} elementEq xs ys = True) -> xs = ys"
+    , "let listEqSound.{u} @a elementEq xs ys proof ="
+    , "        match xs"
+    , "        case Nil ->"
+    , "            match ys"
+    , "            case Nil -> refl"
+    , "            case y :: yrest ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "        case x :: xrest ->"
+    , "            match ys"
+    , "            case Nil ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "            case y :: yrest ->"
+    , "                let condition : Bool = eqBoolean.{u} elementEq x y"
+    , "                let body : Bool = listEq.{u} elementEq xrest yrest"
+    , "                let heads : (=) x y = eqBooleanSound.{u} elementEq x y (boolGuardCondition condition body proof)"
+    , "                let tails : (=) xrest yrest = listEqSound.{u} elementEq xrest yrest (boolGuardBody condition body proof)"
+    , "                match heads"
+    , "                case refl -> consCong.{u} x tails"
+    , ""
+    , "listEqComplete.{u} : forall (a : Type u). (elementEq : Eq a) -> (xs : List a) -> (ys : List a) -> (0 proof : xs = ys) -> listEq.{u} elementEq xs ys = True"
+    , "let listEqComplete.{u} @a elementEq xs ys proof ="
+    , "        match proof"
+    , "        case refl ->"
+    , "            match xs"
+    , "            case Nil -> refl"
+    , "            case x :: rest ->"
+    , "                boolGuardComplete (eqBoolean.{u} elementEq x x) (listEq.{u} elementEq rest rest) (eqBooleanComplete.{u} elementEq x x refl) (listEqComplete.{u} elementEq rest rest refl)"
+    , ""
+    , "instance Eq a => Eq (List a) ="
+    , "    let (==) xs ys = listEq (summon (Eq a)) xs ys"
+    , "    let eqSound xs ys proof = listEqSound (summon (Eq a)) xs ys proof"
+    , "    let eqComplete xs ys proof = listEqComplete (summon (Eq a)) xs ys proof"
     , ""
     , "instance Ord a => Ord (List a) ="
     , "    let compare xs ys ="
@@ -3141,8 +3481,21 @@ preludeSource =
     , -- §10.4 Array equality/order are the elementwise (list) relations on
       -- the array's element sequence; this also discharges the Eq
       -- superclass of the §14.1.3 'Hashable (Array a)' instance.
-      "instance Eq a => Eq (Array a) ="
-    , "    let (==) xs ys = arrayToList xs == arrayToList ys"
+      "arrayEq.{u} : forall (a : Type u). Eq a -> Array a -> Array a -> Bool"
+    , "let arrayEq.{u} @a elementEq xs ys = listEq.{u} elementEq (arrayToList.{u} xs) (arrayToList.{u} ys)"
+    , ""
+    , "arrayEqSound.{u} : forall (a : Type u). (elementEq : Eq a) -> (xs : Array a) -> (ys : Array a) -> (0 proof : arrayEq.{u} elementEq xs ys = True) -> xs = ys"
+    , "let arrayEqSound.{u} @a elementEq xs ys proof = __arrayExt xs ys (listEqSound.{u} elementEq (arrayToList.{u} xs) (arrayToList.{u} ys) proof)"
+    , ""
+    , "arrayEqComplete.{u} : forall (a : Type u). (elementEq : Eq a) -> (xs : Array a) -> (ys : Array a) -> (0 proof : xs = ys) -> arrayEq.{u} elementEq xs ys = True"
+    , "let arrayEqComplete.{u} @a elementEq xs ys proof ="
+    , "    match proof"
+    , "    case refl -> listEqComplete.{u} elementEq (arrayToList.{u} xs) (arrayToList.{u} xs) refl"
+    , ""
+    , "instance Eq a => Eq (Array a) ="
+    , "    let (==) xs ys = arrayEq (summon (Eq a)) xs ys"
+    , "    let eqSound xs ys proof = arrayEqSound (summon (Eq a)) xs ys proof"
+    , "    let eqComplete xs ys proof = arrayEqComplete (summon (Eq a)) xs ys proof"
     , ""
     , "instance Ord a => Ord (Array a) ="
     , "    let compare xs ys = compare (arrayToList xs) (arrayToList ys)"
@@ -3156,14 +3509,43 @@ preludeSource =
     , "instance Show a => Show (List a) ="
     , "    let show xs = \"[\" ++ __showListGo True xs ++ \"]\""
     , ""
-    , "instance Eq a => Eq (Option a) ="
-    , "    let (==) xo yo ="
+    , "optionEq : forall (a : Type). Eq a -> Option a -> Option a -> Bool"
+    , "let optionEq @a elementEq xo yo ="
     , "        match xo"
     , "        case None -> (match yo case None -> True case Some w -> False)"
     , "        case Some x ->"
     , "          match yo"
     , "          case None -> False"
-    , "          case Some y -> x == y"
+    , "          case Some y -> eqBoolean elementEq x y"
+    , ""
+    , "optionEqSound : forall (a : Type). (elementEq : Eq a) -> (xo : Option a) -> (yo : Option a) -> (0 proof : optionEq elementEq xo yo = True) -> xo = yo"
+    , "let optionEqSound @a elementEq xo yo proof ="
+    , "        match xo"
+    , "        case None ->"
+    , "            match yo"
+    , "            case None -> refl"
+    , "            case Some y ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "        case Some x ->"
+    , "            match yo"
+    , "            case None ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "            case Some y -> cong Some (eqBooleanSound elementEq x y proof)"
+    , ""
+    , "optionEqComplete : forall (a : Type). (elementEq : Eq a) -> (xo : Option a) -> (yo : Option a) -> (0 proof : xo = yo) -> optionEq elementEq xo yo = True"
+    , "let optionEqComplete @a elementEq xo yo proof ="
+    , "        match proof"
+    , "        case refl ->"
+    , "            match xo"
+    , "            case None -> refl"
+    , "            case Some x -> eqBooleanComplete elementEq x x refl"
+    , ""
+    , "instance Eq a => Eq (Option a) ="
+    , "    let (==) xo yo = optionEq (summon (Eq a)) xo yo"
+    , "    let eqSound xo yo proof = optionEqSound (summon (Eq a)) xo yo proof"
+    , "    let eqComplete xo yo proof = optionEqComplete (summon (Eq a)) xo yo proof"
     , ""
     , "instance Ord a => Ord (Option a) ="
     , "    let compare xo yo ="
@@ -3180,14 +3562,43 @@ preludeSource =
     , "        case None -> \"None\""
     , "        case Some x -> \"Some \" ++ show x"
     , ""
-    , "instance (Eq e, Eq a) => Eq (Result e a) ="
-    , "    let (==) xr yr ="
+    , "resultEq : forall (e : Type) (a : Type). Eq e -> Eq a -> Result e a -> Result e a -> Bool"
+    , "let resultEq @e @a errorEq valueEq xr yr ="
     , "        match xr"
-    , "        case Ok x -> (match yr case Ok y -> x == y case Err w -> False)"
+    , "        case Ok x -> (match yr case Ok y -> eqBoolean valueEq x y case Err w -> False)"
     , "        case Err x ->"
     , "          match yr"
     , "          case Ok y -> False"
-    , "          case Err y -> x == y"
+    , "          case Err y -> eqBoolean errorEq x y"
+    , ""
+    , "resultEqSound : forall (e : Type) (a : Type). (errorEq : Eq e) -> (valueEq : Eq a) -> (xr : Result e a) -> (yr : Result e a) -> (0 proof : resultEq errorEq valueEq xr yr = True) -> xr = yr"
+    , "let resultEqSound @e @a errorEq valueEq xr yr proof ="
+    , "        match xr"
+    , "        case Ok x ->"
+    , "            match yr"
+    , "            case Ok y -> cong Ok (eqBooleanSound valueEq x y proof)"
+    , "            case Err y ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "        case Err x ->"
+    , "            match yr"
+    , "            case Ok y ->"
+    , "                match proof"
+    , "                case refl -> impossible"
+    , "            case Err y -> cong Err (eqBooleanSound errorEq x y proof)"
+    , ""
+    , "resultEqComplete : forall (e : Type) (a : Type). (errorEq : Eq e) -> (valueEq : Eq a) -> (xr : Result e a) -> (yr : Result e a) -> (0 proof : xr = yr) -> resultEq errorEq valueEq xr yr = True"
+    , "let resultEqComplete @e @a errorEq valueEq xr yr proof ="
+    , "        match proof"
+    , "        case refl ->"
+    , "            match xr"
+    , "            case Ok x -> eqBooleanComplete valueEq x x refl"
+    , "            case Err x -> eqBooleanComplete errorEq x x refl"
+    , ""
+    , "instance (Eq e, Eq a) => Eq (Result e a) ="
+    , "    let (==) xr yr = resultEq (summon (Eq e)) (summon (Eq a)) xr yr"
+    , "    let eqSound xr yr proof = resultEqSound (summon (Eq e)) (summon (Eq a)) xr yr proof"
+    , "    let eqComplete xr yr proof = resultEqComplete (summon (Eq e)) (summon (Eq a)) xr yr proof"
     , ""
     , -- §28.2 Ord for Result orders Err before Ok (the conventional
       -- error-channel-low order), then by the contained value.
@@ -3209,7 +3620,7 @@ preludeSource =
     , -- §28.2.2: Result is the standard error-short-circuiting monad over
       -- a fixed error type; an Err halts the computation.
       "instance Applicative (Result e) ="
-    , "    let pureA x = Ok x"
+    , "    let pure x = Ok x"
     , "    let liftA2 f ra rb ="
     , "        match ra"
     , "        case Err e -> Err e"
@@ -3232,37 +3643,58 @@ preludeSource =
       -- runs an applicative action for each element, discarding results;
       -- 'sequence_' runs a Foldable of actions for effect.
       "for_ : forall (t : (0 A : Type) -> Type) (f : (0 A : Type) -> Type) (a : Type) (b : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t a -> (a -> f b) -> f Unit"
-    , "let for_ xs act = foldr (\\x -> \\acc -> liftA2 (\\u -> \\v -> Unit) (act x) acc) (pureA Unit) xs"
+    , "let for_ xs act = foldr (\\x -> \\acc -> liftA2 (\\u -> \\v -> Unit) (act x) acc) (pure Unit) xs"
     , ""
     , "sequence_ : forall (t : (0 A : Type) -> Type) (f : (0 A : Type) -> Type) (a : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t (f a) -> f Unit"
-    , "let sequence_ xs = foldr (\\m -> \\acc -> liftA2 (\\u -> \\v -> Unit) m acc) (pureA Unit) xs"
+    , "let sequence_ xs = foldr (\\m -> \\acc -> liftA2 (\\u -> \\v -> Unit) m acc) (pure Unit) xs"
     , ""
     , "summon : (0 t : Type) -> (@_ : IsTrait t) -> (@evidence : t) -> t" -- §16.3.3.1
     , "let summon (0 t : Type) (@_ : IsTrait t) (@evidence : t) = evidence"
     , ""
     , -- §28.2 proof and equality helpers over propositional equality.
-      -- This implementation does not yet propagate the branch-local endpoint
-      -- equality forced by matching 'refl' (see docs/notes/KNOWN_SPEC_ISSUES.md), so
-      -- these helpers cannot be defined by 'match eq case refl -> ...'. They
-      -- are realized through primitives that respect the operational
-      -- meaning of erased, proof-irrelevant equality: 'subst'/'pathInd'
-      -- transport by the identity (the equality witness is erased), and
-      -- sym/trans/cong produce the relevant erased proof. The spec
-      -- signatures are exactly as in §28.2.
+      -- Symmetry, transitivity, and congruence are ordinary path-inductive
+      -- definitions. They receive no constructor-name or primitive privilege.
       "absurd : forall (@0 a : Type). Void -> a"
     , "let absurd v = __absurd v"
     , ""
     , "subst.{u, v} : forall (@parametric 0 a : Type u) (@parametric 0 p : (ordinary 0 z : a) -> Type v) (@ordinary 0 x : a) (@ordinary 0 y : a). x = y -> p x -> p y"
     , "let subst.{u, v} eq px = __transport px"
     , ""
-    , "sym : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x"
-    , "let sym eq = __eqProof"
+    , "sym.{u} : forall (@0 a : Type u) (@0 x : a) (@0 y : a). x = y -> y = x"
+    , "let sym.{u} eq = match eq case refl -> refl"
     , ""
-    , "trans : forall (@0 a : Type) (@0 x : a) (@0 y : a) (@0 z : a). x = y -> y = z -> x = z"
-    , "let trans p q = __eqProof"
+    , "trans.{u} : forall (@0 a : Type u) (@0 x : a) (@0 y : a) (@0 z : a). x = y -> y = z -> x = z"
+    , "let trans.{u} p q = match p case refl -> q"
     , ""
-    , "cong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
-    , "let cong f eq = __eqProof"
+    , "cong.{u, v} : forall (@0 a : Type u) (@0 b : Type v) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
+    , "let cong.{u, v} f eq = match eq case refl -> refl"
+    , ""
+    , "happly.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : (x : a) -> b x) (g : (x : a) -> b x). f = g -> forall (x : a). f x = g x"
+    , "let happly.{u, v} equality x = cong (\\(function : (z : a) -> b z) -> function x) equality"
+    , ""
+    , "happlyForall.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : forall (x : a). b x) (g : forall (x : a). b x). f = g -> forall (x : a). f @x = g @x"
+    , "let happlyForall.{u, v} equality x = match equality case refl -> refl"
+    , ""
+    , "borrowHapply.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : (& x : a) -> b x) (g : (& x : a) -> b x). f = g -> forall (x : a). f x = g x"
+    , "let borrowHapply.{u, v} equality x = cong (\\(function : (& z : a) -> b z) -> function x) equality"
+    , ""
+    , "expect term funExt.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : (x : a) -> b x) (g : (x : a) -> b x). (forall (x : a). f x = g x) -> f = g"
+    , ""
+    , "expect term forallExt.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : forall (x : a). b x) (g : forall (x : a). b x). (forall (x : a). f @x = g @x) -> f = g"
+    , ""
+    , "expect term borrowFunExt.{u, v} : forall (a : Type u) (parametric 0 b : a -> Type v) (f : (& x : a) -> b x) (g : (& x : a) -> b x). (forall (x : a). f x = g x) -> f = g"
+    , ""
+    , "hedberg.{u} : forall (a : Type u). ((& x : a) -> (& y : a) -> Dec (x = y)) -> IsSet a"
+    , "let hedberg.{u} decision = derive (IsSet a)"
+    , ""
+    , "piIsProp.{u, v} : forall (a : Type u) (b : a -> Type v). (forall (x : a). IsProp (b x)) -> IsProp ((x : a) -> b x)"
+    , "let piIsProp.{u, v} pointwise = derive"
+    , ""
+    , "piIsSet.{u, v} : forall (a : Type u) (b : a -> Type v). (forall (x : a). IsSet (b x)) -> IsSet ((x : a) -> b x)"
+    , "let piIsSet.{u, v} pointwise = derive"
+    , ""
+    , "sigmaIsSet.{u, v} : forall (a : Type u) (b : a -> Type v). IsSet a -> (forall (x : a). IsSet (b x)) -> IsSet (first : a, second : b this.first)"
+    , "let sigmaIsSet.{u, v} baseIsSet fiberIsSet = derive"
     , ""
     , -- Canonical Nat right identity is proved structurally because natAdd
       -- recurses on its left argument. The erased provider argument records
@@ -3287,20 +3719,20 @@ preludeSource =
       -- value still unelaborated) mis-resolves its implicit equality endpoints.
       -- Each 'h :: t' arm's dependent goal reduces because the §7.4.1
       -- dependent-match refinement substitutes the scrutinee by its cons.
-      "consCong : forall (a : Type) (xs : List a) (ys : List a). (h : a) -> (=) xs ys -> (=) (h :: xs) (h :: ys)"
-    , "let consCong h eq = cong (\\rest -> h :: rest) eq"
+      "consCong.{u} : forall (a : Type u) (xs : List a) (ys : List a). (h : a) -> (=) xs ys -> (=) (h :: xs) (h :: ys)"
+    , "let consCong.{u} h eq = cong.{u, u} (\\rest -> h :: rest) eq"
     , ""
-    , "listAppendRightIdentity : forall (a : Type). (xs : List a) -> (=) (listAppend xs Nil) xs"
-    , "let listAppendRightIdentity xs ="
+    , "listAppendRightIdentity.{u} : forall (a : Type u). (xs : List a) -> (=) (listAppend xs Nil) xs"
+    , "let listAppendRightIdentity.{u} xs ="
     , "    match xs"
     , "    case Nil -> refl"
-    , "    case h :: t -> consCong h (listAppendRightIdentity t)"
+    , "    case h :: t -> consCong.{u} h (listAppendRightIdentity.{u} t)"
     , ""
-    , "listAppendAssoc : forall (a : Type). (xs : List a) -> (ys : List a) -> (zs : List a) -> (=) (listAppend (listAppend xs ys) zs) (listAppend xs (listAppend ys zs))"
-    , "let listAppendAssoc xs ys zs ="
+    , "listAppendAssoc.{u} : forall (a : Type u). (xs : List a) -> (ys : List a) -> (zs : List a) -> (=) (listAppend (listAppend xs ys) zs) (listAppend xs (listAppend ys zs))"
+    , "let listAppendAssoc.{u} xs ys zs ="
     , "    match xs"
     , "    case Nil -> refl"
-    , "    case h :: t -> consCong h (listAppendAssoc t ys zs)"
+    , "    case h :: t -> consCong.{u} h (listAppendAssoc.{u} t ys zs)"
     , ""
     , -- §21.6 semantic-reflection witness algebra (compile-time/erased).
       -- Bodies use '__eqProof', the same magic-inhabitant mechanism as
@@ -3324,10 +3756,10 @@ preludeSource =
       -- erased proof terms exported by the authenticated prelude; callers do
       -- not depend on checker-only constructor tags or source-name matching.
       "natSuccInjective : forall (m : Nat) (n : Nat). Nat.Succ m = Nat.Succ n -> m = n"
-    , "let natSuccInjective proof = __eqProof"
+    , "let natSuccInjective proof = match proof case refl -> refl"
     , ""
     , "natZeroNotSucc : forall (n : Nat). Nat.Zero = Nat.Succ n -> Void"
-    , "let natZeroNotSucc proof = __eqProof"
+    , "let natZeroNotSucc proof = match proof case refl -> impossible"
     , ""
     , -- §11.4/§14.4 h-prop closure lemmas (admitted via '__eqProof', the same
       -- magic-inhabitant mechanism as sym/trans/cong). These are the TRUE
@@ -3827,6 +4259,16 @@ stdHashSource =
     , "        case MkHashCode x ->"
     , "            match b"
     , "            case MkHashCode y -> eqInt x y"
+    , "    let eqSound a b proof ="
+    , "        match a"
+    , "        case MkHashCode x ->"
+    , "            match b"
+    , "            case MkHashCode y -> cong MkHashCode (eqBooleanSound (summon (Eq Int)) x y proof)"
+    , "    let eqComplete a b proof ="
+    , "        match proof"
+    , "        case refl ->"
+    , "            match a"
+    , "            case MkHashCode x -> eqBooleanComplete (summon (Eq Int)) x x refl"
     , ""
     , "instance Ord HashCode ="
     , "    let compare a b ="

@@ -1091,7 +1091,7 @@ basePrims =
     , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef"
     , "locallyFiberRef" -- §18.1.7 lowered to a krt2_locally_fiber_ref bind tree (compileAppGlob)
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
-    , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
+    , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure", "stmOrElse"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "__sleepForNanos"
     , "__currentFiberId", "__fiberId" -- §18.1.10 fiber identity; kpf_current_fiber_id/kpf_fiber_id shims
@@ -3634,6 +3634,11 @@ compileAppGlob g sargs term = do
           | [(jv, v)] <- explIxG -> do
               vc <- peaIx jv v
               pure ("krt2_stm_pure(" <> vc <> ")")
+        Just "stmOrElse"
+          | [(jl, left), (jr, right)] <- explIxG -> do
+              leftCode <- peaIx jl left
+              rightCode <- peaIx jr right
+              pure ("krt2_or_else(" <> leftCode <> ", " <> rightCode <> ")")
         Just "newTVar"
           | [(jv, v)] <- explIxG -> do
               vc <- peaIx jv v
@@ -4250,6 +4255,7 @@ cpsNodeApp term = do
         (Just "__interruptForkAny", [_, _]) -> True
         (Just "atomically", [_]) -> True
         (Just "stmBind", [_, _]) -> True
+        (Just "stmOrElse", [_, _]) -> True
         _ -> False
     _ -> pure False
 
@@ -5155,7 +5161,7 @@ suspendingNames =
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
-    , "atomically", "stmBind" -- §18.1.13 STM: atomically retry-parks; stmBind builds the STM tree
+    , "atomically", "stmBind", "stmOrElse" -- §18.1.13 STM node builders
       -- §18.1.4 reason-carrying finalizers: structured do-kernel nodes, forced
       -- onto CPS for ordinary do-block execution; the sync bridge is only a
       -- non-parking legacy fallback.

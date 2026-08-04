@@ -8,7 +8,7 @@
 -- instance may omit a defaulted member (the default applies) or override it.
 -- Omitting a required member is a compile-time rejection. Neither §3.2 nor the
 -- §3.1 portable-alias list names a diagnostic for this rejection, so this test
--- asserts this implementation's stable code E_INSTANCE_MEMBER_MISSING.
+-- asserts the portable §3.2.4A completion code E_DERIVE_MEMBER_MISSING.
 
 --! mode check
 
@@ -57,14 +57,14 @@ let useOverride = isEmptyC (Wrap 5)
 data Token : Type =
     MkToken String
 
-instance Describable Token =    --!! E_INSTANCE_MEMBER_MISSING
+instance Describable Token =    --!! E_DERIVE_MEMBER_MISSING
 
 -- NEGATIVE: instance provides only the defaulted member and omits the
 -- required `sizeOf` (which has no default).
 data Tag : Type =
     MkTag Int
 
-instance Sized Tag =            --!! E_INSTANCE_MEMBER_MISSING
+instance Sized Tag =            --!! E_DERIVE_MEMBER_MISSING
     let isEmptyC t = True
 
 --! assertErrorCount 2

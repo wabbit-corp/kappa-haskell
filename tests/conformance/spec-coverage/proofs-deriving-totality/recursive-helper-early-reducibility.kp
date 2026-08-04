@@ -1,0 +1,22 @@
+-- Spec 15.1/15.3: direct structural recursion remains conversion-reducible
+-- when its body calls an earlier conversion-reducible helper. Certification
+-- must happen before checking the following declaration, not only in the
+-- final module SCC pass.
+module main
+
+identityBool : Bool -> Bool
+let identityBool value = value
+
+allTrue : List Bool -> Bool
+let allTrue values =
+    match values
+    case Nil -> True
+    case value :: rest ->
+        if identityBool value then allTrue rest else False
+
+allTrueNil : allTrue Nil = True
+let allTrueNil = refl
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

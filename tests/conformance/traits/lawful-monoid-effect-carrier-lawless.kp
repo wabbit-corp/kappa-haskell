@@ -4,25 +4,24 @@ module main
 -- monoid laws as mandatory members).  The effect carrier `IO e a` CANNOT
 -- discharge those laws — its propositional equality is not an h-prop (no
 -- `IsSet (IO e a)`), and fabricating one is exactly the unsoundness this avoids.
--- So `IO e a` is NOT a `Monoid`: a `Monoid (IO e a)` obligation is unsatisfiable
--- (no such instance, and none can be fabricated).  It still needs an `empty` for
--- the §18.1.13 `let?`/STM `empty` desugaring, which it gets from the minimal,
--- law-LESS `Pointed` trait instead.
+-- So `STM a` is NOT a `Monoid`: a `Monoid (STM a)` obligation is unsatisfiable
+-- (no such instance, and none can be fabricated). Transactional choice instead
+-- belongs to the lawful `Alternative STM` interface required by §18.1.14.
 
 needMonoid : forall (a : Type). (@_ : Monoid a) -> Unit
 let needMonoid = Unit
 
-needPointed : forall (a : Type). (@_ : Pointed a) -> Unit
-let needPointed = Unit
+needAlternative : forall (f : (0 A : Type) -> Type). (@_ : Alternative f) -> Unit
+let needAlternative = Unit
 
--- `Pointed (IO e a)` resolves (the law-less `empty`-only trait is available):
-okPointed : forall (e : Type) (a : Type). (@_ : Pointed (IO e a)) -> Unit
-let okPointed = Unit
+-- `Alternative STM` resolves through the standard transactional-choice
+-- instance, whose `empty` is `retry` and whose choice operation is `orElse`.
+let lawfulSTMAlternative : Unit = needAlternative @STM
 
--- but `Monoid (IO e a)` does NOT: no instance, and the laws would need a
--- fabricated `IsSet (IO e a)` that this implementation correctly refuses.
-badMonoid : forall (e : Type) (a : Type). Unit
-let badMonoid = needMonoid @(IO e a)
+-- But `Monoid (STM a)` does NOT: no instance, and transactional choice does
+-- not satisfy the unrelated value-level append contract.
+badMonoid : forall (a : Type). Unit
+let badMonoid = needMonoid @(STM a)
 
 --! mode check
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
