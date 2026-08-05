@@ -60,10 +60,32 @@ library
         Kappa.Build.Types
         Kappa.Cardinality
         Kappa.Check
+        Kappa.Check.Arith
         Kappa.Check.Artifact
+        Kappa.Check.Blocks
+        Kappa.Check.CallGraph
+        Kappa.Check.Comprehensions
+        Kappa.Check.Decls
+        Kappa.Check.Derive
+        Kappa.Check.Do
+        Kappa.Check.Elab
+        Kappa.Check.Effects
         Kappa.Check.GeneratedPrelude
-        Kappa.Check.Pending
+        Kappa.Check.Kernel
+        Kappa.Check.Implicits
+        Kappa.Check.Match
+        Kappa.Check.Names
         Kappa.Check.Patch
+        Kappa.Check.Pending
+        Kappa.Check.Positivity
+        Kappa.Check.Projections
+        Kappa.Check.Quotes
+        Kappa.Check.Records
+        Kappa.Check.StateOps
+        Kappa.Check.Support
+        Kappa.Check.Totality
+        Kappa.Check.Types
+        Kappa.Check.Unify
         Kappa.Check.UniverseConstraints
         Kappa.Config
         Kappa.Core

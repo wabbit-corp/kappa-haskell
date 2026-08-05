@@ -9,19 +9,49 @@ Each item: what, why it would help, rough size/risk.
 
 ## High value
 
-- **Split `Check.hs` (~14.4k lines) into ~8 cohesive modules.** It is the single
-  biggest navigability barrier. The 23 existing `-- ── … ──` dividers already
-  fall on clean seams. Proposed cut (line numbers approximate, at audit time):
-  - `Check.State` — state, `Ctx`, `DataInfo`/`CtorInfo`/`TraitInfo`, bind/refine helpers (~85–948)
-  - `Check.Unify` — `unify`, `qSubsumes`, occurs check, meta solving (~949–1594)
-  - `Check.Names` — name resolution/scoping (~1595–1936)
-  - `Check.Implicits` — implicit-arg + trait/instance resolution ladder (~1937–3037)
-  - `Check.Elab` — `infer`/`check`/spines, the heart (~3038–4490)
-  - `Check.Elab.Records` / `.Literals` / `.Control` — records/projections, literals, lambdas/effects/match/do (~4490–9170)
-  - `Check.Elab.Meta` — quotes/macros/Elab, derivation reflection, comprehensions (~9170–10980)
-  - `Check.Declarations` — `checkModule`, decls, instances, positivity (~10980–12884)
-  - `Check.Totality` — SCC edges, size-change, measures (~12885–14362)
-  Size: large. Risk: low-ish (mechanical, but lots of import wiring + export lists).
+- **Split `Check.hs`** — DONE (2026-08-05), but *not* along the lines this
+  entry originally proposed. Recording why, since the reasoning generalizes.
+
+  The original plan was to cut along the 23 `-- ── … ──` dividers, on the
+  stated grounds that they "already fall on clean seams". They do not. A
+  call-graph analysis (comments and string literals stripped) puts **all 23
+  sections in a single dependency cycle** — the dividers record where code was
+  *placed*, not how it *depends*. `elabInstance`, for one, sits under the
+  "Normalization and arithmetic evidence" divider. Cutting there would have
+  needed an `.hs-boot` seam at every boundary.
+
+  What worked instead was cutting by **dependency layer**, ignoring topic:
+
+  - `Check.Types` — the 125 type declarations. Safe by construction: a data
+    declaration can never join a value-level cycle.
+  - `Check.Support` + 17 topical modules (`Names`, `Unify`, `Implicits`,
+    `Decls`, `Match`, `Do`, …) — the layer *below* the kernel. Each topical
+    module was formed by taking the definitions reachable from exactly one
+    consumer; anything reachable from two or more went to `Support`. That
+    yields **zero cross-topic edges**, so the topical modules are mutually
+    independent and all sit on `Support`.
+  - `Check.Arith` / `Check.Totality` — arithmetic evidence and termination.
+  - `Check` / `Check.Kernel` — the naming was inverted so `Kappa.Check` is now
+    the ~6k declaration driver (`checkModule` and friends, the place to start
+    reading) and the elaboration kernel moved to `Kappa.Check.Kernel`. No
+    downstream import changed.
+
+  `Check.hs` went 60,647 → 6,027 lines; no new module exceeds ~5.2k.
+
+- **The remaining `Check.Kernel` monolith (~29.8k lines).** This is the
+  irreducible part *by module surgery alone*: 416 definitions in one cycle.
+  It is not uniformly tangled, though — it is held together by **12 hub
+  functions totalling ~2.7k lines** (`infer`, `check`, `unifyWith`,
+  `inferType`, `resolveImplicitQ`, `tryInstance`, and six smaller ones).
+  Remove those and the other 404 definitions (~26.9k lines) fall into 350
+  components, the largest only ~1.9k lines.
+
+  So the kernel *can* be broken, but only with an `.hs-boot` file declaring
+  those 12 signatures, with the topical pieces importing it via
+  `{-# SOURCE #-}` (the pattern GHC's own source tree uses). That would leave
+  no file over ~2.7k. Deliberately **not** done: it buys modularity at the
+  cost of a hand-maintained boot file and slower builds. Revisit if the kernel
+  keeps growing.
 
 - **Extract `Pipeline.compileFilesWithCfgInj`'s ~300-line `let`
   (`Pipeline.hs:352-649`) into named phase functions.** Right now the end-to-end
