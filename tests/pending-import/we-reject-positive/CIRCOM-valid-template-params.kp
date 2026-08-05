@@ -39,3 +39,5 @@ result : Array (Shifter 4) 2
 let result = makeShifters 4
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_APPLICATION_NONCALLABLE at line 28; current source or fixture is not portable v1 and must be rewritten before promotion.

@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+import eqs.(type Bit(..))
+import custom_equiv
+
+result : Bool
+let result = O ~= I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertNoErrors
+--! assertEval result True
+--! assertFallbackNotSelected Equiv Bit

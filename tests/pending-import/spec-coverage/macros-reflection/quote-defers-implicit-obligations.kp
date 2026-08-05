@@ -40,4 +40,4 @@ let nVal = 7
 
 viaHandler : String
 let viaHandler = pfx"${nVal}"
--- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT (Show @1) at both quotes: the implicit is solved at quotation time instead of being deferred to the splice site per §21.1
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Show @1" at line 24

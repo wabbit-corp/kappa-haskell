@@ -12,4 +12,4 @@ module main
 
 person : (name : String, age : Integer)
 let person = (nmae = "ada", age = 36) --!! kappa.type.mismatch
--- STATUS(a0497523): FAIL — generic whole-row mismatch, no mismatch path, no rename fix; Spec 3.2.3 record-row label repair now mandatory
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.type.mismatch has a fix with applicability maybe-applicable

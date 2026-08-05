@@ -21,4 +21,4 @@ let portKey : ConfigInputKey Int = configInput "port"
 let port = input portKey
 let endpoint = f"$host:$port"
 
--- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; manifest-checker cross-check: ConfigInputKey/configInput resolve, but the §35.4 standard form input is not in the schema scope (unimplemented)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability configMode: not provided

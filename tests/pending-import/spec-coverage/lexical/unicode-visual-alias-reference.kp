@@ -20,4 +20,4 @@ let A = 41
 resolved : Int
 let resolved = `А` + 1
 
--- STATUS(a0497523): FAIL — no strongVisualNameKey lookup: the Cyrillic reference is E_NAME_UNRESOLVED instead of resolving to A with W_UNICODE_VISUAL_ALIAS_REFERENCE
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name '\1040' (not in scope)" at line 21; no diagnostic warning[W_UNICODE_VISUAL_ALIAS_REFERENCE] was produced (saw: W_UNICODE_CONFUSABLE_IDENTIFIER@21, E_NAME_UNRESOLVED@21); assertEval: 'resolved' evaluates to addInt _ 1, expected 42

@@ -28,4 +28,4 @@ let buildBad = do
 
 bad : Pair2
 let bad = $(buildBad)
--- STATUS(a0497523): FAIL — std.deriving.shape exports no constructAdt/fieldArgument (unresolved names) and KAPPA_DERIVING_SHAPE_BAD_CONSTRUCTOR_ARGUMENTS is not a registered diagnostic code; the §22.6 argument-validation surface is unimplemented
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'constructAdt' (not in scope)" at line 25; no diagnostic with family kappa.deriving.shape was produced

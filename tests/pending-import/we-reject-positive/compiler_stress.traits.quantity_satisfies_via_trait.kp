@@ -34,3 +34,5 @@ result2 : Int
 let result2 = withDroppable (x = 99)
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_NAME_UNRESOLVED at line 15; current source or fixture is not portable v1 and must be rewritten before promotion.

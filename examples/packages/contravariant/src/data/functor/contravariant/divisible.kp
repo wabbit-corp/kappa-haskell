@@ -1,0 +1,33 @@
+module data.functor.contravariant.divisible
+
+import data.functor.contravariant.*
+
+data Split a b =
+    Split (first : a) (second : b)
+
+trait Contravariant f => Divisible f =
+    conquer : forall a. f a
+    divide : forall a b c. (a -> Split b c) -> f b -> f c -> f a
+
+instance Divisible Predicate =
+    let conquer = MkPredicate (\_ -> True)
+    let divide split left right =
+        match left
+        case MkPredicate testLeft ->
+            match right
+            case MkPredicate testRight ->
+                MkPredicate (\input ->
+                    match split input
+                    case Split first second -> testLeft first && testRight second)
+
+instance Monoid r => Divisible (Op r) =
+    let conquer = MkOp (\_ -> empty)
+    let divide split left right =
+        match left
+        case MkOp consumeLeft ->
+            match right
+            case MkOp consumeRight ->
+                MkOp (\input ->
+                    match split input
+                    case Split first second ->
+                        append (consumeLeft first) (consumeRight second))

@@ -50,3 +50,5 @@ useBool : Result Bool Int
 let useBool = errOnly True
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_PARAMETRIC_TYPE_PROMOTION at line 23; current source or fixture is not portable v1 and must be rewritten before promotion.

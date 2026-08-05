@@ -37,6 +37,4 @@ let bad (1 t : Two) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch linear|quantit|duplic|consum
 
--- STATUS(a0497523): FAIL — accepted with 0 errors: an as-pattern on a
--- linear scrutinee hands out the whole and the part as independently
--- consumable owned bindings (runtime double-consume of the component).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /linear|quantit|duplic|consum/ (no diagnostics)

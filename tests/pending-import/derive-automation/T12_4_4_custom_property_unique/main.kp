@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+trait TruthWitness =
+    proof : True = True
+    evidence uniqueness = derive
+
+makeTruth : TruthWitness
+let makeTruth = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode TruthWitness independent
+--! assertEvidenceUniquenessCertificateValid TruthWitness
+--! assertEvidenceConstructionMode makeTruth fresh-independent
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertEvidenceUniquenessMode' is not defined by Appendix T (§T.3); line 16: unknown directi

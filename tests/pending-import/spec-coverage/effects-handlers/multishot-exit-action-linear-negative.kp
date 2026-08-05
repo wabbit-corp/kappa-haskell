@@ -30,4 +30,4 @@ let bad (1 x : Int) : Int =
                         pure a
 
         runPure handled
--- STATUS(a0497523): FAIL — compiler rejects, but with E_QTT_LINEAR_OVERUSE rather than E_QTT_CONTINUATION_CAPTURE identifying the exit-action-obligation reason required by §18.1.20.2.
+-- STATUS(74742dfd): FAIL — error codes are [E_QTT_LINEAR_OVERUSE], expected [E_QTT_CONTINUATION_CAPTURE]

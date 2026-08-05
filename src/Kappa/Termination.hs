@@ -249,9 +249,16 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
                 Nothing -> Nothing
       CGlobal x universes -> Just (CGlobal x universes)
       CLamM mode ic q n b -> CLamM mode ic q n <$> go (curDepth + 1) b
-      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-        CPiEvidenceM mode formation ic q brw n assumption origin <$> go curDepth a <*> go (curDepth + 1) b
-      CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
+      CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+        CPiRuntimeM mode formation ic q brw n assumption origin
+          <$> traverse (go curDepth) runtimeErasure
+          <*> go curDepth a
+          <*> go (curDepth + 1) b
+      CAppM ic runtimeErasure f a ->
+        CAppRuntime ic
+          <$> traverse (go curDepth) runtimeErasure
+          <*> go curDepth f
+          <*> go curDepth a
       CSort u -> Just (CSort u)
       CLevel u -> Just (CLevel u)
       CUniverseLift from to evidence t ->
@@ -284,18 +291,21 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
       CProjAtM mode e f i -> CProjAtM mode <$> go curDepth e <*> pure f <*> pure i
       CVariantT ms -> CVariantT <$> traverse (go curDepth) ms
       CInject tag e -> CInject tag <$> go curDepth e
-      CLetM mode q n a b c -> CLetM mode q n <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
-      CLetRecM mode q n a b c -> CLetRecM mode q n <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
-      CLetPolyM mode q n telescope a b c ->
-        CLetPolyM mode q n telescope <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
-      CLetRecPolyM mode q n telescope a b c ->
-        CLetRecPolyM mode q n telescope <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CLetRuntimeM mode q n runtimeErasure a b c ->
+        CLetRuntimeM mode q n <$> traverse (go curDepth) runtimeErasure <*> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
+      CLetRecRuntimeM mode q n runtimeErasure a b c ->
+        CLetRecRuntimeM mode q n <$> traverse (go curDepth) runtimeErasure <*> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CLetPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetPolyRuntimeM mode q n telescope <$> traverse (go curDepth) runtimeErasure <*> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
+      CLetRecPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetRecPolyRuntimeM mode q n telescope <$> traverse (go curDepth) runtimeErasure <*> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
       CLetRecGroupM telescope definitions body -> do
         let groupDepth = curDepth + length definitions
         definitions' <- traverse
           (\definition ->
-             (\ty rhs -> definition {clrdType = ty, clrdRhs = rhs})
-               <$> go curDepth (clrdType definition)
+             (\runtimeErasure ty rhs -> definition {clrdRuntimeErasure = runtimeErasure, clrdType = ty, clrdRhs = rhs})
+               <$> traverse (go curDepth) (clrdRuntimeErasure definition)
+               <*> go curDepth (clrdType definition)
                <*> go groupDepth (clrdRhs definition))
           definitions
         CLetRecGroupM telescope definitions' <$> go groupDepth body
@@ -351,14 +361,15 @@ simplifyDecisionTermAt = go
          in fromMaybe
               (CMatch s' scrutineeAnn resultAnn alts')
               (reduceSimpleMatch s' alts')
-      CApp ic f a ->
-        let function = go depth f
+      CAppM ic runtimeErasure f a ->
+        let runtimeErasure' = fmap (go depth) runtimeErasure
+            function = go depth f
             argument = go depth a
          in case function of
               CLamM _ binderIcit _ _ body
                 | binderIcit == ic ->
                     go depth (substTopTermAt depth argument body)
-              _ -> CApp ic function argument
+              _ -> CAppRuntime ic runtimeErasure' function argument
       CUniverseLift from to evidence t ->
         CUniverseLift from to evidence (go depth t)
       CSchemaLift family source target roles evidence certificate sourceArguments targetArguments t ->
@@ -367,8 +378,9 @@ simplifyDecisionTermAt = go
           (map (go depth) targetArguments)
           (go depth t)
       CLamM mode ic q n b -> CLamM mode ic q n (go (depth + 1) b)
-      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-        CPiEvidenceM mode formation ic q brw n assumption origin
+      CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+        CPiRuntimeM mode formation ic q brw n assumption origin
+          (fmap (go depth) runtimeErasure)
           (go depth a)
           (go (depth + 1) b)
       CCtorI g universes ann arguments ->
@@ -384,19 +396,20 @@ simplifyDecisionTermAt = go
       CProjAtM mode e f i -> CProjAtM mode (go depth e) f i
       CVariantT ms -> CVariantT (map (go depth) ms)
       CInject tag e -> CInject tag (go depth e)
-      CLetM mode q n a b c ->
-        CLetM mode q n (go depth a) (go depth b) (go (depth + 1) c)
-      CLetRecM mode q n a b c ->
-        CLetRecM mode q n (go depth a) (go (depth + 1) b) (go (depth + 1) c)
-      CLetPolyM mode q n telescope a b c ->
-        CLetPolyM mode q n telescope (go depth a) (go depth b) (go (depth + 1) c)
-      CLetRecPolyM mode q n telescope a b c ->
-        CLetRecPolyM mode q n telescope (go depth a) (go (depth + 1) b) (go (depth + 1) c)
+      CLetRuntimeM mode q n runtimeErasure a b c ->
+        CLetRuntimeM mode q n (fmap (go depth) runtimeErasure) (go depth a) (go depth b) (go (depth + 1) c)
+      CLetRecRuntimeM mode q n runtimeErasure a b c ->
+        CLetRecRuntimeM mode q n (fmap (go depth) runtimeErasure) (go depth a) (go (depth + 1) b) (go (depth + 1) c)
+      CLetPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetPolyRuntimeM mode q n telescope (fmap (go depth) runtimeErasure) (go depth a) (go depth b) (go (depth + 1) c)
+      CLetRecPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetRecPolyRuntimeM mode q n telescope (fmap (go depth) runtimeErasure) (go depth a) (go (depth + 1) b) (go (depth + 1) c)
       CLetRecGroupM telescope definitions body ->
         let groupDepth = depth + length definitions
          in CLetRecGroupM telescope
               [ definition
-                  { clrdType = go depth (clrdType definition)
+                  { clrdRuntimeErasure = fmap (go depth) (clrdRuntimeErasure definition)
+                  , clrdType = go depth (clrdType definition)
                   , clrdRhs = go groupDepth (clrdRhs definition)
                   }
               | definition <- definitions

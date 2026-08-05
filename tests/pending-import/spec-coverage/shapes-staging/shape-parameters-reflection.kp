@@ -23,4 +23,4 @@ let checkParams = do
 
 ok : String
 let ok = $(checkParams)
--- STATUS(a0497523): FAIL — AdtShape has no 'parameters' member (E_UNRESOLVED_MEMBER); §22 ShapeParameter reflection unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNRESOLVED_MEMBER "no member 'parameters' on this receiver (§7.3)" at line 17

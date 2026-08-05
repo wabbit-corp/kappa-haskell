@@ -1,10 +1,9 @@
 -- Source issues: WebPPL #602 (add observe and condition helpers),
 --   PR #607 (add observe), #756 / #787 (observe forwards options to
 --   sample), PR #794 (make observe pass options to sample).
--- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-01
---   (Prob effect family — proposed; the realized form here uses
---    effects.monadic_core.effect_declarations and the
---    Eff <[label : E]> a row syntax of effects.monadic_core.eff_effect_rows),
+-- Spec: effects.monadic_core.effect_declarations,
+--   effects.monadic_core.effect_labels,
+--   effects.monadic_core.eff_effect_rows,
 --   compiler.frontir.standard_diagnostic_families.effect_row_variant
 --   (kappa.effect.row-mismatch).
 --
@@ -17,24 +16,30 @@
 module test
 
 --! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
 
-data Bernoulli : Type =
+data Bernoulli : Type0 =
     Bernoulli { p : Float }
 
-data Distribution (a : Type) : Type =
+-- The distribution index and polymorphic operation variables are explicitly
+-- small so this test isolates effect-row checking rather than universe lifting.
+data Distribution (0 a : Type0) : Type0 =
     DistBernoulli Bernoulli
 
 effect Prob =
-    1 sample    : forall a. Distribution a -> a
-    1 observe   : forall a. Distribution a -> a -> a
+    1 sample    : forall (a : Type0). Distribution a -> a
+    1 observe   : forall (a : Type0). Distribution a -> a -> a
     1 condition : Bool -> Unit
     1 factor    : Float -> Unit
+
+effect label prob : Prob
 
 -- POSITIVE: a `Prob`-effectful function may invoke each operation through
 -- the `prob` label.
 modelOk : Eff <[prob : Prob]> Bool
 let modelOk = do
-    let dB = DistBernoulli (Bernoulli { p = 0.7 })
+    let dB : Distribution Bool = DistBernoulli (Bernoulli { p = 0.7 })
     let x <- prob.sample dB
     let _ <- prob.observe dB True
     prob.condition (x || True)
@@ -46,6 +51,8 @@ let modelOk = do
 -- NEGATIVE: invoking `prob.sample` from a pure context (empty effect row)
 -- is an effect-row error.
 topSample : Eff <[ ]> Bool
-let topSample = prob.sample (DistBernoulli (Bernoulli { p = 0.5 }))
+let topSample =
+    let dB : Distribution Bool = DistBernoulli (Bernoulli { p = 0.5 })
+    in prob.sample dB
 
---! assertDiagnosticFamily error kappa.effect.row-mismatch
+-- STATUS(2a161551): FAIL — the pure-row mismatch is rejected as generic kappa.type.mismatch rather than the required kappa.effect.row-mismatch.

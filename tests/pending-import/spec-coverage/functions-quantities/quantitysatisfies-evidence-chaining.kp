@@ -30,4 +30,4 @@ let chained x = consume1 x
 
 --! mode check
 --! assertNoErrors
--- STATUS(a0497523): FAIL — `QuantitySatisfies` premises are unimplemented (E_NAME_UNRESOLVED) and quantity-variable binders misparse; 5 errors instead of acceptance, so §12.2.1 reflexive-transitive evidence closure cannot be exercised.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_NAME_UNRESOLVED "unresolved name 'QuantitySatisfies' (not in scope)" at line 11

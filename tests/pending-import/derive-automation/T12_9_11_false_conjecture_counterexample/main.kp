@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+falseClaim :
+    forall (x : Bool).
+    x = True
+let falseClaim = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveCounterexamples
+--! assertDiagnosticFamily error kappa.derive
+--! assertDeriveOutcome falseClaim Counterexample
+--! assertDeriveCounterexample falseClaim

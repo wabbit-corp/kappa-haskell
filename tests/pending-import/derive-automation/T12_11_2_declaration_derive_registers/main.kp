@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+data Color : Type =
+    Red
+    Green
+
+derive Eq Color
+
+reflected : Red = Red
+let reflected = Eq.eqSound Red Red derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedInstance Eq Color
+--! assertDerivedInstanceProviderUsed reflection for Eq Color
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedInstance' is not defined by Appendix T (§T.3); line 17: unknown directive 'ass

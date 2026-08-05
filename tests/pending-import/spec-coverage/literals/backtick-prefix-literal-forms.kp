@@ -25,4 +25,4 @@ let plainStr = f"n = $n"
 
 quotedStr : String
 let quotedStr = `f`"n = $n"
--- STATUS(a0497523): FAIL — `b`'a' and `f`"..." report E_NAME_UNRESOLVED for b/f (with a nonsense "did you mean '%'" hint) while the unquoted spellings resolve; backtick literal prefixes never reach the handler lookup
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'b' (not in scope)" at line 21

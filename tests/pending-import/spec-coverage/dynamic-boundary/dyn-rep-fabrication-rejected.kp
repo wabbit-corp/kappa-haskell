@@ -21,4 +21,4 @@ let forgedRep = MkDynRep "Int" --!! kappa.name.unresolved
 forgedDyn : Dyn
 let forgedDyn = MkDyn "Int" --!! kappa.name.unresolved
 
--- STATUS(a0497523): FAIL — MkDynRep and MkDyn both resolve in user code (the embedded std.gradual leaks constructors through import std.gradual.*), so fabrication type-checks with 0 diagnostics.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name 'MkDynRep' (not in scope)" at line 18; no diagnostic error[kappa.name.unresolved] on line 22 (saw: E_NAME_UNRESOLVED@18)

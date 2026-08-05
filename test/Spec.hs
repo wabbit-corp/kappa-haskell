@@ -8,8 +8,9 @@ module Main (main) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Control.Applicative ((<|>))
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.List (isInfixOf, isSuffixOf, nub, permutations, sort)
+import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import qualified Data.Set as Set
@@ -48,6 +49,7 @@ import Kappa.Backend.IR
   , BackendParam (..)
   , BackendErasure (..)
   , ErasureProvenance (..)
+  , ErasureSite (..)
   , BackendPat (..)
   , BackendTerm (..)
   , BackendIRViolation (..)
@@ -70,7 +72,7 @@ import Kappa.Backend.Repr
   , argConvSelectGlobal
   , ctorLayoutOf
   , erasedSpinePositionsForArgs
-  , runtimeConstructorField
+  , runtimeConstructorPiField
   , scalarRep
   )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyInputs, verifyUnit)
@@ -80,6 +82,7 @@ import Kappa.Builtins
   , prelEqType
   , prelFin
   , prelInt
+  , prelList
   , prelLevelLe
   , prelNat
   , prelNatAdd
@@ -87,8 +90,15 @@ import Kappa.Builtins
   , prelNatMultiply
   , prelNatSucc
   , prelNatZero
+  , prelRuntimeErased
+  , prelThis
+  , prelUIO
   , prelUnit
   , primModule
+  , modAtomic
+  , modBridge
+  , modGradual
+  , modHash
   )
 import Kappa.Cardinality (cardLiteral)
 import Kappa.Check
@@ -98,15 +108,32 @@ import Kappa.Check
   , InstanceEntry (..)
   , LevelOperatorIdentity (..)
   , TraitInfo (..)
+  , sourceRoleMetadataInvarianceChecks
+  )
+import Kappa.DependencyFrontier
+  ( emptyDependencyFrontier
+  , recordDependencyCompletions
+  )
+import Kappa.Check.UniverseConstraints
+  ( constraintIdsForOwners
+  , constraintIdsForOwnersAndOccurrences
+  , rewriteSelectedConstraints
+  )
+import Kappa.MonotoneWorklist
+  ( WorklistResult (..)
+  , stabilizeWorklist
   )
 import Kappa.Core
   ( Closure (..)
   , BinderOrigin (..)
   , CaseAlt (..)
   , ConstructorArg (..)
+  , ConstructorBridge (..)
   , CorePat (..)
+  , ErasureJustification (..)
   , FormationMode (..)
   , GName (..)
+  , gKey
   , gnameText
   , Icit (..)
   , KItem (..)
@@ -114,6 +141,7 @@ import Kappa.Core
   , ObservationMode (..)
   , Q (..)
   , RecordField (..)
+  , RuntimeErasure (..)
   , SchemaRoleEvidence (..)
   , Term (..)
   , UniverseEvidence (..)
@@ -127,8 +155,10 @@ import Kappa.Core
   , validateUniverseLiftEvidenceUnder
   , pattern CPiM
   , pattern CPiFormedM
+  , pattern CPiEvidenceM
   , pattern CGlob
   , pattern VGlobN
+  , pattern VPiEvidenceM
   , pattern VPiM
   , pattern VPi
   )
@@ -136,11 +166,14 @@ import Kappa.CoreOps
   ( CorePatternDecision (..)
   , foldTerm
   , globalsOfTerm
+  , instantiateEtaConstructor
   , levelMetasOfTerm
   , levelParamsOfTerm
+  , roleLevelParamsOfTerm
   , mapTermWithDepth
   , matchCorePattern
   , shiftTerm
+  , spineOfTerm
   , substTerm
   , substTopTermAt
   , termScopedAt
@@ -148,7 +181,8 @@ import Kappa.CoreOps
   , zonkTermWith
   )
 import Kappa.CoreText
-  ( KCoreTextError (..)
+  ( KCoreFile
+  , KCoreTextError (..)
   , KCoreDataInfo (..)
   , KCoreConstructorInfo (..)
   , parseAndVerifyKCoreTextWithEnvironment
@@ -157,6 +191,11 @@ import Kappa.CoreText
   , parseKCoreText
   , printCanonicalKCoreText
   , kcoreExactNaturalErasureOmissionMutation
+  , kcoreNominalInterfaceShapeMutation
+  , kcoreMetadataCaptureAvoidanceChecks
+  , kcoreRoleMetadataInvarianceChecks
+  , kcoreImportedAuthorityCollisionChecks
+  , kcoreRecordInterfaceCount
   , kcoreRepresentationCertificateCount
   , renderKCoreModule
   , semanticHashKCoreText
@@ -177,6 +216,7 @@ import Kappa.Eval
   , quote
   )
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
+import qualified Kappa.DirectedGraph as DirectedGraph
 import Kappa.Inhabitance
   ( CardinalityBound (..)
   , InhabitanceSummary (Contractible, Empty, Finite, Subsingleton, Unknown)
@@ -237,7 +277,40 @@ import Kappa.Level
   , solveLevelConstraints
   , solveLevelConstraintsFor
   , substituteLevelMetas
+  , uniquelyDeterminedLevelAssignmentsFor
   )
+import Kappa.KFrontIR.Build
+  ( buildRawKFrontIR
+  , instantiateExpressionExpansion
+  )
+import Kappa.KFrontIR.Dump (renderKFrontIRJson)
+import Kappa.KFrontIR.Facts
+  ( FrontFactError (FrontFactConflict, FrontFactPhaseError)
+  , resolveArgumentErasure
+  )
+import Kappa.KFrontIR.Identity
+  ( SomeFrontNodeId (SomeExprNode)
+  )
+import Kappa.KFrontIR.Origin
+  ( SyntheticRole (MacroExpansion)
+  )
+import Kappa.KFrontIR.Phase
+  ( FrontPhaseError (FrontPhaseIncomplete, FrontPhaseRegression)
+  , advanceFrontIR
+  , beginFrontIRPhase
+  , publishFrontIRPhase
+  )
+import Kappa.KFrontIR.Query
+  ( allFrontArguments
+  , allFrontExpressions
+  , frontExpansionCount
+  )
+import Kappa.KFrontIR.Types
+  ( fnId
+  , fnSyntax
+  , KFrontIRPhase (BodyResolve, Imports, Raw)
+  )
+import Kappa.KFrontIR.Verify (verifyRawKFrontIR)
 import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
@@ -250,8 +323,9 @@ import Kappa.Ownership
   , crossCheckBodiesWithUniverses
   , renderOwnInfo
   )
-import Kappa.Parser (parseExprText)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
+import Kappa.Parser (parseExprText, parseModule)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude, preludeState, resolvedVisibleHeads, sourcePreludeState)
+import Kappa.Usage (sameResolvedTypeHead)
 import Kappa.Pretty (renderJudgment, renderTerm)
 import Kappa.Representation
   ( BackendProfileRestriction (..)
@@ -274,7 +348,9 @@ import Kappa.Representation
   )
 import Kappa.SemanticHash (canonicalIdentityHex, sha256Hex)
 import Kappa.Source (ModuleName (..))
+import Kappa.StructuralBinary (decodeStructuralBinary, encodeStructuralBinary)
 import Kappa.Syntax (Expr (EArrow, EForall, ERecordType))
+import qualified Kappa.Syntax as Syntax
 import Kappa.TestHarness
   ( Outcome (..)
   , Summary (..)
@@ -316,7 +392,11 @@ main = do
   universeLiftOk <- universeLiftEvidenceDomain
   universeSchemaOk <- universeSchemaInterfaceDomain
   universePrincipalOk <- universeOccurrenceInstantiationPrincipalDomain
+  bodyCloseFrontierOk <- bodyCloseFrontierDomain
+  monotoneWorklistOk <- monotoneWorklistDomain
   universeLawSchemaOk <- universeLawSchemasPrincipalDomain
+  generatedInstanceSchemaOk <- generatedInstanceUniversePrincipalizationDomain
+  nominalInterfaceAuthorityOk <- nominalInterfaceAuthorityDomain
   associatedStaticMemberOk <- associatedStaticMemberUniverseDomain
   universeCapabilityOk <- universeCapabilityBoundary
   schemaLiftBoundaryOk <- schemaLiftBackendCertificateBoundary
@@ -325,6 +405,7 @@ main = do
   quantifierSyntaxOk <- parserQuantifierSyntaxDomain
   expectFragmentOk <- expectFragmentDomain
   kcoreTextOk <- kcoreTextCanonicalDomain
+  roleMetadataOk <- roleMetadataInvarianceDomain
   kcoreInterfaceOk <- kcoreSourceFreeInterfaceDomain
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
@@ -346,6 +427,16 @@ main = do
   scalarDoubleEscapeOk <- llvmDoubleScalarUnboxEscapesWrongTag
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
+  resolvedStorageHeadOk <- resolvedStorageHeadIdentityDomain
+  preludeDemandLoadingOk <- preludeDemandLoadingDomain
+  checkedPreludeArtifactOk <- checkedPreludeArtifactDomain
+  structuralBinaryOk <- structuralBinaryDomain
+  kfrontIdentityOk <- kfrontOccurrenceIdentityDomain
+  kfrontExpansionOk <- kfrontExpansionIdentityDomain
+  kfrontFactsOk <- kfrontFactMonotonicityDomain
+  kfrontPipelineOk <- kfrontPipelineArtifactDomain
+  etaConstructorInstantiationOk <- etaConstructorInstantiationDomain
+  incrementalConstraintRewriteOk <- incrementalConstraintRewriteDomain
   let unitChecks =
         [ ("registryComplete", regOk0)
         , ("familiesHygienic", famOk)
@@ -363,7 +454,11 @@ main = do
         , ("universeLiftEvidenceDomain", universeLiftOk)
         , ("universeSchemaInterfaceDomain", universeSchemaOk)
         , ("universeOccurrenceInstantiationPrincipalDomain", universePrincipalOk)
+        , ("bodyCloseFrontierDomain", bodyCloseFrontierOk)
+        , ("monotoneWorklistDomain", monotoneWorklistOk)
         , ("universeLawSchemasPrincipalDomain", universeLawSchemaOk)
+        , ("generatedInstanceUniversePrincipalizationDomain", generatedInstanceSchemaOk)
+        , ("nominalInterfaceAuthorityDomain", nominalInterfaceAuthorityOk)
         , ("associatedStaticMemberUniverseDomain", associatedStaticMemberOk)
         , ("universeCapabilityBoundary", universeCapabilityOk)
         , ("schemaLiftBackendCertificateBoundary", schemaLiftBoundaryOk)
@@ -372,6 +467,7 @@ main = do
         , ("parserQuantifierSyntaxDomain", quantifierSyntaxOk)
         , ("expectFragmentDomain", expectFragmentOk)
         , ("kcoreTextCanonicalDomain", kcoreTextOk)
+        , ("roleMetadataInvarianceDomain", roleMetadataOk)
         , ("kcoreSourceFreeInterfaceDomain", kcoreInterfaceOk)
         , ("verifierCatchesViolations", verifyOk)
         , ("reprScalarIdentity", reprOk)
@@ -393,6 +489,16 @@ main = do
         , ("llvmDoubleScalarUnboxEscapesWrongTag", scalarDoubleEscapeOk)
         , ("ctorLayoutEvidenceFields", ctorLayoutOk)
         , ("reExportBoundaryRefinement", reExportOk)
+        , ("resolvedStorageHeadIdentityDomain", resolvedStorageHeadOk)
+        , ("preludeDemandLoadingDomain", preludeDemandLoadingOk)
+        , ("checkedPreludeArtifactDomain", checkedPreludeArtifactOk)
+        , ("structuralBinaryDomain", structuralBinaryOk)
+        , ("kfrontOccurrenceIdentityDomain", kfrontIdentityOk)
+        , ("kfrontExpansionIdentityDomain", kfrontExpansionOk)
+        , ("kfrontFactMonotonicityDomain", kfrontFactsOk)
+        , ("kfrontPipelineArtifactDomain", kfrontPipelineOk)
+        , ("etaConstructorInstantiationDomain", etaConstructorInstantiationOk)
+        , ("incrementalConstraintRewriteDomain", incrementalConstraintRewriteOk)
         ]
       regOk = all snd unitChecks
   unless regOk $ do
@@ -419,6 +525,307 @@ main = do
         then exitFailure
         else pure ()
 
+etaConstructorInstantiationDomain :: IO Bool
+etaConstructorInstantiationDomain = pure $ case instantiateEtaConstructor supplied eta of
+  Just (CCtorI actualConstructor actualUniverses actualAnnotation actualFields) ->
+    actualConstructor == constructor
+      && actualUniverses == [LParam 0]
+      && actualAnnotation == Just (CSort LZero)
+      && actualFields == expectedFields
+      && instantiateEtaConstructor [(Impl, CLit (LitInt 7)), (Impl, CVar 0)] eta == Nothing
+      && instantiateEtaConstructor [(Expl, CLit (LitInt 7))] eta == Nothing
+      && instantiateEtaConstructor supplied malformedEta == Nothing
+  _ -> False
+  where
+    constructor = GName (ModuleName [T.pack "unit"]) (T.pack "Pair")
+    supplied = [(Expl, CLit (LitInt 7)), (Impl, CVar 0)]
+    expectedFields =
+      [ ConstructorArg Expl True (Just (T.pack "value")) (CLit (LitInt 7))
+      , ConstructorArg Impl False (Just (T.pack "proof")) (CVar 0)
+      ]
+    eta =
+      CLamM Ordinary Expl QW (T.pack "value") $
+        CLamM Ordinary Impl Q0 (T.pack "proof") $
+          CCtorI constructor [LParam 0] (Just (CSort LZero))
+            [ ConstructorArg Expl True (Just (T.pack "value")) (CVar 1)
+            , ConstructorArg Impl False (Just (T.pack "proof")) (CVar 0)
+            ]
+    malformedEta =
+      CLamM Ordinary Expl QW (T.pack "value") $
+        CLamM Ordinary Impl Q0 (T.pack "proof") $
+          CCtorI constructor [LParam 0] Nothing
+            [ ConstructorArg Expl True Nothing (CApp Expl (CVar 1) (CVar 0)) ]
+
+incrementalConstraintRewriteDomain :: IO Bool
+incrementalConstraintRewriteDomain = pure $
+  selected == Set.fromList [1, 2]
+    && rewritten == [constraint2 {lcRhs = LFinite 9}, constraint3]
+    && constraintIdsForOwnersAndOccurrences byOwner (Set.singleton ownerA) [Set.singleton 4]
+         == Set.fromList [1, 2, 4]
+  where
+    ownerA = GName (ModuleName [T.pack "unit"]) (T.pack "a")
+    ownerB = GName (ModuleName [T.pack "unit"]) (T.pack "b")
+    origin = ConstraintOrigin (T.pack "unit") (T.pack "incremental closeout")
+    constraint identity lhs rhs =
+      LevelConstraint identity lhs rhs origin emptyAssumptions
+    constraint1 = constraint 1 LZero (LFinite 1)
+    constraint2 = constraint 2 (LMeta 4) (LMeta 5)
+    constraint3 = constraint 3 (LMeta 4) (LFinite 9)
+    byOwner = Map.fromList [(ownerA, [constraint1, constraint2]), (ownerB, [constraint3])]
+    selected = constraintIdsForOwners byOwner (Set.singleton ownerA)
+    rewrite current
+      | lcIdentity current == 1 = Nothing
+      | otherwise = Just current {lcRhs = LFinite 9}
+    rewritten = rewriteSelectedConstraints selected rewrite [constraint1, constraint2, constraint3]
+
+-- | §34.2: occurrence identity is structural, not a source-span key. Copying
+-- one parsed argument occurrence into a second application slot must allocate
+-- two argument nodes even though both syntax values carry the same span.
+kfrontOccurrenceIdentityDomain :: IO Bool
+kfrontOccurrenceIdentityDomain =
+  case parseModule "kfront-occurrence.kp" source of
+    Right (syntax@Syntax.Module {Syntax.modDecls = [_functionDecl, Syntax.DLet mods def declSpan]}, diagnostics)
+      | not (any isError diagnostics)
+      , Syntax.EApp callee (argument : _) <- Syntax.ldBody def ->
+          let duplicated =
+                syntax
+                  { Syntax.modDecls =
+                      [ Syntax.DLet
+                          mods
+                          ( def
+                              { Syntax.ldConstructorPatternCandidate = Nothing
+                              , Syntax.ldBody = Syntax.EApp callee [argument, argument]
+                              }
+                          )
+                          declSpan
+                      ]
+                  }
+              front = buildRawKFrontIR duplicated
+              errors = verifyRawKFrontIR front
+              valid = length (allFrontArguments front) == 2 && null errors
+           in do
+                unless valid $ do
+                  putStrLn ("  KFrontIR argument nodes: " <> show (length (allFrontArguments front)))
+                  putStrLn ("  KFrontIR verifier: " <> show errors)
+                pure valid
+    _ -> pure False
+  where
+    source =
+      T.unlines
+        [ "module kfront_occurrence"
+        , "let f x = x"
+        , "let answer = f 42"
+        ]
+
+-- | §34.2 generated syntax receives fresh node and expansion identities while
+-- deriving its provenance from the producer. An occurrence identity from a
+-- different arena must fail rather than resolve by integer coincidence.
+kfrontExpansionIdentityDomain :: IO Bool
+kfrontExpansionIdentityDomain =
+  pure $ case parseModule "kfront-expansion.kp" source of
+    Right (syntax, diagnostics)
+      | not (any isError diagnostics) ->
+          let front0 = buildRawKFrontIR syntax
+           in case allFrontExpressions front0 of
+                producerNode : generatedNode : _ ->
+                  let producer = SomeExprNode (fnId producerNode)
+                      generated = fnSyntax generatedNode
+                      foreignFront = case parseModule "kfront-foreign.kp" "module kfront_foreign\nlet answer = 7\n" of
+                        Right (foreignSyntax, _) -> buildRawKFrontIR foreignSyntax
+                        Left _ -> front0
+                   in case instantiateExpressionExpansion producer MacroExpansion generated front0 of
+                        Right (expansion1, root1, front1) ->
+                          case instantiateExpressionExpansion producer MacroExpansion generated front1 of
+                            Right (expansion2, root2, front2) ->
+                              let crossArena = instantiateExpressionExpansion producer MacroExpansion generated foreignFront
+                               in expansion1 /= expansion2
+                                    && root1 /= root2
+                                    && frontExpansionCount front2 == 2
+                                    && null (verifyRawKFrontIR front2)
+                                    && either (const True) (const False) crossArena
+                            Left _ -> False
+                        Left _ -> False
+                _ -> False
+    _ -> False
+  where
+    source =
+      T.unlines
+        [ "module kfront_expansion"
+        , "let answer = 42"
+        ]
+
+-- | §34.2.2: phase and fact publication is transactional and monotone.
+-- Semantic writes outside an open phase, incomplete publication, fact
+-- replacement, and phase regression all fail explicitly.
+kfrontFactMonotonicityDomain :: IO Bool
+kfrontFactMonotonicityDomain =
+  pure $ case parseModule "kfront-facts.kp" source of
+    Right (syntax, diagnostics)
+      | not (any isError diagnostics) ->
+          let raw = buildRawKFrontIR syntax
+           in case allFrontArguments raw of
+                argumentNode : _ ->
+                  let identity = fnId argumentNode
+                      premature = resolveArgumentErasure identity RuntimeRelevant raw
+                      incomplete = advanceFrontIR BodyResolve raw
+                      opened = beginFrontIRPhase BodyResolve raw
+                   in case opened of
+                        Right bodyFront ->
+                          let recorded = resolveArgumentErasure identity RuntimeRelevant bodyFront
+                           in case recorded of
+                                Right once ->
+                                  let repeated = resolveArgumentErasure identity RuntimeRelevant once
+                                      conflicting =
+                                        resolveArgumentErasure
+                                          identity
+                                          (RuntimeErased (RuntimeErasedEvidence (CVar 0) (CVar 1) (CVar 2)))
+                                          once
+                                      unpublished = publishFrontIRPhase BodyResolve once
+                                      regressed = advanceFrontIR Imports raw >>= advanceFrontIR Raw
+                                   in isPremature premature
+                                        && isIncomplete incomplete
+                                        && either (const False) (const True) repeated
+                                        && isConflict conflicting
+                                        && isIncomplete unpublished
+                                        && isRegression regressed
+                                Left _ -> False
+                        Left _ -> False
+                _ -> False
+    _ -> False
+  where
+    source =
+      T.unlines
+        [ "module kfront_facts"
+        , "let f x = x"
+        , "let answer = f 42"
+        ]
+
+    isPremature (Left (FrontFactPhaseError _)) = True
+    isPremature _ = False
+
+    isConflict (Left FrontFactConflict {}) = True
+    isConflict _ = False
+
+    isIncomplete (Left FrontPhaseIncomplete {}) = True
+    isIncomplete _ = False
+
+    isRegression (Left FrontPhaseRegression {}) = True
+    isRegression _ = False
+
+-- | §34.2/Appendix T: the advertised buildKFrontIR trace names a materialized
+-- artifact on the compiled unit, and the dump is the verified canonical form.
+kfrontPipelineArtifactDomain :: IO Bool
+kfrontPipelineArtifactDomain = do
+  let unit = compileSourceWithPrelude "kfront-pipeline.kp" source
+  pure $ case Map.lookup (cuModule unit) (cuFrontIRs unit) of
+    Nothing -> False
+    Just front ->
+      null (verifyRawKFrontIR front)
+        && "\"schema\":\"kappa.kfrontir.v1\"" `T.isInfixOf` renderKFrontIRJson front
+        && ("buildKFrontIR", "file") `elem` cuTrace unit
+  where
+    source = "module kfront_pipeline\nlet answer = 42\n"
+
+-- | §8.3/§28.1: only the prelude interface is implicit. Ordinary embedded
+-- standard modules enter the checker state when their resolved module
+-- identity is explicitly imported, and their own parsed imports are loaded
+-- transitively. This is both the semantic module boundary and the cold-start
+-- performance guard for tiny programs.
+preludeDemandLoadingDomain :: IO Bool
+preludeDemandLoadingDomain = do
+  let (baseState, baseDiags) = preludeState
+      hashUnit =
+        compileSourceWithPrelude
+          "prelude-demand-hash.kp"
+          "module prelude_demand_hash\nimport std.hash\nlet answer = 42\n"
+      bridgeUnit =
+        compileSourceWithPrelude
+          "prelude-demand-bridge.kp"
+          "module prelude_demand_bridge\nimport std.bridge\nlet answer = 42\n"
+      hasModule moduleName state = Map.member moduleName (csModuleExports state)
+      clean diagnostics = not (any isError diagnostics)
+      checks =
+        [ ("implicit base is clean", clean baseDiags)
+        , ("unused std.hash is absent", not (hasModule modHash baseState))
+        , ("unused std.atomic is absent", not (hasModule modAtomic baseState))
+        , ("explicit std.hash import is clean", clean (cuDiags hashUnit))
+        , ("explicit std.hash is loaded", hasModule modHash (cuState hashUnit))
+        , ("unrelated std.atomic stays absent", not (hasModule modAtomic (cuState hashUnit)))
+        , ("transitive std.bridge import is clean", clean (cuDiags bridgeUnit))
+        , ("std.bridge is loaded", hasModule modBridge (cuState bridgeUnit))
+        , ("std.bridge dependency std.gradual is loaded", hasModule modGradual (cuState bridgeUnit))
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "preludeDemandLoadingDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    putStrLn ("  hash diagnostics=" ++ show (map dCode (cuDiags hashUnit)))
+    putStrLn ("  bridge diagnostics=" ++ show (map dCode (cuDiags bridgeUnit)))
+  pure (null failures)
+
+-- | The bundled prelude image is a checked semantic snapshot, not a second
+-- source checker path. Its global Core authority must match a fresh generator
+-- bootstrap, while current-unit implementation storage stays empty so normal
+-- modules do not reprocess imported prelude bodies.
+checkedPreludeArtifactDomain :: IO Bool
+checkedPreludeArtifactDomain = do
+  let (cached, cachedDiagnostics) = preludeState
+      (source, sourceDiagnostics) = sourcePreludeState
+      globalShape definition =
+        ( gdUniverses definition
+        , gdObservationMode definition
+        , gdNominalSummary definition
+        , gdCoreType definition
+        , gdCoreBody definition
+        , gdReducible definition
+        )
+      quotedValues state =
+        let context = EvalCtx (Globals (csGlobals state)) (csMetas state) False (csFacts state)
+         in Map.map (fmap (quote context 0) . gdValue) (csGlobals state)
+      cachedValues = quotedValues cached
+      sourceValues = quotedValues source
+      valueMismatches =
+        [ global
+        | global <- Set.toAscList (Map.keysSet cachedValues `Set.union` Map.keysSet sourceValues)
+        , Map.lookup global cachedValues /= Map.lookup global sourceValues
+        ]
+      checks =
+        [ ("cached image is clean", not (any isError cachedDiagnostics))
+        , ("source bootstrap is clean", not (any isError sourceDiagnostics))
+        , ("global Core authority agrees", Map.map globalShape (csGlobals cached) == Map.map globalShape (csGlobals source))
+        , ("checked global values agree", null valueMismatches)
+        , ("data identities agree", Map.keysSet (csDatas cached) == Map.keysSet (csDatas source))
+        , ("constructor identities agree", Map.keysSet (csCtors cached) == Map.keysSet (csCtors source))
+        , ("trait identities agree", Map.keysSet (csTraits cached) == Map.keysSet (csTraits source))
+        , ("instance count agrees", length (csInstances cached) == length (csInstances source))
+        , ("cached current-unit body map is empty", Map.null (csCoreBodies cached))
+        , ("cached imported implementations are linked", not (Map.null (csImportedCoreBodies cached)))
+        , ("source generator captured implementations", not (Map.null (csCoreBodies source)))
+        ]
+      failures = [label | (label, False) <- checks]
+  unless (null failures) $ do
+    putStrLn "checkedPreludeArtifactDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+    unless (null valueMismatches) $
+      putStrLn ("  value mismatches=" ++ show (map gKey valueMismatches))
+  pure (null failures)
+
+-- | The checked-interface codec treats opaque byte strings as a primitive,
+-- not as an algebraic value. Length framing must round-trip exact bytes while
+-- truncation and trailing input remain fail-closed.
+structuralBinaryDomain :: IO Bool
+structuralBinaryDomain =
+  let value = (BS.pack [0, 1, 127, 128, 255], T.pack "artifact")
+      encoded = encodeStructuralBinary value
+      decoded = decodeStructuralBinary encoded
+      truncated = decodeStructuralBinary (BS.init encoded)
+      trailing = decodeStructuralBinary (encoded <> BS.singleton 0)
+   in pure
+        ( decoded == Right value
+            && isLeft (truncated :: Either T.Text (BS.ByteString, T.Text))
+            && isLeft (trailing :: Either T.Text (BS.ByteString, T.Text))
+        )
+
 semanticHashDomain :: IO Bool
 semanticHashDomain =
   pure
@@ -431,6 +838,28 @@ semanticHashDomain =
         && canonicalIdentityHex "Global" "a"
           /= canonicalIdentityHex "Constructor" "a"
     )
+
+resolvedStorageHeadIdentityDomain :: IO Bool
+resolvedStorageHeadIdentityDomain =
+  let visible :: Map.Map T.Text GName
+      visible =
+        Map.fromList
+            [ ("List", GName (ModuleName ["custom"]) "List")
+            , ("std.prelude.List", prelList)
+            ]
+      actionHeads =
+        Map.fromList
+          [ ("UIO", GName (ModuleName ["custom"]) "UIO")
+          , ("std.prelude.UIO", prelUIO)
+          , ("PreludeUIO", prelUIO)
+          ]
+   in pure
+        ( resolvedVisibleHeads visible (Set.singleton prelList)
+            == Set.singleton "std.prelude.List"
+            && not
+              (sameResolvedTypeHead actionHeads (Just "UIO") (Just "std.prelude.UIO"))
+            && sameResolvedTypeHead actionHeads (Just "PreludeUIO") (Just "std.prelude.UIO")
+        )
 
 -- | §13.2.1: a one-field record type is comma-terminated regardless of
 -- field markers. The same marked syntax remains available to Pi binders when
@@ -671,6 +1100,129 @@ universeOccurrenceInstantiationPrincipalDomain = do
     putStrLn ("  mapLists schema arity: " ++ show actual ++ "; expected Just 1")
   pure ok
 
+-- | §11.1.2.3A/§30.2.5: body completion and semantic dependency closure are
+-- distinct events.  A completed @B@ that still waits on @C@ must not release
+-- an earlier @A@, and a missing @B@ Core body must leave @A@ blocked.  Once
+-- @C@ closes, the frontier drains the complete transitive component in one
+-- publication event.
+bodyCloseFrontierDomain :: IO Bool
+bodyCloseFrontierDomain = do
+  let moduleName = ModuleName ["body_close_frontier"]
+      owner name = GName moduleName name
+      a = owner "a"
+      b = owner "b"
+      c = owner "c"
+      record completed dependencyMap index =
+        recordDependencyCompletions
+          completed
+          (`Map.lookup` dependencyMap)
+          index
+      (closedA, afterA) =
+        record (Set.singleton a) (Map.singleton a (Set.singleton b)) emptyDependencyFrontier
+      (closedB, afterB) =
+        record (Set.singleton b) (Map.singleton b (Set.singleton c)) afterA
+      (closedC, _) =
+        record (Set.singleton c) (Map.singleton c Set.empty) afterB
+      (_, missingAfterA) =
+        record (Set.singleton a) (Map.singleton a (Set.singleton b)) emptyDependencyFrontier
+      (closedMissingB, _) =
+        recordDependencyCompletions
+          (Set.singleton b)
+          (const Nothing)
+          missingAfterA
+      mutualDependencies =
+        Map.fromList
+          [ (a, Set.singleton b)
+          , (b, Set.fromList [a, c])
+          ]
+      (closedMutualBatch, mutualPending) =
+        record (Set.fromList [a, b]) mutualDependencies emptyDependencyFrontier
+      (closedMutualAfterC, _) =
+        record (Set.singleton c) (Map.singleton c Set.empty) mutualPending
+      (closedMultiA, multiAfterA) =
+        record
+          (Set.singleton a)
+          (Map.singleton a (Set.fromList [b, c]))
+          emptyDependencyFrontier
+      (closedMultiB, multiAfterB) =
+        record (Set.singleton b) (Map.singleton b Set.empty) multiAfterA
+      (closedMultiC, _) =
+        record (Set.singleton c) (Map.singleton c Set.empty) multiAfterB
+      expectedClosure = Set.fromList [a, b, c]
+      ok =
+        Set.null closedA
+          && Set.null closedB
+          && closedC == expectedClosure
+          && Set.null closedMissingB
+          && Set.null closedMutualBatch
+          && closedMutualAfterC == expectedClosure
+          && Set.null closedMultiA
+          && closedMultiB == Set.singleton b
+          && closedMultiC == Set.fromList [a, c]
+  unless ok $ do
+    putStrLn "bodyCloseFrontierDomain FAILED:"
+    putStrLn ("  closed after a: " ++ show closedA)
+    putStrLn ("  closed after b: " ++ show closedB)
+    putStrLn ("  closed after c: " ++ show closedC)
+    putStrLn ("  closed after missing b: " ++ show closedMissingB)
+    putStrLn ("  closed mutual batch: " ++ show closedMutualBatch)
+    putStrLn ("  closed mutual batch after c: " ++ show closedMutualAfterC)
+    putStrLn ("  closed multi-dependency a: " ++ show closedMultiA)
+    putStrLn ("  closed multi-dependency b: " ++ show closedMultiB)
+    putStrLn ("  closed multi-dependency c: " ++ show closedMultiC)
+  pure ok
+
+-- | Universe projection closeout uses the generic worklist in the reverse
+-- dependency direction. A changed dependency must revisit its transitive
+-- consumers, duplicate invalidations must coalesce, and a non-monotone or
+-- otherwise broken transfer must fail closed at the explicit budget.
+monotoneWorklistDomain :: IO Bool
+monotoneWorklistDomain = do
+  let dependencies =
+        Map.fromList
+          [ ('a', Set.singleton 'b')
+          , ('b', Set.singleton 'c')
+          , ('c', Set.empty)
+          ]
+      step key values =
+        let dependencyValue =
+              maximum
+                (0 : [Map.findWithDefault 0 dependency values | dependency <- Set.toList (Map.findWithDefault Set.empty key dependencies)])
+            nextValue = max (Map.findWithDefault 0 key values) (dependencyValue + 1)
+            changed = nextValue /= Map.findWithDefault 0 key values
+         in (changed, Map.insert key nextValue values)
+      dependents =
+        Map.fromListWith Set.union
+          [ (dependency, Set.singleton consumer)
+          | (consumer, required) <- Map.toList dependencies
+          , dependency <- Set.toList required
+          ]
+      converged =
+        stabilizeWorklist
+          20
+          dependents
+          step
+          (Map.keysSet dependencies)
+          Map.empty
+      exhausted =
+        stabilizeWorklist
+          2
+          (Map.singleton 'x' (Set.singleton 'x'))
+          (\_ value -> (True, value + (1 :: Int)))
+          (Set.singleton 'x')
+          0
+      ok =
+        converged
+          == WorklistConverged (Map.fromList [('a', 3), ('b', 2), ('c', 1)])
+          && case exhausted of
+               WorklistExhausted pending value -> pending == Set.singleton 'x' && value == 2
+               WorklistConverged _ -> False
+  unless ok $ do
+    putStrLn "monotoneWorklistDomain FAILED:"
+    putStrLn ("  converged: " ++ show converged)
+    putStrLn ("  exhausted: " ++ show exhausted)
+  pure ok
+
 -- | §11.1.2.4A regression: universe arguments introduced while elaborating
 -- law-bearing trait members are occurrences of dependency schemas, not new
 -- parameters of the trait or member declaration. The carrier level is the
@@ -720,6 +1272,129 @@ universeLawSchemasPrincipalDomain = do
                ++ "; expected " ++ show expected
            ))
       failures
+  pure ok
+
+-- | §11.1.2.4A regression: an implicitly generalized instance dictionary
+-- retains the carrier level needed by its head, while a closed instance stays
+-- monomorphic. Resolving the generic dictionary at Int, Type0, and Type1 also
+-- proves that the retained schema is freshened per occurrence rather than
+-- fixed to the first nonzero universe ceiling.
+generatedInstanceUniversePrincipalizationDomain :: IO Bool
+generatedInstanceUniversePrincipalizationDomain = do
+  let moduleName = ModuleName ["generated_instance_universe_principalization"]
+      source =
+        T.unlines
+          [ "module generated_instance_universe_principalization"
+          , "trait Generic (parametric 0 a : Type)"
+          , "instance Generic a"
+          , "trait Closed (parametric 0 a : Type)"
+          , "instance Closed TypeLevel"
+          , "genericInt : Generic Int"
+          , "let genericInt = summon (Generic Int)"
+          , "genericType : Generic Type0"
+          , "let genericType = summon (Generic Type0)"
+          , "genericType1 : Generic Type1"
+          , "let genericType1 = summon (Generic Type1)"
+          , "closedTypeLevel : Closed TypeLevel"
+          , "let closedTypeLevel = summon (Closed TypeLevel)"
+          ]
+      unit = compileSourceWithPrelude "generated-instance-universe-principalization.kp" source
+      state = cuState unit
+      dictionaryArities trait =
+        [ dutParameterCount (gdUniverses definition)
+        | entry <- csInstances state
+        , ieTrait entry == GName moduleName trait
+        , let GName owner _ = ieDict entry
+        , owner == moduleName
+        , Just definition <- [Map.lookup (ieDict entry) (csGlobals state)]
+        ]
+      errors = filter isError (cuDiags unit)
+      checks =
+        [ ("generic instance dictionary", dictionaryArities "Generic", [1])
+        , ("closed instance dictionary", dictionaryArities "Closed", [0])
+        ]
+      failures =
+        [ (name, actual, expected)
+        | (name, actual, expected) <- checks
+        , actual /= expected
+        ]
+      ok = null errors && null failures
+  unless ok $ do
+    putStrLn "generatedInstanceUniversePrincipalizationDomain FAILED:"
+    putStrLn ("  errors: " ++ show (map dCode errors))
+    mapM_
+      (\(name, actual, expected) ->
+         putStrLn
+           ( "  " ++ T.unpack name ++ " arities: " ++ show actual
+               ++ "; expected " ++ show expected
+           ))
+      failures
+  pure ok
+
+-- | §30.2.0A trust-boundary regression: a nominal record interface and its
+-- compiler-private constructor are one authenticated shape. Mutating only the
+-- interface must fail independent KCore verification.
+nominalInterfaceAuthorityDomain :: IO Bool
+nominalInterfaceAuthorityDomain = do
+  let source =
+        T.unlines
+          [ "module nominal_interface_authority"
+          , "trait Box (0 a : Type) ="
+          , "    value : a"
+          , "instance Box Int ="
+          , "    let value = 1"
+          ]
+      unit = compileSourceWithPrelude "nominal-interface-authority.kp" source
+      errors = filter isError (cuDiags unit)
+      (parseArtifact, artifact) = compiledUnitKCoreArtifact unit
+      mutationResult =
+        case artifact of
+          Left err ->
+            Left
+              ( "source artifact rejected with "
+                  <> kcteCode err
+                  <> ": "
+                  <> kcteMessage err
+              )
+          Right parsed -> do
+            mutant <- kcoreNominalInterfaceShapeMutation parsed
+            case parseArtifact mutant of
+              Left err
+                | kcteCode err == "E_KCORE_TEXT_INVALID"
+                , "nominal record interface disagrees" `T.isInfixOf` kcteMessage err ->
+                    Right ()
+                | otherwise ->
+                    Left
+                      ( "mutant rejected with "
+                          <> kcteCode err
+                          <> ": "
+                          <> kcteMessage err
+                      )
+              Right _ -> Left "mutated nominal record interface was accepted"
+      opaqueUnit =
+        compileSourceWithPrelude
+          "opaque-record-interface-authority.kp"
+          ( T.unlines
+              [ "module opaque_record_interface_authority"
+              , "opaque type Hidden = (value : Int,)"
+              ]
+          )
+      opaqueErrors = filter isError (cuDiags opaqueUnit)
+      opaqueArtifact = snd (compiledUnitKCoreArtifact opaqueUnit)
+      opaqueInterfaceCount = kcoreRecordInterfaceCount <$> opaqueArtifact
+      ok =
+        null errors
+          && null opaqueErrors
+          && isRight mutationResult
+          && opaqueInterfaceCount == Right 0
+  unless ok $ do
+    putStrLn "nominalInterfaceAuthorityDomain FAILED:"
+    putStrLn ("  errors: " ++ show (map dCode errors))
+    putStrLn ("  opaque errors: " ++ show (map dCode opaqueErrors))
+    putStrLn ("  opaque interface count: " ++ show opaqueInterfaceCount)
+    case mutationResult of
+      Left detail -> TIO.putStrLn ("  " <> detail)
+      Right () -> pure ()
   pure ok
 
 -- | §11.1.2.3A / §14.2.1 regression: a generated associated-static-member
@@ -1248,6 +1923,26 @@ universeLevelDomain = do
               (levelMax (levelAdd (LMeta 34) neutralV) neutralW)
           ]
           == OutsidePortableInferenceFragment
+      largeSparseUniverseGraphIsIndexed =
+        let vertexCount = 12000 :: Int
+            graph = DirectedGraph.fromEdges [(vertex, vertex + 1) | vertex <- [0 .. vertexCount - 2]]
+         in length (DirectedGraph.stronglyConnectedComponents graph) == vertexCount
+              && DirectedGraph.reachable graph 0 (vertexCount - 1)
+              && DirectedGraph.reachableFrom graph (Set.fromList [0, vertexCount + 1])
+                   == Set.fromList ([0 .. vertexCount - 1] ++ [vertexCount + 1])
+      exactLevelDetectionBatchesSelectedMetas =
+        let targets = Set.fromList [2000 .. 7999]
+            exactConstraints =
+              concat
+                [ [constraint (finiteLevel (toInteger (meta - 1999))) (LMeta meta)
+                  , constraint (LMeta meta) (finiteLevel (toInteger (meta - 1999)))]
+                | meta <- Set.toAscList targets
+                ]
+            assignments =
+              uniquelyDeterminedLevelAssignmentsFor Set.empty targets exactConstraints
+         in Map.size assignments == Set.size targets
+              && Map.lookup 2000 assignments == Just (finiteLevel 1)
+              && Map.lookup 7999 assignments == Just (finiteLevel 6000)
       hugeFinite = finiteLevel (toInteger (maxBound :: Int) + 1)
       rigidPairs =
         [ (LVar 0, LVar 1)
@@ -1387,6 +2082,8 @@ universeLevelDomain = do
         , ("resource limits dominate blocked metavariables", resourceLimitDominatesBlockedMetavariables)
         , ("max-heavy Presburger translation fails closed before SAT expansion", maxTranslationBudgetFailsBeforeSatExpansion)
         , ("incremental assignment graphs fail before exponential materialization", incrementalAssignmentGraphFailsBeforeExpansion)
+        , ("large sparse universe graphs use indexed adjacency", largeSparseUniverseGraphIsIndexed)
+        , ("exact level detection batches selected metas", exactLevelDetectionBatchesSelectedMetas)
         , ("principal inference classifies opaque meta contexts outside the portable fragment", outsidePortableClass)
         , ("large finite levels remain exact", proveLevelLeq emptyAssumptions hugeFinite LOmega == Proved && hugeFinite /= LZero)
         , ("renderer keeps Type0 implicit", renderTerm (CSort LZero) == "Type")
@@ -1467,6 +2164,17 @@ universeLiftEvidenceDomain = do
       forged = universeLift (solverUniverseEvidence forgedAssumptions u v) payload
       forgedSelfAuthorizationRejected =
         not (null (validateUniverseLiftEvidence 0 3 forged))
+      omittedDependency =
+        CUniverseLift
+          u
+          v
+          (UniverseEvidence [UniverseEvidenceStep u v []])
+          payload
+      ambientAuthorityCannotReplaceRecordedDependency =
+        not
+          ( null
+              (validateUniverseLiftEvidenceUnder uvAssumptions 0 3 omittedDependency)
+          )
       outOfScopeRejected =
         not
           ( null
@@ -1610,6 +2318,7 @@ universeLiftEvidenceDomain = do
                         FormationOrdinary
                         Q0
                         (Just (LMeta 89, LParam 1))
+                        RuntimeRelevant
                         (CGlob prelUnit)
                     ]
                 )
@@ -1647,6 +2356,7 @@ universeLiftEvidenceDomain = do
         , ("composed evidence replays at checkpoint", composedValid)
         , ("missing evidence fails closed", malformedRejected)
         , ("lift evidence cannot authorize itself with embedded assumptions", forgedSelfAuthorizationRejected)
+        , ("lift evidence replays from exactly its recorded dependencies", ambientAuthorityCannotReplaceRecordedDependency)
         , ("out-of-scope universe evidence fails closed", outOfScopeRejected)
         , ("surface cumulativity elaborates to an explicit KCore lift", sourceLifted)
         , ("generalized source lifts retain replayable solver evidence", sourceErrorFree && sourceLiftEvidenceValid)
@@ -1688,6 +2398,12 @@ kcoreSourceFreeInterfaceDomain = do
         "kcore 1;\nmodule @artifact.down#200" <> metadata "artifact.down" <> " {\n"
           <> "  def ordinary @artifact.down.B#201 : Type 0 { body = @artifact.up.A#101; }\n"
           <> "}\n"
+      importedInterfaceSpoof =
+        "kcore 1;\nmodule @artifact.spoof#210" <> metadata "artifact.spoof" <> " {\n"
+          <> "  extension impl.kappa 1;\n"
+          <> "  interface @artifact.up.A#101 : term-node \"impl.kappa.core.record-type\" { "
+          <> "names = []; fields = []; };\n"
+          <> "}\n"
       transitive =
         "kcore 1;\nmodule @artifact.transitive#300" <> metadata "artifact.transitive" <> " {\n"
           <> "  axiom ordinary @artifact.transitive.y#301 : @artifact.down.B#201;\n"
@@ -1710,10 +2426,41 @@ kcoreSourceFreeInterfaceDomain = do
         "kcore 1;\nmodule @artifact.local-cert-consumer#500" <> metadata "artifact.local-cert-consumer" <> " {\n"
           <> "  axiom ordinary @artifact.local-cert-consumer.x#501 : @artifact.local-cert.T#402;\n"
           <> "}\n"
+      levelAuthority =
+        "kcore 1;\nmodule @artifact.level-authority#600" <> metadata "artifact.level-authority" <> " {\n"
+          <> "  level-certificate @certificate.artifact.shared#601 : 0 <= 0 { refl 0; }\n"
+          <> "}\n"
+      levelCollision =
+        "kcore 1;\nmodule @artifact.level-collision#610" <> metadata "artifact.level-collision" <> " {\n"
+          <> "  level-certificate @certificate.artifact.shared#601 : 0 <= 0 { refl 0; }\n"
+          <> "}\n"
+      schemaCollision =
+        "kcore 1;\nmodule @artifact.schema-collision#620" <> metadata "artifact.schema-collision" <> " {\n"
+          <> "  schema-certificate @schema:artifact.local-cert.T#401 for @artifact.local-cert.T#402 "
+          <> "[checkerVersion = 1, typeLevelAlgebraVersion = 1, levelConstructorNormalizerVersion = 1, "
+          <> "levelRigidEntailmentVersion = 1, levelPrincipalInferenceVersion = 1, "
+          <> "levelCertificateVersion = 1, signatureHash = local, saturationArity = 0] {\n"
+          <> "    roles = [];\n"
+          <> "    clauseKinds = [sort_declaration];\n"
+          <> "    monotoneWitnesses = [];\n"
+          <> "  }\n"
+          <> "}\n"
       result = do
         upstreamInterface <- parseAndVerifyKCoreInterface upstream
         downstreamInterface <-
           parseAndVerifyKCoreInterfaceWithInterfaces [upstreamInterface] downstream
+        case parseAndVerifyKCoreInterfaceWithInterfaces [upstreamInterface] importedInterfaceSpoof of
+          Left err
+            | "only describe a declaration owned by its module" `T.isInfixOf` kcteMessage err ->
+                pure ()
+            | otherwise ->
+                Left
+                  ( KCoreTextError
+                      "unit"
+                      ("imported interface spoof failed with the wrong diagnostic: " <> kcteMessage err)
+                  )
+          Right _ ->
+            Left (KCoreTextError "unit" "a module replaced an imported record interface")
         transitiveFile <- parseKCoreText transitive
         verifyKCoreTextWithInterfaces [downstreamInterface] transitiveFile
         downstreamFile <- parseKCoreText downstream
@@ -1721,6 +2468,27 @@ kcoreSourceFreeInterfaceDomain = do
           Left _ -> pure ()
           Right () -> Left (KCoreTextError "unit" "duplicate imported identities were accepted")
         localNominalInterface <- parseAndVerifyKCoreInterface localNominal
+        levelInterface <- parseAndVerifyKCoreInterface levelAuthority
+        levelCollisionFile <- parseKCoreText levelCollision
+        case verifyKCoreTextWithInterfaces [levelInterface] levelCollisionFile of
+          Left KCoreTextError {kcteCode = "E_KCORE_TEXT_INVALID"} -> pure ()
+          Left err ->
+            Left
+              ( KCoreTextError
+                  "unit"
+                  ("imported level-certificate collision failed with the wrong diagnostic: " <> kcteCode err)
+              )
+          Right () -> Left (KCoreTextError "unit" "a local level certificate shadowed an imported certificate identity")
+        schemaCollisionFile <- parseKCoreText schemaCollision
+        case verifyKCoreTextWithInterfaces [localNominalInterface] schemaCollisionFile of
+          Left KCoreTextError {kcteCode = "E_KCORE_TEXT_INVALID"} -> pure ()
+          Left err ->
+            Left
+              ( KCoreTextError
+                  "unit"
+                  ("imported schema-certificate collision failed with the wrong diagnostic: " <> kcteCode err)
+              )
+          Right () -> Left (KCoreTextError "unit" "a local schema certificate shadowed an imported certificate identity")
         nominalConsumerFile <- parseKCoreText nominalConsumer
         case verifyKCoreTextWithInterfaces [localNominalInterface] nominalConsumerFile of
           Left KCoreTextError {kcteCode = "E_KCORE_SCHEMA_CERTIFICATE_INVALID"} -> pure ()
@@ -1953,13 +2721,13 @@ kcoreTextCanonicalDomain = do
       localUniverseAlphaA =
         header "test.local-universe-alpha" ""
           <> "def ordinary @test.local-universe-alpha.value#2 : Type 1 { body = "
-          <> "letrec { def ordinary %poly#7 .{^inner#12} : Type succ(^inner#12) "
+          <> "letrec { def (ordinary ordinary omega explicit value %poly#7 : Type succ(^inner#12)) .{^inner#12} "
           <> "{ body = Type ^inner#12; } } in Type 0; }\n"
           <> footer
       localUniverseAlphaB =
         header "test.local-universe-alpha" ""
           <> "def ordinary @test.local-universe-alpha.value#2 : Type 1 { body = "
-          <> "letrec { def ordinary %renamed#33 .{^level#91} : Type succ(^level#91) "
+          <> "letrec { def (ordinary ordinary omega explicit value %renamed#33 : Type succ(^level#91)) .{^level#91} "
           <> "{ body = Type ^level#91; } } in Type 0; }\n"
           <> footer
       disjointLocalReuseA =
@@ -1993,7 +2761,7 @@ kcoreTextCanonicalDomain = do
           <> "axiom ordinary @test.structured.F#3 : Type level-term(@test.structured.level#2);\n"
           <> "def ordinary @test.structured.value#4 : Type 1 { body = block {\n"
           <> "  let (ordinary ordinary omega explicit value %x#9 : Type 1) = Type 0;\n"
-          <> "  letrec { def ordinary %again#8 : Type 1 { body = Type 0; } } in\n"
+          <> "  letrec { def (ordinary ordinary omega explicit value %again#8 : Type 1) { body = Type 0; } } in\n"
           <> "  case %x#9 : Type 1 { default { %x#9 } }\n"
           <> "}; }\n"
           <> "decl-node \"example.vendor.node\" { mode = ordinary; quantity = quantity-value(affine); explicitness = implicit; access = borrow; level = level-value(succ(0)); values = [string-value(\"x\"), integer-value(7)]; }\n"
@@ -2006,7 +2774,7 @@ kcoreTextCanonicalDomain = do
       nonTotalLevelTerm =
         header "test.nontotal-level" ""
           <> "axiom ordinary @test.nontotal-level.F#2 : Type level-term("
-          <> "letrec { def ordinary %loop#0 : @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c "
+          <> "letrec { def (ordinary ordinary omega explicit value %loop#0 : @std.typelevel.TypeLevel#4b415050413a76313a4b436f7265476c6f62616c007374642e747970656c6576656c2e547970654c6576656c) "
           <> "{ body = %loop#0; } } in %loop#0);\n"
           <> footer
       unavailableIdentity =
@@ -2053,6 +2821,26 @@ kcoreTextCanonicalDomain = do
           <> "axiom ordinary @test.forged-generated-ordinary-binder.bad#2 : "
           <> "((ordinary ordinary omega explicit value generated %value#0 : Type 0) -> Type 0);\n"
           <> footer
+      forgedRuntimeErasureEvidence =
+        header "test.forged-runtime-erasure-evidence" ""
+          <> "axiom ordinary @test.forged-runtime-erasure-evidence.bad#2 : "
+          <> "((ordinary ordinary omega explicit runtime-erased(Type 0) %value#0 : Type 0) -> Type 0);\n"
+          <> footer
+      forgedRuntimeErasureCallingConvention =
+        let identity = "test.forged-runtime-erasure-call"
+            runtimeErasedRef = stableGlobalRef prelRuntimeErased
+            unitRef = stableGlobalRef prelUnit
+         in header identity ""
+              <> "axiom ordinary @" <> identity <> ".proof#2 : apply "
+              <> runtimeErasedRef <> " (explicit Type 0);\n"
+              <> "axiom ordinary @" <> identity <> ".consumeType#3 : "
+              <> "((ordinary ordinary omega explicit value %A#0 : Type 0) -> Type 0);\n"
+              <> "def ordinary @" <> identity <> ".bad#4 : Type 0 { body = apply "
+              <> "@" <> identity <> ".consumeType#3 (explicit runtime-erased(@"
+              <> identity <> ".proof#2) " <> unitRef <> "); }\n"
+              <> footer
+      stableGlobalRef global =
+        "@" <> gKey global <> "#" <> canonicalIdentityHex "KCoreGlobal" (gKey global)
       composedCertificate =
         header "test.composed-certificate" ""
           <> "extension impl.kappa 1;\n"
@@ -2135,6 +2923,26 @@ kcoreTextCanonicalDomain = do
           <> "lambda (ordinary ordinary omega explicit value %value#4 : %A#2) { "
           <> "apply @test.capture-avoiding-dependent-application.select#2 "
           <> "(explicit %A#2, implicit %proof#3, explicit %value#4) } } }; }\n"
+          <> footer
+      outOfScopeQuantityTerm =
+        header "test.out-of-scope-quantity-term" ""
+          <> "axiom ordinary @test.out-of-scope-quantity-term.bad#2 : "
+          <> "((ordinary ordinary quantity-term(%missing#9) explicit value %x#0 : Type 0) -> Type 0);\n"
+          <> footer
+      illTypedQuantityTerm =
+        header "test.ill-typed-quantity-term" ""
+          <> "axiom ordinary @test.ill-typed-quantity-term.bad#2 : "
+          <> "((ordinary ordinary quantity-term(Type 0) explicit value %x#0 : Type 0) -> Type 0);\n"
+          <> footer
+      illTypedBorrowTerm =
+        header "test.ill-typed-borrow-term" ""
+          <> "axiom ordinary @test.ill-typed-borrow-term.bad#2 : "
+          <> "((ordinary ordinary omega explicit borrow-term(Type 0) %x#0 : Type 0) -> Type 0);\n"
+          <> footer
+      illTypedTermEvidence =
+        header "test.ill-typed-term-evidence" ""
+          <> "def ordinary @test.ill-typed-term-evidence.bad#2 : Type 2 { body = "
+          <> "lift [1 <= 2 by term-evidence(Type 0)] Type 0; }\n"
           <> footer
       unordered =
         header "test.order" ""
@@ -2264,6 +3072,9 @@ kcoreTextCanonicalDomain = do
         , ("parametric proof binders cannot authorize level relations", rejectedWith "E_KCORE_TEXT_INVALID" forgedParametricLocalEvidence)
         , ("source-written and generated declaration proof binders have distinct semantic identity", either (const False) id proofBinderOriginIsSemantic)
         , ("only authenticated declaration constraints may carry generated binder provenance", rejectedWith "E_KCORE_TEXT_INVALID" forgedGeneratedOrdinaryBinder)
+        , ("runtime erasure requires independently checked evidence", parses forgedRuntimeErasureEvidence && rejectedWith "E_KCORE_TEXT_INVALID" forgedRuntimeErasureEvidence)
+        , ("runtime erasure must match the selected binder calling convention", parses forgedRuntimeErasureCallingConvention && rejectedWith "E_KCORE_TEXT_INVALID" forgedRuntimeErasureCallingConvention)
+        , ("imported semantic authority classes are collision-free", kcoreImportedAuthorityCollisionChecks)
         , ("composed lift certificates replay scoped assumptions", either (const False) (const True) (parseVerified composedCertificate))
         , ("certificate assumptions are checked against their own normalized block", rejectedWith "E_KCORE_LEVEL_CERTIFICATE_INVALID" badCertificateAssumption)
         , ("semantically neutral certificate proof nodes canonicalize away", either (const False) id certificateProofCanonical)
@@ -2273,6 +3084,11 @@ kcoreTextCanonicalDomain = do
         , ("dependent parametric application preserves its argument dependency", rejectedWith "E_PARAMETRIC_TYPE_PROMOTION" dependentParametricApplication)
         , ("constant parametric application remains ordinary", either (const False) (const True) (parseVerified constantParametricApplication))
         , ("dependent application substitution avoids independently canonicalized binder ids", either (const False) (const True) (parseVerified captureAvoidingDependentApplication))
+        , ("capture avoidance includes lift evidence and borrowed access identities", kcoreMetadataCaptureAvoidanceChecks)
+        , ("quantity terms cannot reference out-of-scope locals", rejectedWith "E_KCORE_TEXT_INVALID" outOfScopeQuantityTerm)
+        , ("quantity terms require the authoritative Quantity classifier", rejectedWith "E_KCORE_TEXT_INVALID" illTypedQuantityTerm)
+        , ("borrow terms require the authoritative Region classifier", rejectedWith "E_KCORE_TEXT_INVALID" illTypedBorrowTerm)
+        , ("first-class lift evidence must prove the asserted relation", rejectedWith "E_KCORE_TEXT_INVALID" illTypedTermEvidence)
         , ("canonical declarations use dependency/identity order", canonicalOrdered)
         , ("canonical local binders are numbered in preorder", canonicalLocals)
         , ("canonical text and semantic hashes are alpha-invariant", either (const False) id alphaStable)
@@ -2306,6 +3122,92 @@ kcoreTextCanonicalDomain = do
       Right text -> TIO.putStrLn text
   pure (null failures)
 
+-- | Proof-only runtime-erasure metadata cannot tighten a nominal universe
+-- role. Independently checked lift endpoints and aligned target arguments
+-- remain part of the represented type and must still be reported.
+roleMetadataInvarianceDomain :: IO Bool
+roleMetadataInvarianceDomain = do
+  let proofAt index = CSort (LParam index)
+      erasedAt index =
+        RuntimeErased
+          (RuntimeErasedEvidence (proofAt index) (proofAt index) (proofAt index))
+      binderOnly =
+        CPiRuntimeM
+          Ordinary FormationOrdinary Expl QW False "value" Nothing
+          BinderSourceWritten (erasedAt 2) (CSort LZero) (CSort LZero)
+      argumentOnly = CAppM Expl (erasedAt 2) (CGlob prelUnit) (CGlob prelUnit)
+      liftEvidence =
+        UniverseEvidence
+          [UniverseEvidenceStep (LParam 2) (LParam 2) []]
+      lifted = CUniverseLift (LParam 0) (LParam 1) liftEvidence (CSort LZero)
+      schemaLifted =
+        CSchemaLift
+          prelList
+          [LParam 0]
+          [LParam 1]
+          [Covariant]
+          [SchemaCovariantEvidence liftEvidence]
+          (SchemaActionCertificateId "test.role-metadata")
+          [proofAt 2]
+          [proofAt 3]
+          (CSort LZero)
+      patternTerm =
+        CMatch
+          (CCtor prelUnit Nothing [])
+          Nothing
+          Nothing
+          [ CaseAlt
+              ( CPCtorM
+                  []
+                  [ConstructorPropositionalBridge (proofAt 3) (proofAt 2)]
+                  []
+                  prelUnit
+                  [LParam 0]
+                  [CPVarM Ordinary "payload"]
+              )
+              Nothing
+              (CVar 0)
+          ]
+      observed =
+        map roleLevelParamsOfTerm
+          [binderOnly, argumentOnly, lifted, schemaLifted, patternTerm]
+      genericObserved =
+        map levelParamsOfTerm [binderOnly, argumentOnly, lifted, schemaLifted, patternTerm]
+      outOfRangeClosure =
+        makeNominalSignatureClosure
+          1
+          []
+          0
+          [ NominalClosureClause
+              ClauseSortDeclaration
+              "test.role-metadata.out-of-range"
+              []
+              "Type"
+              [NominalCovariantUse 1]
+              NominalPreserveRepresentation
+          ]
+      outOfRangeSummary =
+        makeNominalCumulativitySummary
+          "test.role-metadata.out-of-range"
+          [Irrelevant]
+          [False]
+          outOfRangeClosure
+          Nothing
+      valid =
+        observed == [[], [], [0, 1], [0, 1], [0, 3]]
+          && genericObserved == [[2], [2], [0, 1, 2], [0, 1, 2, 3], [0, 2, 3]]
+          && not (verifyNominalCumulativitySummary outOfRangeSummary)
+          && sourceRoleMetadataInvarianceChecks
+          && kcoreRoleMetadataInvarianceChecks
+  unless valid $
+    putStrLn
+      ( "  role metadata parameters=" <> show observed
+          <> "; generic=" <> show genericObserved
+          <> "; source=" <> show sourceRoleMetadataInvarianceChecks
+          <> "; kcore=" <> show kcoreRoleMetadataInvarianceChecks
+      )
+  pure valid
+
 -- | §30.2.2.9: erased binders retain typed justification, while malformed
 -- structural observation modes fail closed before either emitter sees them.
 universeCapabilityBoundary :: IO Bool
@@ -2313,7 +3215,7 @@ universeCapabilityBoundary = do
   let src =
         T.unlines
           [ "module universe_capability"
-          , "param : (parametric 0 A : Type0) -> Unit"
+          , "param : (parametric ω A : Type0) -> Unit"
           , "let param A = ()"
           , "ordinary : (ordinary 0 A : Type0) -> Unit"
           , "let ordinary A = ()"
@@ -2380,7 +3282,7 @@ universeCapabilityBoundary = do
       patternType =
         VPiEvidenceM Ordinary FormationOrdinary Expl QW False "s" Nothing
           BinderSourceWritten
-          (VRecordTQ [RecordField "A" Parametric FormationParametric Q0 Nothing (VSort LZero)])
+          (VRecordTQ [RecordField "A" Parametric FormationParametric Q0 Nothing RuntimeRelevant (VSort LZero)])
           (Closure [] (CSort LZero))
       mismatchedPatternMode =
         st
@@ -3338,6 +4240,66 @@ representationCertificateIdentityDomain = do
     mapM_ (putStrLn . ("  " ++)) failures
   pure (null failures)
 
+-- | Render and independently parse one compiled module against only its
+-- imported environment. Trust-boundary tests share this path so each mutation
+-- exercises the same source-free verifier contract.
+compiledUnitKCoreArtifact
+  :: CompiledUnit
+  -> ( T.Text -> Either KCoreTextError KCoreFile
+     , Either KCoreTextError KCoreFile
+     )
+compiledUnitKCoreArtifact unit = (parseArtifact, artifact)
+  where
+    state = cuState unit
+    dataInterfaces =
+      Map.map
+        (\info -> KCoreDataInfo (diCtors info) (diParamCount info))
+        (csDatas state)
+    constructorInterfaces =
+      Map.map
+        (\info ->
+           KCoreConstructorInfo
+             (ciData info)
+             (ciUniverses info)
+             (ciType info)
+             (ciSourceFields info))
+        (csCtors state)
+    importedGlobals =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule unit)
+        (csGlobals state)
+    importedDataInterfaces =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule unit)
+        dataInterfaces
+    importedConstructorInterfaces =
+      Map.filterWithKey
+        (\(GName owner _) _ -> owner /= cuModule unit)
+        constructorInterfaces
+    importedEval =
+      EvalCtx
+        (Globals importedGlobals)
+        (csMetas state)
+        False
+        mempty
+    parseArtifact =
+      parseAndVerifyKCoreTextWithEnvironment
+        importedEval
+        importedGlobals
+        importedDataInterfaces
+        importedConstructorInterfaces
+    artifact = do
+      rendered <-
+        renderKCoreModule
+          (cuModule unit)
+          (EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty)
+          (csGlobals state)
+          (csCoreBodies state)
+          dataInterfaces
+          constructorInterfaces
+          (kbackendRepresentationCertificates (lowerKBackendIR state))
+      parseArtifact rendered
+
 -- | NFR-6/NFR-7 trust-boundary regression. The exact-natural certificate is
 -- rendered for a user-defined unary natural whose successor is declared before
 -- zero and carries an erased kind field before its recursive payload. Removing
@@ -3357,54 +4319,7 @@ exactNaturalShapeReplayDomain = do
       state = cuState cu
       backendIr = lowerKBackendIR state
       certificates = kbackendRepresentationCertificates backendIr
-      dataInterfaces =
-        Map.map
-          (\info -> KCoreDataInfo (diCtors info) (diParamCount info))
-          (csDatas state)
-      constructorInterfaces =
-        Map.map
-          (\info ->
-             KCoreConstructorInfo
-               (ciData info)
-               (ciUniverses info)
-               (ciType info)
-               (ciSourceFields info))
-          (csCtors state)
-      importedGlobals =
-        Map.filterWithKey
-          (\(GName owner _) _ -> owner /= cuModule cu)
-          (csGlobals state)
-      importedDataInterfaces =
-        Map.filterWithKey
-          (\(GName owner _) _ -> owner /= cuModule cu)
-          dataInterfaces
-      importedConstructorInterfaces =
-        Map.filterWithKey
-          (\(GName owner _) _ -> owner /= cuModule cu)
-          constructorInterfaces
-      importedEval =
-        EvalCtx
-          (Globals importedGlobals)
-          (csMetas state)
-          False
-          mempty
-      parseArtifact =
-        parseAndVerifyKCoreTextWithEnvironment
-          importedEval
-          importedGlobals
-          importedDataInterfaces
-          importedConstructorInterfaces
-      artifact = do
-        rendered <-
-          renderKCoreModule
-            (cuModule cu)
-            (EvalCtx (Globals (csGlobals state)) (csMetas state) False mempty)
-            (csGlobals state)
-            (csCoreBodies state)
-            dataInterfaces
-            constructorInterfaces
-            certificates
-        parseArtifact rendered
+      (parseArtifact, artifact) = compiledUnitKCoreArtifact cu
       mutantResult = case artifact of
         Left err -> Left ("original artifact rejected: " <> kcteMessage err)
         Right parsed -> do
@@ -4759,11 +5674,16 @@ backendIRPhaseAS5 = do
           , "    match b"
           , "    case MkBox x -> MkBox x"
           , "let useIdBox (a : Type) (b : Box a) = idBox a b"
+          , "eraseWithEvidence : (0 a : Type) -> RuntimeErased a -> a -> Int"
+          , "let eraseWithEvidence a erased value = 12"
+          , "eraseByIsProp : (0 p : Type) -> IsProp p -> p -> Int"
+          , "let eraseByIsProp p prop value = 13"
           , "type R = (a : Type, b : Int)"
           , "type TypeOnly = (a : Type,)"
           , "type TupleErased = (a : Type, b : Int)"
           , "type RuntimeProofRec = (proof : (=) 1 1, value : Int)"
           , "type ErasedProofRec = (prop : IsProp ((=) \"x\" \"x\"), value : Int)"
+          , "type DependentErased = (@0 a : Type, @0 erased : RuntimeErased this.a, value : this.a)"
           , "data GhostBox : Type = MkGhostBox (0 ghost : Int) (value : Int)"
           , "data ErasedTail : Type = MkErasedTail (a : Int) (b : Int) (c : Type)"
           , "data RepresentedFields : Type = MkRepresentedFields (n : Nat) (i : Fin 5)"
@@ -4846,6 +5766,9 @@ backendIRPhaseAS5 = do
       m = ModuleName [T.pack "main"]
       idBoxG = GName m (T.pack "idBox")
       useIdBoxG = GName m (T.pack "useIdBox")
+      eraseWithEvidenceG = GName m (T.pack "eraseWithEvidence")
+      eraseByIsPropG = GName m (T.pack "eraseByIsProp")
+      dependentErasedG = GName m (T.pack "DependentErased")
       mkBoxG = GName m (T.pack "MkBox")
       mkGhostBoxG = GName m (T.pack "MkGhostBox")
       fooG = GName m (T.pack "foo")
@@ -4863,6 +5786,8 @@ backendIRPhaseAS5 = do
       backendBodies = kbirBodies ir
       body = Map.lookup idBoxG backendBodies
       callBody = Map.lookup useIdBoxG backendBodies
+      eraseWithEvidenceBody = Map.lookup eraseWithEvidenceG backendBodies
+      eraseByIsPropBody = Map.lookup eraseByIsPropG backendBodies
       recordBody = Map.lookup fooG backendBodies
       recordProjBody = Map.lookup useRecordG backendBodies
       computedRecordBody = Map.lookup fooComputedG backendBodies
@@ -4887,6 +5812,114 @@ backendIRPhaseAS5 = do
       tuplePatternAlts = maybe [] (backendAlts . bbRoot) tuplePatternBody
       polyArgTerms = maybe [] (backendTerms . bbRoot) polyArgBody
       localPolyTerms = maybe [] (backendTerms . bbRoot) localPolyBody
+      selectedEvidencePreserved =
+        any
+          (\case
+              BackendErasure {beSite = ErasedParameterSite, beName = "value", beProvenance = ErasedBySelectedEvidence _ _ _} -> True
+              _ -> False
+          )
+          (maybe [] bbErasures eraseWithEvidenceBody)
+      intrinsicEvidenceHasIdentity =
+        any
+          (\case
+              BackendErasure
+                { beSite = ErasedParameterSite
+                , beName = "value"
+                , beProvenance = ErasedBySelectedEvidence _ evidence _
+                } -> evidence /= CRecordV []
+              _ -> False
+          )
+          (maybe [] bbErasures eraseByIsPropBody)
+      forgeErasure node provenance =
+        ir
+          { kbirBodies =
+              Map.adjust
+                (\backendBody ->
+                   backendBody
+                     { bbErasures =
+                         BackendErasure
+                           { beNode = BackendNodeId node
+                           , beDepth = 0
+                           , beSite = ErasedParameterSite
+                           , beIcit = Expl
+                           , beName = "forged"
+                           , beProvenance = provenance
+                           }
+                           : bbErasures backendBody
+                     })
+                eraseWithEvidenceG
+                backendBodies
+          }
+      runtimeErasedGoal argument =
+        CApp Expl (CGlobal prelRuntimeErased []) argument
+      forgedErasureCodes provenance node =
+        map bivCode (validateKBackendIR (forgeErasure node provenance))
+      forgedGoalCodes =
+        forgedErasureCodes
+          (ErasedBySelectedEvidence (CGlobal prelUnit []) (CRecordV []) (CGlobal prelUnit []))
+          1000000
+      forgedMetaCodes =
+        forgedErasureCodes
+          (ErasedBySelectedEvidence (runtimeErasedGoal (CGlobal prelUnit [])) (CMeta 1000001) (runtimeErasedGoal (CGlobal prelUnit [])))
+          1000002
+      forgedScopeCodes =
+        forgedErasureCodes
+          (ErasedBySelectedEvidence (runtimeErasedGoal (CVar 0)) (CRecordV []) (runtimeErasedGoal (CVar 0)))
+          1000003
+      forgedAnonymousEvidenceCodes =
+        forgedErasureCodes
+          (ErasedBySelectedEvidence (runtimeErasedGoal (CGlobal prelUnit [])) (CRecordV []) (runtimeErasedGoal (CGlobal prelUnit [])))
+          1000004
+      forgedWrongTypedEvidenceCodes =
+        forgedErasureCodes
+          ( ErasedBySelectedEvidence
+              (runtimeErasedGoal (CGlobal prelUnit []))
+              (CGlobal prelUnit [])
+              (CGlobal prelUnit [])
+          )
+          1000005
+      mutateFirstSelected rewrite = go
+        where
+          go (CPiRuntimeM mode formation ic quantity borrowed name assumption origin runtimeErasure domain codomain) =
+            case runtimeErasure of
+              RuntimeErased selected ->
+                CPiRuntimeM mode formation ic quantity borrowed name assumption origin
+                  (RuntimeErased (rewrite selected)) domain codomain
+              RuntimeRelevant ->
+                CPiRuntimeM mode formation ic quantity borrowed name assumption origin
+                  RuntimeRelevant domain (go codomain)
+          go term = term
+      wrongCarrier (RuntimeErasedEvidence goal evidence evidenceType) =
+        let (headTerm, arguments) = spineOfTerm goal
+            arguments' = case reverse arguments of
+              (Expl, _) : rest -> reverse rest ++ [(Expl, CGlobal prelInt [])]
+              _ -> arguments
+         in RuntimeErasedEvidence
+              (foldl (\function (icit, argument) -> CApp icit function argument) headTerm arguments')
+              evidence
+              evidenceType
+      wrongEvidence (RuntimeErasedEvidence goal _ evidenceType) =
+        RuntimeErasedEvidence goal (CGlobal prelUnit []) evidenceType
+      forgedCoreCodes rewrite =
+        case Map.lookup eraseWithEvidenceG (csGlobals st) of
+          Just definition
+            | Just coreType <- gdCoreType definition ->
+                let forgedType = mutateFirstSelected rewrite coreType
+                    evaluation = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+                    forgedDefinition =
+                      definition
+                        { gdCoreType = Just forgedType
+                        , gdType = eval evaluation [] forgedType
+                        }
+                    forgedState =
+                      st
+                        { csGlobals =
+                            Map.insert eraseWithEvidenceG forgedDefinition (csGlobals st)
+                        }
+                 in map bivCode (validateCoreCapabilities forgedState)
+          _ -> []
+      forgedCoreCarrierCodes = forgedCoreCodes wrongCarrier
+      forgedCoreEvidenceCodes = forgedCoreCodes wrongEvidence
       representationCertificates = kbackendRepresentationCertificates ir
       representationCertificateIds =
         map verifiedRepresentationCertificateIdentity representationCertificates
@@ -4916,6 +5949,23 @@ backendIRPhaseAS5 = do
             kcoreRepresentationCertificateCount kcore
               == length representationCertificates
           Left _ -> False
+      dependentRecordEvidenceSelected =
+        case Map.lookup dependentErasedG (csGlobals st) >>= gdValue of
+          Just recordType ->
+            case force importedEval recordType of
+              VRecordTQ fields ->
+                any
+                  (\field ->
+                     rfName field == "value"
+                       && case rfRuntimeErasure field of
+                            RuntimeErased (RuntimeErasedEvidence _ evidence _) ->
+                              case evidence of
+                                VProjN _ (VGlobN root []) "erased" -> root == prelThis
+                                _ -> False
+                            RuntimeRelevant -> False)
+                  fields
+              _ -> False
+          Nothing -> False
       params = maybe [] bbParams body
       hasOnlyRuntimeParam =
         case params of
@@ -5082,6 +6132,16 @@ backendIRPhaseAS5 = do
         , ("polymorphic lambda argument erases type binder from expected type", polyArgErasesTypeLambda)
         , ("local kind-domain lambda binder is erased", localPolyErasesTypeLambda)
         , ("local polymorphic call erases type argument", localPolyCallErasesTypeArg)
+        , ("selected RuntimeErased evidence survives BackendIR lowering", selectedEvidencePreserved)
+        , ("intrinsic RuntimeErased evidence retains a typed identity", intrinsicEvidenceHasIdentity)
+        , ("BackendIR rejects forged selected-erasure goals", "E_BACKENDIR_ERASURE_GOAL" `elem` forgedGoalCodes)
+        , ("BackendIR rejects provisional selected-erasure evidence", "E_BACKENDIR_ERASURE_META" `elem` forgedMetaCodes)
+        , ("BackendIR rejects escaped selected-erasure goals", "E_BACKENDIR_ERASURE_SCOPE" `elem` forgedScopeCodes)
+        , ("BackendIR rejects anonymous structural selected-erasure evidence", "E_BACKENDIR_ERASURE_EVIDENCE" `elem` forgedAnonymousEvidenceCodes)
+        , ("BackendIR rejects nonempty evidence with a mismatched recorded classifier", "E_BACKENDIR_ERASURE_EVIDENCE" `elem` forgedWrongTypedEvidenceCodes)
+        , ("dependent record fields select prior RuntimeErased evidence by this projection", dependentRecordEvidenceSelected)
+        , ("typed Core rejects selected erasure for a different carrier", "E_BACKENDIR_ERASURE_GOAL" `elem` forgedCoreCarrierCodes)
+        , ("typed Core rejects a selected term with the wrong evidence type", "E_BACKENDIR_ERASURE_EVIDENCE" `elem` forgedCoreEvidenceCodes)
         , ("selected representation certificates are identity-unique", representationCertificatesAreUnique)
         , ("selected exact-natural certificate crosses the backend boundary", hasExactNaturalCertificate)
         , ("selected finite-ordinal certificate crosses the backend boundary", hasFiniteOrdinalCertificate)
@@ -5703,6 +6763,9 @@ ctorLayoutEvidenceFields = do
           , "    MkShowable : forall (a : Type). Show a => a -> Showable"
           , "data Eqd : Type ="
           , "    MkEqd : forall (a : Type). Eqt a => a -> a -> Eqd"
+          , -- selected RuntimeErased evidence from an earlier constructor binder
+            "data ErasedBox : Type ="
+          , "    MkErasedBox : forall (0 a : Type). RuntimeErased a => a -> Int -> ErasedBox"
           , -- the previously-correct cases that must stay unchanged
             "data MyUnit : Type ="
           , "    MkMyUnit"
@@ -5724,8 +6787,8 @@ ctorLayoutEvidenceFields = do
       runtimeCtorArity = goCount 0 . eval ctx []
         where
           goCount lvl ty = case force ctx ty of
-            VPi ic q _ _ dom (Closure env cod) ->
-              (if runtimeConstructorField ctx lvl ic q dom then 1 else 0)
+            VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom (Closure env cod) ->
+              (if runtimeConstructorPiField ctx lvl runtimeErasure ic q dom then 1 else 0)
                 + goCount (lvl + 1) (eval ctx (VRigid lvl [] : env) cod)
             _ -> 0
       look cname = Map.lookup (GName m (T.pack cname)) (csCtors st)
@@ -5765,6 +6828,10 @@ ctorLayoutEvidenceFields = do
       checks =
         [ ("MkShowable evidence", evidenceOK "MkShowable" 2, probe "MkShowable") -- [Show dict, a]
         , ("MkEqd evidence", evidenceOK "MkEqd" 3, probe "MkEqd") -- [Eqt dict, a, a]
+        , ( "MkErasedBox selected evidence"
+          , exactOK "MkErasedBox" (2, [RepBoxed, RepInt]) LayoutBoxed (Just 64)
+          , probe "MkErasedBox"
+          )
         , ("MkMyUnit nullary", exactOK "MkMyUnit" (0, []) LayoutImmediate Nothing, probe "MkMyUnit")
         , ("MkMyBox single boxed", exactOK "MkMyBox" (1, [RepBoxed]) LayoutBoxed (Just 56), probe "MkMyBox")
         , ("MkIntBox scalar", exactOK "MkIntBox" (1, [RepInt]) LayoutMayPack (Just 56), probe "MkIntBox")

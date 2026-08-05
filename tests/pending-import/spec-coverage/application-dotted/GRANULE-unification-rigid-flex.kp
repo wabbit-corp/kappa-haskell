@@ -38,4 +38,4 @@ unpackBad :
 let unpackBad e g = withHidden e g   --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.application.argument-mismatch
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.application.argument-mismatch] on line 38 (saw: E_TYPE_EQUALITY_MISMATCH@38, E_EXPECT_UNSATISFIED@21, E_EXPECT_UNSATISFIED@23); no diagnostic with family kappa.application.argument-mismatch was produced

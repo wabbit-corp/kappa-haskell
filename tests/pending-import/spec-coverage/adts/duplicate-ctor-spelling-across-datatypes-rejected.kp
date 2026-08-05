@@ -20,4 +20,4 @@ data B : Type = Mk (b : Bool) --!! E_DUPLICATE_DECLARATION
 
 useA : A
 let useA = Mk 1
--- STATUS(a0497523): FAIL — no duplicate diagnostic; unqualified Mk resolves to the later B.Mk, so `Mk 1 : A` reports E_NUMERIC_LITERAL_DOMAIN_MISMATCH + E_TYPE_EQUALITY_MISMATCH (actual B, expected A) instead
+-- STATUS: SPEC-ISSUE — duplicate rejection is required, but E_DUPLICATE_DECLARATION is not a portable Spec alias

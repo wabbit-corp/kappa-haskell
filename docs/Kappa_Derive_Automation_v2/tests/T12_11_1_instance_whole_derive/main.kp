@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+trait Pointed (parametric 0 a : Type) =
+    point : a
+
+instance Pointed Unit = derive
+
+value : Unit
+let value = point
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedInstance Pointed Unit

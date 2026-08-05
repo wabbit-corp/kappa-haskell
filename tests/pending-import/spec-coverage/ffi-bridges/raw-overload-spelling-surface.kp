@@ -41,4 +41,4 @@ let sample = (state = MkCInt 8)
 sampleRemaining : CInt
 let sampleRemaining = sample.remaining
 
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — portable FFI ABI types are opaque and expose no MkRawPtr/MkCInt constructors

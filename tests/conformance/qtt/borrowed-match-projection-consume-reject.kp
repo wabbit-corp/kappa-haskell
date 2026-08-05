@@ -16,8 +16,8 @@ let resVal (1 r : Res) : Int =
     match r
     case MkRes n -> n
 
-peek : (& r : Res) -> Int
-let peek (& r : Res) : Int =
+peek : (1 & r : Res) -> Int
+let peek (1 & r : Res) : Int =
     match r
     case MkRes n -> n
 

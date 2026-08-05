@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+trait Choice =
+    value : Bool
+
+instance Choice = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_AMBIGUOUS
+--! assertDiagnosticMatch value

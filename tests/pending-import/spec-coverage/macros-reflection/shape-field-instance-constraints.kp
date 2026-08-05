@@ -1,7 +1,9 @@
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.deriving.shape
---! assertDiagnosticMatch second|Blob
+-- (no assertDiagnosticMatch: §22.4 requires the diagnostic to identify
+-- the failing field/type, but §3.2.13's message-text fields are
+-- SHOULD-level, so pinning the primary message is not portable)
 
 -- §22.4: requireRuntimeFieldInstances requires each runtime field's
 -- trait obligation to be solved by ordinary implicit resolution at the
@@ -45,4 +47,5 @@ let good = $(checkGood)
 
 bad : String
 let bad = $(checkBad)
--- STATUS(a0497523): FAIL — requireRuntimeFieldInstances does not consult user-defined instances (Pretty Integer resolves by ordinary implicit search at the same site but the shape query reports the Integer fields as missing), so the positive half errors and the diagnostic names the wrong fields
+
+-- STATUS(6c99ee15): FAIL — expected 1 error, got 2: the §22.4 probe ignores the user Pretty Integer instance (impl bug)

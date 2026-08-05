@@ -22,4 +22,4 @@ let subst p v = substCoreEq p v
 -- §21.6: `substCoreEq reflCoreEq v` reduces to `v`
 substRefl : forall (@0 G : CoreCtx) (@0 P : forall (@0 u : Type). Core G u -> Type) (@0 a : Type) (@0 x : Core G a). P @a x -> P @a x
 let substRefl v = substCoreEq reflCoreEq v
--- STATUS(a0497523): FAIL — transCoreEq/substCoreEq are E_NAME_UNRESOLVED (explicitly deferred in the implementation's prelude)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved name 'transCoreEq' (not in scope)" at line 13

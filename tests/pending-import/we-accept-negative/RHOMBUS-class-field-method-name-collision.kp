@@ -45,3 +45,4 @@ data TripleDup : Type =
     MkTripleDup { a : Int, b : String, a : Bool }  --!! kappa.name.ambiguous
 
 --! assertDiagnosticFamily error kappa.name.ambiguous
+-- STATUS: SPEC-ISSUE — duplicate constructor-field declarations should be specified explicitly; the current Spec does not pin this collision to kappa.name.ambiguous.

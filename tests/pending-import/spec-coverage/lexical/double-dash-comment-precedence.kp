@@ -9,4 +9,4 @@ module main
 
 bad : Bool
 let bad = 5 <--x
--- STATUS(a0497523): FAIL — lexer still forms a three-character operator <-- (2 errors incl. E_OPERATOR_NO_FIXITY naming it); Spec 5.5.1 now forbids -- inside operator tokens
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_OPERATOR_NO_FIXITY "operator '<--' is used in infix position but no fixity is in scope (Spec §5.5.3)" at line 11

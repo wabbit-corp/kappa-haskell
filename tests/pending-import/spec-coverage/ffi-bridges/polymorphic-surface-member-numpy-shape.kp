@@ -30,4 +30,4 @@ type Numpy (r : Region) : Type =
 instance BridgeBindable Numpy =
     let bridgeContract = MkBridgeContract "numpy contract: array deep-monitored"
 
--- STATUS(a0497523): FAIL — the surface record with a forall-(@0 a : Type) member is kinded Region -> Type1, but std.bridge BridgeBindable/BridgeContract only accept Region -> Type, so the §26.1.15/§26.1.19 example shape cannot be given a contract (universe accounting for bridge surfaces unresolved; see spec issue)
+-- STATUS: SPEC-ISSUE — BridgeContract is opaque, and Region -> Type conflicts with this Type-quantified member universe

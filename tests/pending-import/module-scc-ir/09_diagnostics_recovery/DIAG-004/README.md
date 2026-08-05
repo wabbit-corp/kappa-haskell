@@ -1,6 +1,7 @@
-# DIAG-004: IR unavailable-subject payload
+# DIAG-004: IR unavailable-subject diagnostic
 
-The diagnostic identifies the operation, supplied subject, and available subjects.
+The diagnostic uses the standardized unavailable-subject reason. The spec requires semantic operation/application
+information but does not standardize flat `/operation` or `/suppliedSubject` JSON keys, so the suite does not pin them.
 
 ## Normative targets
 

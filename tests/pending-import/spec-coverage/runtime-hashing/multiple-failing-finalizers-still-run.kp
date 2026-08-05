@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "finalizers-composed-in-run-order\n"
+--! assertExitCode 0
 
 -- §32.2.12: a failing exit action does not cancel the remaining ones —
 -- every registered defer runs, and cleanup causes contribute sequentially
@@ -19,16 +21,16 @@ let body = do
 
 classify : Cause Int -> IO Void String
 let classify c = match c
-    case Then (Fail 7) (Then (Fail 9) (Fail 8)) -> ioPure "finalizers-composed-in-run-order"
-    case Then (Then (Fail 7) (Fail 9)) (Fail 8) -> ioPure "finalizers-composed-in-run-order"
-    case Then (Fail 7) (Then (Fail 8) (Fail 9)) -> ioPure "wrong-order"
-    case Then (Then (Fail 7) (Fail 8)) (Fail 9) -> ioPure "wrong-order"
-    case Then (Fail 7) (Fail 9) -> ioPure "second-finalizer-lost"
-    case Then (Fail 7) (Fail 8) -> ioPure "first-finalizer-lost"
-    case _ -> ioPure "cause:other"
+    case Cause.Then (Cause.Fail 7) (Cause.Then (Cause.Fail 9) (Cause.Fail 8)) -> pure "finalizers-composed-in-run-order"
+    case Cause.Then (Cause.Then (Cause.Fail 7) (Cause.Fail 9)) (Cause.Fail 8) -> pure "finalizers-composed-in-run-order"
+    case Cause.Then (Cause.Fail 7) (Cause.Then (Cause.Fail 8) (Cause.Fail 9)) -> pure "wrong-order"
+    case Cause.Then (Cause.Then (Cause.Fail 7) (Cause.Fail 8)) (Cause.Fail 9) -> pure "wrong-order"
+    case Cause.Then (Cause.Fail 7) (Cause.Fail 9) -> pure "second-finalizer-lost"
+    case Cause.Then (Cause.Fail 7) (Cause.Fail 8) -> pure "first-finalizer-lost"
+    case _ -> pure "cause:other"
 
 main : UIO Unit
 let main = do
-    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "succeeded")) classify
+    let r <- catchIO (ioBind (sandbox body) (\v -> pure "succeeded")) classify
     printlnString r
--- STATUS(a0497523): PASS
+-- STATUS(8c3c7747): PASS

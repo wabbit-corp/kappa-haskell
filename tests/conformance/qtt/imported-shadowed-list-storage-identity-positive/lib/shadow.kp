@@ -1,0 +1,4 @@
+module lib.shadow
+
+data List (0 a : Type) : Type =
+    Empty

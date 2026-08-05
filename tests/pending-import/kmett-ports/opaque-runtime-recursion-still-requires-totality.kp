@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+-- Compiler/spec-boundary bug found while implementing the generic recursive
+-- combinators in recursion-schemes. §15 says that total-by-default applies to
+-- transparent definitions and elaboration-time computations, not all runtime
+-- computations. This definition is opaque and cannot unfold in definitional
+-- equality, yet the compiler still rejects it for lacking a termination proof.
+
+module main
+
+loop : Int -> Int
+opaque let loop value = loop value

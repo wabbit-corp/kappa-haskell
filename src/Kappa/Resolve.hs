@@ -433,6 +433,7 @@ rExpr env = go
       e@EVar {} -> pure e
       e@ERefFacet {} -> pure e
       e@EVarRead {} -> pure e
+      e@EQuantityBorrowMarker {} -> pure e
       e@EHole {} -> pure e
       e@EIntLit {} -> pure e
       e@EFloatLit {} -> pure e

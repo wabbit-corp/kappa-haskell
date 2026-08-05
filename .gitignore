@@ -34,3 +34,14 @@ examples/native/**/kappa.lock
 # Native executables (build outputs)
 *.exe
 anon-workspace/
+
+# Local compiler-debug probes and profiling builds
+/.codex-*
+/Debug*.hs
+/tmp-*.kp
+/dist-prof/
+/dist-newstyle-codex-universe/
+/runtime/build-bench-s4-rc/
+/runtime/build-poison-rc/
+/runtime/build-tsan-rc/
+/docs/Spec.md.orig

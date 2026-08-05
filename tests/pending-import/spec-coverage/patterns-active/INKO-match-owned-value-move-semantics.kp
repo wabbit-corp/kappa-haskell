@@ -32,4 +32,4 @@ let matchThenConsume p =
 
 --! assertDiagnosticFamily error kappa.path.consumed
 
--- STATUS(a0497523): FAIL (compiler reports quantity overuse instead of kappa.path.consumed)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.path.consumed] on line 30 (saw: E_QTT_LINEAR_OVERUSE@30); no diagnostic with family kappa.path.consumed was produced

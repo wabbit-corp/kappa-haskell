@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait CircularMember =
+    derive proof : True = True
+
+instance CircularMember =
+    let proof =
+        let self : CircularMember = summon
+        self.proof
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_INCOMPLETE_SELF

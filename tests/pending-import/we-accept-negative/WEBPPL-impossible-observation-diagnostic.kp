@@ -54,3 +54,4 @@ modelUnhandled : Eff <[ ]> Bool
 let modelUnhandled = prob.sample (DistBernoulli { p = 0.5 })
 
 --! assertDiagnosticFamily error kappa.effect.row-mismatch
+-- STATUS: SPEC-ISSUE — the fixture relies on bare top-level `prob` as an effect-row self-label, but the current label-formation rules do not introduce one.

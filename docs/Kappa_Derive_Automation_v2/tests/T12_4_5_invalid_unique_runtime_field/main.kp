@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+trait BadChoice =
+    choose : Bool
+    evidence uniqueness = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnostic error E_EVIDENCE_UNIQUENESS_INVALID

@@ -28,4 +28,4 @@ let nonstrict i decreases i =                --!! kappa.termination.failure
     case j -> nonstrict j
 
 --! assertDiagnosticFamily error kappa.termination.failure
--- STATUS(a0497523): FAIL — both explicit-decreases SCCs are accepted with W_TERMINATION_UNVERIFIED warnings at the definition sites (0 errors); §15.11 requires rejecting an SCC whose call-site decrease goals are unsolved (same gap as decreases-by-missing-wellfounded.kp)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.termination.failure] on line 20 (saw: W_TERMINATION_UNVERIFIED@26, W_TERMINATION_UNVERIFIED@20); no diagnostic error[kappa.termination.failure] on line 26 (saw: W_TERMINATION_UNVERIFIED@26, W_TERMINATION_UNVERIFIED@20); no diagnostic with family kappa.termination.failure was produced

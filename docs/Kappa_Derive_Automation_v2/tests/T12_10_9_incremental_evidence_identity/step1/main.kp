@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+evidence : IsSet Bool
+let evidence =
+    block
+        instance IsSet Bool =
+            let pathIsProp x y = derive
+        summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors

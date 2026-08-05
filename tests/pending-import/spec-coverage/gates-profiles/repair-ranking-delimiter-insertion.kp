@@ -15,4 +15,4 @@ let value = (1
 after : Int
 let after = 2
 
--- STATUS(a0497523): FAIL — no machine-applicable local delimiter fix is offered on the unclosed-paren diagnostic
+-- STATUS(74742dfd): FAIL — no error diagnostic matching E_EXPECTED_SYNTAX_TOKEN has a fix with applicability machine-applicable; no error diagnostic matching E_EXPECTED_SYNTAX_TOKEN has a machine-applicable fix to apply

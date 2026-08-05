@@ -1,0 +1,13 @@
+module data.either
+
+-- An unbiased binary coproduct. Unlike Result, neither parameter is designated
+-- as failure or success.
+data Either a b =
+    Left a
+    Right b
+
+swap : forall a b. Either a b -> Either b a
+let swap value =
+    match value
+    case Left left -> Right left
+    case Right right -> Left right

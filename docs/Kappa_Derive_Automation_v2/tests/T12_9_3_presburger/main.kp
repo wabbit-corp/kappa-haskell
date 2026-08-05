@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+arithmetic :
+    forall (x : Nat) (y : Nat).
+    x + y = y + x
+let arithmetic = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed arithmetic arithmetic
+--! assertDeriveProofChecks arithmetic

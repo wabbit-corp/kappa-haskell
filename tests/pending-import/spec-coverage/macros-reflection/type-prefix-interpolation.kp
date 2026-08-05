@@ -20,4 +20,4 @@ let n = 3
 
 describe : type#"SizedArray #{n} Integer"# -> Nat
 let describe arr = n
--- STATUS(a0497523): FAIL — E_PREFIX_HANDLER_TYPE: the hardcoded `type` intrinsic rejects every interpolation fragment, contradicting §6.3.5 "follows §6.3.4 exactly" and the §6.3.4.1 example type#"Vec #{n} Int"#
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_PREFIX_HANDLER_TYPE "the conventional type\"\8230\" handler (§6.3.5) takes literal type-expression content; it does not support ${\8230} interpolation (a runtime value cannot be spliced into a static type)" at line 21

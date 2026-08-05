@@ -35,7 +35,4 @@ let badRun = do
     let r = runST leakRef --!! kappa.type.mismatch
     pure ()
 
--- STATUS(a0497523): FAIL — the compiler accepts `runST leakRef` with 0 errors:
--- no rigid-variable/skolem scope check fires when the rank-2 instantiation
--- solves `a := STRef s Int` for the region-bound `s` (§18.6.4 requires a
--- standard skolem-escape type error; family here is the spec-implied guess).
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.type.mismatch was produced; no diagnostic error[kappa.type.mismatch] on line 35 (saw: E_BACKENDIR_OBSERVATION_ANALYSIS@0)

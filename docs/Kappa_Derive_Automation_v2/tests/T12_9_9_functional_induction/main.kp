@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+normalizeTwo : Nat -> Nat
+let normalizeTwo n decreases n =
+    if n < 2 then
+        n
+    else
+        normalizeTwo (n - 2)
+
+normalizeTwoBounded :
+    forall (n : Nat).
+    (normalizeTwo n < 2) = True
+let normalizeTwoBounded = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed normalizeTwoBounded functional-induction

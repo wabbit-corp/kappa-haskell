@@ -27,8 +27,4 @@ let f (1 b : Buf) : Int =
     case PosVal (_) -> bufValue b
     case rest -> bufValue rest
 
--- STATUS(a0497523): FAIL — rejected with E_QTT_LINEAR_OVERUSE
--- (kappa.quantity.unsatisfied) at `bufValue b`: the borrowed
--- active-pattern call is itself counted as the consumption of b, so the
--- branch's real consumption is flagged as a second use (contradicts
--- §17.1.8 "does not by itself consume" through a borrow-demanding view).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_QTT_LINEAR_OVERUSE "'b' is consumed more often than its linear quantity permits (§12.2)" at line 27

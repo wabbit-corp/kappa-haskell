@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq _ _ = True
+
+result : Bool
+let result = O <= I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEval result True
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

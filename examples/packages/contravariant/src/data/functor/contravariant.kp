@@ -1,0 +1,46 @@
+module data.functor.contravariant
+
+-- A contravariant functor consumes values. Mapping therefore changes its
+-- input by running a function before the underlying consumer.
+trait Contravariant f =
+    contramap : forall a b. (b -> a) -> f a -> f b
+
+data Predicate a =
+    MkPredicate (getPredicate : a -> Bool)
+
+instance Contravariant Predicate =
+    let contramap before predicate =
+        match predicate
+        case MkPredicate test -> MkPredicate (\input -> test (before input))
+
+data Equivalence a =
+    MkEquivalence (getEquivalence : a -> a -> Bool)
+
+instance Contravariant Equivalence =
+    let contramap before equivalence =
+        match equivalence
+        case MkEquivalence same ->
+            MkEquivalence (\left -> \right -> same (before left) (before right))
+
+data Comparison a =
+    MkComparison (getComparison : a -> a -> Ordering)
+
+instance Contravariant Comparison =
+    let contramap before comparison =
+        match comparison
+        case MkComparison compareValues ->
+            MkComparison (\left -> \right -> compareValues (before left) (before right))
+
+data Op r a =
+    MkOp (getOp : a -> r)
+
+instance Contravariant (Op r) =
+    let contramap before operation =
+        match operation
+        case MkOp consume -> MkOp (\input -> consume (before input))
+
+phantom :
+    forall f a b.
+    (@_ : Functor f) -> (@_ : Contravariant f) -> f a -> f b
+let phantom value =
+    contramap (\_ -> Unit) (map (\_ -> Unit) value)

@@ -1,0 +1,517 @@
+diff --git a/docs/KNOWN_SPEC_ISSUES.md b/docs/KNOWN_SPEC_ISSUES.md
+index 3474697..57f5138 100644
+--- a/docs/KNOWN_SPEC_ISSUES.md
++++ b/docs/KNOWN_SPEC_ISSUES.md
+@@ -43,6 +43,12 @@ Numbered entries removed from Parts I-II:
+ * **15.** §4: unhide/clarify recognized/gated/audited but carry no deeper semantic effect — §4.3 now explicitly defines the semantics the possible fix requested: "`unhide` imports a name that is marked `private` in the imported module, as if it were exported"; "`clarify` …
+ * **16.** §10.1.3,§10.2 vs §11.1: No universe size check for data ctor args — §10.4.1 'Constructor universe-size rule' (L9579) now requires every constructor-local binder `A : Type α` to satisfy solver-proved `α ≤ ρ` under the declared result universe `F Δ :…
+ * **17.** RESOLVED: §11.1/§11.1.2/§11.3 lacked Pi formation & level discipline — Redesigned §11 supplies the missing rules: `TypeLevel` is an ordinary opaque prelude type whose values include `ω` (L10390-10419); universe formation `Γ ⊢ Type u : Type (succ u)` (…
++* **33.** §18.1.19 worked example described deep-handler behavior while using shallow `handle` — resolved 2026-07-27:
++  the examples now use valid declared effect labels, `deep handle`, and `runPure`; the prose separately pins exact-label
++  selection, reinstallation, nearest-handler selection, and identity-preserving rebinding.
++* **35.** §20.6.1 left `order by` direction and multi-key comparison unspecified — resolved 2026-07-27: missing directions
++  now mean ascending, descending reverses each key comparison while preserving `EQ`, and multi-key ordering is stable
++  lexicographic comparison in written left-to-right order. Portable Appendix-T fixtures cover all new cases.
+ * **47.** Exported fixity was per operator, not per fixity kind — resolved 2026-07-24: operator identity, fixity,
+   export, and import selectors are now per role (infix/prefix/postfix) (§5.5.2, §7.1.1, §8.3.1).
+ * **88.** Conflicting imported fixities of the same operator and kind — resolved 2026-07-24: same-role fixity
+@@ -941,38 +947,6 @@ particular, applying `restore` inside an outer `mask` or `uninterruptible`
+ region whose masking was already in effect at that `mask`'s entry does not
+ make the subcomputation interruptible." Mirror the sentence in §32.2.5.
+ 
+-## 33. §18.1.19 vs §18.1.21: §18.1.19 worked example describes deep-handler behavior but uses shallow `handle`
+-
+-**contradiction** · severity **medium** · verification: **confirmed** ·
+-Spec.md lines 19539-19562 vs 19766-19767
+-
+-The first worked example handles `do { inner.put 1; outer.put 2; inner.get ()
+-}` with shallow `handle` whose clauses resume via bare `k ()` / `k 10` and
+-never re-handle the resumption. Under §18.1.21 ("The current handler is not
+-automatically reinstalled around `k`"), after the inner handler consumes
+-`inner.put 1` and resumes, the inner handler is gone; after the outer handler
+-consumes `outer.put 2` and resumes, both handlers are gone; so the trailing
+-`inner.get ()` is unhandled. The example's normative prose — that `inner.get`
+-"is intercepted by the handler for `inner`" — is therefore false as written;
+-it holds only for `deep handle` (or for clauses that explicitly re-handle). An
+-implementer calibrating handler semantics against this example would implement
+-auto-reinstalling (deep) behavior for `handle`, directly contradicting
+-§18.1.21.
+-
+-> line 19561-19562: "The operation `inner.get` is intercepted by the handler
+-for `inner`, not by the handler for `outer`, even though both labels carry the
+-same effect interface." — vs line 19766-19767: "The current handler is not
+-automatically reinstalled around `k`. To continue handling the same label
+-after resumption, the handler body must explicitly handle the resumed
+-computation again."
+-
+-**Possible fix:** In §18.1.19, change both `handle` occurrences of the first
+-example (and the outer/inner handlers) to `deep handle`, or rewrite the
+-operation clauses to re-handle the resumed computation (e.g. `case put _ k ->
+-handle inner (k ()) with ...`). The second (`sameLabel`) example only
+-exercises one operation and may remain shallow, but should be changed to `deep
+-handle` for consistency.
+-
+ ## 34. §20.2, §20.10.2 (cf. §6.4, §30.7): Element semantics of ranges (endpoint inclusion, direction, emptiness, meaning of `exclusive`) are never defined
+ 
+ **omission** · severity **medium** · verification: **confirmed** · Spec.md
+@@ -1006,34 +980,6 @@ included iff exclusive = False. If from > to (or from >= to when exclusive =
+ True) the range is empty; ranges never enumerate descending. Cardinality of
+ the resulting IntoQuery is QZeroOrMore.'
+ 
+-## 35. §20.6.1: `order by expr` has no defined sort direction and multi-key ordering has no defined comparison rule
+-
+-**incompleteness** · severity **medium** · verification: **confirmed** ·
+-Spec.md lines 23315-23356
+-
+-§20.6.1 gives four syntactic forms including bare `order by expr` and multi-
+-key `order by (asc expr1, desc expr2, expr3)`, and gives typing (Ord K per
+-key) and stability, but the only semantic sentence is 'order by applies stable
+-sorting to the current query pipeline'. Nowhere does the spec say (a) that
+-bare `order by expr` (and a direction-less key inside a tuple) sorts
+-ascending, (b) how `asc`/`desc` map onto the `Ord` instance's comparison, or
+-(c) that multiple keys compose lexicographically left-to-right. A whole-spec
+-grep for 'ascending'/'descending' returns zero hits. Two conforming
+-implementations can sort the same comprehension in opposite orders, or
+-prioritize keys differently — directly observable in every `order by` result
+-and also feeding the encounter-order-sensitive semantics of skip/take, keep
+-first/last, and grouped fold order.
+-
+-> L23318-23321: "order by expr\norder by asc expr\norder by desc expr\norder
+-by (asc expr1, desc expr2, expr3)" ... L23333: "* `order by` applies stable
+-sorting to the current query pipeline."
+-
+-**Possible fix:** Add to §20.6.1 Semantics: 'A key without an explicit
+-direction sorts ascending. `asc` orders rows so that keys are nondecreasing
+-under Ord K; `desc` reverses that key comparison. Multiple keys compare
+-lexicographically in written left-to-right order: later keys are consulted
+-only when all earlier keys compare equal.'
+-
+ ## 36. §22 (22.4 signatures) vs §16.3.3 and §9.3: std.deriving.shape requires implicit discharge of a quantified goal `forall x. IsTrait (tc x)` that the implicit-resolution procedure cannot solve
+ 
+ **incompleteness** · severity **medium** · verification: **confirmed** ·
+diff --git a/docs/Spec.md b/docs/Spec.md
+index bd78ed5..de15a95 100644
+--- a/docs/Spec.md
++++ b/docs/Spec.md
+@@ -24773,61 +24773,92 @@ This subsection defines surface semantics only. KCore realization is given by §
+ 
+ Worked examples:
+ 
+-Distinct labels with the same effect interface are handled independently.
++Distinct labels carrying the same effect interface are handled independently.
+ 
+ ```kappa
+-scoped effect State =
++effect State =
+     1 get : Unit -> Int
+     1 put : Int -> Unit
+ 
+-let example : Eff <[outer : State, inner : State]> Int =
+-    handle outer
+-        handle inner
+-            do
+-                inner.put 1
+-                outer.put 2
+-                inner.get ()
+-        with
+-            case return x -> pure x
+-            case get _ k -> k 10
+-            case put _ k -> k ()
+-    with
+-        case return x -> pure x
+-        case get _ k -> k 20
+-        case put _ k -> k ()
++example : Int
++let example =
++    block
++        scoped effect outer : State
++        scoped effect inner : State
++
++        runPure (
++            deep handle outer
++                deep handle inner
++                    do
++                        inner.put 1
++                        outer.put 2
++                        inner.get ()
++                with
++                    case return x -> pure x
++                    case get _ k -> k 10
++                    case put _ k -> k ()
++            with
++                case return x -> pure x
++                case get _ k -> k 20
++                case put _ k -> k ()
++        )
+ ```
+ 
+-The operation `inner.get` is intercepted by the handler for `inner`, not by the handler for `outer`, even though both
+-labels carry the same effect interface.
++`example` evaluates to `10`. The two handlers are deep because the handled computation performs further operations after
++both `put` clauses resume. Each deep resumption reinstalls its own handler, so the later `inner.get ()` is intercepted by
++the handler for `inner`, not by the handler for `outer`, even though both labels carry `State`.
++
++Had either relevant handler been shallow and resumed by bare `k`, that handler would not be reinstalled around the resumed
++suffix (§18.1.21). This example therefore tests both exact-label selection and deep-handler reinstallation; it must not be
++used as an example of shallow-handler persistence.
+ 
+ Nested handlers for the same exact label use the nearest dynamically enclosing matching handler.
+ 
+ ```kappa
+-let sameLabel : Eff <[state : State]> Int =
+-    handle state
+-        handle state
+-            state.get ()
+-        with
+-            case return x -> pure x
+-            case get _ k -> k 1
+-            case put _ k -> k ()
+-    with
+-        case return x -> pure x
+-        case get _ k -> k 2
+-        case put _ k -> k ()
++sameLabel : Int
++let sameLabel =
++    block
++        scoped effect state : State
++
++        runPure (
++            deep handle state
++                deep handle state
++                    state.get ()
++                with
++                    case return x -> pure x
++                    case get _ k -> k 1
++                    case put _ k -> k ()
++            with
++                case return x -> pure x
++                case get _ k -> k 2
++                case put _ k -> k ()
++        )
+ ```
+ 
+-The result is `1`, because the inner handler is the nearest dynamically enclosing handler for the exact label `state`.
++`sameLabel` evaluates to `1`, because the inner handler is the nearest dynamically enclosing handler for the exact label
++`state`. This example performs only one operation at `state`; its selection result does not depend on whether a handler is
++reinstalled after resumption. `deep handle` is used here so that both nested handlers eliminate their effect and the
++example can be closed with `runPure`.
+ 
+-Lexical label identity still matters:
++Lexical rebinding preserves label identity.
+ 
+ ```kappa
+-let rebound = state
+-handle rebound (state.get ()) with ...
++reboundLabel : Int
++let reboundLabel =
++    block
++        scoped effect state : State
++        let rebound = state
++
++        runPure (
++            deep handle rebound (state.get ()) with
++                case return x -> pure x
++                case get _ k -> k 7
++                case put _ k -> k ()
++        )
+ ```
+ 
+-This handles the operation only because `rebound` denotes the same effect-label value as `state`. Matching is by
+-resolved effect-label identity, not by spelling.
++`reboundLabel` evaluates to `7`. The handler matches because `rebound` denotes the same effect-label value as `state`.
++Matching is by resolved effect-label identity, not by source spelling.
+ 
+ <!-- effects.monadic_core.effect_application_linear_soundness -->
+ #### 18.1.20 Effect application and linear soundness
+@@ -28636,29 +28667,70 @@ order by desc expr
+ order by (asc expr1, desc expr2, expr3)
+ ```
+ 
++Each ordering key may independently carry `asc`, `desc`, or no direction marker. A key with no direction marker is
++ascending. Consequently, `order by expr` is semantically equivalent to `order by asc expr`, and the directionless
++`expr3` in the multi-key example above means `asc expr3`.
++
+ Typing:
+ 
+ * `order by expr` requires an implicit `Ord K` instance, where `expr : K`.
+ * `order by asc expr` and `order by desc expr` likewise require `Ord K`.
+-* `order by (dir1 expr1, ..., dirn exprn)` requires `Ord Ki` for every ordering key `expri : Ki`.
++* `order by (dir1 expr1, ..., dirn exprn)` requires `Ord Ki` for every ordering key `expri : Ki`. The key types need not
++  be equal.
+ 
+ Semantics:
+ 
+-* `order by` applies stable sorting to the current query pipeline.
++For two input rows `x` and `y`, let `key_i(x)` and `key_i(y)` be the cached values of the `i`th ordering-key expression,
++and let `compare_i` be `Ord.compare` from the coherent `Ord Ki` evidence selected for that key.
++
++Define the meta-level operation:
++
++```text
++reverseOrdering(LT) = GT
++reverseOrdering(EQ) = EQ
++reverseOrdering(GT) = LT
++```
++
++The directed comparison for key `i` is:
++
++```text
++directedCompare_i(x, y) =
++    compare_i(key_i(x), key_i(y))                  when direction_i = asc
++    reverseOrdering(compare_i(key_i(x), key_i(y))) when direction_i = desc
++```
++
++where an omitted `direction_i` is `asc`.
++
++Rows are compared lexicographically in written left-to-right key order:
++
++* inspect `directedCompare_1(x, y)`, then `directedCompare_2(x, y)`, and so on;
++* the first result that is not `EQ` is the comparison of the two rows;
++* a later key is consulted only when every earlier key compares `EQ`; and
++* if every key compares `EQ`, the rows compare `EQ` for this `order by` clause.
++
++A row `x` precedes a row `y` when their row comparison is `LT`; a result of `GT` places `x` after `y`. The current query
++pipeline is stably sorted by that relation. `desc` reverses the comparison of its own key; it does not reverse the
++already-sorted output sequence. In particular, `desc` preserves `EQ`, so equal-key rows remain subject to the ordinary
++stability rule rather than having their relative order reversed.
+ 
+ Stability:
+-* `order by` is a stable sort: elements that compare equal under the ordering keys preserve their relative order from
+-  the input iteration order.
++
++* Rows for which every ordering key compares `EQ` preserve their relative order from the current encounter order.
++* This stability rule applies equally to ascending keys, descending keys, and mixtures of directions.
+ 
+ Tie behavior on unordered inputs:
+ 
+ * Stability is with respect to the **current encounter order**.
+-* If the current orderedness is Unordered (§20.3.2), then the relative order of elements with equal ordering keys is
+-  deterministic in package mode under §20.3.2, but not user-visible or specified.
++* If the current orderedness is Unordered (§20.3.2), then the relative order of rows whose complete lexicographic
++  comparison is `EQ` is deterministic in package mode under §20.3.2, but not user-visible or specified.
+ 
+ Evaluation:
+-* In `order by ...`, each ordering key expression is evaluated exactly once per row. Implementations may cache keys for
+-  sorting.
++
++* Each ordering-key expression is evaluated exactly once per row.
++* The semantics is as if every row were decorated with its key values, the decorated rows were stably sorted by the
++  comparison above, and the temporary keys were then discarded.
++* Implementations may cache keys and may use any sorting algorithm observationally equivalent to that model. They MUST
++  NOT re-evaluate a key expression during comparator invocations.
+ 
+ Quantity and borrowing:
+ 
+diff --git a/tests/conformance/effects/handler-selection/main.kp b/tests/conformance/effects/handler-selection/main.kp
+new file mode 100644
+index 0000000..0ce451d
+--- /dev/null
++++ b/tests/conformance/effects/handler-selection/main.kp
+@@ -0,0 +1,87 @@
++module main
++
++effect State =
++    1 get : Unit -> Int
++    1 put : Int -> Unit
++
++distinctLabels : Int
++let distinctLabels =
++    block
++        scoped effect outer : State
++        scoped effect inner : State
++
++        runPure (
++            deep handle outer
++                deep handle inner
++                    do
++                        inner.put 1
++                        outer.put 2
++                        inner.get ()
++                with
++                    case return x -> pure x
++                    case get _ k -> k 10
++                    case put _ k -> k ()
++            with
++                case return x -> pure x
++                case get _ k -> k 20
++                case put _ k -> k ()
++        )
++
++shallowDoesNotReinstall : Int
++let shallowDoesNotReinstall =
++    block
++        scoped effect state : State
++
++        runPure (
++            deep handle state
++                handle state
++                    do
++                        state.put 0
++                        state.get ()
++                with
++                    case return x -> pure x
++                    case get _ k -> k 1
++                    case put _ k -> k ()
++            with
++                case return x -> pure x
++                case get _ k -> k 2
++                case put _ k -> k ()
++        )
++
++nearestSameLabel : Int
++let nearestSameLabel =
++    block
++        scoped effect state : State
++
++        runPure (
++            deep handle state
++                deep handle state
++                    state.get ()
++                with
++                    case return x -> pure x
++                    case get _ k -> k 1
++                    case put _ k -> k ()
++            with
++                case return x -> pure x
++                case get _ k -> k 2
++                case put _ k -> k ()
++        )
++
++reboundIdentity : Int
++let reboundIdentity =
++    block
++        scoped effect state : State
++        let rebound = state
++
++        runPure (
++            deep handle rebound (state.get ()) with
++                case return x -> pure x
++                case get _ k -> k 7
++                case put _ k -> k ()
++        )
++
++--! assertNoErrors
++--! assertEval distinctLabels 10
++--! assertEval shallowDoesNotReinstall 2
++--! assertEval nearestSameLabel 1
++--! assertEval reboundIdentity 7
+diff --git a/tests/conformance/queries/order-by/main.kp b/tests/conformance/queries/order-by/main.kp
+new file mode 100644
+index 0000000..a05abd4
+--- /dev/null
++++ b/tests/conformance/queries/order-by/main.kp
+@@ -0,0 +1,114 @@
++module main
++
++-- Encode a list of single decimal digits in encounter order.  For example,
++-- [1, 2, 3] becomes 123.  This gives each ordering test one compact assertEval
++-- subject without hiding the produced sequence behind collection rendering.
++encodeDigits : List Int -> Int
++let encodeDigits xs =
++    block
++        go : List Int -> Int -> Int
++        let go ys acc decreases structural ys =
++            match ys
++            case Nil -> acc
++            case (::) digit rest -> go rest (acc * 10 + digit)
++
++        go xs 0
++
++defaultAscending : Int
++let defaultAscending =
++    encodeDigits [
++        for x in [3, 1, 2]
++        order by x
++        yield x
++    ]
++
++explicitAscending : Int
++let explicitAscending =
++    encodeDigits [
++        for x in [2, 3, 1]
++        order by asc x
++        yield x
++    ]
++
++explicitDescending : Int
++let explicitDescending =
++    encodeDigits [
++        for x in [1, 3, 2]
++        order by desc x
++        yield x
++    ]
++
++-- Written key priority is: major ascending, middle descending, minor
++-- ascending.  Rows 3 and 6 compare EQ under all three keys and therefore
++-- remain in encounter order.
++lexicographicMixedStable : Int
++let lexicographicMixedStable =
++    encodeDigits [
++        for (major, middle, minor, id) in [
++            (0, 1, 2, 1),
++            (0, 2, 2, 2),
++            (0, 2, 1, 3),
++            (1, 1, 1, 4),
++            (1, 1, 0, 5),
++            (0, 2, 1, 6)
++        ]
++        order by (major, desc middle, minor)
++        yield id
++    ]
++
++-- A directionless later key is ascending, not merely a directionless first
++-- key or single key.
++omittedLaterDirection : Int
++let omittedLaterDirection =
++    encodeDigits [
++        for (major, minor, id) in [
++            (0, 2, 2),
++            (1, 2, 4),
++            (0, 1, 1),
++            (1, 1, 3)
++        ]
++        order by (desc major, minor)
++        yield id
++    ]
++
++-- Different keys may use different key types and therefore different coherent
++-- Ord dictionaries.  Here the first key is Int and the second is String.
++heterogeneousKeyTypes : Int
++let heterogeneousKeyTypes =
++    encodeDigits [
++        for (major, name, id) in [
++            (0, "a", 1),
++            (0, "z", 2),
++            (1, "z", 3),
++            (1, "a", 4)
++        ]
++        order by (major, desc name)
++        yield id
++    ]
++
++ascendingTieStability : Int
++let ascendingTieStability =
++    encodeDigits [
++        for (key, id) in [(2, 1), (1, 2), (2, 3), (2, 4), (1, 5)]
++        order by key
++        yield id
++    ]
++
++descendingTieStability : Int
++let descendingTieStability =
++    encodeDigits [
++        for (key, id) in [(2, 1), (1, 2), (2, 3), (2, 4), (1, 5)]
++        order by desc key
++        yield id
++    ]
++
++--! assertNoErrors
++--! assertTotal encodeDigits
++--! assertEval defaultAscending 123
++--! assertEval explicitAscending 123
++--! assertEval explicitDescending 321
++--! assertEval lexicographicMixedStable 362154
++--! assertEval omittedLaterDirection 3412
++--! assertEval heterogeneousKeyTypes 2134
++--! assertEval ascendingTieStability 25134
++--! assertEval descendingTieStability 13425

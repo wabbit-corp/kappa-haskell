@@ -14,4 +14,4 @@ data Res : Type = MkRes (rid : Int)
 
 leak : IO Unit Res
 let leak = bracket (ioPure (MkRes 1)) (\r -> ioPure ()) (\r -> ioPure r) --!! E_QTT_BORROW_ESCAPE
--- STATUS(a0497523): FAIL — compiler accepts (0 errors): the prelude types bracket's use phase as a -> IO e b (owned view), not the §18.1.25.1 borrowed view, so the resource escape from use is not rejected.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_QTT_BORROW_ESCAPE]; no diagnostic error[E_QTT_BORROW_ESCAPE] on line 16 (no diagnostics)

@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+functionsAreSet :
+    forall (a : Type) (b : a -> Type).
+    (forall (x : a). IsSet (b x)) ->
+    IsSet ((x : a) -> b x)
+let functionsAreSet pointwise = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed functionsAreSet function-extensionality

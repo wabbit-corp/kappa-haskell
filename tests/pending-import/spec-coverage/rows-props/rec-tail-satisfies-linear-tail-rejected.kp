@@ -28,4 +28,4 @@ let mkLocker : Locker = (name = "top", secret = MkKey)
 bad : String
 let bad = forgetExtras mkLocker
 
--- STATUS(a0497523): FAIL — RecTailSatisfies is not in scope (E_NAME_UNRESOLVED), so the call-site structural quantity check never runs; no E_ROW_TAIL_QUANTITY_UNSATISFIED emitted
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_ROW_TAIL_QUANTITY_UNSATISFIED] was produced (saw: E_NAME_UNRESOLVED@19, E_NAME_UNRESOLVED@22)

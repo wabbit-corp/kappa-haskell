@@ -17,4 +17,4 @@ let main = do
 
 --! mode check
 --! assertErrorCount 2
--- STATUS(a0497523): FAIL — 0 errors: the compiler silently accepts duplicate labels on sibling loops and on sibling lambdas at the same lexical nesting level; §18.2.5 requires a compile-time error for both.
+-- STATUS(e25d64e1): FAIL — expected 2 errors, got 4; finalized Core reports E_PARAMETRIC_TYPE_PROMOTION

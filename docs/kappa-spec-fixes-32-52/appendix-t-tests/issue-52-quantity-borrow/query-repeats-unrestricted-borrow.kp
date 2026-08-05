@@ -1,0 +1,22 @@
+module main
+
+data Token : Type =
+    Token
+
+data LinearBox : Type =
+    LinearBox (value : Int) (1 token : Token)
+
+readValue : (1 & box : LinearBox) -> Int
+let readValue box =
+    box.value
+
+repeatBorrowInQuery : (& box : LinearBox) -> List Int
+let repeatBorrowInQuery box =
+    [
+        for n in [1, 2]
+        yield readValue box + n
+    ]
+
+--! mode check
+--! assertNoErrors
+--! assertTotal repeatBorrowInQuery

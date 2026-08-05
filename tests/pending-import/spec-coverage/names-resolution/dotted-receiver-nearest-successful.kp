@@ -15,4 +15,4 @@ let nested =
 
 --! assertNoErrors
 --! assertEval nested 42
--- STATUS(a0497523): FAIL — receiver lookup stops at the nearest spelled binding group: E_UNRESOLVED_MEMBER (no member 'm') on the inner x instead of continuing outward to the record x
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNRESOLVED_MEMBER "no member 'm' on this receiver (§7.3)" at line 14; assertEval: 'nested' evaluates to _, expected 42

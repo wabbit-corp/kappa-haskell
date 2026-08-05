@@ -41,4 +41,4 @@ let flagsOk = $(checkFlags)
 
 filterOk : String
 let filterOk = $(checkFilter)
--- STATUS(a0497523): FAIL — ShapeField has no runtimeRelevant/implicit members; implicit evidence fields are dropped from ctor.fields entirely, and runtimeConstructorFields returns erased fields too (reflects "ghost,payload")
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_UNRESOLVED_MEMBER "no member 'runtimeRelevant' on this receiver (§7.3)" at line 22

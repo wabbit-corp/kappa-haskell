@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+polynomial :
+    forall (x : Integer) (y : Integer).
+    (x + y) * (x + y) =
+        x * x + x * y + y * x + y * y
+let polynomial = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProviderUsed polynomial arithmetic
+--! assertDeriveProofChecks polynomial
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3); line 15: unknown directive '

@@ -39,3 +39,5 @@ listsEqual : List Int -> List Int -> Bool
 let listsEqual xs ys = xs == ys
 
 --! assertNoErrors
+
+-- STATUS: SPEC-ISSUE — currently FAIL: Eq requires IsSet/law evidence; this test tracks the proposed ergonomic auto-derivation rule.

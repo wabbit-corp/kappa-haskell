@@ -32,4 +32,4 @@ let colorOf n = if n % 2 == 0 then Red else Green
 firstReps : Int
 let firstReps =
     foldl addInt 0 [ for x in [1, 2, 3, 4], distinct by colorOf x, yield x ]
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — decide whether handwritten Eq may synthesize IsSet and eqSound/eqComplete from (==)

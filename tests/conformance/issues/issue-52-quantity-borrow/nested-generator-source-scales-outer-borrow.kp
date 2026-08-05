@@ -1,0 +1,22 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+singletonFrom : (1 & box : Box) -> List Int
+let singletonFrom (1 & box : Box) : List Int =
+    [box.value]
+
+bad : (1 & box : Box) -> List Int
+let bad (1 & box : Box) : List Int =
+    [
+        for outer in [1, 2]
+        for inner in singletonFrom box
+        yield outer + inner
+    ]
+
+-- The second source expression runs once per incoming row. Its demand on box
+-- is therefore multiplied by the current [0, omega] pipeline cardinality.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

@@ -13,4 +13,4 @@ let goodK p =
     match p
     case refl -> refl
 
--- STATUS(a0497523): FAIL — match on refl performs no endpoint identification even with IsSet a in scope; refl branch rejected with E_TYPE_EQUALITY_MISMATCH
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 14

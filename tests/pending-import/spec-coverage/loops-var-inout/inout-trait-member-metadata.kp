@@ -21,7 +21,4 @@ let main = do
     step ~x
     printlnString (showInt x)
 
--- STATUS(a0497523): FAIL — the compiler emits E_QTT_INOUT_MARKER_UNEXPECTED at the
--- trait-member call site: InoutParam metadata declared on a trait-member
--- signature is not propagated to ~ resolution (§18.9.2/§18.9.3 require
--- trait-member interfaces to carry it). Declaration and instance are accepted.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_QTT_INOUT_MARKER_UNEXPECTED "call-site '~' marker on an argument whose parameter is not declared inout (§18.9.3)" at line 21; stdout mismatch: expected "2\n", got ""

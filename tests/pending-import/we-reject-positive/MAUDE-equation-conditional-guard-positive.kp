@@ -35,3 +35,5 @@ ok2 : Int
 let ok2 = classify ItemA ItemB    -- expect 1
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — an explicitly exhaustive constructor match is incorrectly reported non-exhaustive (§17.1).

@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- An affine borrowed parameter may demand its argument zero times. Its call
+-- therefore cannot discharge an owned relevant root's positive lower bound.
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+maybeRead : (<=1 & box : Box) -> Unit
+let maybeRead (<=1 & box : Box) : Unit = ()
+
+bad : (>=1 box : Box) -> Unit
+let bad (>=1 box : Box) : Unit =
+    maybeRead box

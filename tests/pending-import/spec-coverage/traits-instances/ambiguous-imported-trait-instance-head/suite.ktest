@@ -2,4 +2,4 @@
 --! packageMode
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.name.ambiguous
--- STATUS(a0497523): FAIL — got E_INSTANCE_HEAD "instance head must be a trait applied to type arguments" instead of kappa.name.ambiguous; the §8.3.1A candidate listing is absent, hiding the real cause
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.name.ambiguous was produced; no diagnostic error[kappa.name.ambiguous] on line 16 (saw: E_INSTANCE_HEAD@16)

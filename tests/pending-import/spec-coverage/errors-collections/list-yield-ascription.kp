@@ -8,6 +8,4 @@ module main
 
 ascribed : List Int
 let ascribed = [ for x in [1, 2], yield x : Int ]
--- STATUS(a0497523): FAIL — the compiler parses `yield x : Int` as key/value even in
--- a LIST comprehension (result type List (key : Integer, value : Type)); the
--- §20.5 map-only `:` rule leaks into list/set carriers.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 10

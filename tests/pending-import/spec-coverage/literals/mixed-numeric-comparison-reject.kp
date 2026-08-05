@@ -28,4 +28,4 @@ let d = 4.0
 varMixed : Bool
 let varMixed = i < d               --!! kappa.type.mismatch
 
--- STATUS(a0497523): PASS — literal case gets kappa.type.literal-domain-mismatch with a §6.1.5 citation; variable case gets a plain actual/expected mismatch.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 29; no diagnostic with family kappa.type.literal-domain-mismatch was produced; no diagnostic error[kappa.type.literal-domain-mismatch] on line 20 (saw: E_TYPE_EQUALITY_MISMATCH@29)

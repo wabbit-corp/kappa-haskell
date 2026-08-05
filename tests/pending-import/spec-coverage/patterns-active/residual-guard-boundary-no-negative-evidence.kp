@@ -36,4 +36,4 @@ let badGuarded x b =
 -- unique-remaining HasCtor derivation works for `if x is C` chains
 -- (residual_normalization.kp) but is not implemented for a `match`
 -- catch-all after unguarded constructor cases.
--- STATUS(a0497523): FAIL — unchanged (2 errors; match catch-all still lacks residual LacksCtor derivation).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_UNRESOLVED_MEMBER "no member 'value' on this receiver (§7.3)" at line 20

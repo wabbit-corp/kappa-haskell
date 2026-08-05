@@ -24,4 +24,4 @@ let overrideExpected ty act = withExpectedGoal ty act
 
 ensureEq : forall (@0 g : ElabGoal) (@0 a : Type) (@0 b : Type). Core g.ctx a -> Core g.ctx b -> Elab Unit
 let ensureEq x y = ensureDefEqGoal x y
--- STATUS(a0497523): FAIL — ElabGoal/currentGoal/asCoreGoal/withExpectedGoal/ensureDefEqGoal are E_NAME_UNRESOLVED (goal API unimplemented)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 12; first error: E_NAME_UNRESOLVED "unresolved name 'ElabGoal' (not in scope)" at line 19

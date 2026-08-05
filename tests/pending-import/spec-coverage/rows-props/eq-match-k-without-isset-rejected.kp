@@ -17,4 +17,4 @@ let badK p =
     match p
     case refl -> refl
 
--- STATUS(a0497523): FAIL — the match IS rejected (1 error) but via generic E_TYPE_EQUALITY_MISMATCH; mandated E_EQUALITY_MATCH_REQUIRES_ISSET / kappa.equality.match-requires-hlevel is not registered
+-- STATUS(74742dfd): FAIL — no registered explanation for diagnostic code or family 'E_EQUALITY_MATCH_REQUIRES_ISSET' (§3.1.2A)

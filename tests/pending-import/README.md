@@ -71,6 +71,16 @@ the new contract. Manifest-validated by
 the `f1e4161b` baseline. Implementation plan:
 `docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md`.
 
+### `derive-automation/` — unified derive / canonical evidence contract (2026-08)
+The 109-suite Appendix T tree imported from
+`docs/Kappa_Derive_Automation_v2/tests/` for the unified `derive`,
+evidence-uniqueness, fallback-instance, and lawful-orders revision, plus
+`retargeted/` — conformance fixtures that revision invalidated, rewritten to
+the new contract. Manifest-validated by
+`scripts/validate_derive_automation_contract.py`; per-suite STATUS lines
+record the audited baseline. Implementation plan:
+`docs/DERIVE-AUTOMATION-PLAN.md`.
+
 ### `spec-coverage/` — spec-coverage campaign (2026-07)
 Different provenance from the ANON corpus above: tests authored directly from
 `docs/Spec.md` by the spec-coverage campaign, targeting sections and feature

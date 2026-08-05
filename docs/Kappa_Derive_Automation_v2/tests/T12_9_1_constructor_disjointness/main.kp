@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+distinct : O = I -> Void
+let distinct equality = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed distinct no-confusion

@@ -13,4 +13,4 @@ let r1 = foldl (infix -) 10 [1, 2]
 
 r2 : Int
 let r2 = (prefix -) 3
--- STATUS(a0497523): FAIL — (infix -)/(prefix -) role selectors not parsed; (prefix -) misreads as a section
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type does not match the parameter type (§16.1.7.1)" at line 12; assertEval: 'r1' evaluates to \ordinary p -> subtract _ _ (\ordinary p -> subtract _ _ 10 1 @0) 2 @0, expected 7; assertEval: 'r2' evaluates to -3, expected (negInt 3)

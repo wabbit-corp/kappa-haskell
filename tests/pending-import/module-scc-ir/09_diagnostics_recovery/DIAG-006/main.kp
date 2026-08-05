@@ -4,5 +4,3 @@ data Code : Type =
 decode : Code -> Type
 let decode code =
     decode code
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

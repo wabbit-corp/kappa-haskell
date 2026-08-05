@@ -1,0 +1,25 @@
+-- §13.2.5/§13.2.6 validate patch-source identities before choosing the
+-- closed-record or open-row elaborator. Open rows must reject the same
+-- duplicate paths and labels as closed records, and a mixed patch requires
+-- its update and extension labels to be pairwise distinct.
+--! mode check
+--! packageMode
+--! assertDiagnosticCodes E_RECORD_PATCH_DUPLICATE_PATH, E_ROW_EXTENSION_DUPLICATE_LABEL, E_RECORD_PATCH_PREFIX_CONFLICT
+
+module main
+
+duplicateUpdate : forall (r : RecRow). (name : String | r) -> (name : String | r)
+let duplicateUpdate (@0 r : RecRow) (rec : (name : String | r)) : (name : String | r) =
+    rec.{ name = "first", name = "second" }
+
+duplicateExtension :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) ->
+    (name : String, age : Int | r)
+let duplicateExtension (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36, age := 37 }
+
+mixedLabel : forall (r : RecRow). (name : String | r) -> (name : String | r)
+let mixedLabel (@0 r : RecRow) (rec : (name : String | r)) : (name : String | r) =
+    rec.{ name = "updated", name := "extended" }

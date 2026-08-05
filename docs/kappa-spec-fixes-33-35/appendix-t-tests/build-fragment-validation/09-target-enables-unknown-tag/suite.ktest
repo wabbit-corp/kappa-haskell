@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! requires backend jvm
+--! assertErrorCount 1
+--! assertDiagnostic error E_BUILD_FRAGMENT_TAG_UNKNOWN
+--! assertDiagnosticPayload error E_BUILD_FRAGMENT_TAG_UNKNOWN /subjectKind "target-fragment-selection"

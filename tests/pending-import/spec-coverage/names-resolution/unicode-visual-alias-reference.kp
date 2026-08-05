@@ -25,4 +25,4 @@ let shadowed =
 --! assertNoErrors
 --! assertEval refCyr 1
 --! assertEval shadowed 2
--- STATUS(a0497523): FAIL — no StrongVisualNameTable lookup: both Cyrillic references are E_NAME_UNRESOLVED (plus a W_UNICODE_CONFUSABLE_IDENTIFIER); the visual-alias warning is never emitted
+-- STATUS(74742dfd): FAIL — no diagnostic warning[W_UNICODE_VISUAL_ALIAS_REFERENCE] on line 13 (saw: W_UNICODE_CONFUSABLE_IDENTIFIER@13, E_NAME_UNRESOLVED@13, E_NAME_UNRESOLVED@23); no diagnostic warning[W_UNICODE_VISUAL_ALIAS_REFERENCE] on line 23 (saw: W_UNICODE_CONFUSABLE_IDENTIFIER@13, E_NAME_UNRESOLVED@13, E_NAME_UNRESOLVED@23); expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name '\1040' (not in scope)" at line 13; assertEval: 'refCyr' evaluates to _, expected 1; assertEval: 'shadowed' evaluates to _, expected 2

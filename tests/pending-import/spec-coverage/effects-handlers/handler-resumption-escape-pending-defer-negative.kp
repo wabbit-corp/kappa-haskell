@@ -36,4 +36,4 @@ let escapedBad =
     handle Cap compDefer with
         case return x -> wrap (fallback x)
         case grab _ k -> wrap k --!! E_QTT_CONTINUATION_CAPTURE
--- STATUS(a0497523): FAIL — compiler accepts (0 errors): escaping a resumption whose captured segment holds a pending defer is not checked; the §32.2.20 no-escape-with-pending-exit-actions obligation is unimplemented.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_QTT_CONTINUATION_CAPTURE]; no diagnostic error[E_QTT_CONTINUATION_CAPTURE] on line 38 (no diagnostics)

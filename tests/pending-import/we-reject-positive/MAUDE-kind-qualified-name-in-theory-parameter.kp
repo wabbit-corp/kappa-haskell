@@ -52,3 +52,5 @@ ok1 : Tag
 let ok1 = roundTrip TagA
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_UNRESOLVED_MEMBER at line 44; current source or fixture is not portable v1 and must be rewritten before promotion.

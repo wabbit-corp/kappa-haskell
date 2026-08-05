@@ -1,0 +1,28 @@
+module data.bitraversable
+
+import data.bifunctor.*
+import data.bifoldable.*
+import data.either.*
+
+trait (Bifunctor p, Bifoldable p) => Bitraversable p =
+    bitraverse :
+        forall f a b c d.
+        (@_ : Applicative f) ->
+        (a -> f c) -> (b -> f d) -> p a b -> f (p c d)
+
+instance Bitraversable PairF =
+    let bitraverse f g value =
+        match value
+        case Pair a b -> liftA2 (\c -> \d -> Pair c d) (f a) (g b)
+
+instance Bitraversable Either =
+    let bitraverse f g value =
+        match value
+        case Left a -> liftA2 (\c -> \u -> Left c) (f a) (pure Unit)
+        case Right b -> liftA2 (\d -> \u -> Right d) (g b) (pure Unit)
+
+instance Bitraversable Result =
+    let bitraverse f g value =
+        match value
+        case Err e -> liftA2 (\c -> \u -> Err c) (f e) (pure Unit)
+        case Ok a -> liftA2 (\d -> \u -> Ok d) (g a) (pure Unit)

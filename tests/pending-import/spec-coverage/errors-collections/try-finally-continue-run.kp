@@ -21,3 +21,4 @@ let main = do
 --! mode run
 --! assertNoErrors
 --! assertStdout "body:1\nfin:1\nbody:2\nfin:2\nbody:3\nfin:3\nafter\n"
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_BREAK_OUTSIDE_LOOP "'continue' is valid only within the body of a loop of this do-scope (§18.6)" at line 15; stdout mismatch: expected "body:1\nfin:1\nbody:2\nfin:2\nbody:3\nfin:3\nafter\n", got ""

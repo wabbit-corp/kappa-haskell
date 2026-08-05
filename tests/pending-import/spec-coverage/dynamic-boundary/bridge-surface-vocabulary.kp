@@ -34,4 +34,4 @@ let precisionName p =
     case Conservative -> "conservative"
     case Lossy -> "lossy"
 
--- STATUS(a0497523): PASS
+-- STATUS(e25d64e1): FAIL — BridgeHandle.bridgeContract reports E_TRAIT_MEMBER_TELESCOPE_MISMATCH

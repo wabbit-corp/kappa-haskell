@@ -1,0 +1,43 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "restored:7\ninterrupted\nafter-fail:7\n"
+--! assertExitCode 0
+
+-- §18.1.7 (Spec.md L19012-19019): locallyFiberRef restores the previous
+-- value on INTERRUPTION and on TYPED FAILURE, not only on normal completion
+-- (restoration behaves as a masked finalizer). The interrupted child's
+-- outer ensuring finalizer observes the restored (pre-locally) value.
+module main
+
+localBody : FiberRef Int -> Promise Void Unit -> UIO Unit
+let localBody cell ready = do
+    let _ <- completePromise ready (Exit.Success ())
+    sleepFor (seconds 10)
+
+reportRestored : FiberRef Int -> UIO Unit
+let reportRestored cell = do
+    let v <- getFiberRef cell
+    printlnString ("restored:" ++ showInt v)
+
+child : FiberRef Int -> Promise Void Unit -> UIO Unit
+let child cell ready =
+    ensuring (locallyFiberRef cell 99 (localBody cell ready)) (reportRestored cell)
+
+failing : IO String Int
+let failing = throwIO "boom"
+
+main : UIO Unit
+let main = do
+    let cell <- newFiberRef 7
+    -- interruption path: the child inherits 7; locallyFiberRef installs 99;
+    -- the interrupt unwinds and restores 7 before the ensuring finalizer runs
+    let ready <- newPromise
+    let f <- fork (child cell ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    printlnString "interrupted"
+    -- typed-failure path in this fiber: locallyFiberRef restores 7 on Fail
+    let v <- catchIO (locallyFiberRef cell 55 failing) (\m -> getFiberRef cell)
+    printlnString ("after-fail:" ++ showInt v)
+-- STATUS(8c3c7747): PASS — promoted after revalidation.

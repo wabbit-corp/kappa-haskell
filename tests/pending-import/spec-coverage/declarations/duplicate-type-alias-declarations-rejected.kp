@@ -19,4 +19,4 @@ type T = Bool --!! E_DUPLICATE_DECLARATION
 
 x : T
 let x = True
--- STATUS(a0497523): FAIL — no diagnostic; the second alias silently replaces the first (x : T checks against Bool)
+-- STATUS: SPEC-ISSUE — duplicate rejection is required, but E_DUPLICATE_DECLARATION is not a portable Spec alias

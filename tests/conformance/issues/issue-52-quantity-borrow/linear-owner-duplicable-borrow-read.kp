@@ -1,0 +1,13 @@
+module main
+
+readAndReturn : (1 x : Int) -> Int
+let readAndReturn (1 x : Int) : Int =
+    let y =
+        let & view = x
+        in view + 1
+    in x
+
+-- The binder owns one linear capability, but its stored Int remains
+-- duplicable. Reading the borrowed alias does not consume that capability.
+--! mode check
+--! assertNoErrors

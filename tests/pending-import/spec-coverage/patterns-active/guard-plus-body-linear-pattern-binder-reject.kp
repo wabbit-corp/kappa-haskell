@@ -37,7 +37,4 @@ let bad (1 b : Box) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch quantit|linear|consum|overuse
 
--- STATUS(a0497523): FAIL — accepted with 0 errors; guard usage of
--- pattern-bound linear binders is invisible to the quantity checker
--- (the function-parameter analogue is rejected with
--- E_QTT_LINEAR_OVERUSE, kappa.quantity.unsatisfied).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /quantit|linear|consum|overuse/ (no diagnostics)

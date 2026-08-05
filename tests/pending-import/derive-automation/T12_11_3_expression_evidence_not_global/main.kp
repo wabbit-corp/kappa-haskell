@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+import evidence_source.(type Flag(..))
+
+needsSet : IsSet Flag => Flag
+let needsSet = Off
+
+value : Flag
+let value = needsSet
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnosticFamily error kappa.implicit.unsolved

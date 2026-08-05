@@ -30,9 +30,4 @@ let flat = dyn.shown
 witnessLeak : Type
 let witnessLeak = pkg.a                 --!! E_RECORD_PROJECTION_MISSING_FIELD
 
--- STATUS(a0497523): FAIL — single-field payloads, alpha-equivalence, and
--- witness non-addressability all behave; but a MULTI-field record
--- payload does not scope the witness over the field telescope
--- (E_NAME_UNRESOLVED "unresolved name 'a'" on the `dyn` signature and
--- seal), so the §13.2.11 payload-view flattening for telescopes like
--- (tc : Eq a, value : a) is unimplemented.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 8; first error: E_NOT_A_TYPE "expected a type; this expression has type __this.a" at line 14

@@ -4,15 +4,13 @@
 
 -- §23.3: cross-stage persistence is lift-based — a user 'Lift'
 -- instance for a custom data type persists a present-stage value into
--- a quote structurally via 'liftCode' and nested escapes. (The base
--- 'Lift Integer' instance uses the implementation's '__codeQuote'
--- primitive, as in tests/conformance/staging/code-pipeline.kp.)
+-- a quote structurally via 'liftCode' and nested escapes.
 
 data Pt : Type =
     MkPt (px : Integer) (py : Integer)
 
 instance Lift Integer =
-    let liftCode n = __codeQuote n
+    let liftCode n = .< n >.
 
 instance Lift Pt =
     let liftCode p =
@@ -32,4 +30,4 @@ let main = do
         let v <- runCode cc
         println v
     case None -> printlnString "not closed"
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — defining base Lift via a quotation of its own argument recursively requires the Lift instance being defined

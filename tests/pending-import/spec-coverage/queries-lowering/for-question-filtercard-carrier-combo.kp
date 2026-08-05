@@ -28,4 +28,4 @@ badNarrow : Option Int -> QueryCore (QueryMode.QueryMode QueryUse.Reusable Query
 let badNarrow o =
     QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [ for? Some x in mk o, yield x ] --!! E_QUERY_CARDINALITY_MISMATCH
 
--- STATUS(a0497523): FAIL — no diagnostics: for? is treated as cardinality-preserving (filterCard is not applied), so the QOne source still satisfies the QOne demand and `badNarrow` is accepted; both positives check clean.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_QUERY_CARDINALITY_MISMATCH] was produced (no diagnostics); no diagnostic error[E_QUERY_CARDINALITY_MISMATCH] on line 29 (no diagnostics)

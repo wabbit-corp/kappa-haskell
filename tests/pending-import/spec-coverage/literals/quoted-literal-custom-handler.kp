@@ -41,4 +41,4 @@ let viaEscape = probe'\u0041'
 
 viaWide : String
 let viaWide = probe'λ'
--- STATUS(a0497523): FAIL — E_UNSUPPORTED "this quoted-literal form is not supported": only the hardcoded g/b prefixes exist; the §6.5 QuotedLiteralMacro handler pipeline for user prefixes is unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNSUPPORTED "this quoted-literal form is not supported by this implementation" at line 40; assertEval: 'viaEscape' evaluates to _, expected "\\u0041|A|byte"; assertEval: 'viaWide' evaluates to _, expected "λ|λ|nobyte"

@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- DX regression encountered while laying out long higher-kinded APIs. Once
+-- `forall` has been written after a signature's colon, its telescope and body
+-- may continue together at the next indentation level. The quantifier owns the
+-- continuation DEDENT; the following definition must remain a sibling.
+
+module main
+
+identity : forall
+    (a : Type).
+    a -> a
+let identity x = x
+
+answer : Int
+let answer = identity 42

@@ -17,4 +17,4 @@ ab
 
 main : UIO Unit
 let main = println (if sample == "ab\n" then "LF-CLEAN" else "DIRTY")
--- STATUS(a0497523): FAIL — multiline content keeps raw CRs plus a phantom leading line; prints DIRTY; Spec 6.3.3 now requires U+000A normalization
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "LF-CLEAN\n", got "DIRTY\n"

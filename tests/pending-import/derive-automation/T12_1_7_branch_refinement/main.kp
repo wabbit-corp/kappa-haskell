@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+branchProof :
+    (b : Bool) ->
+    if b then b = True else b = False
+let branchProof b =
+    if b then
+        derive
+    else
+        derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProofChecks branchProof
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProofChecks' is not defined by Appendix T (§T.3))

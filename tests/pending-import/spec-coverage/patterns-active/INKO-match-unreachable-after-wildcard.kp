@@ -29,4 +29,4 @@ let classifyBad s =
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
 
--- STATUS(a0497523): FAIL (unreachable arm after wildcard is not diagnosed)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.pattern.unreachable] on line 28 (no diagnostics); no diagnostic with family kappa.pattern.unreachable was produced

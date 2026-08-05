@@ -50,4 +50,4 @@ let mislabel = do
 --! assertDiagnosticFamily error kappa.effect.row-mismatch
 -- NOTE: the §3.2.3-vs-§3.2.9 family-precedence ambiguity on this shape is
 -- already recorded in docs/SPEC_ISSUES.md (writer1:diag-families-1 entry).
--- STATUS(a0497523): FAIL — compiler emits kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH on the Eff row types) plus a cascaded kappa.proof.impossible-reachable; the dedicated §3.2.9 row family is never produced (the §3.2.3-vs-§3.2.9 precedence gap is already recorded in docs/SPEC_ISSUES.md).
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.effect.row-mismatch] on line 46 (saw: E_TYPE_EQUALITY_MISMATCH@46, E_INDEXED_IMPOSSIBLE_REACHABLE@48); no diagnostic with family kappa.effect.row-mismatch was produced

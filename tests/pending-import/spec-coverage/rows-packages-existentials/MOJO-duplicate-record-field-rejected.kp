@@ -37,4 +37,4 @@ data Either : Type =
     Left  { val : Int }
     Right { val : String }
 
--- STATUS(a0497523): FAIL (duplicate constructor-field names are accepted)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.name.ambiguous] on line 23 (no diagnostics); no diagnostic with family kappa.name.ambiguous was produced; no diagnostic error[kappa.name.ambiguous] on line 29 (no diagnostics); no diagnostic with family kappa.name.ambiguous was produced

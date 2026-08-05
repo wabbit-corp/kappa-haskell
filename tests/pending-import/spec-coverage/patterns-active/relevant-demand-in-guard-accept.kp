@@ -15,7 +15,4 @@ let f (>=1 x : Int) (n : Int) : Int =
     case m if m > x -> m
     case m -> m + x
 
--- STATUS(a0497523): FAIL — rejected with E_QTT_LINEAR_DROP
--- (kappa.quantity.positive-lower-bound): guard usage is not credited to
--- the guarded case's usage interval, so the checker believes the case-1
--- path drops x.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_QTT_LINEAR_DROP "'x' (relevant) may be dropped without being consumed (§12.2.5)" at line 13

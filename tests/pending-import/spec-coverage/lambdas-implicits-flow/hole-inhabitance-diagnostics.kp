@@ -22,4 +22,4 @@ let finiteHole = _ --!! E_HOLE_UNSOLVED
 -- Finite 2 goal lists both candidates deterministically:
 --! assertDiagnosticMatch True
 --! assertDiagnosticMatch False
--- STATUS(a0497523): FAIL — the MUST parts pass (both holes report name + expected type), but the diagnostics carry no structured payload and no inhabitance suggestions: neither the Contractible unique inhabitant () for Unit nor the Finite-2 candidates True/False for Bool are reported (§16.3.2 SHOULD items unimplemented).
+-- STATUS(74742dfd): FAIL — no diagnostic message matches /\(\)/ (saw: "hole ?u : Unit"; "hole _ : Bool"); no diagnostic message matches /True/ (saw: "hole ?u : Unit"; "hole _ : Bool"); no diagnostic message matches /False/ (saw: "hole ?u : Unit"; "hole _ : Bool")

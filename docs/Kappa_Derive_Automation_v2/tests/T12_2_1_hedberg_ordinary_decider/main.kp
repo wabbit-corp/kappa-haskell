@@ -1,0 +1,30 @@
+@PrivateByDefault module main
+
+decideBool :
+    (& x : Bool) -> (& y : Bool) -> Dec (x = y)
+let decideBool x y =
+    match (x, y)
+    case (True, True)   -> Yes refl
+    case (False, False) -> Yes refl
+    case _ -> No (\equality ->
+        match equality
+        case impossible)
+
+makeSet :
+    forall (a : Type).
+    ((& x : a) -> (& y : a) -> Dec (x = y)) ->
+    IsSet a
+let makeSet decision = derive
+
+boolSet : IsSet Bool
+let boolSet = makeSet decideBool
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertType decideBool (& x : Bool) -> (& y : Bool) -> Dec (x = y)
+--! assertDeriveProviderUsed makeSet hedberg
+--! assertEvidenceConstructionMode makeSet fresh-independent

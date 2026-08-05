@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+decideTrue :
+    (x : Bool) ->
+    Dec (x = True)
+let decideTrue = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProviderUsed decideTrue finite-enumeration
+--! assertDeriveProofChecks decideTrue

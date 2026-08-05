@@ -1,0 +1,23 @@
+@PrivateByDefault module main
+
+data Seq (0 a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : Seq a)
+
+append : Seq a -> Seq a -> Seq a
+let append left right =
+    match left
+    case Nil -> right
+    case Cons head tail -> Cons head (append tail right)
+
+appendRightIdentity :
+    forall (a : Type) (xs : Seq a).
+    append xs Nil = xs
+let appendRightIdentity = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed appendRightIdentity structural-induction
+--! assertDeriveInductionSubject appendRightIdentity 1

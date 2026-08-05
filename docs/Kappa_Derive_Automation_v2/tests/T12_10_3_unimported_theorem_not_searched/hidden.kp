@@ -1,0 +1,13 @@
+@PrivateByDefault module hidden
+
+public opaque data Token : Type =
+    Token (value : Nat)
+
+public opaque left : Token
+let left = Token 0
+
+public opaque right : Token
+let right = Token 0
+
+public equality : left = right
+let equality = refl

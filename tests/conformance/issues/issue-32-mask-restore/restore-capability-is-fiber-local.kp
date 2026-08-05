@@ -1,0 +1,45 @@
+module main
+
+import std.prelude.(type Exit(..))
+
+main : UIO Unit
+let main =
+    mask (\foreignRestore ->
+        do
+            let ready <- newPromise @Void @Unit
+            let gate <- newPromise @Void @Unit
+            let report <- newPromise @Void @Bool
+
+            let child <- foreignRestore (
+                fork (
+                    ensuring
+                        (
+                            mask (\_ ->
+                                do
+                                    completePromise ready (Success ())
+                                    foreignRestore (awaitPromise gate)
+                                    completePromise report (Success True)
+                                    pure ()
+                            )
+                        )
+                        (
+                            do
+                                completePromise report (Success False)
+                                pure ()
+                        )
+                )
+            )
+
+            awaitPromise ready
+            interruptFork child
+            completePromise gate (Success ())
+            let reached <- awaitPromise report
+            let _ <- await child
+            println reached
+    )
+
+--! mode run
+--! requires capability runTask
+--! entry main
+--! assertStdout "True\n"
+--! assertExitCode 0

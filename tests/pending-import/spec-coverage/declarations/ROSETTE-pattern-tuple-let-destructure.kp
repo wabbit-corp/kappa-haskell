@@ -63,4 +63,4 @@ let badWidth =
 --! assertEval flat 6
 --! assertEval chained 10
 
--- STATUS(a0497523): FAIL — the width-mismatched pattern `let (a, b, c) = (e : (Int, Int))` is accepted silently: no diagnostic at all is emitted for the extra component `c` (spec requires the pattern to check against the scrutinee type, §9.1.2/§17.2.1).
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 58 (saw: E_PARAMETRIC_TYPE_PROMOTION@0); no diagnostic with family kappa.type.mismatch was produced

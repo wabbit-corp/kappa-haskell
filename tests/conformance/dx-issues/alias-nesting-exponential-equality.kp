@@ -1,0 +1,48 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+-- DX EXPECTATION (not necessarily spec-required): checking a value of an
+-- alias type against the SAME alias spelling should not unfold the alias
+-- exponentially. 21 pair-doubling aliases (P20 has 2^20 Int leaves) plus
+-- the identity function below should check essentially instantly; a
+-- nominal same-alias shortcut or a shared (DAG) type representation makes
+-- the equality near-O(1).
+--
+-- What currently happens (a0497523): checking `idP : P20 -> P20` with
+-- body `v` is exponential in the doubling depth — depth 16/18/20/22/24
+-- checks in 0.18s/0.45s/1.6s/6.2s/24.5s (~3.5-4x per level); depth 30 is
+-- unreachable. The cost is in the P-to-P definitional equality check
+-- itself: the alias DECLARATIONS alone are instant, and an unused
+-- `P22 -> Int` parameter is instant. Diagnostic RENDERING is not the
+-- problem (a forced mismatch renders compactly as `(_1 : P23, _2 : P23)`).
+-- A LINEAR alias chain of 200 (`type A1 = A0` ...) is also instant.
+-- This file pins depth 20 (~1.6s) as a canary: it currently completes,
+-- but any further slowdown (or a fix) will show in suite wall-time.
+module main
+
+type P0 = Int
+type P1 = (P0, P0)
+type P2 = (P1, P1)
+type P3 = (P2, P2)
+type P4 = (P3, P3)
+type P5 = (P4, P4)
+type P6 = (P5, P5)
+type P7 = (P6, P6)
+type P8 = (P7, P7)
+type P9 = (P8, P8)
+type P10 = (P9, P9)
+type P11 = (P10, P10)
+type P12 = (P11, P11)
+type P13 = (P12, P12)
+type P14 = (P13, P13)
+type P15 = (P14, P14)
+type P16 = (P15, P15)
+type P17 = (P16, P16)
+type P18 = (P17, P17)
+type P19 = (P18, P18)
+type P20 = (P19, P19)
+
+idP : P20 -> P20
+let idP v = v
+-- STATUS(8c3c7747): PASS — retained at depth 20 as a conformance performance canary.

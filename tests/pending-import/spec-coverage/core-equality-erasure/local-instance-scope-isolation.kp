@@ -37,4 +37,4 @@ let bad =
             let greet g = "hi"
         greet MkG
 
--- STATUS(a0497523): FAIL — local data/trait/instance declarations inside block are E_UNSUPPORTED (6 errors), so neither the positive local-resolution half nor the global-head rejection is reachable
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 5; first error: E_UNSUPPORTED "this local declaration form is not supported inside block by this implementation" at line 18

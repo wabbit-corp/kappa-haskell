@@ -21,6 +21,13 @@ Every test ends with a comment recording its outcome against a clean compiler bu
     -- STATUS(<commit>): FAIL — <what the compiler actually does>
     -- STATUS(<commit>): UNSUPPORTED — <missing capability>
     -- STATUS(<commit>): HARNESS-ERROR — <e.g. spec-implied family not registered>
+    -- STATUS: SPEC-ISSUE — <why the expectation is not currently portable or settled>
+
+`SPEC-ISSUE` is commit-independent: it records a test whose intended requirement
+cannot currently be pinned to one portable outcome because the specification is
+missing, contradictory, or awaiting a design decision. Such a test remains staged
+and MUST NOT be promoted to `tests/conformance` until the issue is resolved and the
+test is rewritten with an ordinary commit-qualified outcome.
 
 Tally at `a0497523` (573 units): **203 PASS / 331 FAIL / 17 UNSUPPORTED / 22 harness
 errors**. FAILs are writer-classified compiler gaps (see each file's note); harness

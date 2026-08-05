@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+
+-- Section 21.2 / 31.2: each expansion of the same Syntax value is a distinct
+-- application-argument occurrence.  The first splice is checked in a
+-- quantity-zero slot; that erasure decision must not suppress either of the
+-- later runtime uses merely because all three generated expressions retain
+-- the same quoted source span.
+module main
+
+eraseInt : (0 value : Integer) -> Unit
+let eraseInt (0 value : Integer) = ()
+
+bad : (1 t : Integer) -> Integer
+let bad t =
+    block
+        let s : Syntax Integer = '{ t }
+        let ignored = eraseInt $(pure s)
+        addInt $(pure s) $(pure s)

@@ -27,4 +27,4 @@ let badPostScope =
         group by (x > 1) { items = [x] } into g
         yield x --!! E_NAME_UNRESOLVED
     ]
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 3; first error: E_NAME_UNRESOLVED "unresolved name 'items' (not in scope)" at line 17

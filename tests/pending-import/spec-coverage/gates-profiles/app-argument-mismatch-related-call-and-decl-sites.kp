@@ -18,4 +18,4 @@ let f n = n
 
 y : Integer
 let y = f "hi" --!! E_APPLICATION_ARGUMENT_MISMATCH
--- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH is emitted but its JSON has related: [] (and payload kind "none"): neither call-site nor declaration-site related origins are attached
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.application.argument-mismatch has a related origin with role call-site (saw roles: ); no error diagnostic matching kappa.application.argument-mismatch has a related origin with role declaration-site (saw roles: )

@@ -608,6 +608,8 @@ registry =
       "A linear or affine (quantity 1 / <=1) binding or field path is consumed more often than its quantity permits (§12.2)."
   , ent "E_QTT_QUANTITY_UNSATISFIED" (Just "kappa.quantity.unsatisfied")
       "A declaration uses a quantity forbidden by the construct's static contract."
+  , ent "E_QUANTITY_BORROW_NOT_QUANTITY" (Just "kappa.quantity.borrow-not-quantity")
+      "The '&' token is borrowed binder access, not a Quantity expression; use it in a borrowed binder or write an interval quantity (§3.2.6, §12.1.1)."
   , ent "E_QTT_PATH_CONSUMED" (Just "kappa.path.consumed")
       "A place is borrowed or re-projected after the path was already consumed at quantity 1, without an intervening restoring record update (§12.4, §3.2.6)."
   , ent "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
@@ -744,6 +746,14 @@ registry =
       "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a data-layout inconsistency: two constructors of one datatype share a runtime tag id (non-injective assignment), a constructor a datatype lists does not point back to it, or a constructor declares more explicit fields than its type's runtime arity (so its layout would under-reserve slots) — Spec §34.3.3 layout-consistency, §§31.3-31.4. This warning surfaces it without changing codegen."
   , ent "E_BACKENDIR_ERASED_RUNTIME_TERM" (Just "kappa-hs.backendir.erased-runtime-term")
       "KCore-to-KBackendIR lowering found an erased source entity (type/proof term, erased binder, erased index, or unsolved compile-time meta) that would still be needed by a runtime-relevant backend value. Native emission rejects this rather than silently substituting a unit placeholder (§31.2, §34.3)."
+  , ent "E_BACKENDIR_ERASURE_GOAL" (Just "kappa-hs.backendir.erasure-evidence")
+      "A KBackendIR runtime-erasure annotation does not carry a selected dictionary for the exact RuntimeErased goal it claims to prove. Native emission rejects the annotation rather than reconstructing semantic evidence from source shape."
+  , ent "E_BACKENDIR_ERASURE_EVIDENCE" (Just "kappa-hs.backendir.erasure-evidence")
+      "A KBackendIR runtime-erasure annotation carries a selected term whose checked type is not the stored exact RuntimeErased goal. Native emission rejects mismatched or unauthenticated representation evidence."
+  , ent "E_BACKENDIR_ERASURE_META" (Just "kappa-hs.backendir.erasure-evidence")
+      "A KBackendIR runtime-erasure goal or selected dictionary still contains an unresolved term or universe metavariable. Native emission rejects provisional evidence rather than treating it as finalized representation authority."
+  , ent "E_BACKENDIR_ERASURE_SCOPE" (Just "kappa-hs.backendir.erasure-evidence")
+      "A KBackendIR runtime-erasure goal or selected dictionary refers outside the lexical scope recorded at its checked Core occurrence. Native emission rejects escaped evidence rather than accepting a stale binder reference."
   , ent "E_DERIVE_HEAD" (Just "kappa.derive")
       "A derive declaration does not name a supported derivable trait applied to exactly one target type (§14.5.1-§14.5.2)."
   , ent "E_DERIVE_UNSUPPORTED" (Just "kappa.derive")
@@ -814,6 +824,8 @@ registry =
       "The compiler could not construct the typed lexical-region witness required for an anonymous borrow."
   , ent "E_INTERNAL_MISSING_PRELUDE_DECLARATION" (Just "kappa.internal.compiler")
       "A compiler-generated use requires a checked prelude declaration or trait member that is absent from the semantic environment."
+  , ent "E_INTERNAL_PRELUDE_ARTIFACT" (Just "kappa.internal.compiler")
+      "The compiler-bundled checked prelude image is malformed, stale, or incompatible with the current semantic schema. Compilation fails closed and the image must be regenerated from the bundled sources."
   , ent "E_INTERNAL_EFFECT_PURE_TYPE" (Just "kappa.internal.compiler")
       "The compiler attempted to construct an effect-tree pure node without an Eff result type."
   , ent "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")

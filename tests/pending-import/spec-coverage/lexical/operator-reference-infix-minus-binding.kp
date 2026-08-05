@@ -18,4 +18,4 @@ let sub2 = (infix -)
 probe : Int
 let probe = sub2 9 4
 
--- STATUS(a0497523): FAIL — (infix -) skips the eta-expansion/proof-insertion path that bare (-) gets, so it reports E_TYPE_EQUALITY_MISMATCH against Int -> Int -> Int (actual type keeps the subDefined proof argument)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type CheckedSub _" at line 16; assertEval: 'probe' evaluates to \ordinary p -> subtract _ _ 9 4 @0, expected 5

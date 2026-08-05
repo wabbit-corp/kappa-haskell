@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteCount": 47,
+  "suiteCount": 48,
   "suites": [
     {
       "path": "positive/default_type_binder_parametric",
@@ -496,6 +496,25 @@
       "harnessOutcome": "pass",
       "capabilities": [],
       "ownerStage": "U-E9"
+    },
+    {
+      "path": "kcore/accept_outer_pi_observation_subsumption",
+      "category": "kcore",
+      "description": "Canonical KCore applies one-way observation subsumption consistently to direct lambdas and explicitly ascribed functions.",
+      "files": [
+        "exact-quantity.kcore",
+        "main.kp",
+        "nested.kcore",
+        "reverse.kcore",
+        "subsumption.kcore",
+        "suite.ktest"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [
+        "kcoreText"
+      ],
+      "ownerStage": "U-E7"
     },
     {
       "path": "kcore/parse_and_roundtrip_identity",

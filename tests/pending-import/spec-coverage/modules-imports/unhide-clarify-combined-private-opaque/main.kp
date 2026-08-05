@@ -16,4 +16,4 @@ let proofHidden = refl
 --! allow_unhiding
 --! allow_clarify
 --! assertNoErrors
--- STATUS(a0497523): FAIL — unhide does not grant access to private items (E_IMPORT_ITEM_NOT_FOUND on both import items, plus cascades)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_IMPORT_ITEM_NOT_FOUND "'secret' exists in module 'vlib' but is not exported (Spec §8.5)" at line 7

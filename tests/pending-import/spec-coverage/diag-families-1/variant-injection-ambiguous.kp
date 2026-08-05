@@ -22,4 +22,4 @@ let okInferred = (| 42 |)
 amb : (| List Int | List String |)
 let amb = (| Nil |) --!! kappa.variant.injection-ambiguous
 
--- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.variant.injection-ambiguous' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-ty… [was FAIL in an earlier STATUS line]
+-- STATUS(74742dfd): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.variant.injection-ambiguous' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 23: inline marker 'kappa.variant.injection-ambiguous' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

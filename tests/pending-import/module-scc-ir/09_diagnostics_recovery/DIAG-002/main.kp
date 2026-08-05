@@ -2,5 +2,3 @@ a : Nat
 let a = b
 b : Nat
 let b = a
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

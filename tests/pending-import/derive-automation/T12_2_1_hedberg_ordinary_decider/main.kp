@@ -1,0 +1,32 @@
+@PrivateByDefault module main
+
+decideBool :
+    (& x : Bool) -> (& y : Bool) -> Dec (x = y)
+let decideBool x y =
+    match (x, y)
+    case (True, True)   -> Dec.Yes refl
+    case (False, False) -> Dec.Yes refl
+    case _ -> Dec.No (\equality ->
+        match equality
+        case impossible)
+
+makeSet :
+    forall (a : Type).
+    ((& x : a) -> (& y : a) -> Dec (x = y)) ->
+    IsSet a
+let makeSet decision = derive
+
+boolSet : IsSet Bool
+let boolSet = makeSet decideBool
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertType decideBool (& x : Bool) -> (& y : Bool) -> Dec (x = y)
+--! assertDeriveProviderUsed makeSet hedberg
+--! assertEvidenceConstructionMode makeSet fresh-independent
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3); line 30: unknown directive '

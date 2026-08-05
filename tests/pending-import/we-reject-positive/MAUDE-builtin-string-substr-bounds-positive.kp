@@ -38,3 +38,5 @@ eq3 : Bool
 let eq3 = "AAA" < "aardvark"   -- ASCII-order positive
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_UNRESOLVED_MEMBER at line 23; current source or fixture is not portable v1 and must be rewritten before promotion.

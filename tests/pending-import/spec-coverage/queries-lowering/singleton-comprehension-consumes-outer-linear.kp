@@ -29,4 +29,4 @@ let single tok = [ yield consumeToken tok ]
 
 useOnce : List Int
 let useOnce = listAppend (single Token) [ yield 9 ]
--- STATUS(a0497523): FAIL — E_QTT_LINEAR_OVERUSE "'tok' is consumed more often than its linear quantity permits" on the singleton-yield definition, despite the QOne empty-clause pipeline of §20.10.6.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_QTT_LINEAR_OVERUSE "'tok' is consumed more often than its linear quantity permits (§12.2)" at line 28

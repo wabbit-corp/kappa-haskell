@@ -29,7 +29,4 @@ let main = do
     bump ~(chooseCell True (l = a, r = b))
     printlnString f"a=${a.value} b=${b.value}"
 
--- STATUS(a0497523): FAIL — E_PROJECTION_ROOT_INVALID on the marked call: the
--- compiler accepts single-root projector applications under ~ but rejects a
--- MULTI-root pack even in the §16.1.5 roots-record-literal form; the
--- §18.9.4 multi-root scatter write-back is unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_PROJECTION_ROOT_INVALID "a '~' inout argument must be a stable place, mutable var-place, or supported projection/accessor place (§18.9.3)" at line 29; stdout mismatch: expected "a=11 b=20\n", got ""

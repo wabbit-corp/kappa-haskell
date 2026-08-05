@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq _ _ = True
+
+result : Bool
+let result = O <= I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEval result True

@@ -36,9 +36,13 @@ let okOther (1 a : Pack) (1 b : Pack) (1 c : Pack) (which : Bool) : (Pack, Pack,
 
 -- NEGATIVE: the union footprint locks root b even when the dynamic
 -- branch would have chosen a
-bad : (1 a : Pack) -> (1 b : Pack) -> Bool -> Pack
+bad : (1 a : Pack) -> (1 b : Pack) -> Bool -> (Pack, Pack)
 let bad a b which =
-    let & p = pick a b which
-    in consumeWhole b --!! E_QTT_BORROW_OVERLAP
+    block
+        let second =
+            block
+                let & p = pick a b which
+                consumeWhole b --!! E_QTT_BORROW_OVERLAP
+        (a, second)
 
 -- STATUS(a51e1bf): PASS

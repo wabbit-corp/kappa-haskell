@@ -28,3 +28,4 @@ bad : Int
 let bad = i 42                             --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+-- STATUS(2a161551): FAIL — TEST-ISSUE: §16.1.7.1 expected-type-directed suspension insertion legitimately wraps `42` to satisfy the thunk parameter.

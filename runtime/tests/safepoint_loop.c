@@ -9,9 +9,9 @@
  * violation.
  *
  * THE FIX: the KK_LOOP back-edge is a safe point.  It (a) flags a deliverable
- * interrupt (interrupt_pending && mask_depth==0) so the gate delivers it on the
+ * interrupt (pending with effective state Interruptible) so the gate delivers it on the
  * next turn, and (b) spends a fairness quantum, ceding (re-enqueue behind other
- * runnables) when it runs out.  Masked suppression still holds: mask_depth>0 at
+ * runnables) when it runs out.  Masked suppression still holds: a non-Interruptible state at
  * the back-edge does NOT deliver — the interrupt is held until the mask exits.
  *
  * TEST 1 (unmasked tight loop IS interrupted):

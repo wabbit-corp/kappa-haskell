@@ -57,3 +57,4 @@ sound :
     x = y
 
 let sound = Eq.eqSound @Nat
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_UNRESOLVED_MEMBER "'fromInteger' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)" at line 39; assertEval: 'got' evaluates to match _ 12 ..., expected 12

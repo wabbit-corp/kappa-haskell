@@ -1,13 +1,12 @@
--- §30.2.0: application propagation inspects the immediate codomain of each
--- binder. Applying the later argument must not erase A's dependency from the
--- first application before it reaches an ordinary consumer.
+-- §30.2.0: a parametric dependency whose checked result classifier does not
+-- carry it must remain visible when that result reaches an ordinary sink.
 module main
 
-consume : Int -> Int
-let consume x = x
+consumeType : (ordinary T : Type) -> Int
+let consumeType T = 0
 
-bad : (A : Type) -> (f : forall B. B -> Int) -> A -> Int
-let bad A f x = consume (f @A x)
+bad : (A : Type) -> (f : forall B. Type) -> Int
+let bad A f = consumeType (f @A)
 
 --! mode check
 --! assertErrorCount 1

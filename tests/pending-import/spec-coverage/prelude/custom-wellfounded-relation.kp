@@ -29,4 +29,4 @@ let treePairs = lexRelation
 
 mixedPairs : WellFoundedRelation (Tree, Nat)
 let mixedPairs = lexRelation
--- STATUS(a0497523): FAIL — 3x E_UNSOLVED_IMPLICIT "WellFoundedRelation Nat": the §28.2-mandated `instance WellFoundedRelation Nat` is not provided by the prelude (the user Tree instance itself is accepted).
+-- STATUS: SPEC-ISSUE — WellFoundedRelation requires wf, but the portable prelude exposes no WellFounded introduction

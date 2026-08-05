@@ -1,0 +1,23 @@
+module main
+
+import api.*
+
+-- Regression coverage from spelling `Recursive (List a) (ListF a)` in the
+-- recursion-schemes port. The local Functor instance proves `ListF a` has the
+-- required unary parametric kind, and the imported trait interface must retain
+-- that higher-kinded `f` parameter in the downstream instance head.
+data ListF a r =
+    NilF
+    ConsF (head : a) (tail : r)
+
+instance Functor (ListF a) =
+    let map function layer =
+        match layer
+        case NilF -> NilF
+        case ConsF head tail -> ConsF head (function tail)
+
+instance Project (List a) (ListF a) =
+    let project values =
+        match values
+        case Nil -> NilF
+        case head :: tail -> ConsF head tail

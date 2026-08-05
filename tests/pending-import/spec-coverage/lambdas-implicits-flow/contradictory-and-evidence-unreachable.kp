@@ -41,6 +41,4 @@ let contraIndex v =
         if v is Zero then impossible else 1
     else 0
 
--- STATUS(a0497523): FAIL — 2x E_IMPOSSIBLE_REACHABLE: contradictory
--- HasCtor facts (directly, or via forced index equations) do not mark the
--- branch unreachable for the impossible check.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_IMPOSSIBLE_REACHABLE "'impossible' is not provably unreachable here (§17.1.4)" at line 33

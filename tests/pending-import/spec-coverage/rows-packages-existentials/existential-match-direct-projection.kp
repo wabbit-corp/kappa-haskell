@@ -19,4 +19,4 @@ let n =
     case Option.None -> 0
     case Option.Some _ -> 1
 
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_NOT_A_TYPE "expected a type; this expression has type Option __this.a" at line 13

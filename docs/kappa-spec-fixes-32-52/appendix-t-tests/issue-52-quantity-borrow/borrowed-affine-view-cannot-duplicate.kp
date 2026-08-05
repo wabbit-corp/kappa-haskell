@@ -1,0 +1,19 @@
+module main
+
+data Token : Type =
+    Token
+
+data LinearBox : Type =
+    LinearBox (value : Int) (1 token : Token)
+
+readValue : (1 & box : LinearBox) -> Int
+let readValue box =
+    box.value
+
+duplicateAffineBorrow : (<=1 & box : LinearBox) -> Int
+let duplicateAffineBorrow box =
+    readValue box + readValue box
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

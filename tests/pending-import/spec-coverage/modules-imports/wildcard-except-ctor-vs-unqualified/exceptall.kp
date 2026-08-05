@@ -12,4 +12,4 @@ badType : Int
 let badType = (0 : Box) --!! E_NAME_UNRESOLVED
 
 --! assertErrorCount 2
--- STATUS(a0497523): FAIL — expected 2 errors, got 3; first error: E_MODULE_NAME_UNRESOLVED "imported module 'blib' is not part of this compilation unit (Spec \167\&8.2)" at line 6
+-- STATUS(e25d64e1): FAIL — helper module is now present; expected 2 errors, got 5 because ctor-qualified except also removes the type facet

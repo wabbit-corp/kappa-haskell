@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+trait Chooses =
+    token : Unit
+    choose : Bool
+
+instance Chooses =
+    let token = ()
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_MEMBER_MISSING
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

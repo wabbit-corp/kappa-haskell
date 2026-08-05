@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "defect:unhandled-child\n"
+--! assertExitCode 0
+
+-- §18.1.3 (Spec.md L18779-18781): an attached child fiber that terminates
+-- with unacknowledged typed failure and remains unacknowledged when its
+-- enclosing scope exits MUST become Defect (DefectInfo UnhandledChildFailure
+-- msg) — observed here on the scope owner's exit via sandbox (§18.1.2).
+module main
+
+failingChild : IO String Int
+let failingChild = throwIO "child-boom"
+
+useScope : Scope -> UIO Int
+let useScope sc = do
+    let f <- forkIn sc failingChild
+    let _ = f
+    -- let the child terminate with its (never-awaited) typed failure
+    sleepFor (millis 20)
+    pure 7
+
+parent : UIO Int
+let parent = withScope useScope
+
+classify : Cause Void -> IO Void String
+let classify c = match c
+    case Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m) -> pure "defect:unhandled-child"
+    case Cause.Defect (DefectInfo t m) -> pure "defect:other-tag"
+    case _ -> pure "cause:other"
+
+main : UIO Unit
+let main = do
+    let r <- catchIO (ioBind (sandbox parent) (\v -> pure "scope-succeeded")) classify
+    printlnString r
+-- STATUS(8c3c7747): FAIL — promoted conformance regression: an unacknowledged failed attached child lets its scope report success instead of UnhandledChildFailure.

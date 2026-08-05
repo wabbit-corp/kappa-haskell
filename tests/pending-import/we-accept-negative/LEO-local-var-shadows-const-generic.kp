@@ -47,3 +47,4 @@ let usesK (0 k : Int) (x : Int) : Int = k + x
 okK : Int
 let okK = usesK 3 7
 
+-- STATUS(2a161551): FAIL — TEST-ISSUE: lexical shadowing is explicitly legal; the supposed positive controls instead fail for runtime use of quantity-0 parameters.

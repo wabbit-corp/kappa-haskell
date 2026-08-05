@@ -54,3 +54,5 @@ let exampleModel = do
 
 --! assertNoErrors
 --! assertType exampleModel (Eff <[prob : Prob]> Bool)
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

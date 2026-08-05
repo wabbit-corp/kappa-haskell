@@ -45,4 +45,4 @@ notAProjector : Unit -> Projector (this : Cell,) Int
 let notAProjector () : Projector (this : Cell,) Int =
     readOnly --!! E_TYPE_EQUALITY_MISMATCH
 
--- STATUS(a0497523): FAIL — accessor bundles are not assigned the §12.4.3 first-class descriptor types: binding readOnly/sinkOnly at Getter/Sinker (this : Cell,) Int is E_TYPE_EQUALITY_MISMATCH (bare `Getter Cell Int` also mismatches), so descriptors cannot be stored or returned; only the final Projector-mismatch line errors as specified.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 5; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 26; error codes are [E_TYPE_EQUALITY_MISMATCH, E_APPLICATION_NONCALLABLE, E_TYPE_EQUALITY_MISMATCH, E_APPLICATION_NONCALLABLE, E_TYPE_EQUALITY_MISMATCH], expected [E_TYPE_EQUALITY_MISMATCH]

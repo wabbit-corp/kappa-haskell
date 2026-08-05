@@ -38,4 +38,4 @@ let viaPkg =
                 case return x -> pure x
                 case tick _ k -> k 8
         runPure handled
--- STATUS(a0497523): FAIL — compiler rejects let-/package-rebound labels in `handle` (E_NAME_UNRESOLVED: 'handle' requires an effect label in scope); §18.1.15 rebinding unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "'handle' requires an effect label in scope (a §9.3.1.1 scoped or §18.1 top-level effect)" at line 27; assertEval: 'viaLet' evaluates to runPure _, expected 8; assertEval: 'viaPkg' evaluates to runPure _, expected 9

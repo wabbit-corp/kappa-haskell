@@ -41,4 +41,4 @@ let bad b =
                         pure (addInt l r)
 
         runPure handled
--- STATUS(a0497523): FAIL — compiler accepts (0 errors): a live borrowed binder in the captured suffix of an ω operation is not rejected; §18.1.20.2 borrowed-capture checking unimplemented (quantity-1 capture IS checked, cf. multishot-capture-linear.kp).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_QTT_CONTINUATION_CAPTURE]; no diagnostic error[E_QTT_CONTINUATION_CAPTURE] on line 31 (no diagnostics)

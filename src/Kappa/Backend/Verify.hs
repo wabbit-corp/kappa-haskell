@@ -58,11 +58,11 @@ import Kappa.Backend.Repr
   ( assignUserCtorTags
   , erasedSpinePositionsForArgs
   , isBuiltinCtor
-  , runtimeConstructorField
+  , runtimeConstructorPiField
   , tagId
   )
 import Kappa.Builtins (prelUnit)
-import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
+import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..), linkedCoreBodies)
 import Kappa.Core
 import Kappa.CoreOps (spineOfTerm)
 import Kappa.Diagnostic
@@ -101,7 +101,7 @@ verifyInputs st =
   VerifyInputs
     { viGlobals = csGlobals st
     , viMetas = csMetas st
-    , viBodies = csCoreBodies st
+    , viBodies = linkedCoreBodies st
     , viDatas = csDatas st
     , viCtors = csCtors st
     }
@@ -360,8 +360,8 @@ ctorPayloadCounts :: EvalCtx -> Value -> CtorPayloadCounts
 ctorPayloadCounts ctx = count 0
   where
     count lvl ty = case force ctx ty of
-      VPi ic q _ _ dom clo ->
-        let runtime = runtimeConstructorField ctx lvl ic q dom
+      VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom clo ->
+        let runtime = runtimeConstructorPiField ctx lvl runtimeErasure ic q dom
             core = ic == Expl || runtime
             implicitRuntime = ic /= Expl && runtime
             rest = count (lvl + 1) (closApply ctx lvl clo)
@@ -467,10 +467,10 @@ ctorRuntimeExplicitFacts vi g fieldCount = do
   pure (length explicitFlags, length (filter id (take fieldCount fieldFlags)))
   where
     collect ctx lvl ty = case force ctx ty of
-      VPi ic q _ _ dom clo ->
+      VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom clo ->
         let rest = collect ctx (lvl + 1) (closApply ctx lvl clo)
          in if ic == Expl
-              then runtimeConstructorField ctx lvl ic q dom : rest
+              then runtimeConstructorPiField ctx lvl runtimeErasure ic q dom : rest
               else rest
       _ -> []
     closApply ctx lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body

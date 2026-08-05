@@ -31,4 +31,4 @@ let normThenReify c = do
 
 headOf : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Option Symbol)
 let headOf c = headSymbol c
--- STATUS(a0497523): FAIL — asCore/asCoreIn/reifyCore/inferType/whnf/normalize/headSymbol are all E_NAME_UNRESOLVED (semantic value tier unimplemented)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 8; first error: E_NAME_UNRESOLVED "unresolved name 'asCore' (not in scope)" at line 13

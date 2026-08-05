@@ -24,4 +24,4 @@ let bad =
         case Option.None -> 0
         case Option.Some k -> k
 
--- STATUS(a0497523): FAIL — compiler accepts with 0 errors: erased-scrutinee discrimination (E_QTT_ERASED_RUNTIME_USE) is enforced for 0-quantity function binders but a 0-quantity payload field bound by open's record pattern is matchable with no diagnostic
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 6; first error: E_APPLICATION_NONCALLABLE "this expression is not callable" at line 17; no diagnostic with family kappa.quantity.unsatisfied was produced; no diagnostic error[E_QTT_ERASED_RUNTIME_USE] on line 23 (saw: E_APPLICATION_NONCALLABLE@17, E_NOT_A_TYPE@17, E_APPLICATION_NONCALLABLE@18, E_NOT_A_TYPE@18, E_NOT_A_TYPE@18, E_TYPE_EQUALITY_MISMATCH@22)

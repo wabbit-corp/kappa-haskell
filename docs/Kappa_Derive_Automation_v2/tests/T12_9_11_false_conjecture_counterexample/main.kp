@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+falseClaim :
+    forall (x : Bool).
+    x = True
+let falseClaim = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveCounterexamples
+--! assertDiagnostic error E_DERIVE_UNSOLVED
+--! assertDeriveOutcome falseClaim Counterexample
+--! assertDeriveCounterexample falseClaim

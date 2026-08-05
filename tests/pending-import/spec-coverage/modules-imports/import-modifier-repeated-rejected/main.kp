@@ -2,13 +2,12 @@ module main
 
 -- §8.3.1.1: "Repeating the same modifier within one import item is a
 -- compile-time error." Both gates are enabled so the errors below are
--- attributable to the repetition itself, not to §4.2 gating. (The spec
--- names no diagnostic family; E_IMPORT_ITEM_MALFORMED is the closest
--- registered code.)
+-- attributable to the repetition itself, not to §4.2 gating. The Spec
+-- requires rejection but does not define a portable diagnostic identity.
 import mlib.(unhide unhide x) --!! E_IMPORT_ITEM_MALFORMED
 import mlib.(clarify clarify y) --!! E_IMPORT_ITEM_MALFORMED
 
 --! allow_unhiding
 --! allow_clarify
 --! assertErrorCount 2
--- STATUS(a0497523): FAIL — repeated unhide/clarify modifiers are accepted silently (parser collapses them into boolean flags)
+-- STATUS: SPEC-ISSUE — repeated import modifiers require rejection but have no normative diagnostic identity

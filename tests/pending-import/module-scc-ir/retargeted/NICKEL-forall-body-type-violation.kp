@@ -3,7 +3,7 @@
 -- complete explicit signature in any position (§9.2/§9.5.5). All diagnostic pins unchanged.
 -- Source: nickel tests/typecheck/mismatch_forall_variable.ncl,
 --         mismatch_forall_var_concrete_type.ncl, nickel PR #1320
--- Spec: §3.2.3 (kappa.type.mismatch), §3.1.1B/§16.1.7.1
+-- Spec: §3.2.3 (kappa.type.mismatch), §3.1.10/§3.1.4/§16.1.7
 --       (kappa.application.argument-mismatch), §12.2 (forall), §9.2/§9.5.5
 --       (top-level signatures; recursive SCC members require a COMPLETE
 --       explicit signature — separate in either position, cross-fragment,
@@ -56,5 +56,3 @@ let goodRecursive n =
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 --! assertDiagnosticFamily error kappa.application.argument-mismatch
-
--- STATUS(f1e4161b): PASS

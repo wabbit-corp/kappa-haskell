@@ -1,0 +1,36 @@
+-- Replayability is a property of one provisional body, not a declaration-SCC
+-- boundary.  A mutually recursive signed component is generalized and
+-- published atomically even when only one member contains an unprojected
+-- universe occurrence introduced by a polymorphic dependency.
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+identity : (A : Type) -> A -> A
+let identity A value = value
+
+left : Nat -> Bool
+let left value =
+    match value
+    case Nat.Zero -> True
+    case Nat.Succ previous -> right previous
+
+right : Nat -> Bool
+let right value =
+    match value
+    case Nat.Zero -> True
+    case Nat.Succ previous ->
+        if identity Bool True
+        then left previous
+        else False
+
+result : Bool
+let result = left 2
+
+--! assertType result Bool

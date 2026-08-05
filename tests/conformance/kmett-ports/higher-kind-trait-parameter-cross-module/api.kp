@@ -1,0 +1,5 @@
+module api
+
+-- The inferred higher kind of f is part of this exported trait interface.
+trait Functor f => Project t f =
+    project : t -> f t

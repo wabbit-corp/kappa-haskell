@@ -15,4 +15,4 @@ import libb.*
 
 instance Tag Bool =                   --!! kappa.name.ambiguous
     let tag b = 1
--- STATUS(a0497523): FAIL — no diagnostic with family kappa.name.ambiguous was produced; no diagnostic error[kappa.name.ambiguous] on line 16 (saw: E_INSTANCE_HEAD@16)
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.name.ambiguous was produced; no diagnostic error[kappa.name.ambiguous] on line 16 (saw: E_INSTANCE_HEAD@16)

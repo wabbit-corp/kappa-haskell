@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+choose :
+    forall (a : Type).
+    (x : a) -> a
+let choose x = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed choose exact
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

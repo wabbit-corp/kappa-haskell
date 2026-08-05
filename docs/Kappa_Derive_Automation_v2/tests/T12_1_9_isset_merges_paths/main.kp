@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+choosePath :
+    forall (a : Type).
+    IsSet a =>
+    forall (x : a) (y : a).
+    (p : x = y) ->
+    (q : x = y) ->
+    x = y
+let choosePath p q = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed choosePath hlevel

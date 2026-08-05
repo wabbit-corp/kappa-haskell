@@ -28,4 +28,4 @@ let bad src =
         distinct --!! E_QUERY_ROW_NOT_DROPPABLE
         yield consumeToken t
     ]
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — decide whether handwritten Eq may synthesize IsSet and eqSound/eqComplete from (==)

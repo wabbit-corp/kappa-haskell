@@ -21,4 +21,4 @@ let total = addInt secretA secretB
 --! allow_clarify
 --! assertNoErrors
 --! assertEval total 33
--- STATUS(a0497523): FAIL — both orderings parse and are gated/audited symmetrically, but the imports are rejected with E_IMPORT_ITEM_NOT_FOUND (unhide does not grant private access) and the refl proofs fail (clarify does not grant transparency).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 8; first error: E_IMPORT_ITEM_NOT_FOUND "'secretA' exists in module 'plib' but is not exported (Spec §8.5)" at line 8; assertEval: 'total' evaluates to addInt _ _, expected 33

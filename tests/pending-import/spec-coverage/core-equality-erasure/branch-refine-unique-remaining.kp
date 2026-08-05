@@ -24,4 +24,4 @@ let projects c =
     if c is Hole then 0
     else c.val
 
--- STATUS(a0497523): FAIL — the derived unique-remaining HasCtor licenses residual projection but NOT tag-test normalization: refl is rejected with E_APPLICATION_ARGUMENT_MISMATCH
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)" at line 19

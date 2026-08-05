@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+pointwiseUnit :
+    forall (x : Bool).
+    IsProp Unit
+let pointwiseUnit = derive
+
+ordinaryFunctionProp :
+    IsProp ((x : Bool) -> Unit)
+let ordinaryFunctionProp =
+    piIsProp pointwiseUnit
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertType ordinaryFunctionProp IsProp ((x : Bool) -> Unit)
+--! assertEvidenceConstructionMode ordinaryFunctionProp fresh-independent

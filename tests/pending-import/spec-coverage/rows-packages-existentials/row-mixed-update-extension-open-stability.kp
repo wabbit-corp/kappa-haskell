@@ -18,4 +18,4 @@ mixedOpen :
 let mixedOpen (@0 r : RecRow) (@_ : LacksRec r z) (rec : (x : Int | r)) : (x : Int, z : Bool | r) =
     rec.{ x = 9, z := True }
 
--- STATUS(a0497523): FAIL — compiler accepts with 0 errors; no StableUnderRecChange obligation is generated for the update label of a mixed patch over an abstract tail (E_RECORD_OPEN_TAIL_INVALIDATED alias also unregistered)
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0

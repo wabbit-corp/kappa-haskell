@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+derive IsSet Bit
+
+instance Eq Bit =
+    let (==) _ _ = True
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_UNSOLVED

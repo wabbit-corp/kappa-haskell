@@ -42,3 +42,5 @@ let equalConstruction =
       case (TokenName a, TokenName b) -> a == b
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — expected-type-directed FromString elaboration is not applied (§6.3.4, §28).

@@ -54,4 +54,4 @@ type Q2 = (tag : Int, v : Int)
 qtyEq : Q1 = Q2
 let qtyEq = refl --!! E_TYPE_EQUALITY_MISMATCH
 
--- STATUS(a0497523): FAIL — the quantity-mismatch negative is accepted (0 errors): record-type definitional equality ignores field quantities, against §31.4 "including identical field quantities"
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_TYPE_EQUALITY_MISMATCH] on line 55 (no diagnostics)

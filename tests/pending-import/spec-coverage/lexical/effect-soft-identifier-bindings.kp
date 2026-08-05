@@ -18,4 +18,4 @@ main : UIO Unit
 let main = do
     let effect <- pure (addEffect effect)
     println effect
--- STATUS(a0497523): FAIL — effect : Int still misread as an effect declaration head (E_RECOVERY_DECLARATION_SKIPPED); Spec 5.2 declaration-head disambiguation now requires the identifier reading
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'effect' at start of declaration" at line 11; stdout mismatch: expected "8\n", got ""

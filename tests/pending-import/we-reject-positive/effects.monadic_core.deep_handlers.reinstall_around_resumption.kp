@@ -41,3 +41,5 @@ let shallowCountOne comp =
 
 --! assertNoErrors
 --! assertType shallowCountOne Eff <[counter : Counter]> Unit -> Eff <[ ]> Int
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

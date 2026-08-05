@@ -119,6 +119,8 @@ import Kappa.NominalVariance
   , verifyNominalCumulativitySummary
   )
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeForWithConfig, loadSourceFile, moduleNameRelTo)
+import Kappa.KFrontIR.Dump (renderKFrontIRJson)
+import Kappa.KFrontIR.Verify (verifyKFrontIR)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Representation
@@ -363,9 +365,9 @@ declKindNames =
   , "trait", "instance", "derive", "effect", "pattern", "expect"
   ]
 
--- KCore is materialized as canonical KCoreText. Other conceptual Chapter 34
--- checkpoints remain fail-closed until their serializers exist; naming one in
--- an assertion is a harness error rather than a silent unsupported result.
+-- KFrontIR is materialized as canonical JSON and KCore as canonical
+-- KCoreText. Other conceptual Chapter 34 checkpoints remain fail-closed until
+-- their serializers exist; naming one is a harness error.
 --
 -- @assertDiagnosticFixCompiles@ is implemented against the §3.1.6 fix
 -- records (apply the first machine-applicable fix, recompile, assert no
@@ -375,8 +377,8 @@ declKindNames =
 -- §T.4 portable capabilities this harness provides. @runTask@: programs
 -- are executed in-process by the tree-walking interpreter. @
 -- pipelineTrace@: portable (event, subject) counts are recorded for
--- parse\/buildKFrontIR\/lowerKCore. @stageDumps@ currently materializes the
--- KCore checkpoint as KCoreText. Not provided: @incremental@ (no session
+-- parse\/buildKFrontIR\/lowerKCore. @stageDumps@ materializes KFrontIR as
+-- canonical JSON and KCore as KCoreText. Not provided: @incremental@ (no session
 -- state survives between suite roots).
 --
 -- The corpus's nonstandard capability names are provided as documented
@@ -2231,6 +2233,16 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
               <> ", expected " <> rel <> " " <> tshow n
           )
   AStageDumpEquals checkpoint relative format
+    | checkpoint == "KFrontIR" && format == "json" ->
+        withKCoreFile relative $ \expected ->
+          pure $ case Map.lookup (cuModule cu) (cuFrontIRs cu) of
+            Nothing -> AssertFail "assertStageDump KFrontIR: the compiled module has no frontend artifact"
+            Just front ->
+              requirePure
+                (normalizeLF (renderKFrontIRJson front) == normalizeLF expected)
+                ("canonical KFrontIR stage dump does not match golden file " <> relative)
+    | checkpoint == "KFrontIR" ->
+        pure (AssertHarnessError "assertStageDump KFrontIR requires dumpFormat json")
     | checkpoint /= "KCore" ->
         pure (AssertHarnessError ("assertStageDump names unknown or unmaterialized checkpoint '" <> checkpoint <> "'"))
     | format /= "kcore" ->
@@ -2249,6 +2261,15 @@ checkAssertion compileWith root path src files cu diags mRun mBackendIr = \case
               | printCanonicalKCoreText actualCore == printCanonicalKCoreText expectedCore -> AssertOk
               | otherwise -> AssertFail ("canonical KCore stage dump does not match golden file " <> relative)
   AStageDumpRoundTrips checkpoint
+    | checkpoint == "KFrontIR" ->
+        pure $ case Map.lookup (cuModule cu) (cuFrontIRs cu) of
+          Nothing -> AssertFail "assertStageDumpRoundTrips KFrontIR: the compiled module has no frontend artifact"
+          Just front
+            | not (null (verifyKFrontIR front)) ->
+                AssertFail "assertStageDumpRoundTrips KFrontIR: structural verification failed"
+            | renderKFrontIRJson front /= renderKFrontIRJson front ->
+                AssertFail "assertStageDumpRoundTrips KFrontIR: canonical rendering is unstable"
+            | otherwise -> AssertOk
     | checkpoint /= "KCore" ->
         pure (AssertHarnessError ("assertStageDumpRoundTrips names unknown checkpoint '" <> checkpoint <> "'"))
     | not (null errors) ->

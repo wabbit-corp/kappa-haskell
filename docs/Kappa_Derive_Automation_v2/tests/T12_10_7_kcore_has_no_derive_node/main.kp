@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+proof : True = True
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! requires capability kcoreText
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore
+--! assertDeriveProofChecks proof

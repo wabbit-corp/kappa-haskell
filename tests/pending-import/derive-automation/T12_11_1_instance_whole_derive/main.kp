@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+trait Pointed (parametric 0 a : Type) =
+    point : a
+
+instance Pointed Unit = derive
+
+value : Unit
+let value = point
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedInstance Pointed Unit
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedInstance' is not defined by Appendix T (§T.3))

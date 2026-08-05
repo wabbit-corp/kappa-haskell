@@ -35,4 +35,4 @@ let matchOuter u =
     case (| i : Inner |) -> 1
     case (| b : Bool |)  -> 2
 
--- STATUS(a0497523): FAIL — both injections rejected E_TYPE_EQUALITY_MISMATCH: (| v : Inner |) elaborates at type Inner (union-typed member annotation acts as an ascription) and expected-type-directed injection of a union-typed member is never inserted; only the match side typechecks, so the Inner arm is unconstructible.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 27

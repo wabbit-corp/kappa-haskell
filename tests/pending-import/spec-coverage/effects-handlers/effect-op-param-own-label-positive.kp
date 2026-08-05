@@ -14,4 +14,4 @@ effect Meta =
 
 ok : Int
 let ok = 1
--- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED: the effect's own label is not in scope inside its own operation signatures, so even the spec-permitted parameter-type mention is rejected.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved effect label 'Meta' (not a scoped (§9.3.1.1) or top-level (§18.1) effect)" at line 13

@@ -27,4 +27,4 @@ let use =
         case Nil -> 0
         case ECons x xs -> x
 
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_PARAMETRIC_TYPE_PROMOTION "constructor pattern for 'Nil' cannot be aligned with its finalized scrutinee type" at line 0

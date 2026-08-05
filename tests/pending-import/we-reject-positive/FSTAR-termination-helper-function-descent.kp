@@ -1,11 +1,12 @@
 -- Source issue: FSTAR-1857
--- Spec: declarations.totality.structural_descent
--- Termination through a non-recursive helper that passes a subterm must be recognized.
+-- Spec: declarations.totality.structural_descent; §15.6 optional call-edge exposure
+-- A recursive definition routed through a transparent helper remains admissible;
+-- implementations may leave its stronger termination certification unverified.
 
 --! mode check
 
 -- A helper that strips the head of a non-empty list and calls its continuation.
-process : {A : Type} -> List A -> (List A -> Unit) -> Unit
+process : forall (A : Type). List A -> (List A -> Unit) -> Unit
 let process xs k =
     match xs
       case Nil        -> ()
@@ -13,10 +14,12 @@ let process xs k =
 
 -- recFn calls process with itself; process calls back with a strict sublist.
 -- Termination: each callback receives tl which is structurally smaller than xs.
-recFn : {A : Type} -> List A -> Unit
+recFn : forall (A : Type). List A -> Unit
 let recFn xs decreases xs =
     match xs
       case Nil       -> ()
       case (_ :: _)  -> process xs recFn
 
 --! assertNoErrors
+
+-- STATUS: SPEC-ISSUE — §15.6 makes higher-order call-edge exposure optional, so portable conformance cannot require either acceptance or rejection.

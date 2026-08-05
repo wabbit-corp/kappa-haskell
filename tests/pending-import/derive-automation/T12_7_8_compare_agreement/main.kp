@@ -1,0 +1,23 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq x y =
+        match (x, y)
+        case (I, O) -> False
+        case _      -> True
+
+instance PartialOrder Bit = derive
+
+instance Ord Bit =
+    let compare _ _ = EQ
+    let leqTotal = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive
+--! assertDiagnosticMatch compareEqSound|compareEqComplete

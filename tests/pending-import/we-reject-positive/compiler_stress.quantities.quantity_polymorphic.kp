@@ -13,3 +13,5 @@ apply :
 let apply fn x = fn x
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — source-visible QuantitySatisfies is required by §§12.2.3/28.2 but is not resolved.

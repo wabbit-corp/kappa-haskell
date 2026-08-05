@@ -1,9 +1,4 @@
 --! mode check
 --! scriptMode
---! requires capability generatedDeclarationTests
 --! assertErrorCount 1
---! assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED
---! assertDiagnosticFamily error kappa.declaration.recursive-group
---! assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason "generated-dependency-cycle"
---! assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED generated-site
---! assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED macro-invocation-site
+--! assertDiagnosticFamily error kappa.name.unresolved

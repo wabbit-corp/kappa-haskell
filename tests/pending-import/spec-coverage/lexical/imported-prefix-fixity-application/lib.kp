@@ -3,4 +3,4 @@ module lib
 prefix 80 (~~)
 prefix (~~) : Int -> Int
 let prefix (~~) x = subInt 0 x
--- STATUS(a0497523): FAIL — suite REVISED to role-marked prefix definition; not parsed yet
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 10; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'prefix' at start of declaration" at line 4; assertEval: 'bare' evaluates to _, expected -5; assertEval: 'parenApp' evaluates to \ordinary __x -> _, expected -5

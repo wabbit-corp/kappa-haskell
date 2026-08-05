@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- Compiler bug found while porting `Decidable.lose`. A polymorphic associated
+-- member whose argument eliminates its input to the prelude `Void` is not
+-- retained as an associated member. The instance method is then parsed as an
+-- unexpectedly indented duplicate top-level declaration. Replacing `Void`
+-- with `Bool` makes the same trait and instance compile, so this is not an
+-- ordinary trait layout or higher-kinded inference failure.
+
+module main
+
+trait Select f =
+    reject : forall a. (a -> Void) -> f a
+    select : forall a b c. (a -> Result b c) -> f b -> f c -> f a
+
+data Predicate a =
+    MkPredicate (runPredicate : a -> Bool)
+
+instance Select Predicate =
+    let reject impossible = MkPredicate (\input -> absurd (impossible input))
+    let select branch left right =
+        match left
+        case MkPredicate testLeft ->
+            match right
+            case MkPredicate testRight ->
+                MkPredicate (\input ->
+                    match branch input
+                    case Err first -> testLeft first
+                    case Ok second -> testRight second)
+-- STATUS(8c3c7747): FAIL — the checker loses the Void-eliminating term member, then reports an indentation/duplicate/missing-member cascade.

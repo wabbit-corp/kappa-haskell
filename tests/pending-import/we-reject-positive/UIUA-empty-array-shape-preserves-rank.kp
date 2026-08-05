@@ -34,3 +34,5 @@ let reversedOuter = []  -- in Kappa pseudo-syntax, reverse emptyRank3
 --! assertType emptyRank3 List (List (List Int))
 --! assertType outerLen Int
 --! assertType reversedOuter List (List (List Int))
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_NAME_UNRESOLVED at line 26; current source or fixture is not portable v1 and must be rewritten before promotion.

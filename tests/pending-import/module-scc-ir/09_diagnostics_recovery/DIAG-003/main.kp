@@ -2,5 +2,3 @@ data A : Type =
     MkA (f : B -> Nat)
 data B : Type =
     MkB (a : A)
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

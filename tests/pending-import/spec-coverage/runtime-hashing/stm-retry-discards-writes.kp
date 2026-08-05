@@ -33,8 +33,8 @@ let main = do
     atomically (writeTVar flag 1)
     let ex <- await f
     match ex
-      case Success v -> printlnString ("woke:" ++ showInt v)
-      case Failure c -> printlnString "woke:failed"
+      case Exit.Success v -> printlnString ("woke:" ++ showInt v)
+      case Exit.Failure c -> printlnString "woke:failed"
     let fin <- atomically (readTVar t)
     printlnString ("final:" ++ showInt fin)
--- STATUS(a0497523): FAIL — prints 99/99/99: the interpreter applies TVar writes directly to the cell, so the write journaled by the retried (aborted) attempt is permanently visible instead of being discarded.
+-- STATUS(e25d64e1): FAIL — stdout mismatch: expected "parked-no-partial-write:10\nwoke:10\nfinal:10\n", got "parked-no-partial-write:99\nwoke:99\nfinal:99\n"

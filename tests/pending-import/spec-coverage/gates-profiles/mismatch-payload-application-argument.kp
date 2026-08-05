@@ -15,4 +15,4 @@ let f n = n
 
 let app = f True --!! E_APPLICATION_ARGUMENT_MISMATCH
 
--- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH payload is kind 'none'; no expected/actual payload although both sides are available
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.application.argument-mismatch has payload /payload/kind = expected-actual (saw: /payload/kind=none); no error diagnostic matching kappa.application.argument-mismatch has payload /payload/mismatchKind = application-argument (saw: /payload/mismatchKind=<absent>); no error diagnostic matching kappa.application.argument-mismatch has payload /payload/expected = Integer (saw: /payload/expected=<absent>); no error diagnostic matching kappa.application.argument-mismatch has payload /payload/actual = Bool (saw: /payload/actual=<absent>)

@@ -1,0 +1,70 @@
+module data.profunctor.core
+
+-- Core of Edward Kmett's `profunctors`: contravariant in the input and
+-- covariant in the output. `dimap` is sufficient; lmap/rmap are derived.
+trait Profunctor p =
+    dimap : forall a b c d.
+        (a -> b) -> (c -> d) -> p b c -> p a d
+
+lmap :
+    forall p a b c.
+    (@_ : Profunctor p) -> (a -> b) -> p b c -> p a c
+let lmap f value = dimap f (\x -> x) value
+
+rmap :
+    forall p a b c.
+    (@_ : Profunctor p) -> (b -> c) -> p a b -> p a c
+let rmap f value = dimap (\x -> x) f value
+
+-- Kappa does not permit an instance head directly over the infix function
+-- constructor, so Fn gives ordinary functions a nominal profunctor carrier.
+data Fn a b =
+    MkFn (runFn : a -> b)
+
+instance Profunctor Fn =
+    let dimap before after value =
+        match value
+        case MkFn function -> MkFn (\input -> after (function (before input)))
+
+data Star f a b =
+    MkStar (runStar : a -> f b)
+
+instance Functor f => Profunctor (Star f) =
+    let dimap before after value =
+        match value
+        case MkStar function -> MkStar (\input -> map after (function (before input)))
+
+data Costar f a b =
+    MkCostar (runCostar : f a -> b)
+
+instance Functor f => Profunctor (Costar f) =
+    let dimap before after value =
+        match value
+        case MkCostar function -> MkCostar (\input -> after (function (map before input)))
+
+data Forget r a b =
+    MkForget (runForget : a -> r)
+
+instance Profunctor (Forget r) =
+    let dimap before after value =
+        match value
+        case MkForget function -> MkForget (\input -> function (before input))
+
+data Tagged a b =
+    MkTagged (unTagged : b)
+
+instance Profunctor Tagged =
+    let dimap before after value =
+        match value
+        case MkTagged output -> MkTagged (after output)
+
+-- Exchange is the concrete representation behind many profunctor encodings of
+-- optics: it remembers how to extract an `a` and rebuild a `t` from a `b`.
+data Exchange a b s t =
+    MkExchange (view : s -> a) (review : b -> t)
+
+instance Profunctor (Exchange a b) =
+    let dimap before after value =
+        match value
+        case MkExchange get put ->
+            MkExchange (\input -> get (before input)) (\focus -> after (put focus))

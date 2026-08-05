@@ -17,4 +17,4 @@ let probe =
         let compiled = re"[a-z]+"
         let raw = b"payload"
         ()
--- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED for both `re` and `b`: std.prelude supplies no re/b prefixed-string handlers (§28.1 minimum contents violated)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 're' used as a string-literal prefix (Spec §6.3.4)" at line 17

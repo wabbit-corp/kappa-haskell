@@ -18,6 +18,4 @@ main : UIO Unit
 let main = do
     try both
     except e -> printlnString (stringAppend "caught: " e)
--- STATUS(a0497523): FAIL — stdout is "cleanup\ncaught: secondary\n": the finalizer
--- error REPLACES the primary error instead of being suppressed per §18.8.3
--- steps 4-6 (primary must win; secondary may only be attached or discarded).
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "cleanup\ncaught: primary\n", got "cleanup\ncaught: secondary\n"

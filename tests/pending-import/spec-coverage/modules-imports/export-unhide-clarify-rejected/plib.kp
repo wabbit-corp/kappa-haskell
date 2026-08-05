@@ -1,0 +1,4 @@
+module plib
+
+secret : Int
+private let secret = 7

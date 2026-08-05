@@ -23,4 +23,4 @@ let handledEff =
 
 result : Int
 let result = runPure handledEff
--- STATUS(a0497523): FAIL — qualified references to an imported effect label are rejected everywhere: the row annotation <[elib.counterL : ...]> is a parse error ("unexpected '<['", dotted names are not accepted in row-label position), and `deep handle elib.counterL` reports E_NAME_UNRESOLVED "'handle' requires an effect label in scope"
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected '<[' at start of declaration" at line 15; assertEval: 'result' evaluates to runPure _, expected 42

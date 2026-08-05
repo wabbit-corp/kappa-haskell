@@ -43,3 +43,4 @@ let ok_disjoint t =
     case Baz -> 2
 
 --! assertDiagnosticFamily warning kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary redundant arms are legal first-match code; the Spec does not mandate this warning.

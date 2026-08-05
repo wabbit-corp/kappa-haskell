@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait ProofOnly =
+    token : Unit
+    proof : True = True
+
+instance ProofOnly =
+    let token = ()
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember proof for ProofOnly

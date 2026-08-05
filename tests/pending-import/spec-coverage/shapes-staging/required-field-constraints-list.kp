@@ -21,4 +21,4 @@ let checkCount = do
 
 ok : String
 let ok = $(checkCount)
--- STATUS(a0497523): FAIL — std.deriving.shape exports no requiredRuntimeFieldConstraints (unresolved name); §22.4 constraint listing unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'requiredRuntimeFieldConstraints' (not in scope)" at line 17

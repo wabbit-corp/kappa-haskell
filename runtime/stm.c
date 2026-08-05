@@ -262,7 +262,7 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
       rds[i] = j.r[i].tv;
     }
     f->stm_reads = rds; f->stm_nreads = j.nr;   /* recorded for stm_unpark on re-entry */
-    int park_unmasked = (f->mask_depth == 0);
+    int park_unmasked = krt2i_mask_interruptible(f);
     atomic_store(&f->status, F_PARKED);
     pthread_mutex_unlock(&g_stm);
     j_drop_all_writes(&j);

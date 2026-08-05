@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "zero:timed-out\nnegative:timed-out\npositive:ran\n"
+--! assertExitCode 0
+
+-- §18.1.6: with a nonpositive duration, timeout behaves as if the timer
+-- fires before the FIRST ordinary step of io and the result is the typed
+-- failure Fail Timeout. The implementation MAY avoid starting io entirely;
+-- if it starts io, no ordinary body step may become observable before the
+-- timeout. A positive duration lets a fast body pass through.
+module main
+
+body : UIO Int
+let body = do
+    printlnString "unexpected-body-step"
+    pure (1 : Int)
+
+quiet : UIO Int
+let quiet = pure (2 : Int)
+
+main : UIO Unit
+let main = do
+    let zero <- catchIO (ioBind (timeout (millis 0) body) (\v -> pure "ran")) (\e -> pure "timed-out")
+    printlnString ("zero:" ++ zero)
+    let negative <- catchIO (ioBind (timeout (millis (negate 5)) body) (\v -> pure "ran")) (\e -> pure "timed-out")
+    printlnString ("negative:" ++ negative)
+    let positive <- catchIO (ioBind (timeout (seconds 5) quiet) (\v -> pure "ran")) (\e -> pure "timed-out")
+    printlnString ("positive:" ++ positive)
+-- STATUS(8c3c7747): PASS — zero and negative durations time out, while a fast action wins a positive timeout.

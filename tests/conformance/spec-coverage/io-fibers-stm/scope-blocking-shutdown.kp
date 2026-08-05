@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "child-finalized\nscope-done\nscope-shutdown\n"
+--! assertExitCode 0
+
+-- Combination §18.1.8 + §18.1.11 + §18.1.12: a child forked into an
+-- explicit scope parks inside `blocking`. Scope exit (withScope) interrupts
+-- it with tag ScopeShutdown. `blocking` preserves the interruption behavior
+-- of its interruptible `sleepFor` body; it does not make arbitrary blocking
+-- operations cancellable. The child's finalizer runs under masked
+-- finalization, and shutdown completes before withScope returns.
+module main
+
+childBody : Promise Void Unit -> UIO Unit
+let childBody ready = do
+    let _ <- completePromise ready (Exit.Success ())
+    blocking (sleepFor (seconds 10))
+
+child : Promise Void Unit -> UIO Unit
+let child ready = ensuring (childBody ready) (printlnString "child-finalized")
+
+useScope : Promise Void Unit -> Scope -> UIO (Fiber Void Unit)
+let useScope ready sc = do
+    let f <- forkIn sc (child ready)
+    let _ <- awaitPromise ready
+    pure f
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- withScope (useScope ready)
+    -- withScope's exit shutdown waited for the child and its finalizers
+    printlnString "scope-done"
+    let ex <- await f
+    match ex
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.ScopeShutdown by)) -> printlnString "scope-shutdown"
+      case Exit.Failure c -> printlnString "other"
+-- STATUS(8c3c7747): PASS — promoted after revalidation.

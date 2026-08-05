@@ -10,13 +10,13 @@ data Vec (n : Int) : Type =
 readData : forall (n : Int). (& v : Vec n) -> Int
 let readData (@0 n : Int) (& v : Vec n) : Int = 0
 
--- POSITIVE: `data`'s type depends on `len`, but consuming the record
--- while only reading `data` is fine — the dependency does not force a
--- runtime demand of `len` (both fields are droppable at ω).
+-- POSITIVE: `data`'s type depends on `len`, but borrowing `data` from an
+-- unrestricted record does not create a runtime demand of `len` (both fields
+-- and the root are droppable at omega).
 type Arr = (len : Int, data : Vec this.len)
 
-useArr : (1 a : Arr) -> Int
-let useArr (1 a : Arr) : Int =
+useArr : (a : Arr) -> Int
+let useArr (a : Arr) : Int =
     readData a.data
 
 -- NEGATIVE: with `len` at quantity 1, the type dependency from `data`

@@ -17,8 +17,8 @@ data Wrap : Type =
 firstConstructor : forall (@0 a : Type). AdtShape a -> Elab ShapeConstructor
 let firstConstructor shape =
     match shape
-    case AdtShape _ _ _ _ (c :: _) -> pure c
-    case AdtShape _ _ _ _ Nil -> failElab "no constructors"
+    case AdtShape.AdtShape _ _ _ _ (c :: _) -> pure c
+    case AdtShape.AdtShape _ _ _ _ Nil -> failElab "no constructors"
 
 badBuild : Elab (Syntax Wrap)
 let badBuild = do
@@ -29,4 +29,4 @@ let badBuild = do
 
 bad : Wrap
 let bad = $(badBuild)
--- STATUS(a0497523): FAIL — std.deriving.shape does not provide constructAdt (unresolved name); §22 expect-term surface incomplete, so no kappa.deriving.shape BAD_CONSTRUCTOR_ARGUMENTS is emitted
+-- STATUS(e25d64e1): FAIL — expected kappa.deriving.shape, but constructAdt is unresolved and the Elab evaluator reports a second error

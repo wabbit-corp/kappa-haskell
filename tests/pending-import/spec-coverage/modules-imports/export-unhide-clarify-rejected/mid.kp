@@ -10,4 +10,4 @@ export plib.(unhide secret) --!! E_IMPORT_ITEM_MALFORMED
 
 --! allow_unhiding
 --! assertErrorCount 1
--- STATUS(a0497523): FAIL — the unhide import itself fails (private access unimplemented, E_IMPORT_ITEM_NOT_FOUND@8) and the export of an unhide item is accepted without diagnostic
+-- STATUS: SPEC-ISSUE — forbidden re-export of unhidden/clarified items has no normative diagnostic identity

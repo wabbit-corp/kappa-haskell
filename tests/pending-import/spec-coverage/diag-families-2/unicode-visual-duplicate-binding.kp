@@ -14,4 +14,4 @@ module main
 
 let A = 1
 let `А` = 2
--- STATUS(a0497523): FAIL — the compiler ACCEPTS the visual duplicate (0 errors; only the optional W_UNICODE_CONFUSABLE_IDENTIFIER hygiene warning exists behind a capability): strong-visual-key duplicate detection per §5.1A is not implemented
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_UNICODE_VISUAL_DUPLICATE_BINDING] was produced (saw: W_UNICODE_CONFUSABLE_IDENTIFIER@16); no diagnostic with family kappa.unicode.name was produced

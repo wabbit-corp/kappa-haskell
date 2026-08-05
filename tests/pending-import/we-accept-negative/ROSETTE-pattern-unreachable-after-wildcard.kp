@@ -39,3 +39,4 @@ let score s =
     case (Rect _ _) -> 99           --!! kappa.pattern.unreachable
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary dead arms are legal first-match code; the Spec does not mandate this diagnostic.

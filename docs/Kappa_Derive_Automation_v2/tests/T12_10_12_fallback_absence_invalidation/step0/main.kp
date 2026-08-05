@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+import types.(type Bit(..))
+
+public result : Bool
+let result = O ~= I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertNoErrors
+--! assertEval result False
+--! assertFallbackSelected Equiv Bit std.prelude.eqToEquivFallback

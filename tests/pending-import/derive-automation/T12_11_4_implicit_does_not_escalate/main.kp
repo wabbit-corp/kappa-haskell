@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+needsSet : IsSet Flag => Flag
+let needsSet = Off
+
+value : Flag
+let value = needsSet
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

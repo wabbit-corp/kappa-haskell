@@ -40,3 +40,5 @@ let all_specific (c : Color) : String =
 
 -- expect: shadowed_by_wildcard and wildcard_in_middle rejected with unreachable warnings;
 --         wildcard_at_end and all_specific accepted
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary dead arms are semantically harmless under first-match matching, and the Spec does not mandate this lint.

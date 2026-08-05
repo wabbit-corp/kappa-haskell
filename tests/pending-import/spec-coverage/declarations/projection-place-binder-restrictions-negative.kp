@@ -17,4 +17,4 @@ projection inoutPlace (inout place this : Cell) : Int =
 
 --! mode check
 --! assertErrorCount 3
--- STATUS(a0497523): FAIL — compiler accepts quantity/@/inout on place binders (0 errors); §9.1.1 place-binder restriction not enforced
+-- STATUS(74742dfd): FAIL — expected 3 errors, got 0

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -41,6 +42,8 @@ module Kappa.Core
   , ObservationMode (..)
   , FormationMode (..)
   , BinderOrigin (..)
+  , RuntimeErasure (..)
+  , ErasureJustification (..)
   , RecordField (..)
   , ConstructorArg (..)
   , ConstructorValueArg (..)
@@ -84,7 +87,8 @@ module Kappa.Core
   , universeLift
   , validateUniverseLiftEvidence
   , validateUniverseLiftEvidenceUnder
-  , Term (.., CCtor)
+  , Term (.., CApp, CAppRuntime, CCtor)
+  , pattern CPiEvidenceM
   , pattern CPiM
   , pattern CPiBoundM
   , pattern CPiFormedM
@@ -95,6 +99,10 @@ module Kappa.Core
   , pattern CPi
   , pattern CProj
   , pattern CProjAt
+  , pattern CLetM
+  , pattern CLetRecM
+  , pattern CLetPolyM
+  , pattern CLetRecPolyM
   , pattern CLet
   , pattern CLetRec
   , pattern CRecordT
@@ -119,6 +127,7 @@ module Kappa.Core
   , Telescope
   , TelescopeEntry (..)
   , Value (.., VCtor)
+  , pattern VPiEvidenceM
   , pattern VPiM
   , pattern VPiBoundM
   , pattern VPiFormedM
@@ -136,6 +145,7 @@ module Kappa.Core
   , QuotedSyntax (..)
   ) where
 
+import Data.Data (Data)
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (TVar)
@@ -187,7 +197,7 @@ primModule = ModuleName ["__prim"]
 
 -- | Global name: defining module + spelling.
 data GName = GName !ModuleName !Text
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 gnameText :: GName -> Text
 gnameText (GName _ t) = t
@@ -200,7 +210,7 @@ gKey :: GName -> Text
 gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
 
 data Icit = Expl | Impl
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Provenance of a dependent binder in the typed interface. Generated
 -- declaration-universe constraints are inserted ahead of the source term
@@ -209,11 +219,27 @@ data Icit = Expl | Impl
 data BinderOrigin
   = BinderSourceWritten
   | BinderGenerated
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
+
+-- | Checked runtime-representation authority attached to a dependent binder.
+-- Quantity-zero and intrinsically compile-time classifiers remain derivable
+-- from the ordinary Pi fields; this annotation records the non-syntactic case
+-- where selected semantic evidence proves the classifier runtime-erased.
+data RuntimeErasure evidence
+  = RuntimeRelevant
+  | RuntimeErased !(ErasureJustification evidence)
+  deriving stock (Eq, Ord, Show, Data, Functor, Foldable, Traversable)
+
+data ErasureJustification evidence
+  = RuntimeErasedEvidence
+      !evidence -- ^ The checked @RuntimeErased T@ goal.
+      !evidence -- ^ Evidence selected for that exact goal.
+      !evidence -- ^ The evidence's independently checked classifier.
+  deriving stock (Eq, Ord, Show, Data, Functor, Foldable, Traversable)
 
 -- | Core quantities (§12.2). The five portable interval quantities.
 data Q = Q0 | Q1 | QW | QLe1 | QGe1
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A dependent record field retains its quantity in KCore.  This is required
 -- both for parametric-witness capability and for erasure justification; a
@@ -228,9 +254,14 @@ data RecordField a = RecordField
   -- ^ Authenticated lexical level bound introduced by this field when it is
   -- an erased comparison proof. This is proof-interface metadata, not a
   -- source-shape inference performed by later phases.
+  , rfRuntimeErasure :: !(RuntimeErasure a)
+  -- ^ Checked non-syntactic runtime-erasure authority for this field. The
+  -- quantity and classifier remain the canonical authority for quantity-zero
+  -- and kind-domain erasure; this field preserves selected evidence that
+  -- cannot be reconstructed by later phases.
   , rfType :: !a
   }
-  deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
+  deriving stock (Eq, Ord, Show, Data, Functor, Foldable, Traversable)
 
 -- | One replayable universe-ordering derivation used by KCore.  The scoped
 -- assumptions are part of the certificate rather than ambient checker state:
@@ -241,21 +272,21 @@ data UniverseEvidenceStep = UniverseEvidenceStep
   , uesUpper :: !Level
   , uesAssumptions :: ![(Level, Level)]
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | One independently replayable obligation of a nominal schema lift.
 data SchemaRoleEvidence
   = SchemaInvariantEvidence
   | SchemaCovariantEvidence !UniverseEvidence
   | SchemaIrrelevantEvidence
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Canonical evidence for one cumulative lift.  More than one step records a
 -- composed lift; retaining the chain preserves every proof dependency.
 newtype UniverseEvidence = UniverseEvidence
   { ueSteps :: [UniverseEvidenceStep]
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Freeze a successful solver judgment into KCore evidence.
 solverUniverseEvidence :: Assumptions -> Level -> Level -> UniverseEvidence
@@ -352,6 +383,11 @@ validateUniverseLiftEvidenceUnder trusted depth universeArity = \case
               sort (nub [(normalizeLevel a, normalizeLevel b) | (a, b) <- assumptionsList trusted])
             normalizedDependencies =
               sort (nub [(normalizeLevel a, normalizeLevel b) | (a, b) <- uesAssumptions])
+            replayAssumptions =
+              foldr
+                (uncurry insertAssumption)
+                emptyAssumptions
+                normalizedDependencies
             levels = uesLower : uesUpper : concatMap (\(a, b) -> [a, b]) uesAssumptions
             scopeErrors = concatMap validateLevel levels
             authorityErrors =
@@ -361,13 +397,13 @@ validateUniverseLiftEvidenceUnder trusted depth universeArity = \case
               | any (`notElem` normalizedTrusted) normalizedDependencies
               ]
             proofErrors =
-              ["universe evidence assumptions are inconsistent" | not (assumptionsConsistent trusted)]
+              ["universe evidence assumptions are inconsistent" | not (assumptionsConsistent replayAssumptions)]
                 ++ [ "universe evidence does not prove "
                        <> T.pack (show (normalizeLevel uesLower))
                        <> " <= " <> T.pack (show (normalizeLevel uesUpper))
-                       <> " under " <> T.pack (show normalizedTrusted)
-                   | assumptionsConsistent trusted
-                   , proveLevelLeq trusted uesLower uesUpper /= Proved
+                       <> " from its recorded dependencies " <> T.pack (show normalizedDependencies)
+                   | assumptionsConsistent replayAssumptions
+                   , proveLevelLeq replayAssumptions uesLower uesUpper /= Proved
                    ]
          in scopeErrors ++ authorityErrors ++ proofErrors
       validateLevel level =
@@ -383,7 +419,7 @@ type MetaId = Int
 -- Core body. Backends use it only as proof-carrying metadata; it is not a
 -- source-visible reference and does not affect runtime values.
 newtype RefCellId = RefCellId Int
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A lowering witness proving that a source `var` cell was created through the
 -- checker-selected prelude `MonadRef (IO e)` dictionary, whose members are the
@@ -393,7 +429,7 @@ data RefLoweringWitness
   = BuiltinIORefWitness
       { rlwCellId :: !RefCellId
       }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Occurrence-level evidence for a mutable-reference action selected by the
 -- checker. The action term remains authoritative for semantics; the witness is
@@ -402,7 +438,7 @@ data RefActionWitness
   = BuiltinIORefNew !RefLoweringWitness
   | BuiltinIORefRead !RefLoweringWitness
   | BuiltinIORefWrite !RefLoweringWitness
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data Literal
   = LitInt !Integer -- Nat/Int/Integer share representation
@@ -412,7 +448,7 @@ data Literal
   | LitByte !Word8 -- §6.5 conventional 'b' handler payload
   | LitBytes !ByteString -- §29.5 byte sequences (exact byte content)
   | LitGrapheme !Text -- §6.5 conventional 'g' handler payload (exact scalar sequence)
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Core terms, de Bruijn indexed. Grouped into families below for reading.
 -- | One typed constructor argument. 'caPayload' records membership in the
@@ -425,7 +461,7 @@ data ConstructorArg = ConstructorArg
   , caName :: !(Maybe Text)
   , caTerm :: !Term
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Semantic counterpart of 'ConstructorArg'.  Keeping the complete typed
 -- spine in the value domain makes normalization-by-evaluation lossless for
@@ -447,10 +483,11 @@ data CoreLocalRecDef = CoreLocalRecDef
   { clrdMode :: !ObservationMode
   , clrdQuantity :: !Q
   , clrdName :: !Text
+  , clrdRuntimeErasure :: !(RuntimeErasure Term)
   , clrdType :: !Term
   , clrdRhs :: !Term
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Arithmetic proposition domains whose proof rules are independently
 -- replayed at typed checkpoints (§15.8.2/§30.2.0A). First-class
@@ -461,14 +498,14 @@ data ArithmeticDomain
   | ArithmeticInteger
   | ArithmeticTypeLevel
   | ArithmeticProviderLaw
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A portable algebraic theory understood by the proof-normalization
 -- service.  These are semantic roles, not source trait names.
 data ArithmeticNormalizationTheory
   = ArithmeticMonoid
   | ArithmeticCommutativeMonoid
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | The identity-bearing, versioned part of one §15.8.2 provider artifact.
 -- The selected dictionary remains occurrence-specific and is stored alongside
@@ -481,18 +518,18 @@ data ArithmeticNormalizationProvider = ArithmeticNormalizationProvider
   , anpProviderVersion :: !Integer
   , anpCheckerVersion :: !Integer
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data ArithmeticVariableKind
   = ArithmeticVariableNatural
   | ArithmeticVariableInteger
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data ArithmeticVariable a = ArithmeticVariable
   { avKind :: !ArithmeticVariableKind
   , avTerm :: !a
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | One selected provider admitted to an arithmetic proof. The trait identity
 -- and the exact selected evidence term are both retained; a verifier never
@@ -502,7 +539,7 @@ data ArithmeticProviderEvidence a = ArithmeticProviderEvidence
   , apeTrait :: !GName
   , apeEvidence :: !a
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ArithmeticAssumptionSource a
   = ArithmeticAssumptionProof
@@ -516,7 +553,7 @@ data ArithmeticAssumptionSource a
       { aasBranchTruth :: !Bool
       , aasBranchCondition :: !a
       }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ArithmeticAssumption a = ArithmeticAssumption
   { aaTruth :: !Bool
@@ -524,7 +561,7 @@ data ArithmeticAssumption a = ArithmeticAssumption
   , aaReplayProposition :: !a
   , aaSource :: !(ArithmeticAssumptionSource a)
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A proof-producing arithmetic decision. The portable artifact adds the
 -- canonical replay normal form; Core retains identity-bearing source material
@@ -543,7 +580,7 @@ data ArithmeticCertificate a = ArithmeticCertificate
   -- It is explicit so independent artifact verification never has to trust
   -- elaborator-only normalization state.
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Version of the independently replayed arithmetic-certificate payload.
 -- Version 3 uses ordered multiplicative words in polynomial normal forms.
@@ -673,14 +710,20 @@ data Term
   -- core so usage analysis reads it from the type, not the surface AST. It
   -- is metadata for the quantity/borrow checker: conversion ignores it
   -- (borrow on a parameter is not part of definitional type identity here).
-  | CPiEvidenceM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !Term !Term
+  | CPiRuntimeM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !(RuntimeErasure Term) !Term !Term
     -- ^ A dependent function type plus the authenticated level assumption
     -- introduced by this binder, when any. The proposition remains the
     -- ordinary domain term; this metadata is the designated universe-proof
     -- interface and is never reconstructed from a rendered source shape.
     -- 'BinderOrigin' distinguishes user evidence from declaration-solver
     -- evidence; explicit implicit application depends on that provenance.
-  | CApp !Icit !Term !Term
+  | CAppM !Icit !(RuntimeErasure Term) !Term !Term
+    -- ^ Application with the checker-selected, occurrence-local runtime
+    -- representation of its argument.  The annotation is required when a
+    -- generic binder becomes erasable only through evidence available at
+    -- this call site (notably an equality proof under local @IsSet@
+    -- evidence).  Backends consume this fact; they never repeat evidence
+    -- selection after elaboration.
   | CSort !Level -- ^ @Type u@
   | CLevel !Level
     -- ^ A static declaration-universe identity used while checking a level
@@ -737,13 +780,13 @@ data Term
   | CVariantT ![Term] -- ^ canonical member order
   | CInject !Text !Term -- ^ member-identity tag + payload
   -- Binding and metavariables --------------------------------------------
-  | CLetM !ObservationMode !Q !Text !Term !Term !Term -- ^ mode, q, name, type, rhs, body
-  | CLetRecM !ObservationMode !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
-  | CLetPolyM !ObservationMode !Q !Text !DeclarationUniverseTelescope !Term !Term !Term
+  | CLetRuntimeM !ObservationMode !Q !Text !(RuntimeErasure Term) !Term !Term !Term -- ^ mode, q, name, erasure, type, rhs, body
+  | CLetRecRuntimeM !ObservationMode !Q !Text !(RuntimeErasure Term) !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
+  | CLetPolyRuntimeM !ObservationMode !Q !Text !DeclarationUniverseTelescope !(RuntimeErasure Term) !Term !Term !Term
     -- ^ Universe-polymorphic non-recursive local declaration.  The type and
     -- rhs are closed over the telescope's 'LParam's; only the body is under
     -- the term binder.
-  | CLetRecPolyM !ObservationMode !Q !Text !DeclarationUniverseTelescope !Term !Term !Term
+  | CLetRecPolyRuntimeM !ObservationMode !Q !Text !DeclarationUniverseTelescope !(RuntimeErasure Term) !Term !Term !Term
     -- ^ Universe-polymorphic recursive local declaration.  Both rhs and body
     -- are under the term binder, as for 'CLetRecM'.
   | CLetRecGroupM !DeclarationUniverseTelescope ![CoreLocalRecDef] !Term
@@ -763,7 +806,7 @@ data Term
   -- Conditional and metaprogramming --------------------------------------
   | CIf !Term !Term !Term
   | CQuote !QuotedSyntax ![Term] -- ^ §21.1 syntax quote: payload + in-quote splice slots
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Structural equality on 'Term'.
 --
@@ -780,9 +823,9 @@ instance Eq Term where
   CLocal a us == CLocal a' us' = a == a' && us == us'
   CGlobal a us == CGlobal a' us' = a == a' && us == us'
   CLamM m a b c d == CLamM m' a' b' c' d' = m == m' && a == a' && b == b' && c == c' && d == d'
-  CPiEvidenceM m fm a b c d p o e f == CPiEvidenceM m' fm' a' b' c' d' p' o' e' f' =
-    m == m' && fm == fm' && a == a' && b == b' && c == c' && d == d' && p == p' && o == o' && e == e' && f == f'
-  CApp a b c == CApp a' b' c' = a == a' && b == b' && c == c'
+  CPiRuntimeM m fm a b c d p o r e f == CPiRuntimeM m' fm' a' b' c' d' p' o' r' e' f' =
+    m == m' && fm == fm' && a == a' && b == b' && c == c' && d == d' && p == p' && o == o' && r == r' && e == e' && f == f'
+  CAppM a _ b c == CAppM a' _ b' c' = a == a' && b == b' && c == c'
   CSort a == CSort a' = a == a'
   CLevel a == CLevel a' = a == a'
   CUniverseLift a b c d == CUniverseLift a' b' c' d' =
@@ -805,14 +848,14 @@ instance Eq Term where
   CProjAtM a b c d == CProjAtM a' b' c' d' = a == a' && b == b' && c == c' && d == d'
   CVariantT a == CVariantT a' = a == a'
   CInject a b == CInject a' b' = a == a' && b == b'
-  CLetM a b c d e f == CLetM a' b' c' d' e' f' =
-    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
-  CLetRecM a b c d e f == CLetRecM a' b' c' d' e' f' =
-    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
-  CLetPolyM a b c u d e f == CLetPolyM a' b' c' u' d' e' f' =
-    a == a' && b == b' && c == c' && u == u' && d == d' && e == e' && f == f'
-  CLetRecPolyM a b c u d e f == CLetRecPolyM a' b' c' u' d' e' f' =
-    a == a' && b == b' && c == c' && u == u' && d == d' && e == e' && f == f'
+  CLetRuntimeM a b c r d e f == CLetRuntimeM a' b' c' r' d' e' f' =
+    a == a' && b == b' && c == c' && r == r' && d == d' && e == e' && f == f'
+  CLetRecRuntimeM a b c r d e f == CLetRecRuntimeM a' b' c' r' d' e' f' =
+    a == a' && b == b' && c == c' && r == r' && d == d' && e == e' && f == f'
+  CLetPolyRuntimeM a b c u r d e f == CLetPolyRuntimeM a' b' c' u' r' d' e' f' =
+    a == a' && b == b' && c == c' && u == u' && r == r' && d == d' && e == e' && f == f'
+  CLetRecPolyRuntimeM a b c u r d e f == CLetRecPolyRuntimeM a' b' c' u' r' d' e' f' =
+    a == a' && b == b' && c == c' && u == u' && r == r' && d == d' && e == e' && f == f'
   CLetRecGroupM telescope definitions body == CLetRecGroupM telescope' definitions' body' =
     telescope == telescope' && definitions == definitions' && body == body'
   CMeta a == CMeta a' = a == a'
@@ -835,7 +878,7 @@ data QuoteCapture = QuoteCapture
   , qcOrig :: !Text
   , qcLevel :: !Int
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | The meta-phase payload of an elaborated syntax quote (§21.1):
 -- surface syntax (with 'Kappa.Syntax.EQuoteHole' grafting slots for
@@ -845,7 +888,7 @@ data QuotedSyntax = QuotedSyntax
   , qsCaptures :: ![QuoteCapture]
   , qsSpan :: !Span
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Quotes compare by rendered payload and captures ('Expr' has no
 -- structural equality); used only by 'Term' equality, where comparing
@@ -861,7 +904,7 @@ data CaseAlt = CaseAlt
   , caGuard :: !(Maybe Term) -- ^ guard, under pattern binders
   , caBody :: !Term -- ^ under pattern binders (left-to-right)
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | One proof-producing compatibility step for a constructor branch whose
 -- result indices are propositionally, but not definitionally, compatible with
@@ -881,7 +924,7 @@ data ConstructorBridge
       { cbType :: !Term
       , cbProof :: !Term
       }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 constructorBridgeBinderCount :: [ConstructorBridge] -> Int
 constructorBridgeBinderCount =
@@ -904,7 +947,7 @@ data ConstructorHiddenBinder = ConstructorHiddenBinder
   { chbAfterExplicitFields :: !Int
   , chbMode :: !ObservationMode
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Reconstruct the source constructor telescope from explicit pattern fields
 -- and the authenticated hidden-field positions carried by 'CPCtorM'.  Invalid
@@ -977,7 +1020,7 @@ data CorePat
     -- positions (e.g. @A p q | B q p@).
     CPOr ![CorePat] ![[Int]]
   | CPAsM !ObservationMode !Text !CorePat -- ^ as-pattern: binds the whole value, then inner
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | do-kernel items (typed during elaboration, executed by Interp).
 data KItem
@@ -1003,14 +1046,14 @@ data KItem
     -- outward. Distinct from a first-class @do@ VALUE (e.g. @let x = do …@),
     -- which is an opaque computation reached through 'KExpr'/'KBind'.
     KSubDo !(Maybe Text) ![KItem]
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A while condition is either the ordinary pure Bool condition, or the
 -- §18.6 monadic condition action that must be run again for every test.
 data KCond
   = KCondPure !Term
   | KCondAction !Term
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data TelescopeEntry = TelescopeEntry
   { teIcit :: !Icit
@@ -1022,7 +1065,7 @@ data TelescopeEntry = TelescopeEntry
   , teDomain :: !Term
   , teLevelAssumption :: !(Maybe (Level, Level))
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 type Telescope = [TelescopeEntry]
 
@@ -1049,7 +1092,7 @@ data Value
   | VFlex !MetaId !Spine -- ^ neutral: an unsolved metavariable + its args
   | VGlobal !GName ![Level] !Spine -- ^ neutral global plus hidden universe instantiation
   | VLamM !ObservationMode !Icit !Q !Text !Closure
-  | VPiEvidenceM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !Value !Closure
+  | VPiRuntimeM !ObservationMode !FormationMode !Icit !Q !Bool !Text !(Maybe (Level, Level)) !BinderOrigin !(RuntimeErasure Value) !Value !Closure
     -- ^ Semantic Pi carrying the same checked level-assumption authority as
     -- 'CPiEvidenceM'. 'Bool' is the binder borrow marker (§12.3).
   | VSort !Level
@@ -1096,12 +1139,12 @@ instance Show Value where
 pattern CRecordT :: [(Text, Term)] -> Term
 pattern CRecordT fs <- CRecordTQ (recordFieldPairs -> fs)
   where
-    CRecordT fs = CRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing t | (n, t) <- fs]
+    CRecordT fs = CRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing RuntimeRelevant t | (n, t) <- fs]
 
 pattern VRecordT :: [(Text, Value)] -> Value
 pattern VRecordT fs <- VRecordTQ (recordFieldPairs -> fs)
   where
-    VRecordT fs = VRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing t | (n, t) <- fs]
+    VRecordT fs = VRecordTQ [RecordField n Ordinary FormationOrdinary QW Nothing RuntimeRelevant t | (n, t) <- fs]
 
 -- | Compatibility view for global references. Pattern matches preserve the
 -- semantic global identity while clients that need declaration-universe
@@ -1114,6 +1157,19 @@ pattern CGlob g <- CGlobal g _
 
 pattern CGlobI :: GName -> [Level] -> Term
 pattern CGlobI g universes = CGlobal g universes
+
+-- | Compatibility constructor/view for an ordinary runtime-relevant
+-- application.  Semantic consumers that need the selected calling
+-- convention must use 'CAppRuntime'.
+pattern CApp :: Icit -> Term -> Term -> Term
+pattern CApp ic function argument <- CAppM ic _ function argument
+  where
+    CApp ic function argument = CAppM ic RuntimeRelevant function argument
+
+-- | Complete application view retaining occurrence-local erasure evidence.
+pattern CAppRuntime :: Icit -> RuntimeErasure Term -> Term -> Term -> Term
+pattern CAppRuntime ic runtimeErasure function argument =
+  CAppM ic runtimeErasure function argument
 
 pattern VGlobN :: GName -> Spine -> Value
 pattern VGlobN g spine <- VGlobal g _ spine
@@ -1163,16 +1219,23 @@ pattern CLam ic q n body <- CLamM _ ic q n body
 -- assumption. Formation is independent evidence and therefore cannot be
 -- reconstructed from observation mode by a compatibility constructor.
 pattern CPiM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Term -> Term -> Term
+pattern CPiEvidenceM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> BinderOrigin -> Term -> Term -> Term
+pattern CPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain <-
+  CPiRuntimeM mode formation ic q borrowed name assumption origin _ domain codomain
+  where
+    CPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain =
+      CPiRuntimeM mode formation ic q borrowed name assumption origin RuntimeRelevant domain codomain
+
 pattern CPiM mode ic q borrowed name domain codomain <-
-  CPiEvidenceM mode _ ic q borrowed name _ _ domain codomain
+  CPiRuntimeM mode _ ic q borrowed name _ _ _ domain codomain
 
 pattern CPiBoundM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Term -> Term -> Term
 pattern CPiBoundM mode ic q borrowed name assumption domain codomain <-
-  CPiEvidenceM mode _ ic q borrowed name assumption _ domain codomain
+  CPiRuntimeM mode _ ic q borrowed name assumption _ _ domain codomain
 
 pattern CPiFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Term -> Term -> Term
 pattern CPiFormedM mode formation ic q borrowed name domain codomain <-
-  CPiEvidenceM mode formation ic q borrowed name _ _ domain codomain
+  CPiRuntimeM mode formation ic q borrowed name _ _ _ domain codomain
   where
     CPiFormedM mode formation ic q borrowed name domain codomain =
       CPiEvidenceM mode formation ic q borrowed name Nothing BinderSourceWritten domain codomain
@@ -1189,6 +1252,25 @@ pattern CProj value field <- CProjM _ value field
 
 pattern CProjAt :: Term -> Text -> Int -> Term
 pattern CProjAt value field index <- CProjAtM _ value field index
+
+-- | Compatibility observers for clients that do not inspect local erasure
+-- authority. They are intentionally unidirectional: Core producers must
+-- construct the evidence-bearing nodes explicitly.
+pattern CLetM :: ObservationMode -> Q -> Text -> Term -> Term -> Term -> Term
+pattern CLetM mode quantity name ty rhs body <-
+  CLetRuntimeM mode quantity name _ ty rhs body
+
+pattern CLetRecM :: ObservationMode -> Q -> Text -> Term -> Term -> Term -> Term
+pattern CLetRecM mode quantity name ty rhs body <-
+  CLetRecRuntimeM mode quantity name _ ty rhs body
+
+pattern CLetPolyM :: ObservationMode -> Q -> Text -> DeclarationUniverseTelescope -> Term -> Term -> Term -> Term
+pattern CLetPolyM mode quantity name telescope ty rhs body <-
+  CLetPolyRuntimeM mode quantity name telescope _ ty rhs body
+
+pattern CLetRecPolyM :: ObservationMode -> Q -> Text -> DeclarationUniverseTelescope -> Term -> Term -> Term -> Term
+pattern CLetRecPolyM mode quantity name telescope ty rhs body <-
+  CLetRecPolyRuntimeM mode quantity name telescope _ ty rhs body
 
 pattern CLet :: Q -> Text -> Term -> Term -> Term -> Term
 pattern CLet q name ty rhs body <- CLetM _ q name ty rhs body
@@ -1228,16 +1310,23 @@ pattern VLam :: Icit -> Q -> Text -> Closure -> Value
 pattern VLam ic q n body <- VLamM _ ic q n body
 
 pattern VPiM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Value -> Closure -> Value
+pattern VPiEvidenceM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> BinderOrigin -> Value -> Closure -> Value
+pattern VPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain <-
+  VPiRuntimeM mode formation ic q borrowed name assumption origin _ domain codomain
+  where
+    VPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain =
+      VPiRuntimeM mode formation ic q borrowed name assumption origin RuntimeRelevant domain codomain
+
 pattern VPiM mode ic q borrowed name domain codomain <-
-  VPiEvidenceM mode _ ic q borrowed name _ _ domain codomain
+  VPiRuntimeM mode _ ic q borrowed name _ _ _ domain codomain
 
 pattern VPiBoundM :: ObservationMode -> Icit -> Q -> Bool -> Text -> Maybe (Level, Level) -> Value -> Closure -> Value
 pattern VPiBoundM mode ic q borrowed name assumption domain codomain <-
-  VPiEvidenceM mode _ ic q borrowed name assumption _ domain codomain
+  VPiRuntimeM mode _ ic q borrowed name assumption _ _ domain codomain
 
 pattern VPiFormedM :: ObservationMode -> FormationMode -> Icit -> Q -> Bool -> Text -> Value -> Closure -> Value
 pattern VPiFormedM mode formation ic q borrowed name domain codomain <-
-  VPiEvidenceM mode formation ic q borrowed name _ _ domain codomain
+  VPiRuntimeM mode formation ic q borrowed name _ _ _ domain codomain
   where
     VPiFormedM mode formation ic q borrowed name domain codomain =
       VPiEvidenceM mode formation ic q borrowed name Nothing BinderSourceWritten domain codomain
@@ -1263,9 +1352,9 @@ patternRestName = fmap snd
 -- Total traversals that preserve all typed metadata should match the real
 -- constructors rather than a compatibility view. This COMPLETE set prevents
 -- GHC from selecting one of the lossy read-only pattern-synonym sets above.
-{-# COMPLETE CVar, CLocal, CGlobal, CLamM, CPiEvidenceM, CApp, CSort, CLevel,
+{-# COMPLETE CVar, CLocal, CGlobal, CLamM, CPiRuntimeM, CApp, CSort, CLevel,
   CUniverseLift, CSchemaLift, CArithmeticProof, CLit, CCtorI, CMatch, CRecordTQ, CRecordV, CProjM, CProjAtM,
-  CVariantT, CInject, CLetM, CLetRecM, CLetPolyM, CLetRecPolyM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE,
+  CVariantT, CInject, CLetRuntimeM, CLetRecRuntimeM, CLetPolyRuntimeM, CLetRecPolyRuntimeM, CLetRecGroupM, CMeta, CDo, CSealE, CSigT, CThunkE,
   CLazyE, CForceE, CIf, CQuote #-}
 
 {-# COMPLETE CVar, CLocal, CGlob, CLam, CPiM, CApp, CSort, CLevel, CUniverseLift, CSchemaLift, CArithmeticProof, CLit,
@@ -1283,7 +1372,7 @@ patternRestName = fmap snd
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar,
   VFiber, VScope, VFiberRef, VTVar, VIOAction, VQuote #-}
 
-{-# COMPLETE VRigid, VFlex, VGlobal, VLamM, VPiEvidenceM, VSort, VLevel, VArithmeticProof, VLit,
+{-# COMPLETE VRigid, VFlex, VGlobal, VLamM, VPiRuntimeM, VSort, VLevel, VArithmeticProof, VLit,
   VCtorI, VRecordTQ, VRecordV, VVariantT, VInject, VMatchN, VProjN, VAppN, VSealV,
   VSigT, VDoV, VThunkV, VLazyV, VIfN, VPrim, VRef, VArr, VMVar, VFiber,
   VScope, VFiberRef, VTVar, VIOAction, VQuote #-}

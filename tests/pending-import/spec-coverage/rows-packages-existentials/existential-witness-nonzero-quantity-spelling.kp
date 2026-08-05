@@ -12,4 +12,4 @@ module main
 
 type Bad : Type1 = exists (@1 a : Type). Option a
 
--- STATUS(a0497523): FAIL — compiler accepts with 0 errors: exists (@1 a : Type). T parses and elaborates like an ordinary witness; the "@0-only" spelling restriction of L17652-L17654 is not enforced
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0

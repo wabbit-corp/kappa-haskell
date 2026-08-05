@@ -56,4 +56,4 @@ let main = do
     let origin <- bridgePackageOrigin localPackage
     printlnString (describeOrigin origin)
 
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — portable source cannot construct BridgeOrigin/BridgeContract/BridgePackage or a complete stub BridgeHandle

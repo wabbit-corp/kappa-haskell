@@ -20,4 +20,4 @@ originShape :
     (& package : BridgePackage surface) -> UIO BridgeOrigin
 let originShape package = bridgePackageOrigin package
 
--- STATUS(a0497523): FAIL — bridgePackageValue is a by-value stub returning IO BridgeFailure (surface r), not the canonical pure region-borrow returning (surface r) captures (r) (E_TYPE_EQUALITY_MISMATCH).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 16

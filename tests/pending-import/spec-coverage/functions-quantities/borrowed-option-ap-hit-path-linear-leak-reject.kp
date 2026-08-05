@@ -34,6 +34,4 @@ let bad (1 b : Buf) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch linear|drop|consum|quantit
 
--- STATUS(a0497523): FAIL — accepted with 0 errors: the borrowed AP call
--- is counted as the linear consumption of b, so the leaking Hit path
--- looks fully discharged to the checker.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /linear|drop|consum|quantit/ (no diagnostics)

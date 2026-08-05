@@ -1,0 +1,15 @@
+@PrivateByDefault module lemmas
+
+public opaque data Token : Type =
+    Token (value : Nat)
+
+public opaque left : Token
+let left = Token 0
+
+public opaque right : Token
+let right = Token 0
+
+public equality : left = right
+let equality = refl
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

@@ -5,8 +5,8 @@
  *   then(shutdownScope(daemonScope), shutdownScope(rootScope))
  * and force-attached every daemon to the per-run daemon scope.  shutdownScope parks
  * the caller until the scope's live==0, but a ScopeShutdown interrupt is delivered
- * only when the target's mask_depth==0.  A daemon parked inside `uninterruptible`
- * (mask_depth>0) NEVER receives the shutdown interrupt, so live never reaches 0 and
+ * only when the target's effective state is Interruptible. A daemon parked inside
+ * `uninterruptible` remains Uninterruptible and never receives the shutdown interrupt, so live never reaches 0 and
  * run_main parks FOREVER.  §32.2.3 does NOT await unattached daemons at scope close.
  *
  * THE FIX: daemon teardown is best-effort + BOUNDED (krt2i_scope_drain_bounded):

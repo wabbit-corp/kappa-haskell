@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+applyEquality :
+    forall (a : Type) (b : a -> Type)
+           (f : (x : a) -> b x)
+           (g : (x : a) -> b x).
+    f = g ->
+    forall (x : a). f x = g x
+let applyEquality equality = happly equality
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType applyEquality forall (a : Type) (b : a -> Type) (f : (x : a) -> b x) (g : (x : a) -> b x). f = g -> forall (x : a). f x = g x

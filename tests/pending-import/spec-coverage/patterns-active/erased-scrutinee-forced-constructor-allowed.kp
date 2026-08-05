@@ -32,4 +32,4 @@ let succCase v =
 -- STATUS(a51e1bf): FAIL — compiler rejects both matches with
 -- E_QTT_ERASED_RUNTIME_USE; it does not implement the §17.1.3 exception
 -- for constructors forced by family-argument unification.
--- STATUS(a0497523): FAIL — unchanged (E_QTT_ERASED_RUNTIME_USE; forced-constructor exception unimplemented).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_QTT_ERASED_RUNTIME_USE "erased (quantity 0) binding 'v' is used at runtime (§12.2.1)" at line 22

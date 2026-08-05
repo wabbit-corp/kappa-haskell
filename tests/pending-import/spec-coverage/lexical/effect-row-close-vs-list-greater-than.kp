@@ -16,4 +16,4 @@ let firstOrZero xs =
 
 probe : Bool
 let probe = firstOrZero [1]>0
--- STATUS(a0497523): FAIL — [1]>0 still lexes ]> as an effect-row closer, skipping the declaration; Spec 5.5.1 now scopes ]> to an open <[ context
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected '[' at start of declaration" at line 18; assertEval: 'probe' evaluates to \ordinary xs -> match @0 ..., expected True

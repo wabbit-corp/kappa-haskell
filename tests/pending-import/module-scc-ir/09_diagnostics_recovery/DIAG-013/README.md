@@ -1,8 +1,9 @@
-# DIAG-013: Unsupported mixed cycle includes attempted classes
+# DIAG-013: Alias-exposed strict value cycle
 
-A genuinely unsupported staged cycle records the classifications attempted.
+Transparent normalization exposes a body-facet cycle containing the non-function initializer `makeType`. The specific
+strict-value-cycle rule takes precedence over the unsupported mixed-cycle fallback.
 
 ## Normative targets
 
 * `§3.2.11A`
-* `§9.5.4`
+* `§9.5.6`

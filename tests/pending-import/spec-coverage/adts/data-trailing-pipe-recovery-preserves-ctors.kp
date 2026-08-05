@@ -1,14 +1,14 @@
 -- §3.1.14A: recovery MUST preserve enough surrounding source structure
 -- to support diagnostics for unaffected neighboring declarations.  A
--- trailing '|' after the last constructor alternative is recovered by
--- ending the data declaration and skipping the dangling token — the
+-- trailing '|' after the last constructor alternative is recovered as an
+-- expected-token syntax error while preserving the declaration — the
 -- already-parsed alternatives survive, so 'Circle' and 'Square' remain
 -- usable both as values and in patterns and the three later
 -- declarations elaborate cleanly (no constructor-use cascade, §3.1.11).
 -- Pins the current good behavior: exactly one parse-recovery error.
 --! mode check
 --! assertErrorCount 1
---! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
 module main
 
 data Shape = Circle Int | Square Int |
@@ -25,4 +25,4 @@ let area sh =
       case Circle r -> r
       case Square s -> s * s
 
--- STATUS(a0497523): PASS
+-- STATUS(e25d64e1): PASS

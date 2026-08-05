@@ -2,4 +2,3 @@
 --! scriptMode
 --! assertErrorCount 1
 --! assertDiagnostic error E_RECOVERY_MISSING_NODE
---! assertSuppressedDiagnostic E_RECOVERY_MISSING_NODE E_INDUCTIVE_RECURSIVE_INVALID

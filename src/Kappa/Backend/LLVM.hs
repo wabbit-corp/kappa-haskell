@@ -64,7 +64,7 @@ import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsC
 import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Build.Types (FfiClass (..))
-import Kappa.Check (CheckState (..))
+import Kappa.Check (CheckState (..), linkedCoreBodies)
 import Kappa.Core
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
 import Kappa.Representation (ExactNaturalRepresentationCertificate)
@@ -456,6 +456,7 @@ generateLL rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
         Left failure -> Left failure
         Right mRcFindings ->
           let
+            bodies = linkedCoreBodies cs
             evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
             backendIr = lowerKBackendIR cs
             st0 =
@@ -474,13 +475,13 @@ generateLL rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
                 , gsCur = mainG
                 , gsGlobals = csGlobals cs
                 , gsEvalCtx = evalCtx0
-                , gsBodies = csCoreBodies cs
+                , gsBodies = bodies
                 , gsBackendBodies = kbirBodies backendIr
                 , gsExactNaturalCertificate = kbirExactNaturalCertificate backendIr
-                , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
+                , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) bodies
                 , gsPrims = Set.union basePrims ffiPrims
                 , gsDeclSites = csDeclSites cs
-                , gsCtorTags = hostCtorTags (csCoreBodies cs) hostSyms
+                , gsCtorTags = hostCtorTags bodies hostSyms
                 , gsBlock = "build"
                 , gsCtorSet = Map.keysSet (csCtors cs)
                 , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
@@ -526,7 +527,7 @@ hostFfiSidecar cs hostSyms
   | Map.null hostSyms = Nothing
   | otherwise =
       let syms = Map.elems hostSyms
-          tagMap = hostCtorTags (csCoreBodies cs) hostSyms
+          tagMap = hostCtorTags (linkedCoreBodies cs) hostSyms
           -- the std.ffi ctors any wrapper actually boxes/unboxes (MkU64/MkI32/…);
           -- each gets a KT_<mangle> define so the wrapper's kctor(KT_…, …) uses
           -- the exact id the .ll's match emits.  Sorted for a deterministic file.
@@ -603,7 +604,7 @@ basePrims =
     -- them here so 'globPrimName' recognises a saturated `uninterruptible`/`mask`/
     -- `poll` and routes it to 'compilePrimApp' → 'compileIoNode' (krt2_*) rather
     -- than the bare-value path.
-    `Set.union` Set.fromList ["blocking", "uninterruptible", "__mask", "poll"]
+    `Set.union` Set.fromList ["blocking", "uninterruptible", "__mask", "__uninterruptibleMask", "poll"]
     -- §18.1.12 rank-2 restore adapter: lowered to a bare kapp(raw, act) in
     -- 'compilePrimApp' (no kpf_* entry, no krt2_* node), so add it here so
     -- 'globPrimName' recognises a saturated `__restoreAt` rather than rejecting it.
@@ -2079,7 +2080,7 @@ backendSpineHeadSuspendsLL susp t = case fst (backendSpineOf t) of
         , "cede", "nowMonotonic", "__nowNanos", "sleepFor", "sleepUntil", "__sleepForNanos"
         , "newPromise", "completePromise", "awaitPromiseExit"
         , "__race", "__timeout", "withScope", "__interruptWait", "__interruptNoWait"
-        , "blocking", "uninterruptible", "__mask", "poll"
+        , "blocking", "uninterruptible", "__mask", "__uninterruptibleMask", "poll"
         , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
         , "atomically", "stmBind", "stmOrElse"
         , "onExit", "onInterrupt", "finallyIO", "catchIO"
@@ -4882,6 +4883,7 @@ ioNodeBuilder = \case
   -- `__mask f` are 1-arg; `poll` is 0-arg (handled below as a bare value too).
   "uninterruptible" -> Just ("krt2_uninterruptible", 1)
   "__mask" -> Just ("krt2_mask", 1)
+  "__uninterruptibleMask" -> Just ("krt2_uninterruptible_mask", 1)
   "poll" -> Just ("krt2_poll", 0)
   -- §18.1.13 STM (journaled): newTVar/readTVar/writeTVar/stmBind/stmPure are the
   -- STM_* tree leaves and `atomically` runs the tree in an OP_ATOMICALLY

@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- §12.4.1 makes borrowed binders place-preserving aliases. An inout call
+-- requires ownership of, and writes a successor into, its marked place; it
+-- cannot acquire that ownership through either a whole borrowed alias or a
+-- projection rooted at one.
+module main
+
+data Token : Type =
+    Token
+
+type Cell = (1 tok : Token, tag : Int)
+type Nest = (inner : Cell, other : Int)
+
+useToken : (inout t : Token) -> UIO (1 t : Token,)
+let useToken (inout t : Token) : UIO (1 t : Token,) =
+    pure (t = t,)
+
+badWhole : (1 cell : Cell) -> UIO Unit
+let badWhole (1 cell : Cell) : UIO Unit =
+    do
+        let & value = cell.tok
+        useToken ~value
+        pure ()
+
+badProjection : (1 nest : Nest) -> UIO Unit
+let badProjection (1 nest : Nest) : UIO Unit =
+    do
+        let & cell = nest.inner
+        useToken ~cell.tok
+        pure ()

@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+let evidence : Equiv Flag = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnostic error E_EVIDENCE_CONSTRUCTION_SEALED
+--! assertEvidenceUniquenessMode Equiv sealed

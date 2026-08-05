@@ -1,0 +1,24 @@
+@PrivateByDefault module main
+
+data Seq (0 a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : Seq a)
+
+mapSeq : (a -> b) -> Seq a -> Seq b
+let mapSeq f xs =
+    match xs
+    case Nil -> Nil
+    case Cons h t -> Cons (f h) (mapSeq f t)
+
+mapIdentity :
+    forall (a : Type) (xs : Seq a).
+    mapSeq (\x -> x) xs = xs
+let mapIdentity = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed mapIdentity structural-induction
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

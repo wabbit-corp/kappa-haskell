@@ -12,4 +12,4 @@ module main
 fabricated : Elab Unit
 let fabricated =
     failElabWith "FAKE-CODE" "fabricated string code" [] --!! kappa.type.mismatch
--- STATUS(a0497523): FAIL — compiles cleanly: the implementation's failElabWith takes a String code, so the fabricated string is accepted instead of failing the mandated DiagnosticCode type check
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic with family kappa.type.mismatch was produced; no diagnostic error[kappa.type.mismatch] on line 14 (no diagnostics)

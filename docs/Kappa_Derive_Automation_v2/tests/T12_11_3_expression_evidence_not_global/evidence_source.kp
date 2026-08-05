@@ -1,0 +1,8 @@
+@PrivateByDefault module evidence_source
+
+public data Flag : Type =
+    Off
+    On
+
+public explicitSet : IsSet Flag
+let explicitSet = derive

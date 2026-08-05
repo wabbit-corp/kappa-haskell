@@ -42,3 +42,5 @@ let describeBoth rec =
       case (a = (| _ : B |)) -> "rec-with-B"
 
 --! assertNoErrors
+
+-- STATUS(8c3c7747): FAIL — explicit coverage of both closed-union members is incorrectly reported non-exhaustive (§17.1, §13.3).

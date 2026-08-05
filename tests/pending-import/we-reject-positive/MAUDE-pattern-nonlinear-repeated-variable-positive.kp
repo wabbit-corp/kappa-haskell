@@ -41,3 +41,5 @@ ok2 : Bool
 let ok2 = diag (MkPair Red Green)    -- False
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — the exhaustive guard-plus-catch-all encoding is incorrectly reported non-exhaustive (§17.1.9).

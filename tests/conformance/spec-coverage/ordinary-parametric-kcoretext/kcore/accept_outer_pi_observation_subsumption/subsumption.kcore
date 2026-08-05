@@ -1,0 +1,44 @@
+kcore 1;
+
+module @tests.kcore.outer-pi-subsumption#1007 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.outer-pi-subsumption",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.outer-pi-subsumption.R#2001 : Type 0;
+  axiom ordinary @tests.kcore.outer-pi-subsumption.value#2002 :
+    @tests.kcore.outer-pi-subsumption.R#2001;
+
+  def ordinary @tests.kcore.outer-pi-subsumption.direct#2003 :
+    ((ordinary ordinary 0 explicit value %x#0 :
+        @tests.kcore.outer-pi-subsumption.R#2001) ->
+      @tests.kcore.outer-pi-subsumption.R#2001)
+  {
+    body =
+      lambda (parametric ordinary 0 explicit value %x#0 :
+          @tests.kcore.outer-pi-subsumption.R#2001) {
+        @tests.kcore.outer-pi-subsumption.value#2002
+      };
+  }
+
+  def ordinary @tests.kcore.outer-pi-subsumption.ascribed#2004 :
+    ((ordinary ordinary 0 explicit value %x#1 :
+        @tests.kcore.outer-pi-subsumption.R#2001) ->
+      @tests.kcore.outer-pi-subsumption.R#2001)
+  {
+    body =
+      ascribe
+        lambda (parametric ordinary 0 explicit value %x#1 :
+            @tests.kcore.outer-pi-subsumption.R#2001) {
+          @tests.kcore.outer-pi-subsumption.value#2002
+        }
+        : ((parametric ordinary 0 explicit value %x#1 :
+              @tests.kcore.outer-pi-subsumption.R#2001) ->
+            @tests.kcore.outer-pi-subsumption.R#2001);
+  }
+}

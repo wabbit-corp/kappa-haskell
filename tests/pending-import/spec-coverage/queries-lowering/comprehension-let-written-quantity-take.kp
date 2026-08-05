@@ -35,4 +35,4 @@ let badTake =
         yield consumeTok t
     ]
 
--- STATUS(a0497523): FAIL — parse-level gap: the comprehension `let` clause parses a bare pattern only, so `let 1 t = ...` breaks the whole declaration (2x E_RECOVERY_DECLARATION_SKIPPED); binder quantities in comprehension let clauses (§20.10.7 rule 6) are unsupported, and the take-droppability check is never reached.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration" at line 22; no diagnostic error[E_QUERY_ROW_NOT_DROPPABLE] was produced (saw: E_RECOVERY_DECLARATION_SKIPPED@22, E_RECOVERY_DECLARATION_SKIPPED@30); no diagnostic error[E_QUERY_ROW_NOT_DROPPABLE] on line 34 (saw: E_RECOVERY_DECLARATION_SKIPPED@22, E_RECOVERY_DECLARATION_SKIPPED@30)

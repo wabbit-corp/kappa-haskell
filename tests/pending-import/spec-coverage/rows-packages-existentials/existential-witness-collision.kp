@@ -11,4 +11,4 @@ module main
 bad : exists (value : Type). (value : Int)
 let bad = seal exists (value = Int). (value = 1) as exists (value : Type). (value : Int)
 
--- STATUS(a0497523): FAIL — compiler accepts with 0 errors; the witness/payload-field name collision in the explicit-witness seal surface view is not detected
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 6; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 11

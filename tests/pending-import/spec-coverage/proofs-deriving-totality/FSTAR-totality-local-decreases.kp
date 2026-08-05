@@ -25,4 +25,4 @@ let subst_bad e s decreases e =
 
 --! assertDiagnosticFamily error kappa.termination.failure
 
--- STATUS(a0497523): FAIL (emits only W_TERMINATION_UNVERIFIED)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.termination.failure] on line 24 (saw: W_TERMINATION_UNVERIFIED@19); no diagnostic with family kappa.termination.failure was produced

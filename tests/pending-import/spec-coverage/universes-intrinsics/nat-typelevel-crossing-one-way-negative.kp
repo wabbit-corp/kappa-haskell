@@ -29,12 +29,4 @@ let levelFinite l =
     match l
     case Level c n -> n --!! E_NAME_UNRESOLVED
 
--- STATUS(a0497523): HARNESS-ERROR — E_UNIVERSE_LEVEL_EXPRESSION is not a
--- registered diagnostic code on the a0497523 build (it predates first-class
--- levels; the code and family kappa.universe.level-expression are registered
--- in the current tree, src/Kappa/Explain.hs). Unresolved-pattern-ctor =
--- E_NAME_UNRESOLVED/kappa.name.unresolved was probe-confirmed on a0497523
--- for a non-TypeLevel constructor. The assertErrorCount 2 guards against a
--- vacuous pass but is unvalidated at HEAD (natAsLevel may cascade an extra
--- unbounded-telescope error); adjust the count from a current-HEAD run
--- before import.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 3; first error: E_UNIVERSE_LEVEL_EXPRESSION "a Type index must be a stable, total, serializable TypeLevel term (§11.1.1)" at line 21

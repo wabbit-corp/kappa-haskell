@@ -38,4 +38,4 @@ let trans p q = match p
 
 --! assertNoErrors
 
--- STATUS(a0497523): FAIL (GADT equality refinement is unavailable in branch bodies)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 31

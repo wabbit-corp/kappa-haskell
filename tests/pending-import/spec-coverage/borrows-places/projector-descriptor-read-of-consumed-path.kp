@@ -32,4 +32,4 @@ let bad (1 cell : LinCell) : (Token, Int) =
         let moved = takeToken cell.value
         (moved, observeToken (proj cell)) --!! E_QTT_PATH_CONSUMED
 
--- STATUS(a0497523): FAIL — 0 errors: the descriptor application `proj cell` is accepted after cell.value was moved (same gap as the fully applied projection call form; direct projection is rejected with E_QTT_PATH_CONSUMED).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_QTT_PATH_CONSUMED] was produced (no diagnostics); no diagnostic error[E_QTT_PATH_CONSUMED] on line 33 (no diagnostics)

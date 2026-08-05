@@ -208,8 +208,10 @@ observationCallableType ctx depth value =
       forced -> forced
 
     expandProjectionResult = \case
-      CPiEvidenceM mode formation icit quantity borrowed name assumption origin domain codomain ->
-        CPiEvidenceM mode formation icit quantity borrowed name assumption origin domain
+      CPiRuntimeM mode formation icit quantity borrowed name assumption origin runtimeErasure domain codomain ->
+        CPiRuntimeM mode formation icit quantity borrowed name assumption origin
+          (fmap expandProjectionResult runtimeErasure)
+          domain
           (expandProjectionResult codomain)
       result ->
         case spineOfTerm result of
@@ -488,8 +490,10 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VFlex _ spine -> any (go seen . snd) spine
           VGlobal _ _ spine -> any (go seen . snd) spine
           VLamM _ _ _ _ (Closure environment _) -> any (go seen) environment
-          VPiEvidenceM _ _ _ _ _ _ _ _ domain (Closure environment _) ->
-            go seen domain || any (go seen) environment
+          VPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure domain (Closure environment _) ->
+            any (go seen) runtimeErasure
+              || go seen domain
+              || any (go seen) environment
           VCtorI _ _ arguments -> any (go seen . cvaValue) arguments
           VRecordTQ fields -> any (go seen . rfType) fields
           VRecordV fields -> any (go seen . snd) fields
@@ -543,8 +547,9 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
             VGlobal global levels [(icit, go resolving argument) | (icit, argument) <- spine]
           VLamM mode icit quantity name closure ->
             VLamM mode icit quantity name (substituteClosure resolving closure)
-          VPiEvidenceM mode formation icit quantity borrowed name assumption origin domain closure ->
-            VPiEvidenceM mode formation icit quantity borrowed name assumption origin
+          VPiRuntimeM mode formation icit quantity borrowed name assumption origin runtimeErasure domain closure ->
+            VPiRuntimeM mode formation icit quantity borrowed name assumption origin
+              (fmap (go resolving) runtimeErasure)
               (go resolving domain) (substituteClosure resolving closure)
           VArithmeticProof certificate ->
             VArithmeticProof
@@ -853,7 +858,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
             (domain, bodyExpected) = lambdaExpected env mode icit wanted
             binding = ObservationBinding mode (if mode == Parametric then Just origin else Nothing) domain Nothing Nothing
          in Set.delete origin (go (child path 1) (binding : env) bodyExpected body)
-      CPiEvidenceM mode _ _ _ _ name _ _ domain codomain ->
+      CPiRuntimeM mode _ _ _ _ name _ _ _ domain codomain ->
         let domainDeps = go (child path 0) env Nothing domain
             domainType = Just (eval ctx (rigidEnv (length env)) domain)
             origin = ParametricBinder (originPath (child path 1)) name
@@ -917,7 +922,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
       CVariantT members -> Set.unions
         [go (child path index) env Nothing member | (index, member) <- zip [0 ..] members]
       CInject _ value -> go (child path 0) env Nothing value
-      CLetM mode _ name ty rhs body ->
+      CLetRuntimeM mode _ name _ ty rhs body ->
         let rhsDeps = go (child path 0) env (Just (eval ctx (rigidEnv (length env)) ty)) rhs
             origin = ParametricBinder (originPath (child path 1)) name
             binding = ObservationBinding mode (Just origin)
@@ -926,7 +931,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
                         (Just (length env, rhs))
             bodyDeps = go (child path 2) (binding : env) wanted body
          in substituteOrigin origin rhsDeps bodyDeps
-      CLetRecM mode _ name ty rhs body ->
+      CLetRecRuntimeM mode _ name _ ty rhs body ->
         let origin = ParametricBinder (originPath (child path 0)) name
             tyValue = eval ctx (rigidEnv (length env)) ty
             binding = ObservationBinding mode (Just origin) (Just tyValue)
@@ -936,7 +941,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
             rhsDeps = Set.delete origin rhsDeps0
             bodyDeps = go (child path 2) (binding : env) wanted body
          in substituteOrigin origin rhsDeps bodyDeps
-      CLetPolyM mode _ name telescope ty rhs body ->
+      CLetPolyRuntimeM mode _ name telescope _ ty rhs body ->
         let rhsDeps = go (child path 0) env (Just (eval ctx (rigidEnv (length env)) ty)) rhs
             origin = ParametricBinder (originPath (child path 1)) name
             binding = ObservationBinding mode (Just origin)
@@ -945,7 +950,7 @@ observationDependencies oracle bindings expected = go [] bindings expected
                         (Just (length env, rhs))
             bodyDeps = go (child path 2) (binding : env) wanted body
          in substituteOrigin origin rhsDeps bodyDeps
-      CLetRecPolyM mode _ name telescope ty rhs body ->
+      CLetRecPolyRuntimeM mode _ name telescope _ ty rhs body ->
         let origin = ParametricBinder (originPath (child path 0)) name
             tyValue = eval ctx (rigidEnv (length env)) ty
             binding = ObservationBinding mode (Just origin) (Just tyValue)
@@ -1359,7 +1364,16 @@ observationDependencies oracle bindings expected = go [] bindings expected
                     then
                       let argumentValue = eval ctx (rigidEnv (length env)) argument
                           resultType = eval ctx (argumentValue : closureEnv) codomain
-                       in walkArguments path env unavailableHead accumulated' (Just resultType) rest (offset + 1)
+                          -- Each application result is interpreted relative to
+                          -- its own checked classifier before the next spine
+                          -- argument is considered.  In particular, a static
+                          -- origin carried by the classifier of a partially
+                          -- applied polymorphic function is not an ordinary
+                          -- observation made by that function value.
+                          resultDependencies =
+                            classifierRelativeDependencies
+                              oracle env (length env) resultType accumulated'
+                       in walkArguments path env unavailableHead resultDependencies (Just resultType) rest (offset + 1)
                     else
                       -- A recovery term outside the supplied local telescope
                       -- cannot safely specialize a dependent codomain. Retain

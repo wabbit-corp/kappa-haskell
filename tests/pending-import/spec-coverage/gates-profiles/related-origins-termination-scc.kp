@@ -17,4 +17,4 @@ let ping n = pong n
 pong : Int -> Int
 let pong n = ping n
 
--- STATUS(a0497523): FAIL — the termination diagnostic carries no related origins (no declaration-site or call-site for the SCC)
+-- STATUS(74742dfd): FAIL — no warning diagnostic matching kappa.termination.failure has a related origin with role declaration-site (saw roles: ); no warning diagnostic matching kappa.termination.failure has a related origin with role call-site (saw roles: )

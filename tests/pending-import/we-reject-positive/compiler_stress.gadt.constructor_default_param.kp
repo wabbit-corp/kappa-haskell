@@ -27,13 +27,21 @@ let singleBox = MkVecBox { n = 1, xs = VCons 42 VNil }
 
 -- Extract the length from a VecBox.
 boxLen : forall (a : Type). VecBox a -> Nat
-let boxLen (MkVecBox n _) = n
+let boxLen box =
+  match box
+    case MkVecBox n _ -> n
 
 -- Extract and re-wrap with the same length.
 identity : forall (a : Type). VecBox a -> VecBox a
 let identity b = match b
   case MkVecBox n xs -> MkVecBox { n = n, xs = xs }
 
---! assertNoErrors
+emptyLen : Nat
+let emptyLen = boxLen @Int emptyBox
 
--- STATUS(f1b025a3): FAIL — E_TYPE_EQUALITY_MISMATCH: named construction rejects omission of the defaulted dependent n field.
+--! assertNoErrors
+--! assertType emptyBox VecBox Int
+--! assertType singleBox VecBox Int
+--! assertEval emptyLen 0
+
+-- STATUS(8c3c7747): FAIL — omitting defaulted `n` in the dependent named constructor application reports E_TYPE_EQUALITY_MISMATCH; the explicit-`n` construction is accepted.

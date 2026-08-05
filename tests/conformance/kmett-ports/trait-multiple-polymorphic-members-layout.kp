@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- Each multiline forall body owns its continuation layout pair. Completing
+-- one member must not close the enclosing trait before the following member.
+
+module main
+
+trait ChoiceLike p =
+    leftP : forall a b c.
+        p a b -> p (Result a c) (Result b c)
+    rightP : forall a b c.
+        p a b -> p (Result c a) (Result c b)
+
+data Fn a b =
+    MkFn (runFn : a -> b)
+
+instance ChoiceLike Fn =
+    let leftP value =
+        match value
+        case MkFn function ->
+            MkFn (\input ->
+                match input
+                case Err x -> Err (function x)
+                case Ok c -> Ok c)
+    let rightP value =
+        match value
+        case MkFn function ->
+            MkFn (\input ->
+                match input
+                case Err c -> Err c
+                case Ok x -> Ok (function x))

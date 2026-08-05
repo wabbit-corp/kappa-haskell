@@ -32,4 +32,4 @@ let main = do
         println (g 4)
     case None ->
         printlnString "outer not closed"
--- STATUS(a0497523): FAIL — closeCode returns Some for OPEN code mentioning the future-stage lambda binder (prints 104, taking the Some branch), so scope extrusion through closeCode is not prevented
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "closed\n4\n", got "closed\n104\n"

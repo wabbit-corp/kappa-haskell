@@ -49,4 +49,4 @@ let folded =
 
 encoded : Int
 let encoded = runPure folded
--- STATUS(a0497523): FAIL — evaluates to 40030201: emission order was 1,2,3,40 — the using-release and both defers ran EAGERLY at registration (before the pre-op emit 40), not at abandonment in masked LIFO order; only the post-op emit 99 suppression is honored.
+-- STATUS(74742dfd): FAIL — assertEval: 'encoded' evaluates to 40030201, expected 1020340

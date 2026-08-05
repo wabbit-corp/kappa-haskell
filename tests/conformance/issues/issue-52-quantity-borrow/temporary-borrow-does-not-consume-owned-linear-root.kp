@@ -1,0 +1,18 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+readBox : (1 & box : Box) -> Int
+let readBox (1 & box : Box) : Int =
+    box.value
+
+bad : (1 box : Box) -> Int
+let bad (1 box : Box) : Int =
+    readBox box
+
+-- The temporary borrow ends when readBox returns. The caller still owns box
+-- and must transfer or consume it before leaving the scope.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

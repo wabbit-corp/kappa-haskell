@@ -1,0 +1,31 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+universal : BoolRelation Bit
+let universal _ _ = True
+
+equalityLike : BoolRelation Bit
+let equalityLike x y =
+    match (x, y)
+    case (O, O) -> True
+    case (I, I) -> True
+    case _      -> False
+
+universalLaws : IsEquivalence Bit universal
+let universalLaws = derive
+
+equalityLaws : IsEquivalence Bit equalityLike
+let equalityLaws = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode IsEquivalence independent
+--! assertEvidenceSemanticIdentityDiffers universalLaws equalityLaws
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertEvidenceUniquenessMode' is not defined by Appendix T (§T.3); line 29: unknown directi

@@ -42,4 +42,4 @@ let goal = refl
 roundTrip : List Int -> T
 let roundTrip xs = readR (mkR (openD (MkD (idT xs))))
 
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved name 'items' (not in scope)" at line 19

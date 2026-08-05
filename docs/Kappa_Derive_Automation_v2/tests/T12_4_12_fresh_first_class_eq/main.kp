@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+explicitEq : Eq Flag
+let explicitEq = derive
+
+comparison : Bool
+let comparison = explicitEq.(==) Off On
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceConstructionMode explicitEq fresh-independent
+--! assertEval comparison False

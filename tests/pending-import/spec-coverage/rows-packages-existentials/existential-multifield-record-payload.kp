@@ -31,4 +31,4 @@ let use =
     open pkg as exists (a). (tc = tc, value = v) in
         tc.pretty v
 
--- STATUS(a0497523): FAIL — witness binders are not in scope inside multi-field record payloads: each field type mentioning the witness gets E_NAME_UNRESOLVED (single-field payloads work)
+-- STATUS(e25d64e1): FAIL — trait member pretty reports E_TRAIT_MEMBER_TELESCOPE_MISMATCH

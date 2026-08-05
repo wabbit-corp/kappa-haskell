@@ -27,4 +27,4 @@ let handled =
 
 result : Int
 let result = runPure handled
--- STATUS(a0497523): FAIL — implicit forall binders are not parsed in operation signatures (E_NAME_UNRESOLVED "unresolved name 'forall'"); only the explicit form `forall (a : Type).` is accepted.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 7; first error: E_NAME_UNRESOLVED "unresolved name 'forall' (not in scope)" at line 14; assertEval: 'result' evaluates to addInt (_.fromInteger 5) 2, expected 7

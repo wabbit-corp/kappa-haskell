@@ -51,4 +51,4 @@ let meanOf np xs = np.mean xs
 withDefaultNumpy : forall (r : Region). IO BridgeFailure (Numpy r)
 let withDefaultNumpy = bindNumpy venvPython
 
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — portable source cannot construct BridgeOrigin/BridgeContract or a complete stub BridgeHandle

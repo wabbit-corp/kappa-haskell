@@ -30,6 +30,4 @@ let bad n =
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): FAIL — all three refl sites get E_APPLICATION_ARGUMENT_MISMATCH: the §17.1.6 assumption is only
--- introduced for VARIABLE scrutinees, so the elaborated view application (isPos n) never yields @p : isPos n = True
--- (a direct `match isPos n` fails identically; also, a pattern-decl name like IsPos does not resolve in type position).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 3; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)" at line 19; no diagnostic with family kappa.type.mismatch was produced

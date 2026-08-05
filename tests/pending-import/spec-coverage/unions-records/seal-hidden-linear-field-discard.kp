@@ -27,6 +27,4 @@ hideLinear : (1 w : WithSecret) -> Public
 let hideLinear (1 w : WithSecret) : Public =
     seal w as Public
 
--- STATUS(a0497523): FAIL — the compiler accepts hideLinear (0 errors):
--- seal's hidden-field discard does not check droppability, so a linear
--- field is silently leaked. §13.2.10 requires rejecting this seal.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0

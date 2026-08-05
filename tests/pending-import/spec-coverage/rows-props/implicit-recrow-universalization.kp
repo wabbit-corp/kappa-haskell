@@ -13,4 +13,4 @@ module main
 readX : (x : Int | r) -> Int
 let readX rec = rec.x
 
--- STATUS(a0497523): FAIL — a free lowercase identifier in open-record residual position is not implicitly universalized to RecRow (E_NAME_UNRESOLVED 'r')
+-- STATUS(74742dfd): FAIL — type of 'readX' is (@ordinary r : RecRow) -> __openRec @0 (x : Int) -> Int, expected (@ordinary 0 r : RecRow) -> __openRec @0 (x : Int) -> Int

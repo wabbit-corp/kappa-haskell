@@ -23,7 +23,4 @@ let pack (@d : Marker Integer) (n : Integer) : Packed = (id = n, @m = d)
 consume : Packed -> String
 let consume p = label p.id
 
--- STATUS(a0497523): FAIL — construction with @m = d is accepted, but
--- binding does not unpack the implicit field: `label p.id` dies with
--- E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type
--- Marker Integer". §13.2.9 transparent unpacking is unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Marker Integer" at line 24

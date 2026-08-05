@@ -23,7 +23,4 @@ let inject n = n
 useProject : (| Integer | String |) -> Option Integer
 let useProject u = project u
 
--- STATUS(a0497523): FAIL — compiler has no VarRow/LacksVar (unresolved name
--- 'VarRow'); open variant rows are rejected in elaboration (Syntax.hs
--- EVariant tail is always Nothing), so §13.1.5 row polymorphism is
--- unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved name 'VarRow' (not in scope)" at line 12

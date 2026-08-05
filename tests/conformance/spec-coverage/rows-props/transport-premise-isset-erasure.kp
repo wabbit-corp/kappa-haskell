@@ -1,0 +1,27 @@
+--! mode compile
+--! assertNoErrors
+--! dumpFormat kcore
+--! assertStageDumpRoundTrips KCore
+
+-- Section 11.4.1 / 31.2: the exact IsSet evidence selected while checking
+-- the equality proof is the erasure authority carried into lowering.  The
+-- evidence here is premise-bearing: IsSet (Wrap a) is available only through
+-- the local IsSet a argument and the conditional instance below.  A backend
+-- must consume that selected certificate rather than repeat a weaker closed-
+-- instance search.
+module main
+
+data Wrap (parametric 0 a : Type) : Type =
+    Wrap a
+
+instance IsSet a => IsSet (Wrap a)
+
+data Indexed (parametric 0 a : Type) (parametric 0 x : Wrap a) : Type =
+    MkIndexed
+
+castWithPremise :
+    forall (parametric 0 a : Type) (@0 setA : IsSet a)
+           (@0 x : Wrap a) (@0 y : Wrap a).
+    (proof : x = y) -> Indexed a x -> Indexed a y
+let castWithPremise (@0 a : Type) (@0 setA : IsSet a) (@0 x : Wrap a) (@0 y : Wrap a) (proof : x = y) (value : Indexed a x) : Indexed a y =
+    subst @(Wrap a) @(Indexed a) @x @y proof value

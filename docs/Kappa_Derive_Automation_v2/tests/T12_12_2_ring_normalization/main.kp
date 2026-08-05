@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+polynomial :
+    forall (x : Integer) (y : Integer).
+    (x + y) * (x + y) =
+        x * x + x * y + y * x + y * y
+let polynomial = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProviderUsed polynomial arithmetic
+--! assertDeriveProofChecks polynomial

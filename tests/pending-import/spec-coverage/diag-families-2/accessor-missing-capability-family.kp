@@ -32,4 +32,4 @@ let badSet (cell : Cell) : Cell = cell.{ (.readOnly) = 9 }
 
 badSink : (1 cell : Cell) -> Int
 let badSink (1 cell : Cell) : Int = consumeInt (cellLens cell)
--- STATUS(a0497523): HARNESS-ERROR — line 7: directive 'assertDiagnosticFamily': 'kappa.accessor.missing-capability' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-ty… [was FAIL in an earlier STATUS line]
+-- STATUS(74742dfd): HARNESS-ERROR — line 7: directive 'assertDiagnosticFamily': 'kappa.accessor.missing-capability' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

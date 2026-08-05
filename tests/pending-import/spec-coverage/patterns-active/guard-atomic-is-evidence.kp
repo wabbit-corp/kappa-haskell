@@ -29,7 +29,4 @@ let guardMatch p q =
         case Box x -> w + x
     case _ -> 0
 
--- STATUS(a0497523): FAIL — E_UNRESOLVED_MEMBER on q.value and
--- E_PATTERN_NON_EXHAUSTIVE on the nested match: guard-success constructor
--- evidence is not installed even for atomic is-test guards, so the gap is
--- broader than the boolean-operator lowering already pinned.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNRESOLVED_MEMBER "no member 'value' on this receiver (§7.3)" at line 20

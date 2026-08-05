@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+proof : True = True
+let proof = reflectsComplete (Reflects.IsTrue refl) refl
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

@@ -23,6 +23,4 @@ let bad n =
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): FAIL — 3 errors: even the guarded-positive refl sites get E_APPLICATION_ARGUMENT_MISMATCH
--- ("no equality evidence licenses the transport"); the §17.1.9 guard-success evidence @p : guard = True is never
--- registered as equality evidence for §16.1.8 transport / normalization.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 3; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)" at line 12; no diagnostic with family kappa.type.mismatch was produced

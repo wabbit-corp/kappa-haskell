@@ -24,3 +24,4 @@ effect ReaderStr (a : Type) =
 twoDistinctReaders : Eff <[intReader : Reader Int, strReader : Reader String]> Int
 let twoDistinctReaders = intReader.ask ()
 
+-- STATUS: SPEC-ISSUE — duplicate row labels should be disallowed, but this fixture also relies on an unspecified bare top-level `reader` self-label and pins a non-normative row-mismatch diagnostic.

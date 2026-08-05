@@ -36,4 +36,4 @@ let badUniformMismatch = getUniform (bla = True, blo = 1, ble = "oops")  --!! ka
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): PASS
+-- STATUS(e25d64e1): FAIL — expected kappa.type.mismatch, got three E_UNSOLVED_IMPLICIT diagnostics

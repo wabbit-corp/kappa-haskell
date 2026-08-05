@@ -13,4 +13,4 @@ module main
 
 x : Integer
 let x = "hi" --!! E_TYPE_EQUALITY_MISMATCH
--- STATUS(a0497523): FAIL — the mismatch carries only the use-site related origin (actual side); no related origin (and no payload expectedOrigin) points at the `x : Integer` signature that supplied the expected type
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.type.mismatch has a related origin with role signature-site (saw roles: use-site)

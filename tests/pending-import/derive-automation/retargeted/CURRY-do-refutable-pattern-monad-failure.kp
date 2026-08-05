@@ -1,0 +1,106 @@
+-- Retargeted from tests/conformance/spec-coverage/do-blocks/CURRY-do-refutable-pattern-monad-failure.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- The old scaffolding spelled the Alternative member `emptyA` and routed the desugared
+-- `empty` through a `Pointed` instance; the revised §28.2 `trait Applicative f =>
+-- Alternative` requires members `empty` and `(<|>)` directly (only `orElse` is
+-- defaulted), and `Pointed` is not a prelude trait at HEAD, so as pinned the file
+-- rejected (unresolved `Pointed` head per §14.3; `instance Alternative Option` missing
+-- required runtime member `empty`, never synthesized per §14.2). The instances are
+-- rewritten to the canonical surface (`Pointed` deleted, `emptyA` renamed to `empty`),
+-- restoring the original accept pins.
+--
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDoList.curry
+--   (do (True,x) <- return (False,42); return x =-= []).
+-- Spec: §18.2 (bind `let pat <- expr` requires an IRREFUTABLE pattern),
+--       §18.2.1 (refutable local binding `let?`: on match failure the
+--       do-path short-circuits via `empty`, requiring `Alternative m`
+--       or an equivalent structure providing `empty`).
+--
+-- Pins: refutable monadic destructuring uses the dedicated `let?` form,
+-- which short-circuits through `empty` on failure. The local Choice carrier
+-- supplies the complete Functor/Applicative/Monad/Alternative chain, so this
+-- test does not depend on non-minimum Prelude evidence for Option (§28.2).
+
+module test
+
+--! mode check
+--! requires capability deriveAutomation
+
+data Choice (0 a : Type) : Type =
+    Empty
+    Full (value : a)
+
+instance Functor Choice =
+    let map f value =
+        match value
+        case Empty  -> Empty
+        case Full x -> Full (f x)
+
+instance Applicative Choice =
+    let pure x = Full x
+    let liftA2 f left right =
+        match (left, right)
+        case (Full x, Full y) -> Full (f x y)
+        case _                -> Empty
+
+instance Monad Choice =
+    let (>>=) value next =
+        match value
+        case Empty  -> Empty
+        case Full x -> next x
+
+instance Alternative Choice =
+    let empty = Empty
+    let (<|>) left right =
+        match left
+        case Empty  -> right
+        case Full x -> Full x
+
+--! assertNoErrors
+
+-- POSITIVE: an irrefutable bare-binder `let x <- ...` always succeeds.
+sampleIrrefutable : Choice Int
+let sampleIrrefutable =
+    do
+        let x <- Full 42
+        pure x
+
+intScore : Choice Int -> Int
+let intScore o =
+    match o
+    case Empty -> 0 - 1
+    case Full n -> n
+
+irrefutableScore : Int
+let irrefutableScore = intScore sampleIrrefutable
+
+--! assertType sampleIrrefutable (Choice Int)
+--! assertEval irrefutableScore 42
+
+-- POSITIVE: `let?` accepts a refutable pattern; the literal `True` in
+-- the tuple pattern matches, so the block continues.
+sampleRefutableSucceeds : Choice Int
+let sampleRefutableSucceeds =
+    do
+        let? (True, x) = (True, 42)
+        pure x
+
+succeedsScore : Int
+let succeedsScore = intScore sampleRefutableSucceeds
+
+--! assertType sampleRefutableSucceeds (Choice Int)
+--! assertEval succeedsScore 42
+
+-- POSITIVE: `let?` failure path short-circuits via `empty`, producing
+-- Empty for the Choice monad.
+sampleRefutableFails : Choice Int
+let sampleRefutableFails =
+    do
+        let? (True, x) = (False, 42)
+        pure x
+
+failsScore : Int
+let failsScore = intScore sampleRefutableFails
+
+--! assertNoErrors
+--! assertType sampleRefutableFails (Choice Int)
+--! assertEval failsScore -1

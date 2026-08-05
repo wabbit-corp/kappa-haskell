@@ -5,5 +5,3 @@ let left n =
 right : Nat -> Nat
 let right n =
     left n
-
--- STATUS(f1e4161b): FAIL — E_TERMINATION_UNVERIFIED

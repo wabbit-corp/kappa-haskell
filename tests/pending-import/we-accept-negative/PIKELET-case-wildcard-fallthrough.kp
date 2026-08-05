@@ -29,3 +29,4 @@ let withDeadArm n =
     case 1 -> "one"    --!! kappa.pattern.unreachable
 
 --! assertDiagnosticFamily warning kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.

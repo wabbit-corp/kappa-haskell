@@ -19,4 +19,4 @@ let amb =
 
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_NAME_AMBIGUOUS
--- STATUS(a0497523): FAIL — compiler conflates 'let B' with the data type's reified facet (E_TYPE_EQUALITY_MISMATCH at the let, record vs Type) instead of forming a two-kind binding group and reporting B.Mk ambiguous
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_NAME_AMBIGUOUS] on line 17 (saw: E_TYPE_EQUALITY_MISMATCH@12); error codes are [E_TYPE_EQUALITY_MISMATCH], expected [E_NAME_AMBIGUOUS]

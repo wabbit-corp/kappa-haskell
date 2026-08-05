@@ -94,4 +94,4 @@ let badCompose = compose strToInt intToStr    --!! kappa.type.mismatch
 
 --! mode check
 
--- STATUS(a0497523): FAIL (specialized application diagnostics do not satisfy pinned family/spans)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 36 (saw: E_APPLICATION_NONCALLABLE@36, E_TYPE_EQUALITY_MISMATCH@44, E_TYPE_EQUALITY_MISMATCH@53, E_APPLICATION_ARGUMENT_MISMATCH@67); no diagnostic error[kappa.type.mismatch] on line 67 (saw: E_APPLICATION_NONCALLABLE@36, E_TYPE_EQUALITY_MISMATCH@44, E_TYPE_EQUALITY_MISMATCH@53, E_APPLICATION_ARGUMENT_MISMATCH@67); no diagnostic error[kappa.type.mismatch] on line 91 (saw: E_APPLICATION_NONCALLABLE@36, E_TYPE_EQUALITY_MISMATCH@44, E_TYPE_EQUALITY_MISMATCH@53, E_APPLICATION_ARGUMENT_MISMATCH@67)

@@ -19,4 +19,4 @@ person : (name : String, age : Integer)
 let person = (name = "ada", age = 36)
 
 let x = person.nmae --!! kappa.name.unresolved
--- STATUS(a0497523): FAIL — E_RECORD_PROJECTION_MISSING_FIELD lists the fields in prose but payload is {"kind":"none"}: no name, no suggestion, no fix
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/name = nmae (saw: /payload/name=<absent>); no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = name (saw: /payload/suggestion=<absent>); no error diagnostic matching kappa.name.unresolved has a fix with applicability maybe-applicable

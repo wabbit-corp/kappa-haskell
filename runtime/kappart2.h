@@ -127,7 +127,7 @@ KValue *krt2_write_ref(KValue *ref, KValue *val);   /* writeRef: Ref a -> a -> I
 
 /* §32.2.6 safe point for a codegen-emitted NATIVE loop.  Returns 1 iff the loop
  * should ABORT to let the runtime deliver a pending interrupt at this back-edge
- * (interrupt_pending && mask_depth==0 on the current fiber) — the generated loop
+ * (interrupt_pending && effective mask state is Interruptible) — the generated loop
  * then aborts through the scalar-worker boundary so the CK-machine delivers
  * before later source effects run.  Returns 0 when masked (suppression holds) or off any fiber.  Codegen
  * emits this at native loop back-edges, counter-gated so the hot unboxed loop is
@@ -228,6 +228,7 @@ KValue *krt2_demonitor(KValue *mon);                /* UIO Unit                 
 KValue *krt2_poll(void);                            /* UIO Unit (explicit ckpt)     */
 KValue *krt2_uninterruptible(KValue *body);         /* IO e a -> IO e a             */
 KValue *krt2_mask(KValue *f);                       /* (restore -> IO e a) -> IO e a*/
+KValue *krt2_uninterruptible_mask(KValue *f);       /* uninterruptible mask + restore*/
 KValue *krt2_ensuring(KValue *body, KValue *fin);   /* IO e a -> IO e () -> IO e a  */
 KValue *krt2_acquire_release(KValue *acq, KValue *rel, KValue *use);
 KValue *krt2_blocking(KValue *body);                /* IO e a -> IO e a (rt-blocking)*/

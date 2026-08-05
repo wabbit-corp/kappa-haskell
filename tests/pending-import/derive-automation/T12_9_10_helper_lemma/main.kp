@@ -1,0 +1,28 @@
+@PrivateByDefault module main
+
+data Seq (0 a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : Seq a)
+
+reverseAcc : Seq a -> Seq a -> Seq a
+let reverseAcc xs acc =
+    match xs
+    case Nil -> acc
+    case Cons h t -> reverseAcc t (Cons h acc)
+
+reverse : Seq a -> Seq a
+let reverse xs = reverseAcc xs Nil
+
+reverseReverse :
+    forall (a : Type) (xs : Seq a).
+    reverse (reverse xs) = xs
+let reverseReverse = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed reverseReverse helper-lemma
+--! assertDeriveHelperCount reverseReverse >= 1
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3); line 26: unknown directive '

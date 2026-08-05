@@ -475,25 +475,45 @@ static void check_fiber_shared_marks_continuation_aux_variants(void) {
 
   KValue *handlerExitItems[1] = { handlerExit };
   ExitStack handlerXs = { handlerExitItems, 1, 1 };
+  DynamicState handlerDynamic = { .exits = &handlerXs, .mask_top = NULL };
   Handler handler = { handlerRet, handlerOps, 1 };
 
   KValue *resExitItems[1] = { resExit };
   ExitStack resXs = { resExitItems, 1, 1 };
   KValue *resHandlerExitItems[1] = { resHandlerExit };
   ExitStack resHandlerXs = { resHandlerExitItems, 1, 1 };
+  DynamicState resCaptured = { .exits = &resXs, .mask_top = NULL };
+  DynamicState resPrompt = { .exits = &resHandlerXs, .mask_top = NULL };
   Handler resHandler = { resHandlerRet, resHandlerOps, 1 };
   Cont resHead = { KK_THEN, resHeadAction, NULL, NULL, NULL };
-  Resumption res = { &resHead, NULL, &resXs, resLabel, &resHandler, &resHandlerXs, 0, 0 };
+  Resumption res = {
+      .head = &resHead,
+      .tail = NULL,
+      .captured = &resCaptured,
+      .prompt = &resPrompt,
+      .label = resLabel,
+      .handler = &resHandler,
+      .used = 0,
+      .tail_res = 0,
+  };
 
   KValue *abandExitItems[1] = { abandExit };
   ExitStack abandXs = { abandExitItems, 1, 1 };
+  DynamicState abandDynamic = { .exits = &abandXs, .mask_top = NULL };
   Cont abandKont = { KK_THEN, abandKontAction, NULL, NULL, NULL };
-  AbandonEnd aband = { &abandKont, &abandXs, RK_RETURN, abandRval, abandRlabel, NULL };
+  AbandonEnd aband = {
+      .kont = &abandKont,
+      .saved_dynamic = &abandDynamic,
+      .rkind = RK_RETURN,
+      .rval = abandRval,
+      .rlabel = abandRlabel,
+      .prev_drain = NULL,
+  };
   FinSeq finseq = { &finseqXs, 0, RK_RETURN, finseqRval, finseqRlabel, RK_NORMAL, finseqOrigin, &aband };
 
   Cont cAbandEnd = { KK_ABANDEND, NULL, &aband, NULL, NULL };
   Cont cAbandon = { KK_ABANDON, NULL, &res, NULL, &cAbandEnd };
-  Cont cHandler = { KK_HANDLER, boxed_publication_payload("aux-handler-label"), &handler, &handlerXs, &cAbandon };
+  Cont cHandler = { KK_HANDLER, boxed_publication_payload("aux-handler-label"), &handler, &handlerDynamic, &cAbandon };
   Cont cFinseq = { KK_FINSEQ, NULL, &finseq, NULL, &cHandler };
   Cont cDoscope = { KK_DOSCOPE, boxed_publication_payload("aux-doscope-frame"), &doscopeXs, &doscopeSavedXs, &cFinseq };
   f.k = &cDoscope;
@@ -535,9 +555,20 @@ static void check_foreign_resumption_marks_private_payload(void) {
   ExitStack resXs = { resExitItems, 1, 1 };
   KValue *handlerExitItems[1] = { handlerExit };
   ExitStack handlerXs = { handlerExitItems, 1, 1 };
+  DynamicState captured = { .exits = &resXs, .mask_top = NULL };
+  DynamicState prompt = { .exits = &handlerXs, .mask_top = NULL };
   Handler handler = { handlerRet, handlerOps, 1 };
   Cont tail = { KK_THEN, tailAction, NULL, NULL, NULL };
-  Resumption res = { NULL, &tail, &resXs, resLabel, &handler, &handlerXs, 0, 0 };
+  Resumption res = {
+      .head = NULL,
+      .tail = &tail,
+      .captured = &captured,
+      .prompt = &prompt,
+      .label = resLabel,
+      .handler = &handler,
+      .used = 0,
+      .tail_res = 0,
+  };
 
   KValue *token = kfgn(&res, KRT2_KIND_RESUMPTION);
   krc_mark_shared_recursive(token);

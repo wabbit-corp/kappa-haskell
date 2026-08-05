@@ -7,5 +7,3 @@ let decode code decreases structural code =
     match code
     case NatCode -> Hidden
     case Bad inner sample -> decode inner
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

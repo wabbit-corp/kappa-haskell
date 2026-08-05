@@ -8,8 +8,8 @@ module main
 data Token : Type =
     MkToken Int
 
-readT : (& t : Token) -> Int
-let readT (& t : Token) : Int =
+readT : (1 & t : Token) -> Int
+let readT (1 & t : Token) : Int =
     match t
     case MkToken n -> n
 

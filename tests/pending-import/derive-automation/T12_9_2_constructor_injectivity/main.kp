@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+data Box (0 a : Type) : Type = Box (value : a)
+
+injective :
+    forall (a : Type) (x : a) (y : a).
+    Box x = Box y -> x = y
+let injective equality = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed injective no-confusion
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

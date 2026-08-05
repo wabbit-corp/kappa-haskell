@@ -48,4 +48,4 @@ let bad = foo mono            --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.application.argument-mismatch
 --! assertErrorCount 1
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.application.argument-mismatch] on line 47 (saw: E_TYPE_EQUALITY_MISMATCH@47); no diagnostic with family kappa.application.argument-mismatch was produced

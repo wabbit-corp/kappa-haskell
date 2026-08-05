@@ -16,6 +16,4 @@ let main = do
         finally ->
             printlnString "fin"
     printlnString "after"
--- STATUS(a0497523): FAIL — E_BREAK_OUTSIDE_LOOP: the compiler treats the `try do`
--- body as a completion-confining fresh do-scope, so break cannot reach the
--- enclosing loop through a try (contra §19.2 control-flow interaction).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_BREAK_OUTSIDE_LOOP "'break' is valid only within the body of a loop of this do-scope (§18.6)" at line 15; stdout mismatch: expected "body\nfin\nafter\n", got ""

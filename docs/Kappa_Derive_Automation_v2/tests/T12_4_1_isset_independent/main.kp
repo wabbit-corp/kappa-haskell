@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+let witness : IsSet Flag = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode IsSet independent
+--! assertEvidenceUniquenessCertificateValid IsSet
+--! assertEvidenceConstructionMode witness fresh-independent

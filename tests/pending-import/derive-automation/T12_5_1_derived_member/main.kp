@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+trait LawfulIdentity (parametric 0 a : Type) =
+    identity : a -> a
+    derive identityLaw :
+        forall (x : a). identity x = x
+
+instance LawfulIdentity Bool =
+    let identity x = x
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember identityLaw for LawfulIdentity Bool
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedMember' is not defined by Appendix T (§T.3))

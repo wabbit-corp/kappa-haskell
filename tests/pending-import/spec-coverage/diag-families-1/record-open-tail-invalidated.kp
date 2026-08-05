@@ -36,4 +36,4 @@ setLen :
 let setLen (@0 r : RecRow) (rec : (len : Nat | r)) (n : Nat) : (len : Nat | r) =
     rec.{ len = n } --!! E_RECORD_OPEN_TAIL_INVALIDATED
 
--- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnostic': 'E_RECORD_OPEN_TAIL_INVALIDATED' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5… [was FAIL in an earlier STATUS line]
+-- STATUS(74742dfd): HARNESS-ERROR — line 2: directive 'assertDiagnostic': 'E_RECORD_OPEN_TAIL_INVALIDATED' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 3: directive 'assertDiagnosticFamily': 'kappa.record.open-tail-invalidated' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 37: inline marker 'E_RECORD_OPEN_TAIL_INVALIDATED' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

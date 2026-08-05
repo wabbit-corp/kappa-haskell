@@ -32,3 +32,5 @@ noop : Unit
 let noop = ()
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — the reified Unit type is resolved as the Unit value in a Type-expected term position (§7.6, §11.1.6).

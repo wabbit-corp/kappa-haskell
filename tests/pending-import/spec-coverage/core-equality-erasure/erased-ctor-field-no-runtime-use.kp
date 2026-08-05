@@ -31,4 +31,4 @@ let useHidden b =
     match b
     case MkBoxed h s -> h --!! E_QTT_ERASED_RUNTIME_USE
 
--- STATUS(a0497523): FAIL — the compiler accepts the file with 0 errors: a match-bound quantity-0 constructor field returned as the runtime result is not usage-checked (binder-level erased-use checking exists; ctor-field patterns are not covered)
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_QTT_ERASED_RUNTIME_USE] on line 32 (no diagnostics)

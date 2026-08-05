@@ -22,4 +22,4 @@ let bad =
     block
         let s : Syntax Integer = '{ -> } --!! kappa.syntax.quotation
         $(pure s)
--- STATUS(a0497523): FAIL — malformed quote leaks raw parse recovery (E_UNEXPECTED_INDENTATION / E_NAME_UNRESOLVED), never a kappa.syntax.quotation diagnostic
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.syntax.quotation was produced; no diagnostic error[kappa.syntax.quotation] on line 23 (saw: E_UNEXPECTED_INDENTATION@23, E_NAME_UNRESOLVED@22)

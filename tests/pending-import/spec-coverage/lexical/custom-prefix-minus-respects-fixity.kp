@@ -23,4 +23,4 @@ let result = -Token
 
 sub : Int
 let sub = 5 - 2
--- STATUS(a0497523): FAIL — role-marked prefix definition not parsed; minus still hard-routed to negate
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'prefix' at start of declaration" at line 18; assertEval: 'result' evaluates to negInt Token, expected 99

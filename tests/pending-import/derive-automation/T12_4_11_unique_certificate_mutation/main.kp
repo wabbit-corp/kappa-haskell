@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait OnlyProof =
+    proof : True = True
+    evidence uniqueness = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessCertificateMutationsReject OnlyProof
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertEvidenceUniquenessCertificateMutationsReject' is not defined by Appendix T (§T.3))

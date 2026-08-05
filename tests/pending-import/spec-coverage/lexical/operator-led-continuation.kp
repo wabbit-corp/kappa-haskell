@@ -21,4 +21,4 @@ let eitherTrue = either False True
 
 neitherTrue : Bool
 let neitherTrue = either False False
--- STATUS(a0497523): FAIL — leading || line still rejected with remote E_RECOVERY_DECLARATION_SKIPPED at the next declaration; Spec 5.4 continuation-leading tokens now accept it
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration" at line 15; assertEval: 'eitherTrue' evaluates to either False True, expected True; assertEval: 'neitherTrue' evaluates to either False False, expected False

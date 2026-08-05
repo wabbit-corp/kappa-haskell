@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+let witness : IsSet Flag = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode IsSet independent
+--! assertEvidenceUniquenessCertificateValid IsSet
+--! assertEvidenceConstructionMode witness fresh-independent
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertEvidenceUniquenessMode' is not defined by Appendix T (§T.3); line 15: unknown directi

@@ -24,4 +24,4 @@ let medium = classify 50
 
 large : Int
 let large = classify 500
--- STATUS(a0497523): FAIL — hanging elif/else chain still yields E_UNEXPECTED_INDENTATION x2; Spec 5.4 continuation-leading tokens now accept it
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNEXPECTED_INDENTATION "unexpected indentation: no block introducer or continuation context is active; consider a comma, operator, explicit parentheses, or dedent (Spec §5.4)" at line 16; assertEval: 'medium' evaluates to (), expected 2; assertEval: 'large' evaluates to (), expected 3

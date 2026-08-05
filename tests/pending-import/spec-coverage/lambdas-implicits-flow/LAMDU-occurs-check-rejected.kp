@@ -55,4 +55,4 @@ let badSelfRef n =
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): FAIL (self-application uses specialized application diagnostics)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 37 (saw: E_APPLICATION_NONCALLABLE@37, E_TYPE_EQUALITY_MISMATCH@45, E_TYPE_EQUALITY_MISMATCH@53, W_TERMINATION_UNVERIFIED@50)

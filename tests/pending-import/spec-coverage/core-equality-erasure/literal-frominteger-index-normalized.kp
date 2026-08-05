@@ -142,3 +142,4 @@ bridgeNotConversion : forall (m : Nat). TagN m -> natAdd m Nat.Zero = m
 let bridgeNotConversion t =
     match t
     case TagAdd -> refl --!! E_TYPE_MISMATCH
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 7; first error: E_NUMERIC_LITERAL_DOMAIN_MISMATCH "expected Meters but found an integer literal; Meters has no FromInteger witness, so it admits no integer literal domain (§6.1.5)" at line 34; no diagnostic error[E_TYPE_MISMATCH] on line 144 (saw: E_NUMERIC_LITERAL_DOMAIN_MISMATCH@34, E_NUMERIC_LITERAL_DOMAIN_MISMATCH@47, E_NUMERIC_LITERAL_DOMAIN_MISMATCH@58, E_APPLICATION_ARGUMENT_MISMATCH@41, E_APPLICATION_ARGUMENT_MISMATCH@51, E_TYPE_EQUALITY_MISMATCH@63, E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH@129)

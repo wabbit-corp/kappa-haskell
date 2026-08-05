@@ -35,7 +35,4 @@ let bad c =
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): FAIL — 4 errors: every needsTrue b refl site gets E_APPLICATION_ARGUMENT_MISMATCH; the §17.1.6
--- assumption does not transport to an as-pattern alias (§16.4.3) even in plain match, and try match inherits the gap.
--- Separately, ALIGNED try-match case clauses fail to parse (E_RECOVERY_DECLARATION_SKIPPED), contra §19.3; the
--- indented form used here parses.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 4; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)" at line 17; no diagnostic with family kappa.type.mismatch was produced

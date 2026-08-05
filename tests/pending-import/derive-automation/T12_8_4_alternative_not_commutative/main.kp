@@ -1,0 +1,32 @@
+@PrivateByDefault module main
+
+data Choice (0 a : Type) : Type =
+    Empty
+    Full (value : a)
+
+instance Functor Choice =
+    let map f value =
+        match value
+        case Empty -> Empty
+        case Full x -> Full (f x)
+
+instance Applicative Choice =
+    let pure x = Full x
+    let liftA2 f left right =
+        match (left, right)
+        case (Full x, Full y) -> Full (f x y)
+        case _ -> Empty
+
+instance Alternative Choice =
+    let empty = Empty
+    let (<|>) left right =
+        match left
+        case Empty -> right
+        case Full x -> Full x
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

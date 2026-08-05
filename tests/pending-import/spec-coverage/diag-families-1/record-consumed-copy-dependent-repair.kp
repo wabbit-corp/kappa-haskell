@@ -43,4 +43,4 @@ goodRepair : Sized -> Sized
 let goodRepair (s : Sized) : Sized =
     s.{ len = 2, buf = VNil }
 
--- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.record.consumed-copy' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T… [was FAIL in an earlier STATUS line]
+-- STATUS(74742dfd): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.record.consumed-copy' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 3: directive 'assertDiagnosticFamily': 'kappa.record.dependent-update-repair' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 24: inline marker 'kappa.record.consumed-copy' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 38: inline marker 'kappa.record.dependent-update-repair' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

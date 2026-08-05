@@ -10,4 +10,4 @@ module main
 
 let placeholder = ()
 
--- STATUS(a0497523): FAIL — the compiler registers no kappa.bridge.contract family (bridge-contract failures are not diagnosed at compile time); the explain-exists assertion fails
+-- STATUS(74742dfd): FAIL — no registered explanation for diagnostic code or family 'kappa.bridge.contract' (§3.1.2A)

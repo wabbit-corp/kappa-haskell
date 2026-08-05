@@ -21,4 +21,4 @@ instance FromComprehensionRaw Sink =
     let fromComprehensionRaw raw = do
         let plan <- lowerComprehension raw
         pure '{ Sink }
--- STATUS(a0497523): FAIL — lowerComprehension is E_NAME_UNRESOLVED (RawComprehension/ComprehensionPlan are opaque tokens with no lowering/inspection API)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'lowerComprehension' (not in scope)" at line 14

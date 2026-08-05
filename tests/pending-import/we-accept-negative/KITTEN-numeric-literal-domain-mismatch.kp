@@ -20,3 +20,5 @@ needsFloat : Float
 let needsFloat = 1                         --!! kappa.type.literal-domain-mismatch
 
 --! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: integer-form literals elaborate through FromInteger and may target Float; explicit conversion is not required.

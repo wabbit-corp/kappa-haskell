@@ -17,7 +17,7 @@
 -- answers "equal" soundly.
 module Kappa.Eval
   ( Globals (..)
-  , GlobalDef (GlobalDef, gdUniverses, gdProvisionalUniverseProjection, gdObservationMode, gdNominalSummary, gdType, gdCoreType, gdValue, gdCoreBody, gdReducible)
+  , GlobalDef (GlobalDefData, GlobalDef, gdUniverses, gdProvisionalUniverseProjection, gdObservationMode, gdNominalSummary, gdType, gdCoreType, gdValue, gdCoreBody, gdRecordInterface, gdReducible)
   , globalDefWithObservationMode
   , globalDefWithUniverses
   , globalDefWithCoreType
@@ -139,15 +139,20 @@ data GlobalDef = GlobalDefData
   -- ^ Closed generalized Core body when one exists. Universe specialization
   -- uses this authority directly instead of re-quoting an NbE closure, whose
   -- captured environments are intentionally not serialized by 'quote'.
+  , gdRecordInterface :: !(Maybe Term)
+  -- ^ Closed checked structural record interface when NbE is intentionally
+  -- lossy. In particular, an all-erased trait dictionary evaluates to unit,
+  -- but KCore still needs its field telescope to verify projections and
+  -- dictionary literals independently.
   , gdReducible :: !Bool
   -- ^ Conversion-reducible (§15.1): may δ-unfold during conversion.
   }
 
 pattern GlobalDef :: Value -> Maybe Value -> Bool -> GlobalDef
-pattern GlobalDef ty value reducible <- GlobalDefData _ _ _ _ ty _ value _ reducible
+pattern GlobalDef ty value reducible <- GlobalDefData _ _ _ _ ty _ value _ _ reducible
   where
     GlobalDef ty value reducible =
-      GlobalDefData emptyDeclarationUniverseTelescope [] Ordinary Nothing ty Nothing value Nothing reducible
+      GlobalDefData emptyDeclarationUniverseTelescope [] Ordinary Nothing ty Nothing value Nothing Nothing reducible
 
 {-# COMPLETE GlobalDef #-}
 
@@ -326,10 +331,11 @@ eval ctx env = \case
       then VPrim p []
       else VGlobal g (map (evalLevel ctx env) universes) []
   CLamM mode ic q n body -> VLamM mode ic q n (Closure env body)
-  CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-    VPiEvidenceM mode formation ic q brw n
+  CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+    VPiRuntimeM mode formation ic q brw n
       (fmap (\(lower, upper) -> (evalLevel ctx env lower, evalLevel ctx env upper)) assumption)
       origin
+      (fmap (eval ctx env) runtimeErasure)
       (eval ctx env a)
       (Closure env b)
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
@@ -373,14 +379,14 @@ eval ctx env = \case
   CProjAtM mode e f _ -> vproj ctx mode (eval ctx env e) f
   CVariantT ms -> VVariantT (map (eval ctx env) ms)
   CInject tag e -> VInject tag (eval ctx env e)
-  CLetM _ _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body
-  CLetRecM _ _ _ _ rhs body ->
+  CLetRuntimeM _ _ _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body
+  CLetRecRuntimeM _ _ _ _ _ rhs body ->
     -- recursive local definition: tie the knot lazily (the rhs is a
     -- lambda, so forcing the binding terminates)
     let env' = eval ctx env' rhs : env in eval ctx env' body
-  CLetPolyM _ _ _ _ _ rhs body ->
+  CLetPolyRuntimeM _ _ _ _ _ _ rhs body ->
     eval ctx (eval ctx env rhs : env) body
-  CLetRecPolyM _ _ _ _ _ rhs body ->
+  CLetRecPolyRuntimeM _ _ _ _ _ _ rhs body ->
     let env' = eval ctx env' rhs : env in eval ctx env' body
   CLetRecGroupM _ definitions body ->
     let values = [eval ctx env' (clrdRhs definition) | definition <- definitions]
@@ -912,8 +918,9 @@ quote ctx lvl v = case forceQ ctx v of
   VGlobal g universes sp -> quoteSpine (CGlobal g universes) sp
   VLamM mode ic q n clo ->
     CLamM mode ic q n (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
-  VPiEvidenceM mode formation ic q brw n assumption origin a clo ->
-    CPiEvidenceM mode formation ic q brw n assumption origin
+  VPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a clo ->
+    CPiRuntimeM mode formation ic q brw n assumption origin
+      (fmap (quote ctx lvl) runtimeErasure)
       (quote ctx lvl a)
       (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n

@@ -1,0 +1,20 @@
+module main
+
+data Token : Type =
+    Token
+
+data LinearBox : Type =
+    LinearBox (value : Int) (1 token : Token)
+
+readValue : (1 & box : LinearBox) -> Int
+let readValue box =
+    box.value
+
+duplicateRelevantBorrow : (>=1 & box : LinearBox) -> Int
+let duplicateRelevantBorrow box =
+    readValue box + readValue box
+
+--! mode check
+--! assertNoErrors
+--! assertTotal readValue
+--! assertTotal duplicateRelevantBorrow

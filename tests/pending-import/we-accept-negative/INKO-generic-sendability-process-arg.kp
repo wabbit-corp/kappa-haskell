@@ -29,3 +29,5 @@ bad : (& b : Blob) -> Int
 let bad b = spawnWith (Message b)   --!! kappa.quantity.unsatisfied
 
 --! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: borrows are access modes, not type arguments; reading unrestricted Blob through `&` constructs an owned Message Blob without an escaping region.

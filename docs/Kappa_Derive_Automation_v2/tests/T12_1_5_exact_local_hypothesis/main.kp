@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+choose :
+    forall (a : Type).
+    (x : a) -> a
+let choose x = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed choose exact

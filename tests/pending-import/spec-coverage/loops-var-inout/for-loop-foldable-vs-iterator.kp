@@ -50,8 +50,4 @@ let drain = do
         printlnString (showInt x)
     pure ()
 
--- STATUS(a0497523): FAIL — the compiler hardcodes for-loop sources to List (plus
--- Array/Set/Map/Option/Query/range conversions): all three loops emit
--- E_TYPE_EQUALITY_MISMATCH against `List ?a`. Neither the §18.8.14 Foldable
--- fallback for simple loops nor the Iterator protocol for early-exit loops
--- is implemented.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 3; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 35; no diagnostic with family kappa.implicit.unsolved was produced; no diagnostic error[kappa.implicit.unsolved] on line 41 (saw: E_TYPE_EQUALITY_MISMATCH@35, E_TYPE_EQUALITY_MISMATCH@41, E_TYPE_EQUALITY_MISMATCH@47)

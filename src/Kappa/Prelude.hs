@@ -33,9 +33,12 @@ import qualified Data.Text as T
 import Kappa.Builtins
   ( prelBorrowRegionOf
   , prelEqType
+  , prelIsProp
   , prelNat
   , prelNatSucc
   , prelNatZero
+  , prelRuntimeErased
+  , prelRuntimeErasedFromIsProp
   , prelThis
   , prelTypeLevel
   )
@@ -274,20 +277,56 @@ builtinState =
       , -- phantom carrier for the corpus 'Array n elem' accommodation
         -- (see inferT in Kappa.Check)
         (prel "__sizedOf", opaqueTy (tyV (piM Ordinary Expl QW False "n" (tcon "Nat") typeToType)))
-      , -- §11.3.1 record rows: row kind, the lacks constraint (labels
+      , -- §11.3.1 record rows are source-nullary compile-time values in Type0.
+        -- Their contextual home prefix is tracked by elaboration facts, not by
+        -- a hidden universe argument on the row identity.  Prefix ceilings
+        -- belong to '__openRec'/'__closedRow' below and may grow when a row is
+        -- weakened by adding a higher-universe explicit field.
+        (prel "RecRow", opaqueTy (tyV tType))
+      , -- row kind, the lacks constraint (labels
         -- are elaborated to string literals), and the open-record
         -- encoding '__openRec r (explicit-prefix record type)'
-        (prel "RecRow", opaqueTy (tyV tType))
-      , (prel "LacksRec", opaqueTy (tyV (tcon "RecRow" ~> tStr ~> tType)))
-      , (prel "__openRec", opaqueTy (tyV (tcon "RecRow" ~> tType ~> tType)))
+        (prel "LacksRec", opaqueTy (tyV (tcon "RecRow" ~> tStr ~> tType)))
+      , ( prel "__openRec"
+        , opaqueTy
+            ( tyV
+                ( piM Parametric Expl Q0 False "row"
+                    (CGlobal (prel "RecRow") [])
+                    ( piM Parametric Expl Q0 False "prefix"
+                        (CSort (LParam 0))
+                        (CSort (LParam 0))
+                    )
+                )
+            )
+        )
       , (prel "__rowExtend", inferDeclarationUniverses (GlobalDef (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))) (Just (VPrim "__rowExtend" [])) False))
       , -- a closed residual row tail '__closedRow (fields record type)':
         -- solving an open record against a closed record instantiates
         -- the row tail with the leftover closed fields (§11.3.1A)
-        (prel "__closedRow", opaqueTy (tyV (tType ~> tcon "RecRow")))
+        ( prel "__closedRow"
+        , opaqueTy
+            ( tyV
+                ( piM Parametric Expl Q0 False "fields"
+                    (CSort (LParam 0))
+                    (CGlobal (prel "RecRow") [])
+                )
+            )
+        )
       , -- compiler-owned introduction-rule witness for the §11.3.1A
         -- intrinsic row traits (the evidence carries no information)
-        (prel "__rowEvidence", opaqueTy (tyV (piI Q0 "r" (tcon "RecRow") (piI Q0 "l" tStr (CApp Expl (CApp Expl (tcon "LacksRec") (CVar 1)) (CVar 0))))))
+        ( prel "__rowEvidence"
+        , opaqueTy
+            ( tyV
+                ( piI Q0 "r" (CGlobal (prel "RecRow") [])
+                    ( piI Q0 "l" tStr
+                        ( CApp Expl
+                            (CApp Expl (CGlobal (prel "LacksRec") []) (CVar 1))
+                            (CVar 0)
+                        )
+                    )
+                )
+            )
+        )
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> typeToType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> typeToType))) -- §20.10.2
@@ -512,13 +551,14 @@ builtinState =
           isSetAt
             (levelMax (LParam 0) (LParam 1))
             ( CRecordTQ
-                [ RecordField "first" Ordinary FormationOrdinary QW Nothing (CVar 3)
+                [ RecordField "first" Ordinary FormationOrdinary QW Nothing RuntimeRelevant (CVar 3)
                 , RecordField
                     "second"
                     Ordinary
                     FormationOrdinary
                     QW
                     Nothing
+                    RuntimeRelevant
                     ( CApp Expl (CVar 2) $
                         CProjM Ordinary (CGlob prelThis) "first"
                     )
@@ -623,6 +663,12 @@ builtinState =
     forallEA body =
       piM Parametric Impl Q0 False "e" (tTypeAt 0) $
         piM Parametric Impl Q0 False "a" (tTypeAt 1) body
+    maskPrimType =
+      tyV (forallEA
+        ( ( piI Q0 "x" tType
+              (io (CVar 2) (CVar 0) ~> io (CVar 3) (CVar 1))
+            ~> io (CVar 2) (CVar 1) )
+          ~> io (CVar 2) (CVar 1) ))
     forallEFA body =
       piM Parametric Impl Q0 False "e" (tTypeAt 0) $
         piM Parametric Impl Q0 False "f" (tTypeAt 1) $
@@ -630,6 +676,10 @@ builtinState =
 
     prims =
       [ compilerOpaque prelBorrowRegionOf borrowRegionOfTy
+      , -- §11.4.1 compiler-owned proof term for the intrinsic
+        -- IsProp-to-RuntimeErased rule. This is an opaque typed theorem, not a
+        -- runtime primitive: every application is erased before emission.
+        compilerOpaque prelRuntimeErasedFromIsProp runtimeErasedFromIsPropType
       , internalPrim "__typeLevelZero" (tyV tLevel)
       , internalPrim "__typeLevelOmega" (tyV tLevel)
       , internalPrim "__typeLevelSucc" (tyV (tLevel ~> tLevel))
@@ -938,8 +988,8 @@ builtinState =
       , -- §18.1.12 interruption masking surface. `uninterruptible body` runs
         -- `body` with interruption delivery suppressed; a pending interrupt is
         -- re-checked when the region is left. The native backend lowers this to
-        -- the OP_UNINTERRUPTIBLE node (krt2_uninterruptible), which raises the
-        -- fiber's mask_depth for the body's duration.
+        -- the OP_UNINTERRUPTIBLE node (krt2_uninterruptible), which installs an
+        -- authenticated Uninterruptible frame for the body's duration.
         -- forall e a. IO e a -> IO e a
         prim "uninterruptible"
           (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
@@ -977,12 +1027,10 @@ builtinState =
         -- erased binder before forwarding the action — see Eval.hs vapp / the
         -- `__restoreAt` case in Interp.hs.)
         -- forall e a. ((forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a
-        prim "__mask"
-          (tyV (forallEA
-            ( ( piI Q0 "x" tType                                  -- restore : forall (x : Type).
-                  (io (CVar 2) (CVar 0) ~> io (CVar 3) (CVar 1))  --   IO e x -> IO e x
-                ~> io (CVar 2) (CVar 1) )                         -- -> IO e a  (the body f)
-              ~> io (CVar 2) (CVar 1) )))                         -- -> IO e a  (mask's result)
+        prim "__mask" maskPrimType
+      , -- Same rank-2 restoration surface, but the introduced frame contributes
+        -- Uninterruptible rather than ordinary Masked (§18.1.12).
+        prim "__uninterruptibleMask" maskPrimType
       , -- §18.1.12 internal: the action transformer `mask` hands to its body.
         -- `__restore act` runs `act` at the interruptibility level that held at
         -- the enclosing `mask`'s entry (OP_RESTORE in the runtime). Not a source
@@ -1296,6 +1344,12 @@ builtinState =
           , primitiveEqLaws "orderingEq" tOrdering (tcon "orderingEq")
           , primitiveEqLaws "natEq" tNat (tcon "natEq")
           ]
+    runtimeErasedFromIsPropType =
+      tyV $
+        piM Parametric Impl Q0 False "p" (CSort (LParam 0)) $
+          piM Ordinary Impl Q0 False "_"
+            (CApp Expl (CGlobI prelIsProp [LParam 0]) (CVar 0))
+            (CApp Expl (CGlobI prelRuntimeErased [LParam 0]) (CVar 1))
 
 -- Evaluate a closed type term without globals (only built-in structure).
 evalClosed :: Term -> Value
@@ -1304,8 +1358,11 @@ evalClosed = go []
     go env = \case
       CVar i -> lookupEnv i env
       CGlobal g universes -> VGlobal g universes []
-      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-        VPiEvidenceM mode formation ic q brw n assumption origin (go env a) (Closure env b)
+      CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+        VPiRuntimeM mode formation ic q brw n assumption origin
+          (fmap (go env) runtimeErasure)
+          (go env a)
+          (Closure env b)
       CApp ic f a -> app (go env f) ic (go env a)
       CSort n -> VSort n
       CRecordT fs -> VRecordT [(n, go env t) | (n, t) <- fs]
@@ -1346,14 +1403,15 @@ floatBuiltinUniverses source = evalState (go [] source) nextParam
         universes <- freshLevels (Map.findWithDefault 0 global seededTypeUniverseArities)
         pure (CGlobal global universes)
       CGlobal global universes -> pure (CGlobal global universes)
-      CPiEvidenceM mode formation ic q borrowed name assumption origin domain codomain -> do
+      CPiRuntimeM mode formation ic q borrowed name assumption origin runtimeErasure domain codomain -> do
         domain' <- case (mode, domain) of
           (Parametric, CSort LZero) -> freshSort
           _ -> go env domain
         let localClassifier = case domain' of
               CSort level -> Just level
               _ -> Nothing
-        CPiEvidenceM mode formation ic q borrowed name assumption origin domain'
+        runtimeErasure' <- traverse (go env) runtimeErasure
+        CPiRuntimeM mode formation ic q borrowed name assumption origin runtimeErasure' domain'
           <$> go (localClassifier : env) codomain
       CLamM mode ic q name body ->
         CLamM mode ic q name <$> go (Nothing : env) body
@@ -1697,6 +1755,10 @@ preludeSource =
     , "data Result (0 e : Type) (0 a : Type) : Type ="
     , "    Ok a"
     , "    Err e"
+    , ""
+    , "data Either (0 a : Type) (0 b : Type) : Type ="
+    , "    Left a"
+    , "    Right b"
     , ""
     , "data List (0 a : Type) : Type ="
     , "    Nil"
@@ -2166,10 +2228,10 @@ preludeSource =
     , "lexRelation : forall (a b : Type). (@_ : WellFoundedRelation a) -> (@_ : WellFoundedRelation b) -> WellFoundedRelation (a, b)"
     , "let lexRelation = __eqProof"
     , ""
-    , "(+) : forall (a : Type). (@_ : Add a) -> (& x : a) -> (& y : a) -> a"
+    , "(+) : forall (a : Type). (@_ : Add a) -> a -> a -> a"
     , "let (+) x y = add x y"
     , ""
-    , "(*) : forall (a : Type). (@_ : Mul a) -> (& x : a) -> (& y : a) -> a"
+    , "(*) : forall (a : Type). (@_ : Mul a) -> a -> a -> a"
     , "let (*) x y = multiply x y"
     , ""
     , "(-) : forall (a : Type). (@_ : CheckedSub a) -> (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"
@@ -2835,6 +2897,9 @@ preludeSource =
       -- use-site `kappi`, with the prim `__restoreAt` dropping its own type-arg
       -- and lowering to a bare `kapp(raw, act)` onto the 1-arg runtime restore.
       "let mask f = __mask (\\raw -> f (\\act -> __restoreAt raw act))"
+    , ""
+    , "uninterruptibleMask : forall (e : Type) (a : Type). ((forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a"
+    , "let uninterruptibleMask f = __uninterruptibleMask (\\raw -> f (\\act -> __restoreAt raw act))"
     , ""
     , -- §18.1.4 interruption surface. interrupt/interruptFork use the Requested
       -- tag with no recorded initiator; the *As forms carry explicit metadata.

@@ -8,8 +8,8 @@ module main
 data File : Type =
     Handle Int
 
-readF : (& f : File) -> Int
-let readF (& f : File) : Int =
+readF : (1 & f : File) -> Int
+let readF (1 & f : File) : Int =
     match f
     case Handle n -> n
 

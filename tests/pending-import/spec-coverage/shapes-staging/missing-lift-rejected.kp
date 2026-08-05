@@ -14,4 +14,4 @@ data NoLift : Type =
 
 bad : NoLift -> Code NoLift
 let bad (o : NoLift) : Code NoLift = .< o >.
--- STATUS(a0497523): FAIL — the compiler accepts the un-lifted capture (0 errors): quotes capture the value environment without a §23.3 Lift obligation
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /(Lift|lift|cross-stage)/ (no diagnostics)

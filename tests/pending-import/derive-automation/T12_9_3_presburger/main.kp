@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+arithmetic :
+    forall (x : Nat) (y : Nat).
+    x + y = y + x
+let arithmetic = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed arithmetic arithmetic
+--! assertDeriveProofChecks arithmetic
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3); line 13: unknown directive '

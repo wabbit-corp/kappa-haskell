@@ -35,4 +35,4 @@ let badSet src =
         for t in src
         yield t
     |} --!! kappa.quantity.positive-lower-bound
--- STATUS(a0497523): FAIL — both accepted (0 errors); at runtime the losing linear Token is silently dropped (keep-last over 2 same-key linear yields leaves a 1-entry map).
+-- STATUS: SPEC-ISSUE — decide whether handwritten Eq may synthesize IsSet and eqSound/eqComplete from (==)

@@ -13,4 +13,4 @@ module main
 
 bad : Syntax Integer
 let bad = '{ if } --!! kappa.syntax.quotation
--- STATUS(a0497523): FAIL — compiler parses the quote body with the ordinary parser and emits E_NAME_UNRESOLVED for 'if'; no kappa.syntax.quotation framing (alias E_QUOTE_MALFORMED_SYNTAX unregistered)
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.syntax.quotation was produced; no diagnostic error[kappa.syntax.quotation] on line 15 (saw: E_NAME_UNRESOLVED@15)

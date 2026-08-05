@@ -25,4 +25,4 @@ let refuteOutside x =
     match x
     case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
 
--- STATUS(a0497523): FAIL — 0 errors: the importer proves the OPAQUE data type empty and accepts case impossible; the inhabitance summary ignores the opacity environment (constructor facts leak across the module boundary). The plain-Empty control is (correctly) accepted.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_INDEXED_IMPOSSIBLE_REACHABLE]; no diagnostic error[E_INDEXED_IMPOSSIBLE_REACHABLE] on line 26 (no diagnostics)

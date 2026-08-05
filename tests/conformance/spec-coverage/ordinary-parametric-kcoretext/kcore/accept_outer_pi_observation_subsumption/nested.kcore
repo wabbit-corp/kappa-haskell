@@ -1,0 +1,30 @@
+kcore 1;
+
+module @tests.kcore.outer-pi-nested#1009 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.outer-pi-nested",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.outer-pi-nested.R#2201 : Type 0;
+  axiom ordinary @tests.kcore.outer-pi-nested.actual#2202 :
+    ((ordinary ordinary 0 explicit value %consume#0 :
+        ((ordinary ordinary 0 explicit value %x#1 :
+            @tests.kcore.outer-pi-nested.R#2201) ->
+          @tests.kcore.outer-pi-nested.R#2201)) ->
+      @tests.kcore.outer-pi-nested.R#2201);
+
+  def ordinary @tests.kcore.outer-pi-nested.bad#2203 :
+    ((ordinary ordinary 0 explicit value %consume#0 :
+        ((parametric ordinary 0 explicit value %x#1 :
+            @tests.kcore.outer-pi-nested.R#2201) ->
+          @tests.kcore.outer-pi-nested.R#2201)) ->
+      @tests.kcore.outer-pi-nested.R#2201)
+  {
+    body = @tests.kcore.outer-pi-nested.actual#2202;
+  }
+}

@@ -43,3 +43,4 @@ let finallyFromMonadResource @resource body cleanup =
 
 --! mode check
 --! assertNoErrors
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Functor @5" at line 14

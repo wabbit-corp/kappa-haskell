@@ -45,4 +45,4 @@ let typoMatch xs =
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
 
--- STATUS(a0497523): FAIL — string literal pattern against a List Int scrutinee is silently accepted (0 errors); no literal-domain check runs on literal patterns, so the spec-required kappa.type.literal-domain-mismatch is never produced.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic with family kappa.type.literal-domain-mismatch was produced

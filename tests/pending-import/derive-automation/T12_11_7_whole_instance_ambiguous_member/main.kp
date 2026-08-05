@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait Choice =
+    value : Bool
+
+instance Choice = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_AMBIGUOUS
+--! assertDiagnosticMatch value
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

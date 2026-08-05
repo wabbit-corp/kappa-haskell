@@ -27,4 +27,4 @@ main : UIO Unit
 let main = do
     printlnString ("secret:" ++ describe (inspect (mkSecret 5)))
     printlnString ("plain:" ++ describe (inspect (Pair 1 2)))
--- STATUS(a0497523): FAIL — compiler gap: inspect on a cross-module `opaque data` value returns Node (exposing the hidden constructor) instead of the §29.6-mandated OpaqueValue Opaque; call-site opacity is not consulted
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "secret:opaque\nplain:node\n", got "secret:node\nplain:node\n"

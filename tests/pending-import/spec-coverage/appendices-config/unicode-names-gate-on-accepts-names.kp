@@ -26,4 +26,4 @@ let `μ` = 1
 
 let μ = 2 --!! E_DUPLICATE_DECLARATION
 
--- STATUS(a0497523): UNSUPPORTED — no capability enables the unicode-names gate in this harness/implementation (unquoted Unicode names are always rejected)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability unicodeNames: not provided

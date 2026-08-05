@@ -16,4 +16,4 @@ module main
 pick : Bool -> Integer
 let pick b =
     if b then 1 else "hi" --!! E_TYPE_EQUALITY_MISMATCH
--- STATUS(a0497523): FAIL — the branch mismatch carries only the use-site related origin at the "hi" literal; nothing points back at the `pick : Bool -> Integer` signature that supplied the expected type
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.type.mismatch has a related origin with role signature-site (saw roles: use-site)

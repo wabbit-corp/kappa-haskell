@@ -30,3 +30,5 @@ let runLogging comp =
 --! assertNoErrors
 --! assertType sayHello Logging Unit
 --! assertType runLogging Logging Unit -> Eff <[ ]> Unit
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

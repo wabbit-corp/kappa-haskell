@@ -35,6 +35,7 @@ let suitValueBad (s : Suit) : Int =
     case Diamonds -> 99    --!! kappa.pattern.unreachable
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary duplicate arms are legal first-match code; the Spec does not mandate this diagnostic.
 
 -- NEGATIVE: duplicate wildcard — second `_` is never reached.
 let suit2 (s : Suit) : Bool =

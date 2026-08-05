@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+duplicate :
+    forall (a : Type).
+    (1 x : a) -> (a, a)
+let duplicate x =
+    (derive, derive)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

@@ -1,11 +1,7 @@
 module main
 
--- §5.5.2: importing (+++) unqualified imports lib's exported (= last)
--- fixity: infix RIGHT 65. With (+++) x y = 10x + y:
---   chain = 2 +++ (3 +++ 4) = 2 +++ 34 = 54   (right associativity)
---   prec  = 1 + (2 +++ 4)  = 1 + 24  = 25    (65 binds tighter than + at 60)
--- Under the module's superseded first fixity (left 55) these would be
--- 234 and 34 instead.
+-- The duplicate fixity in lib is the intended package error. These uses
+-- ensure importing the malformed module does not require a special fixture.
 
 import lib.((+++))
 
@@ -15,4 +11,4 @@ let chain = 2 +++ 3 +++ 4
 prec : Int
 let prec = 1 + 2 +++ 4
 
--- STATUS(a0497523): FAIL — the compiler exports/applies the FIRST fixity declaration (left 55: chain=234, prec=34) instead of the spec-mandated last one in scope at end of module (right 65: chain=54, prec=25)
+-- STATUS(e25d64e1): FAIL — expected E_DUPLICATE_DECLARATION for duplicate fixity declarations, got no diagnostics

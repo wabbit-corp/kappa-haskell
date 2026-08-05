@@ -26,4 +26,4 @@ main : UIO Unit
 let main = do
     let r <- worker
     printlnString (stringAppend "result:" (showInt r))
--- STATUS(a0497523): FAIL — compiler accepts (0 errors): `return` inside a finally clause is not rejected (unlike the defer twin, E_DEFER_ABRUPT_CONTROL); at runtime the return is silently ignored on both normal and error paths.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_DEFER_ABRUPT_CONTROL] on line 22 (no diagnostics)

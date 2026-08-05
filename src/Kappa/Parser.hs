@@ -1052,6 +1052,7 @@ pTraitMember = do
   try (uniquenessMember start)
     <|> try (derivedMember start)
     <|> defMember start
+    <|> try (bareDefMember start)
     <|> sigMember start
   where
     uniquenessMember start = do
@@ -1068,6 +1069,17 @@ pTraitMember = do
       TraitDerived n ty <$> spanFrom start
     defMember start = do
       pKeyword "let"
+      d <- pLetDef
+      TraitDefault d <$> spanFrom start
+    bareDefMember start = do
+      -- Bare assignment is retained only for an associated/static member
+      -- definition such as the §3.2.6 diagnostic example
+      -- @SourceDemand = &@.  Ordinary defaults use @let@ (§14.2).  Guarding
+      -- the ambiguous 'pLetDef' grammar with this fixed-prefix lookahead is
+      -- important: speculatively parsing every member signature as a full
+      -- definition makes standard-prelude parsing superlinear.
+      bareAssignment <- lookAheadIs (pSigName *> token TokEquals)
+      unless bareAssignment (parseFail "bare associated-member assignment")
       d <- pLetDef
       TraitDefault d <$> spanFrom start
     sigMember start = do
@@ -2278,10 +2290,11 @@ pPrefixOp = try $ do
   -- Only `-` and user prefix operators appear here; conservatively treat
   -- any operator directly preceding an operand as prefix when it begins
   -- the chain (resolution validates fixity). The §23.2 staging
-  -- punctuation runs are operand syntax ('pAtom'), never prefix
-  -- operators.
-  when (nameText op `elem` [".<", ">.", ".~"]) $
-    parseFail "staging punctuation is not a prefix operator"
+  -- punctuation runs and the §3.2.6 standalone borrow marker are operand
+  -- syntax ('pAtom'), never prefix operators. Binder-position @&@ is parsed
+  -- independently by 'pBinderPrefix'.
+  when (nameText op `elem` ["&", ".<", ">.", ".~"]) $
+    parseFail "reserved operand punctuation is not a prefix operator"
   pure op
 
 -- Application spines (§16.1.7): postfixExpr applicationArg*, with an
@@ -2539,6 +2552,9 @@ pAtom = do
     TokIdent "ref" -> refFacet start <|> (EVar <$> pIdent)
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent
+    TokOperator "&" -> do
+      void anyToken
+      EQuantityBorrowMarker <$> spanFrom start
     -- Brackets close any enclosing clause context, so query keywords
     -- are ordinary identifiers inside them and their internal newlines
     -- are soft again (§5.2, §5.4).
@@ -3249,12 +3265,17 @@ pDoExpr label = do
   EDo label items <$> spanFrom start
 
 pDoSuite :: P [DoItem]
-pDoSuite = do
+pDoSuite = keepSoftNewlines $ do
   pNewline
-  token TokIndent
-  items <- pDoItem `sepEndByNewlines` ()
-  suiteDedent
-  pure items
+  peekToken >>= \case
+    TokIndent -> do
+      void anyToken
+      items <- pDoItem `sepEndByNewlines` ()
+      suiteDedent
+      pure items
+    -- Bracket depth suppresses layout tokens, but the softened newlines still
+    -- delimit do statements. The enclosing parser owns the closing delimiter.
+    _ -> pDoItem `sepEndByNewlines` ()
 
 pBlockExpr :: P Expr
 pBlockExpr = do
@@ -3657,29 +3678,35 @@ pQuantBody telescopeContinued
             token TokDedent
             pExpr
         )
+        <|> try
+          ( do
+              -- The body may remain in the telescope's continuation region:
+              --
+              -- forall
+              --     (a : Type).
+              --     a -> a
+              --
+              -- In that layout there is no DEDENT between the dot and the
+              -- body. The quantifier still owns and consumes the DEDENT after
+              -- the body so it cannot leak into the enclosing declaration.
+              pNewline
+              body <- pExpr
+              void (many pNewline)
+              token TokDedent
+              pure body
+          )
         <|> do
           body <- pExpr
           void (many pNewline)
           token TokDedent
           pure body
-  | otherwise = do
-      pQuantBodyNewline
-      pExpr
-
--- the body of an inline quantifier may continue on the next line (§5.4)
-pQuantBodyNewline :: P ()
-pQuantBodyNewline = do
-  t <- peekToken
-  case t of
-    TokNewline _ -> do
-      nxt <- peekTokenAt 1
-      case nxt of
-        TokIndent -> anyToken >> anyToken >> pure ()
-        TokDedent -> pure ()
-        TokEOF -> pure ()
-        TokNewline _ -> pure ()
-        _ -> void anyToken
-    _ -> pure ()
+  -- An inline telescope has two newline continuations. If the body opens a
+  -- fresh indentation region, the quantifier owns both that INDENT and its
+  -- matching DEDENT; leaking the latter closes an enclosing trait before its
+  -- next member. If the quantifier is already inside an indented signature
+  -- continuation and its body stays at that same indentation, only consume
+  -- the newline here: the enclosing signature parser still owns its DEDENT.
+  | otherwise = pExprIndented <|> (pNewline *> pExpr)
 
 pExists :: P Expr
 pExists = do

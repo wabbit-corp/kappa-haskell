@@ -1,0 +1,12 @@
+module main
+
+copyOpaque : forall (a : Type). a -> a
+let copyOpaque x = x
+
+bad : forall (a : Type). (& x : a) -> a
+let bad x = copyOpaque x
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

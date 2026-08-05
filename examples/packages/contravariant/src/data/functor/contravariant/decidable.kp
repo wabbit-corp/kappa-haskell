@@ -1,0 +1,38 @@
+module data.functor.contravariant.decidable
+
+import data.either.*
+import data.functor.contravariant.*
+import data.functor.contravariant.divisible.*
+
+trait Divisible f => Decidable f =
+    loseEmpty : f Void
+    choose : forall a b c. (a -> Either b c) -> f b -> f c -> f a
+
+lose :
+    forall f a.
+    (@_ : Decidable f) -> (a -> Void) -> f a
+let lose impossible = contramap impossible loseEmpty
+
+instance Decidable Predicate =
+    let loseEmpty = MkPredicate (\input -> absurd input)
+    let choose branch left right =
+        match left
+        case MkPredicate testLeft ->
+            match right
+            case MkPredicate testRight ->
+                MkPredicate (\input ->
+                    match branch input
+                    case Left first -> testLeft first
+                    case Right second -> testRight second)
+
+instance Monoid r => Decidable (Op r) =
+    let loseEmpty = MkOp (\input -> absurd input)
+    let choose branch left right =
+        match left
+        case MkOp consumeLeft ->
+            match right
+            case MkOp consumeRight ->
+                MkOp (\input ->
+                    match branch input
+                    case Left first -> consumeLeft first
+                    case Right second -> consumeRight second)

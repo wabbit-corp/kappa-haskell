@@ -1,0 +1,32 @@
+module data.bifoldable
+
+import data.bifunctor.*
+import data.either.*
+
+trait Bifoldable p =
+    bifoldr : forall a b c.
+        (a -> c -> c) -> (b -> c -> c) -> c -> p a b -> c
+
+bifoldMap :
+    forall p a b m.
+    (@_ : Bifoldable p) -> (@_ : Monoid m) ->
+    (a -> m) -> (b -> m) -> p a b -> m
+let bifoldMap f g value =
+    bifoldr (\a -> \rest -> append (f a) rest) (\b -> \rest -> append (g b) rest) empty value
+
+instance Bifoldable PairF =
+    let bifoldr f g z value =
+        match value
+        case Pair a b -> f a (g b z)
+
+instance Bifoldable Either =
+    let bifoldr f g z value =
+        match value
+        case Left a -> f a z
+        case Right b -> g b z
+
+instance Bifoldable Result =
+    let bifoldr f g z value =
+        match value
+        case Err e -> f e z
+        case Ok a -> g a z

@@ -11,4 +11,4 @@ let useIface = Counter.tick ()
 
 badUse : Eff <[Counter : Counter]> Int
 let badUse = counterL.tick () --!! E_NAME_UNRESOLVED
--- STATUS(a0497523): FAIL — the effect interface constructor is not exported, and except (effectLabel ...) does not remove the label from the wildcard
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_NAME_UNRESOLVED] on line 13 (saw: E_NAME_UNRESOLVED@9, E_NAME_UNRESOLVED@12, E_TYPE_EQUALITY_MISMATCH@13)

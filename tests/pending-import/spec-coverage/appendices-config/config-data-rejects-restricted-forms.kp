@@ -22,4 +22,4 @@ let m = match Some 1 case Some v -> v case None -> 0 --!! E_CONFIG_RESTRICTED_FO
 
 let called = semver "1.0.0" --!! E_CONFIG_RESTRICTED_FORM
 
--- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; the implementation has no config-data checker yet (only config-expression, for build manifests)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability configMode: not provided

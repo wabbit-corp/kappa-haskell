@@ -87,7 +87,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Build.Types (FfiClass (..))
 import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
-import Kappa.Check (CheckState (..), CtorInfo (..), InstanceEntry (..))
+import Kappa.Check (CheckState (..), CtorInfo (..), InstanceEntry (..), linkedCoreBodies)
 import Kappa.Core
 import Kappa.CoreOps (spineOfTerm)
 import Kappa.Diagnostic
@@ -1081,7 +1081,7 @@ basePrims =
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "withScope", "__interruptWait", "__interruptNoWait", "__interruptForkAny" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
     , "blocking" -- §18.1.11 rt-blocking source bridge; lowered to krt2_blocking (compileAppGlob)
-    , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
+    , "uninterruptible", "__mask", "__uninterruptibleMask", "poll" -- §18.1.12 mask-frame nodes (compileAppGlob)
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "__ioNewRef", "__ioReadRef", "__ioWriteRef"
@@ -1120,7 +1120,8 @@ generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
    in if not (null backendIrErrs)
         then Left (backendIrErrs, mBackendIrReport)
         else
-          let evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
+          let bodies = linkedCoreBodies cs
+              evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
               st0 =
                 GenState
                   { gsFresh = 0
@@ -1141,9 +1142,9 @@ generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
                   , gsEvalCtx = evalCtx0
                   , gsBackendBodies = kbirBodies backendIr
                   , gsExactNaturalCertificate = kbirExactNaturalCertificate backendIr
-                  , gsBodies = csCoreBodies cs
+                  , gsBodies = bodies
                   , gsIOMonadRefDicts = ioMonadRefDicts (csInstances cs)
-                  , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
+                  , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) bodies
                   , gsRcEnabled = rcEnabled
                   , gsReuseEnabled = rcEnabled && reuseEnabled
                   , gsRcFindings = []
@@ -1227,7 +1228,7 @@ multishotLegality cs emitted
           ( "the operation '" <> opn
               <> "' declares a multi-shot resumption (quantity ω / 1+), which requires the 'rt-multishot-effects' runtime capability the native backend does not advertise; declare it one-shot (quantity 1, the default) to resume at most once (§18.1.17, §27.6, §34.3.3)" )
       | g <- Set.toList emitted
-      , Just body <- [Map.lookup g (csCoreBodies cs)]
+      , Just body <- [Map.lookup g (linkedCoreBodies cs)]
       , opn <- Set.toList (termMultishotOps multi body)
       ]
   where
@@ -3573,7 +3574,7 @@ compileAppGlob g sargs term = do
               bc <- peaIx jb body
               pure ("krt2_blocking(" <> bc <> ")")
         -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders.
-        -- `uninterruptible body` raises mask_depth for the body (krt2_uninterruptible);
+        -- `uninterruptible body` installs an Uninterruptible frame (krt2_uninterruptible);
         -- `mask`'s surface wrapper forwards to `__mask f`, which the runtime applies
         -- to its `restore` closure (krt2_mask); `poll` is the explicit checkpoint
         -- (krt2_poll). All are CK-machine nodes driven by the do-kernel.
@@ -3585,6 +3586,10 @@ compileAppGlob g sargs term = do
           | [(jf, f)] <- explIxG -> do
               fc <- peaIx jf f
               pure ("krt2_mask(" <> fc <> ")")
+        Just "__uninterruptibleMask"
+          | [(jf, f)] <- explIxG -> do
+              fc <- peaIx jf f
+              pure ("krt2_uninterruptible_mask(" <> fc <> ")")
         -- §18.1.12 rank-2 adapter: `__restoreAt raw act` re-applies the raw 1-arg
         -- runtime restore closure to `act`. The source rank-2-ness is honored at
         -- the use site (a kunit-filled type slot on the surrounding wrapper, see
@@ -4249,6 +4254,7 @@ cpsNodeApp term = do
         (Just "withScope", [_]) -> True
         (Just "uninterruptible", [_]) -> True
         (Just "__mask", [_]) -> True
+        (Just "__uninterruptibleMask", [_]) -> True
         (Just "poll", []) -> True
         (Just "__interruptWait", [_, _]) -> True
         (Just "__interruptNoWait", [_, _]) -> True
@@ -5156,7 +5162,7 @@ suspendingNames =
     , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 scope + interruption nodes
     , "blocking" -- §18.1.11 source-level rt-blocking bridge
-    , "uninterruptible", "__mask", "poll" -- §18.1.12 masking: OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL nodes
+    , "uninterruptible", "__mask", "__uninterruptibleMask", "poll" -- §18.1.12 mask-frame nodes
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
@@ -6352,7 +6358,7 @@ emitPropagateFailure v = do
 -- reloaded to @KRT2_SP_QUANTUM@, gates the real (still cheap) check so the loop
 -- pays only a decrement + predictable branch per iteration; every QUANTUM
 -- iterations it calls @krt2_safepoint()@, which sets @safepoint_hit@ and returns
--- 1 iff @interrupt_pending && mask_depth==0@ (a masked fiber returns 0 —
+-- 1 iff @interrupt_pending@ and the effective mask state is Interruptible (a masked fiber returns 0 —
 -- suppression holds).  On a 1 we escape the generated do-fn through
 -- @krt2_scalar_abort()@; the runtime catches that at the current fiber-step
 -- boundary, drains active abort-exit tokens through @begin_finseq@ (masked,

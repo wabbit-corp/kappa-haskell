@@ -1,0 +1,28 @@
+let buildConfig : BuildConfig = package
+    { name = "contravariant"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = []
+    , dependencies =
+        [ pathDependency { name = "either", path = "../either" }
+        ]
+    , hostBindings = []
+    , targets =
+        [ library
+            { name = "contravariant"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , modules = modulesUnder "data.functor.contravariant"
+            , dependencies = ["either"]
+            }
+        , executable
+            { name = "contravariant-tests"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , main = module "contravariant.run_tests"
+            , modules = modulesUnder "data.functor.contravariant"
+            , dependencies = ["either"]
+            , hostBindings = []
+            }
+        ]
+    }

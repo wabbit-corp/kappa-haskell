@@ -13,4 +13,4 @@ module main
 import Lib --!! kappa.name.unresolved
 
 let x = 1
--- STATUS(a0497523): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = lib (saw: /payload/suggestion=<absent>); no error diagnostic matching kappa…
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = lib (saw: /payload/suggestion=<absent>); no error diagnostic matching kappa.name.unresolved has a fix with applicability maybe-applicable

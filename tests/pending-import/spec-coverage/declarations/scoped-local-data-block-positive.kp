@@ -23,4 +23,4 @@ let confined =
 --! mode check
 --! assertNoErrors
 --! assertType confined Int
--- STATUS(a0497523): FAIL — compiler rejects scoped data/trait in block with E_UNSUPPORTED ("local declaration form is not supported inside block by this implementation"); §9.3.1.1 scoped local nominal declarations unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNSUPPORTED "this local declaration form is not supported inside block by this implementation" at line 14

@@ -35,4 +35,4 @@ let okPatchDisjointField (p : Pair) : Int =
     in let p2 = p.{ right = 5 }
     in addInt (observe l) p2.right
 
--- STATUS(a0497523): FAIL — 2 errors: both patches are rejected with E_QTT_BORROW_OVERLAP ("'p' is consumed while a live borrow ... exists") even though the root is unrestricted; the manual reconstruction okManual (the patch's normative elaboration) is accepted, and patching through a borrowed whole-record alias is accepted, so the patch form alone treats an unrestricted scrutinee as a consuming use.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_QTT_BORROW_OVERLAP "'p' is consumed while a live borrow of an overlapping path exists (§12.4)" at line 29

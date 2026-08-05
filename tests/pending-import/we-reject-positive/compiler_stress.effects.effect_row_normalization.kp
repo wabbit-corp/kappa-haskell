@@ -36,3 +36,5 @@ let roundTrip : Eff <[l1 : E1, l2 : E2]> Int =
     consume12 normalized
 
 --! assertNoErrors
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

@@ -22,3 +22,5 @@ let x₁ : Int = x₀ + 1
 let total : Int = α + β + x₀ + x₁
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_UNEXPECTED_CHARACTER at line 18; current source or fixture is not portable v1 and must be rewritten before promotion.

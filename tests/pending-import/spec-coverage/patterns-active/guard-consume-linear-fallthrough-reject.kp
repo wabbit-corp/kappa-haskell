@@ -48,8 +48,4 @@ let badParam (1 r : Res) (n : Int) : Int =
 --! assertErrorCount 2
 --! assertDiagnosticMatch quantit|linear|consum|guard
 
--- STATUS(a0497523): FAIL — both functions are accepted with 0 errors:
--- guard consumption is never accumulated into the guard-failure
--- fallthrough path (the same-case param overuse IS caught, see the
--- sibling guard-plus-body test, so this is specifically the fallthrough
--- accounting). The <=1 (affine) variant is accepted identically.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0; no diagnostic message matches /quantit|linear|consum|guard/ (no diagnostics)

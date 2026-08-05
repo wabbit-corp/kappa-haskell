@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+let result =
+    block
+        trait LocalChoice =
+            value : Bool
+
+        let first : LocalChoice = derive
+
+        instance LocalChoice =
+            let value = True
+
+        first
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_EVIDENCE_CONSTRUCTION_SEALED
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

@@ -20,6 +20,7 @@ module Kappa.NominalVariance
   , currentTypeLevelSemanticVersions
   , NominalCumulativitySummary (..)
   , rolePermitsAnnotation
+  , requirementsForUniverseRole
   , inferUniverseRoles
   , makeNominalSignatureClosure
   , withNominalMonotoneWitnesses
@@ -54,7 +55,7 @@ data UniverseVariance = Invariant | Covariant | Irrelevant
 data RoleRequirement
   = RequireCovariant !Int !Text
   | RequireInvariant !Int !Text
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data NominalClauseKind
   = ClauseSortDeclaration
@@ -69,10 +70,10 @@ data NominalClauseKind
   | ClauseComputationRule
   | ClauseTruncationRule
   | ClauseExtension
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data NominalExplicitness = NominalExplicit | NominalImplicit
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data NominalQuantity
   = NominalZero
@@ -80,7 +81,7 @@ data NominalQuantity
   | NominalOmega
   | NominalAtMostOne
   | NominalAtLeastOne
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Presentation-free contract for one binder in a normalized nominal
 -- signature clause. The domain fingerprint is over resolved Core identity and
@@ -95,7 +96,7 @@ data NominalBinderContract = NominalBinderContract
   , nbcLevelAssumption :: !(Maybe (Text, Text))
   , nbcDomainFingerprint :: !Text
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Replayable semantic actions for one normalized clause.  Diagnostic prose
 -- is deliberately absent: a certificate derives role requirements from these
@@ -103,7 +104,7 @@ data NominalBinderContract = NominalBinderContract
 data NominalRoleAction
   = NominalCovariantUse !Int
   | NominalInvariantUse !Int
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Runtime action of a normalized clause.  Schema lifting is erasable only
 -- when every clause preserves representation; there is no detached boolean
@@ -111,7 +112,7 @@ data NominalRoleAction
 data NominalRepresentationAction
   = NominalPreserveRepresentation
   | NominalTransformRepresentation
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | One semantic dependency of selected ordinary monotonicity evidence.
 -- Local dependencies use binder levels, not names or de Bruijn indices, so
@@ -122,7 +123,7 @@ data NominalEvidenceDependency
   | NominalGlobalDependency ![Text] !Text
   | NominalConstructorDependency ![Text] !Text
   | NominalFieldDependency !Text
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Frozen evidence for one neutral one-hole level operator. The goal and
 -- evidence are source-free Core artifacts. Proof-object identity is retained
@@ -135,7 +136,7 @@ data NominalMonotoneWitness = NominalMonotoneWitness
   , nmwEvidence :: !NeutralLevelTerm
   , nmwDependencies :: ![NominalEvidenceDependency]
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | One typed clause in the normalized closure. 'nccIdentity' is the resolved
 -- semantic owner identity, not a source label.  Role and representation
@@ -148,7 +149,7 @@ data NominalClosureClause = NominalClosureClause
   , nccRoleActions :: ![NominalRoleAction]
   , nccRepresentationAction :: !NominalRepresentationAction
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Single authority consumed by role inference, certificate replay, closure
 -- hashing, and interface validation for current ordinary nominal signatures.
@@ -159,10 +160,10 @@ data NominalSignatureClosure = NominalSignatureClosure
   , nscClauses :: ![NominalClosureClause]
   , nscMonotoneWitnesses :: ![NominalMonotoneWitness]
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 newtype SchemaActionCertificateId = SchemaActionCertificateId {unSchemaActionCertificateId :: Text}
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Independently versioned semantic layers which make a universe artifact
 -- replayable. These are part of every interface and certificate identity;
@@ -174,7 +175,7 @@ data TypeLevelSemanticVersions = TypeLevelSemanticVersions
   , tlsvPrincipalInference :: !Int
   , tlsvCertificate :: !Int
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 currentTypeLevelSemanticVersions :: TypeLevelSemanticVersions
 currentTypeLevelSemanticVersions = TypeLevelSemanticVersions 1 1 1 1 1
@@ -198,10 +199,20 @@ data NominalCumulativitySummary = NominalCumulativitySummary
   , ncsExtensionGate :: !(Maybe Text)
   , ncsClosure :: !NominalSignatureClosure
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 rolePermitsAnnotation :: UniverseVariance -> UniverseVariance -> Bool
 rolePermitsAnnotation written inferred = written <= inferred
+
+-- | Convert occurrences governed by one certified universe role into the
+-- portable requirement lattice. Source Core and KCore replay share this
+-- operation so wrapper handling cannot drift between producer and verifier.
+requirementsForUniverseRole :: Text -> UniverseVariance -> [Int] -> [RoleRequirement]
+requirementsForUniverseRole reason role parameters =
+  case role of
+    Irrelevant -> []
+    Covariant -> [RequireCovariant parameter reason | parameter <- parameters]
+    Invariant -> [RequireInvariant parameter reason | parameter <- parameters]
 
 inferUniverseRoles :: Int -> [RoleRequirement] -> [UniverseVariance]
 inferUniverseRoles parameterCount = foldl' tighten (replicate parameterCount Irrelevant)
@@ -225,6 +236,8 @@ verifyNominalCumulativitySummary summary =
     && length effective == length (ncsExplicitRoles summary)
     && ncsConstraints summary == canonicalConstraints (ncsConstraints summary)
     && ncsClosure summary == canonicalClosure (ncsClosure summary)
+    && all (validClauseActions (nscUniverseArity (ncsClosure summary)))
+         (nscClauses (ncsClosure summary))
     && all validMonotoneWitness (nscMonotoneWitnesses (ncsClosure summary))
     && ncsConstraints summary == nscConstraints (ncsClosure summary)
     && ncsSaturationArity summary == nscSaturationArity (ncsClosure summary)
@@ -244,6 +257,11 @@ verifyNominalCumulativitySummary summary =
         && nmwParameter witness < length effective
         && nmwDependencies witness
           == nominalEvidenceDependencies [nmwGoal witness, nmwEvidence witness]
+    validClauseActions arity clause =
+      all (validAction arity) (nccRoleActions clause)
+    validAction arity = \case
+      NominalCovariantUse index -> index >= 0 && index < arity
+      NominalInvariantUse index -> index >= 0 && index < arity
 
 makeNominalSignatureClosure
   :: Int

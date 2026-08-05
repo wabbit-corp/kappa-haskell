@@ -11,7 +11,7 @@ projection pick (place v : VecPair) (i : Nat) : Buffer =
 use : (& buf : Buffer) -> Nat
 let use buf = 0
 
-demo : (1 v : VecPair) -> Nat -> Nat
+demo : VecPair -> Nat -> Nat
 let demo v i = use (pick v i)
 
 --! assertNoErrors

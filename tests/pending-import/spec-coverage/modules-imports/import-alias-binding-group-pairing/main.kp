@@ -22,4 +22,4 @@ let badOriginal = (0 : Box) --!! E_NAME_UNRESOLVED
 
 --! assertErrorCount 1
 --! assertEval result 9
--- STATUS(a0497523): FAIL — aliased same-spelling import constructs via the alias, but the alias is rejected as a pattern head (E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN)
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 3; first error: E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN "'Container' is neither a constructor nor an active pattern, so it cannot head a pattern (§17.3.2)" at line 15; assertEval: 'result' evaluates to match Box 9 ..., expected 9

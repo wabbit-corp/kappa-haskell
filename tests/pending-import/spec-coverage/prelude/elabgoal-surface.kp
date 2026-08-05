@@ -13,4 +13,4 @@ goalExpected : (g : ElabGoal) -> Option (Core g.ctx Type)
 let goalExpected g = g.expected
 
 --! assertType goalCtx ElabGoal -> CoreCtx
--- STATUS(a0497523): FAIL — ElabGoal is not exported by the prelude (E_NAME_UNRESOLVED x2, then E_UNRESOLVED_MEMBER on .ctx/.expected because the receiver type is undetermined).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_NAME_UNRESOLVED "unresolved name 'ElabGoal' (not in scope)" at line 9; assertType: expected type does not elaborate: ElabGoal -> CoreCtx (unresolved name 'ElabGoal' (not in scope))

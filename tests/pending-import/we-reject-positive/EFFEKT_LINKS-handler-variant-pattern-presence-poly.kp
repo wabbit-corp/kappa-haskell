@@ -28,3 +28,5 @@ let classify comp =
 --! mode check
 --! assertNoErrors
 --! assertType classify Eff <[t : Tag]> Unit -> Eff <[ ]> Int
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

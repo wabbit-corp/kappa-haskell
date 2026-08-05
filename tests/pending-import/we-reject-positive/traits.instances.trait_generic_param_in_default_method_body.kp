@@ -52,3 +52,5 @@ sizeCheck5 : Bool
 let sizeCheck5 = length filled5 == 5
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_NAME_UNRESOLVED at line 13; current source or fixture is not portable v1 and must be rewritten before promotion.

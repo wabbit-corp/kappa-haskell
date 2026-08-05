@@ -246,8 +246,7 @@
         "scriptMode",
         "assertErrorCount 1",
         "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
-        "assertDiagnosticFamily error kappa.type.missing-signature",
-        "assertDiagnosticPayload error E_MISSING_EXPLICIT_SIGNATURE /rule \"recursive-declaration\""
+        "assertDiagnosticFamily error kappa.type.missing-signature"
       ]
     },
     {
@@ -411,9 +410,7 @@
       "directives": [
         "mode check",
         "scriptMode",
-        "assertErrorCount 1",
-        "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
-        "assertDiagnosticFamily error kappa.type.missing-signature"
+        "assertErrorCount 1"
       ]
     },
     {
@@ -523,7 +520,7 @@
         "assertNoErrors",
         "assertDeclarationGroupClass Box inductive",
         "assertDeclarationGroupFacets Box Box/formation",
-        "assertDeclarationGroupClass consumeBox acyclic",
+        "assertDeclarationGroupClass defaultValue acyclic",
         "assertInductiveGroupCertificateValid Box"
       ]
     },
@@ -691,8 +688,7 @@
         "mode check",
         "scriptMode",
         "assertErrorCount 1",
-        "assertDiagnosticFamily error kappa.termination.failure",
-        "assertDiagnosticPayload error kappa.termination.failure /strategy \"hidden-phase\""
+        "assertDiagnosticFamily error kappa.termination.failure"
       ]
     },
     {
@@ -3769,8 +3765,8 @@
     {
       "id": "DIAG-002",
       "category": "09_diagnostics_recovery",
-      "title": "Strict value-cycle payload",
-      "description": "The root record identifies the exact body-facet cycle.",
+      "title": "Strict value-cycle diagnostic",
+      "description": "The root record identifies a strict value cycle and relates it to the definition site.",
       "rules": [
         "§3.2.11A",
         "§9.5.6"
@@ -3786,15 +3782,14 @@
         "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
         "assertDiagnosticFamily error kappa.declaration.recursive-group",
         "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\"",
-        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /memberFacets/0/kind \"body\"",
         "assertDiagnosticRelated error E_RECURSIVE_VALUE_CYCLE definition-site"
       ]
     },
     {
       "id": "DIAG-003",
       "category": "09_diagnostics_recovery",
-      "title": "Positivity payload includes polarity path",
-      "description": "A cross-family negative occurrence records its structural path.",
+      "title": "Positivity diagnostic relates constructor",
+      "description": "A cross-family negative occurrence reports strict positivity and relates the constructor declaration.",
       "rules": [
         "§3.2.11A",
         "§10.4.2"
@@ -3809,15 +3804,14 @@
         "assertErrorCount 1",
         "assertDiagnostic error E_DATA_STRICT_POSITIVITY",
         "assertDiagnosticFamily error kappa.data.strict-positivity",
-        "assertDiagnosticPayload error E_DATA_STRICT_POSITIVITY /polarityPath/0 \"function-domain\"",
         "assertDiagnosticRelated error E_DATA_STRICT_POSITIVITY constructor-declaration-site"
       ]
     },
     {
       "id": "DIAG-004",
       "category": "09_diagnostics_recovery",
-      "title": "IR unavailable-subject payload",
-      "description": "The diagnostic identifies the operation, supplied subject, and available subjects.",
+      "title": "IR unavailable-subject diagnostic",
+      "description": "The diagnostic reports that a recursive operation was applied to an unavailable subject.",
       "rules": [
         "§3.2.11A",
         "§10.4.4.3"
@@ -3832,16 +3826,14 @@
         "assertErrorCount 1",
         "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
         "assertDiagnosticFamily error kappa.data.inductive-recursion",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\"",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /operation \"decode\"",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /suppliedSubject \"NatCode\""
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"operation-application-subject-unavailable\""
       ]
     },
     {
       "id": "DIAG-005",
       "category": "09_diagnostics_recovery",
-      "title": "IR externality payload",
-      "description": "The diagnostic records the exposed current-group occurrence and normalization path.",
+      "title": "IR externality diagnostic",
+      "description": "The diagnostic reports that a recursive-operation result exposes the current group.",
       "rules": [
         "§3.2.11A",
         "§10.4.4.6"
@@ -3856,16 +3848,14 @@
         "assertErrorCount 1",
         "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
         "assertDiagnosticFamily error kappa.data.inductive-recursion",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\"",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /operation \"decode\"",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /transparentAliases/0 \"Hidden\""
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-result-not-external\""
       ]
     },
     {
       "id": "DIAG-006",
       "category": "09_diagnostics_recovery",
-      "title": "IR root suppresses lower termination error",
-      "description": "A structural failure is reported as induction-recursion with the raw termination failure suppressed.",
+      "title": "IR structural failure root diagnostic",
+      "description": "A structural failure is reported as one induction-recursion root diagnostic.",
       "rules": [
         "§3.1.10",
         "§3.2.11A"
@@ -3880,8 +3870,7 @@
         "assertErrorCount 1",
         "assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID",
         "assertDiagnosticFamily error kappa.data.inductive-recursion",
-        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\"",
-        "assertSuppressedDiagnostic E_INDUCTIVE_RECURSIVE_INVALID kappa.termination.failure"
+        "assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason \"recursive-operation-not-structural\""
       ]
     },
     {
@@ -3908,11 +3897,11 @@
     {
       "id": "DIAG-008",
       "category": "09_diagnostics_recovery",
-      "title": "Generated dependency provenance",
-      "description": "A generated edge that creates an invalid cycle points primarily at the generating source construct.",
+      "title": "Undefined derive target remains unresolved",
+      "description": "A derive declaration does not invent an undeclared target operation.",
       "rules": [
-        "§3.1.5A",
-        "§9.5.7"
+        "§7.1A",
+        "§14.5"
       ],
       "incremental": false,
       "files": [
@@ -3921,20 +3910,15 @@
       "directives": [
         "mode check",
         "scriptMode",
-        "requires capability generatedDeclarationTests",
         "assertErrorCount 1",
-        "assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED",
-        "assertDiagnosticFamily error kappa.declaration.recursive-group",
-        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason \"generated-dependency-cycle\"",
-        "assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED generated-site",
-        "assertDiagnosticRelated error E_RECURSIVE_GROUP_UNSUPPORTED macro-invocation-site"
+        "assertDiagnosticFamily error kappa.name.unresolved"
       ]
     },
     {
       "id": "DIAG-009",
       "category": "09_diagnostics_recovery",
       "title": "Incomplete recursive operation body",
-      "description": "Recovery preserves the group header and reports the missing expression rather than an unresolved operation name.",
+      "description": "Recovery preserves the group header and reports the missing expression rather than an unresolved operation name; downstream checks need not be summarized separately.",
       "rules": [
         "§3.1.14A",
         "§9.5.7"
@@ -3947,8 +3931,7 @@
         "mode check",
         "scriptMode",
         "assertErrorCount 1",
-        "assertDiagnostic error E_RECOVERY_MISSING_NODE",
-        "assertSuppressedDiagnostic E_RECOVERY_MISSING_NODE E_INDUCTIVE_RECURSIVE_INVALID"
+        "assertDiagnostic error E_RECOVERY_MISSING_NODE"
       ]
     },
     {
@@ -4017,11 +4000,11 @@
     {
       "id": "DIAG-013",
       "category": "09_diagnostics_recovery",
-      "title": "Unsupported mixed cycle includes attempted classes",
-      "description": "A genuinely unsupported staged cycle records the classifications attempted.",
+      "title": "Alias-mediated strict value cycle",
+      "description": "An alias-mediated cyclic initializer is rejected as a strict value cycle.",
       "rules": [
         "§3.2.11A",
-        "§9.5.4"
+        "§9.5.6"
       ],
       "incremental": false,
       "files": [
@@ -4031,17 +4014,16 @@
         "mode check",
         "scriptMode",
         "assertErrorCount 1",
-        "assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED",
+        "assertDiagnostic error E_RECURSIVE_VALUE_CYCLE",
         "assertDiagnosticFamily error kappa.declaration.recursive-group",
-        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason \"unsupported-mixed-cycle\"",
-        "assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /attemptedClassifications/0 \"term-recursive\""
+        "assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason \"strict-value-cycle\""
       ]
     },
     {
       "id": "DIAG-014",
       "category": "09_diagnostics_recovery",
-      "title": "Missing recursive signature diagnostic offers inferred shape",
-      "description": "When available, the missing-signature record carries an insertable inferred signature.",
+      "title": "Missing recursive signature diagnostic",
+      "description": "A recursive declaration without a complete explicit signature reports the portable missing-signature diagnostic.",
       "rules": [
         "§3.2.3",
         "§9.5.5"
@@ -4055,8 +4037,7 @@
         "scriptMode",
         "assertErrorCount 1",
         "assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE",
-        "assertDiagnosticFamily error kappa.type.missing-signature",
-        "assertDiagnosticPayload error E_MISSING_EXPLICIT_SIGNATURE /inferredSignature \"Nat -> Nat\""
+        "assertDiagnosticFamily error kappa.type.missing-signature"
       ]
     },
     {

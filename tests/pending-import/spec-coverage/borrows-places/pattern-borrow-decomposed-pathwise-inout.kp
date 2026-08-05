@@ -27,4 +27,4 @@ let ok (1 p : Pair) : UIO Int =
         bump ~p.right
         pure (observe bl)
 
--- STATUS(a0497523): FAIL — 1 error: E_QTT_BORROW_OVERLAP on `bump ~p.right`; the partial-pattern borrow `let & (left = bl) = p` locks the WHOLE record instead of decomposing pathwise to p.left only (the plain `let & bl = p.left` form of the same program is accepted).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_QTT_BORROW_OVERLAP "'p.right' is consumed while a live borrow of an overlapping path exists (§12.4)" at line 27

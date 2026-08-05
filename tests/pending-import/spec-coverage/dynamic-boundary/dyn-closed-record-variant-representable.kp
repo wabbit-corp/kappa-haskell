@@ -32,4 +32,4 @@ let outcome = Ok 3
 dResult : Dyn
 let dResult = toDyn outcome
 
--- STATUS(a0497523): FAIL — no DynamicType instances exist for closed records, closed variants, or Result (3x E_UNSOLVED_IMPLICIT).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type DynamicType (x : Int, y : String)" at line 22

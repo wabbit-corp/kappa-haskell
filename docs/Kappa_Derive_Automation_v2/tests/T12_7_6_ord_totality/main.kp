@@ -1,0 +1,24 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq x y =
+        match (x, y)
+        case (I, O) -> False
+        case _      -> True
+
+instance PartialOrder Bit = derive
+instance Ord Bit = derive
+
+ordering : Ordering
+let ordering = compare O I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEval ordering LT
+--! assertDerivedMember leqTotal for Ord Bit

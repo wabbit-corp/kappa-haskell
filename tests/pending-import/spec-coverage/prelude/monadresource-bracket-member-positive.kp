@@ -18,3 +18,4 @@ let viaResourceMember @resource acquire release use =
 
 --! mode check
 --! assertNoErrors
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNRESOLVED_MEMBER "'bracket' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)" at line 17

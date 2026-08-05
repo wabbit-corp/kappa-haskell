@@ -176,7 +176,9 @@ typedef struct Fiber {
   Cont         *k;             // suspended continuation: the rest of the computation
   KValue       *cur;           // value being returned into k (when resuming)
   Scope        *scope;         // current supervision scope
-  uint32_t      mask_depth;    // 0 == interruptible; >0 masked (§18.1.12)
+  KMaskState    mask_base;     // inherited, non-restorable base state (§18.1.12)
+  KMaskState    mask_effective;// max(base, active mask frames)
+  MaskFrame    *mask_top;      // authenticated restore-frame stack
   _Atomic int   interrupt_pending;   // a request arrived
   KValue       *interrupt_cause;     // the structured InterruptCause (§18.1.2)
   ExitFrame    *exits;         // per-fiber defer/using stack (heap, LIFO)
@@ -233,7 +235,7 @@ loop *until the fiber suspends or finishes*:
 ```
 fiber_run(f):
   loop:
-    if f->interrupt_pending and f->mask_depth == 0:   // §32.2.5 interruption point
+    if f->interrupt_pending and f->mask_effective == KMASK_INTERRUPTIBLE:
         deliver_interrupt(f); continue                // unwinds via KK_POPEXIT frames
     if f->reductions-- == 0:                           // §6.4 fairness safe point
         f->reductions = QUANTUM; reschedule(f); return SUSPENDED
@@ -376,14 +378,16 @@ and explicit `poll`. It is *never* forced.
   (the structured `InterruptCause`, §18.1.2), then **park the caller** on the
   target's waiter list until the target is `F_DONE` and its finalizers have run
   (§18.1.4). `interruptFork` does not wait.
-- A fiber observes its pending interrupt at the next interruption point **iff
-  `mask_depth == 0`** (§5.3). Delivery converts the rest of the computation into
+- A fiber observes its pending interrupt at an ordinary interruption point iff
+  its effective mask state is `Interruptible` (§5.3). Delivery converts the rest of the computation into
   an unwind: `unwind_to_done` runs every `KK_POPEXIT` / `KK_RESTORE` /
   `KK_UNSCOPE` frame in masked LIFO order (finalizers run masked, §32.2.5), then
   sets `exit = Failure (Interrupt cause)`.
-- `mask f` / `uninterruptible body` raise `mask_depth`; `restore` lowers it for a
-  sub-computation (a `KK_RESTORE` frame restores depth on the way out). `poll`
-  delivers a pending interrupt *even while masked* (§18.1.12).
+- `mask f`, `uninterruptibleMask f`, and `uninterruptible body` install distinct
+  authenticated frames. A restore closure may suspend only its exact topmost
+  active frame on the owning fiber, and `KK_SETMASK` reinstates that frame on
+  every exit. `poll` pierces `Masked` but remains inert under `Uninterruptible`
+  (§18.1.12).
 - A fiber carries **at most one** pending request (§18.1.12); the first
   determines the portable cause; later ones may be recorded diagnostically.
 
@@ -514,14 +518,17 @@ STM, or atomics.
 The existing `KCT_EFFPURE`/`KCT_EFFOP` effect tree already reifies resumptions as
 GC closures, but purely. We unify it with the IO CK-machine:
 
-- A `handle label e with …` pushes a **`KK_HANDLE`** frame recording the
+- A `handle label e with …` pushes a **`KK_HANDLER`** frame recording the
   *exact effect-label value* (identity match, §18.1.18), the return clause, and
   the operation clauses.
-- `label.op args` walks `f->k` to the nearest matching `KK_HANDLE` (skipping other
-  labels), **capturing the `Cont` suffix** from the op site to that handler as the
-  resumption segment `r` (§32.2.13). In the current native runtime this is a
-  one-shot segment.
-- Resuming `r v` re-enters that suffix with `v` (§32.2.13–.18). The captured env's
+- `label.op args` walks `f->k` to the nearest matching `KK_HANDLER` (skipping other
+  labels), **capturing the `Cont` suffix and its `DynamicState`** from the op site
+  to that handler as the resumption segment `r` (§32.2.13). `DynamicState` keeps
+  the parallel exit-action and interruption-mask stacks synchronized. In the
+  current native runtime this is a one-shot segment.
+- Resuming `r v` temporarily installs that captured state and suffix with `v`,
+  then restores the clause's dynamic state on normal or abnormal return
+  (§32.2.13–.18). The captured env's
   heap objects stay **shared** (§32.2.18): a `var`/`newRef` allocated before the
   op site is the *same* object across resumption uses; pre-op effects are not
   rolled back; post-resumption effects occur anew on each use.
@@ -536,21 +543,23 @@ GC closures, but purely. We unify it with the IO CK-machine:
   exit actions must not escape its clause (§32.2.20); the elaborator enforces this
   statically (the runtime trusts the checked program).
 
-Reclamation: abandoned segments are ordinary GC garbage (Boehm reclaims them);
-no segment is freed while a one-shot resumption that needs it is still live, and
-no host-GC promptness is required for source-level release (§34.4.1).
-`deep handle` desugars (already in the prelude/codegen) to a recursive driver that
-reinstalls itself around each resumption — we reuse the existing `eff_reinstall_k`
-shape, lifted into the CK-machine.
+Reclamation: an abandoned segment is first traversed by `KK_ABANDON` /
+`KK_ABANDEND`, which runs captured exit actions exactly once under the captured
+mask state. Its storage becomes ordinary GC garbage only after that semantic
+drain. No segment is reclaimed while a live one-shot resumption needs it, and no
+host-GC promptness is required for source-level release (§34.4.1). `deep handle`
+reinstalls a fresh `KK_HANDLER` prompt around each resumed segment.
 
-**Continuation-representation documentation (the §34.4.1 deliverable for
-advertising `rt-multishot-effects`):**
-- *Segment representation:* immutable singly-linked heap `Cont` frames + captured
-  mask depth; closures captured by reference (shared env).
-- *One-shot destructiveness:* none — one-shot is multi-shot used once; segments
-  are never mutated, so a one-shot resume cannot invalidate a sibling clone.
-- *Multi-shot per-use:* re-entry allocates only the new forward frames it
-  produces; the captured prefix is shared structurally (no copy, no stack walk).
+**Current one-shot continuation representation:**
+- *Segment representation:* singly-linked heap `Cont` frames plus a captured
+  `DynamicState` containing the exit stack and identity-bearing mask-frame top;
+  closures are captured by reference (shared env).
+- *One-shot destructiveness:* capture severs and later relinks the segment. The
+  `used` guard rejects a second resume, matching the absent
+  `rt-multishot-effects` capability.
+- *Future multi-shot requirement:* each use must receive an independent logical
+  segment and dynamic state. Structural sharing is permitted only where mutation
+  of one use cannot invalidate another.
 - *Reclamation events:* GC. A segment becomes unreachable when no fiber holds the
   resumption and it is not on any fiber's `k`; Boehm collects it. No special
   reclamation trigger is required.

@@ -45,3 +45,8 @@ formsAgree : Bool
 let formsAgree = traditionalCall == methodCallSugar
 
 --! assertNoErrors
+--! assertEval traditionalCall 1
+--! assertEval methodCallSugar 1
+--! assertEval formsAgree True
+
+-- STATUS(8c3c7747): FAIL — the receiver marker on the preceding signature is lost before method-call sugar (§7.4, §9.1).

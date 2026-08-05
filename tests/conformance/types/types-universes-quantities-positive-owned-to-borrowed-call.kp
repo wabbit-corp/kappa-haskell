@@ -9,7 +9,10 @@ let read x = 0
 peek : (& x : Box Int) -> Int
 let peek x = read x
 
-demo : (1 x : Box Int) -> Int
-let demo x = peek x
+demo : (1 x : Box Int) -> Box Int
+let demo x =
+    block
+        let _ = peek x
+        x
 
 --! assertNoErrors

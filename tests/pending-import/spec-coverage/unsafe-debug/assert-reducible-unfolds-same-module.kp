@@ -16,4 +16,4 @@ let proof = refl
 --! allow_assert_reducible
 --! assertNoErrors
 --! assertAuditLedger assertReducible
--- STATUS(a0497523): FAIL — same-module conversion does not see the assertReducible grant: the refl proof fails with E_TYPE_EQUALITY_MISMATCH, while the identical cross-module test passes (the override is only honored downstream).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 14

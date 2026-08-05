@@ -26,14 +26,14 @@ let body = do
 
 classify : Cause Int -> IO Void String
 let classify c = match c
-    case Then (Defect (DefectInfo UnhandledChildFailure m)) (Fail 9) -> ioPure "then:child-defect-first-defer-fail-second"
-    case Then (Fail 9) (Defect (DefectInfo UnhandledChildFailure m)) -> ioPure "then:wrong-order"
-    case Fail 9 -> ioPure "defer-fail-only"
-    case Defect (DefectInfo UnhandledChildFailure m) -> ioPure "child-defect-only"
+    case Cause.Then (Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m)) (Cause.Fail 9) -> ioPure "then:child-defect-first-defer-fail-second"
+    case Cause.Then (Cause.Fail 9) (Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m)) -> ioPure "then:wrong-order"
+    case Cause.Fail 9 -> ioPure "defer-fail-only"
+    case Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m) -> ioPure "child-defect-only"
     case _ -> ioPure "cause:other"
 
 main : UIO Unit
 let main = do
     let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "body-succeeded")) classify
     printlnString r
--- STATUS(a0497523): FAIL — prints "defer-fail-only": the defer's Fail 9 propagates as the whole cleanup cause, but the unacknowledged child's UnhandledChildFailure defect is never produced, so no Then composition happens.
+-- STATUS(e25d64e1): FAIL — stdout mismatch: expected composed unhandled-child defect then defer failure, got "defer-fail-only\n"

@@ -20,6 +20,9 @@ instance IntoQuery Chan =
     let Item = Int
     let ItemQuantity = & --!! kappa.query.borrow-not-item-quantity
     let SourceDemand = & --!! kappa.query.borrow-not-source-demand
-    let toQuery c = __queryFromList Nil
+    let toQuery c =
+        block
+            let listSource = summon (IntoQuery (List Int))
+            listSource.toQuery Nil
 
--- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.query.borrow-not-item-quantity' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill… [was FAIL in an earlier STATUS line]
+-- STATUS(e25d64e1): HARNESS-ERROR — portable IntoQuery delegation is used, but the two normative query families remain unregistered

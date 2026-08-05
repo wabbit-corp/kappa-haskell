@@ -43,3 +43,4 @@ let badDup l = match l
     case C -> 3
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary redundant arms are legal first-match code; the Spec does not require this diagnostic.

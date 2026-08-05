@@ -32,11 +32,17 @@ module Kappa.Check
   , initCheckState
   , DataInfo (..)
   , CtorInfo (..)
+  , EvidenceConstructionMode (..)
   , EffLabelInfo (..)
   , EffOpInfo (..)
   , TraitInfo (..)
   , InstanceEntry (..)
   , LevelOperatorIdentity (..)
+  , ProjInfo (..)
+  , InoutParamInfo (..)
+  , APResult (..)
+  , APInfo (..)
+  , EffectOpValueInfo (..)
   , TerminationDecl (..)
   , GlobalDef (..)
   , UnsafeConfig (..)
@@ -44,10 +50,12 @@ module Kappa.Check
   , scriptUnsafeConfig
   , AuditRecord (..)
   , checkModule
+  , linkedCoreBodies
   , unresolvedBuiltins
   , expectUnsatisfiedDiags
   , recursiveSchemaEdgeRecorded
   , selectedUniverseEvidenceRecorded
+  , sourceRoleMetadataInvarianceChecks
   , UniverseInferenceClass (..)
   , UniverseInferenceRecord (..)
   , universeInferenceRecord
@@ -105,6 +113,16 @@ import Kappa.Arithmetic
   , derivePrincipalAffineSubstitution
   , formulaAssumptionFacts
   )
+import Kappa.Check.Patch
+import Kappa.Check.Pending
+  ( DependencySnapshot
+  , captureDependencySnapshot
+  , dependencySnapshotIsCurrent
+  )
+import Kappa.Check.UniverseConstraints
+  ( constraintIdsForOwnersAndOccurrences
+  , rewriteSelectedConstraints
+  )
 import Kappa.Core
 import Kappa.CoreOps
   ( declarationUniverseConstraintBinder
@@ -123,11 +141,14 @@ import Kappa.CoreOps
   , eraseObserveOnlyAnnotations
   , levelMetasOfTerm
   , levelParamsOfTerm
+  , roleLevelParamsOfTerm
+  , maxFreeIndexTerm
   , metaIdsOf
   , metaOccursInTermShallow
   , metaOccursInTermShallowFuel
   , patBindersC
   , CorePatternDecision (..)
+  , instantiateEtaConstructor
   , instantiateCorePatternBody
   , matchCorePattern
   , projectionDepsOf
@@ -142,6 +163,11 @@ import Kappa.CoreOps
   , zonkTermWith
   )
 import qualified Kappa.Backend.Repr as Repr
+import Kappa.DependencyFrontier
+  ( emptyDependencyFrontier
+  , recordDependencyCompletions
+  )
+import qualified Kappa.DirectedGraph as DirectedGraph
 import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Inhabitance
@@ -187,11 +213,26 @@ import Kappa.Level
   , extendLevelAssignmentGraphWithBudget
   , solveLevelConstraints
   , solveLevelConstraintsFor
+  , uniquelyDeterminedLevelAssignmentsFor
   , substituteLevelConstraintMetas
   , substituteLevelMetas
   , substituteLevelParams
   , levelMetas
   , neutralLevelTermLevels
+  )
+import Kappa.LevelEvidence (validateUniverseEvidenceRelationUnder)
+import Kappa.Observation (observationModeSubsumes)
+import Kappa.MonotoneWorklist
+  ( WorklistResult (..)
+  , stabilizeWorklist
+  )
+import Kappa.UniverseProjection
+  ( UniverseReferenceProjection (..)
+  , UniverseReferenceProjections (..)
+  , deriveUniverseReferenceProjection
+  , deriveUniverseReferenceProjectionToLevels
+  , rewriteProvisionalUniverseReferences
+  , uniqueUniverseReferenceProjections
   )
 import Kappa.NominalVariance
 import Kappa.Ownership (OwnInfo)
@@ -228,6 +269,7 @@ import Kappa.SyntaxOps
   , replaceSplices
   , substQuoteHoles
   )
+import Kappa.SurfaceValidation (quantityBorrowMarkerSpans)
 import Kappa.Token (QuotedLit (..), StrFragment (..), StringLit (..))
 import Kappa.Unicode (isSingleGrapheme)
 import Kappa.Usage (tailResumptiveClause)
@@ -273,12 +315,11 @@ data TraitInfo = TraitInfo
   -- ^ Associated static members and members whose checked result is known
   -- 'RuntimeErased' are quantity-zero dictionary fields. Ordinary runtime
   -- methods retain quantity omega.
-  , tiDefaults :: !(Map Text (ModuleName, Bool, LetDef))
-  -- ^ Default source plus its declaration provenance. Embedded standard
-  -- defaults are elaborated later at an instance head, but that must not make
-  -- their already-trusted source look like user code to the unsafe-intrinsic
-  -- gate. The boolean records the authenticated embedded-load origin; a
-  -- source module merely named @std.prelude@ does not acquire it.
+  , tiDefaults :: !(Map Text GName)
+  -- ^ Ordinary defaults elaborated once in the abstract trait context
+  -- (§14.2). Each identity names a hidden checked Core template with the same
+  -- universe/type telescope as the member accessor. No source syntax crosses
+  -- the declaration or module boundary.
   , tiSupers :: ![(Text, Term)]
   -- ^ supertrait premises as (evidence field name, @\\params -> C params@)
   -- (§14.1.4); the field carries the supertrait dictionary (§14.3.3)
@@ -478,19 +519,38 @@ data UniverseInferenceClass
   | InferenceNoPointwiseLeastSolution
   | InferenceOutsidePortableInferenceFragment
   | InferenceBlockedByUnselectedMetas
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data UniverseInferenceRecord = UniverseInferenceRecord
   { uirClass :: !UniverseInferenceClass
   , uirPrincipalAssignments :: !(Map LevelMeta Level)
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data PendingLevelEvidence = PendingLevelEvidence
   { pleOwner :: !GName
   , pleConstraint :: !UniverseConstraint
   }
   deriving stock (Eq, Ord, Show)
+
+data PendingEvidenceDependency
+  = PendingTermMeta !MetaId
+  | PendingLevelMeta !LevelMeta
+  | PendingGlobal !GName
+  deriving stock (Eq, Ord, Show)
+
+data PendingEvidenceDependencyVersion
+  = PendingTermMetaVersion !Int
+  | PendingLevelMetaVersion !(Maybe Level)
+  | PendingGlobalVersion
+      !(Maybe (DeclarationUniverseTelescope, Maybe Term, Maybe Term, Bool))
+      !(Maybe (DeclarationUniverseTelescope, Term))
+  deriving stock (Eq, Show)
+
+type PendingEvidenceAttempt =
+  DependencySnapshot
+    PendingEvidenceDependency
+    PendingEvidenceDependencyVersion
 
 -- | A top-level data family whose source header has not yet been published,
 -- or whose real family classifier has been published while constructor
@@ -621,6 +681,12 @@ data CheckState = CheckState
   -- owning trait identity. Universe generalization uses this relation to keep
   -- the owner-trait schema as the accessor's leading hidden prefix.
   , csInstances :: ![InstanceEntry]
+  , csInstancesByTrait :: !(Map GName [InstanceEntry])
+  -- ^ Deterministic trait-identity partition of 'csInstances'. Instance
+  -- search is on the elaboration hot path and must not scan and sort the
+  -- complete module instance set for every evidence goal. The authoritative
+  -- list is retained for serialization and declaration-order-independent
+  -- coherence checks; 'setCheckInstances' keeps both views synchronized.
   , csInstanceUniverseInterfaces :: !(Map GName [Term])
   -- ^ Dictionary-identity index of the normalized instance head and premises.
   -- Universe interface discovery visits every declaration in an SCC; looking
@@ -633,6 +699,12 @@ data CheckState = CheckState
   -- fixed-point detection consults this directly instead of filtering the
   -- complete meta store on every pass. Point updates and transactional
   -- restores must keep the two fields synchronized.
+  , csMetaAssignmentGenerations :: !(Map MetaId Int)
+  -- ^ Monotone per-meta assignment generations. Observational inference
+  -- probes compare these identities instead of re-quoting arbitrary solved
+  -- values, which may have no recorded creation depth. Fresh metas are
+  -- intentionally absent from the caller's domain and therefore cannot make
+  -- an otherwise read-only probe look stateful.
   , csNextMeta :: !Int
   , csMetaClassifiers :: !(Map MetaId MetaClassifier)
   , csApplicationPlanningMetas :: !(Set MetaId)
@@ -697,6 +769,9 @@ data CheckState = CheckState
   -- parameter of one declaration and only a specialized occurrence in
   -- another; SCC generalization must not copy the former's schema into the
   -- latter.
+  , csLevelGeneralizableMetasByOwner :: !(Map GName (Set LevelMeta))
+  -- ^ Reverse owner index for incremental declaration closeout. Both
+  -- directions are updated at the same provenance-registration boundary.
   , csLevelInstantiationMetas :: !(Set LevelMeta)
   -- ^ Metas created solely by fresh specialization of another declaration's
   -- hidden universe telescope. They are elaboration choices, not source
@@ -707,7 +782,12 @@ data CheckState = CheckState
   -- ^ Declaration components whose elaboration introduced each occurrence
   -- meta. Metas allocated outside an active declaration remain only in the
   -- authoritative set above and are conservatively treated as unowned.
-  , csProvisionalUniverseInstantiations :: ![ProvisionalUniverseInstantiation]
+  , csLevelInstantiationMetasByOwner :: !(Map GName (Set LevelMeta))
+  -- ^ Reverse owner index for occurrence metas. Incremental body solving must
+  -- not transpose the complete module relation at each close event.
+  , csProvisionalUniverseInstantiations :: !(Map Int ProvisionalUniverseInstantiation)
+  , csProvisionalUniverseInstantiationsByOwner :: !(Map GName (Set Int))
+  , csProvisionalUniverseInstantiationsByConsumer :: !(Map GName (Set Int))
   , csNextProvisionalUniverseInstantiation :: !Int
   , csProvisionalGlobalUniverseMetas :: !(Map GName [[LevelMeta]])
   , csProvisionalConstructorUniverseMetas :: !(Map GName [[LevelMeta]])
@@ -749,6 +829,9 @@ data CheckState = CheckState
   -- occurrences additionally carry finalized level facts for schema
   -- termination; ordinary occurrences retain resolved symbol identity and a
   -- source span for termination diagnostics.
+  , csRecursiveSchemaOccurrencesByCaller :: !(Map GName [RecursiveSchemaOccurrence])
+  -- ^ Caller-indexed view used by owner-scoped universe closeout. The ordered
+  -- list remains authoritative for module-final termination diagnostics.
   , csSelectedUniverseEvidence :: !(Set SelectedUniverseEvidence)
   -- ^ Ordinary implicit evidence selected while proving universe-role goals.
   -- The normalized goal and resolved dictionary identity are frozen before
@@ -829,6 +912,11 @@ data CheckState = CheckState
   , csModuleExports :: !(Map ModuleName [Text])
   , csFresh :: !Int
   , csPending :: ![(MetaId, Value, Span, Ctx, [ScopedBoolFact])]
+  , csPendingEvidenceAttempts :: !(Map MetaId PendingEvidenceAttempt)
+  -- ^ Last failed semantic attempt for each postponed evidence identity.
+  -- Declaration closeout retries an entry only after one of this snapshot's
+  -- exact term-meta, level-meta, or referenced-global dependencies changes.
+  -- Final module closeout still forces every survivor once.
   -- ^ postponed implicit goals with the local context they were raised
   -- in (premise dictionaries live there, §14.3.2) and the boolean
   -- branch facts active at the raise site
@@ -942,6 +1030,16 @@ data CheckState = CheckState
   -- ^ Explicit source arguments accepted at a checker-resolved quantity-zero
   -- parameter. Usage consumes this typed fact for projected and aliased
   -- callables whose parameter telescope cannot be reconstructed from syntax.
+  , csBorrowedArgumentDemands :: !(Map Span Q)
+  -- ^ Explicit source arguments accepted at a checker-resolved borrowed
+  -- parameter, paired with the selected demand. Access mode is selected from
+  -- the typed Pi binder and is orthogonal to quantity; Usage consumes this
+  -- occurrence-local fact instead of reconstructing trait/member parameter
+  -- modes from source spellings.
+  , csErasedExpressionSpans :: !(Set Span)
+  -- ^ Source expressions whose checked field/member representation is erased.
+  -- This is occurrence-local typed authority: Usage must not infer erasure
+  -- from a field spelling or from the source quantity of the receiver.
   , csImplicitExpressionDemands :: !(Map Span Q)
   -- ^ Source expressions consumed by checker-inserted calls, keyed by source
   -- identity. Usage cannot recover these hidden application binders from the
@@ -993,6 +1091,10 @@ data CheckState = CheckState
   -- ^ §7.4 receiver-marked explicit binder positions (indices among
   -- the explicit binders) per global, for method-call sugar
   , csExpansions :: !(Map Span Expr)
+  , csUsageExpressionTypes :: !(Map Span Expr)
+  -- ^ Fully checked, delaborated types for source expressions whose storage
+  -- shape Usage must inspect. Facts are recorded only when no type meta
+  -- remains, so absence is conservative rather than guessed.
   -- ^ §21.2 splice expansions (splice span ↦ grafted surface syntax,
   -- with captured occurrences under their original spellings) for the
   -- usage analysis to charge object-level uses at splice sites
@@ -1108,6 +1210,10 @@ data CheckState = CheckState
   -- bindings (quote drops the captured environment), so we keep the real
   -- elaborator output. Used only by backend/lint/analysis paths; the
   -- interpreter path ignores it.
+  , csImportedCoreBodies :: !(Map GName Term)
+  -- ^ Immutable implementation bodies loaded from checked module artifacts.
+  -- They participate in backend reachability but never in current-unit
+  -- re-zonking, ownership analysis, linting, or declaration closeout.
   , csCoreSignatures :: !(Map GName Term)
   -- ^ Checked source signatures retained until their complete declaration
   -- SCC is generalized. NbE deliberately erases cumulative-lift evidence, so
@@ -1184,6 +1290,21 @@ data CheckState = CheckState
   -- keying by resolved global identity prevents same-spelled holes in
   -- unrelated declarations from sharing metas.
   }
+
+-- | Runtime implementations visible to a backend invocation. The mutable
+-- 'csCoreBodies' map is deliberately current-unit only: imported checked
+-- modules retain their implementation bodies on immutable 'GlobalDef'
+-- entries. Keeping the linked view derived prevents imported artifacts from
+-- being re-zonked, ownership-analysed, or linted as though they belonged to
+-- the module currently being checked.
+linkedCoreBodies :: CheckState -> Map GName Term
+linkedCoreBodies state =
+  Map.union
+    (csCoreBodies state)
+    ( Map.union
+        (csImportedCoreBodies state)
+        (Map.mapMaybe gdCoreBody (csGlobals state))
+    )
 
 -- | §16.3.2 a named expression hole (@?name@) shared across its
 -- occurrences in one enclosing declaration. All occurrences denote the
@@ -1311,9 +1432,11 @@ initCheckState =
     , csBareTraitMembers = Map.empty
     , csTraitMemberOwners = Map.empty
     , csInstances = []
+    , csInstancesByTrait = Map.empty
     , csInstanceUniverseInterfaces = Map.empty
     , csMetas = emptyMetas
     , csSolvedMetas = Set.empty
+    , csMetaAssignmentGenerations = Map.empty
     , csNextMeta = 0
     , csMetaClassifiers = Map.empty
     , csApplicationPlanningMetas = Set.empty
@@ -1331,9 +1454,13 @@ initCheckState =
     , csLevelAssignmentBudget = emptyLevelAssignmentGraphBudget
     , csLevelGeneralizableMetas = Set.empty
     , csLevelGeneralizableOwners = Map.empty
+    , csLevelGeneralizableMetasByOwner = Map.empty
     , csLevelInstantiationMetas = Set.empty
     , csLevelInstantiationOwners = Map.empty
-    , csProvisionalUniverseInstantiations = []
+    , csLevelInstantiationMetasByOwner = Map.empty
+    , csProvisionalUniverseInstantiations = Map.empty
+    , csProvisionalUniverseInstantiationsByOwner = Map.empty
+    , csProvisionalUniverseInstantiationsByConsumer = Map.empty
     , csNextProvisionalUniverseInstantiation = 0
     , csProvisionalGlobalUniverseMetas = Map.empty
     , csProvisionalConstructorUniverseMetas = Map.empty
@@ -1344,6 +1471,7 @@ initCheckState =
     , csDirtyNominalSummaries = Set.empty
     , csRecursiveSchemaEdges = Set.empty
     , csRecursiveSchemaOccurrences = []
+    , csRecursiveSchemaOccurrencesByCaller = Map.empty
     , csSelectedUniverseEvidence = Set.empty
     , csUniverseInferenceRecords = Map.empty
     , csPendingUniverseProofs = Map.empty
@@ -1368,6 +1496,7 @@ initCheckState =
     , csModuleExports = Map.empty
     , csFresh = 0
     , csPending = []
+    , csPendingEvidenceAttempts = Map.empty
     , csDeferredTypeEqualities = []
     , csDiagnosedPendingEvidence = Set.empty
     , csPendingLevelEvidence = Map.empty
@@ -1396,6 +1525,8 @@ initCheckState =
     , csConstructorPatternLetSpans = Set.empty
     , csStaticKindBinders = Set.empty
     , csErasedArgumentSpans = Set.empty
+    , csBorrowedArgumentDemands = Map.empty
+    , csErasedExpressionSpans = Set.empty
     , csImplicitExpressionDemands = Map.empty
     , csNextRefCellId = 0
     , csNextLevelFieldId = 0
@@ -1409,6 +1540,7 @@ initCheckState =
     , csDefinitionalEqualityOnly = False
     , csReceivers = Map.empty
     , csExpansions = Map.empty
+    , csUsageExpressionTypes = Map.empty
     , csOpaqueDatas = Map.empty
     , csOpaqueDefs = Map.empty
     , csRecordOrders = Map.empty
@@ -1429,6 +1561,7 @@ initCheckState =
     , csBackendIntrinsics = Map.empty
     , csFoundationProviders = Map.empty
     , csCoreBodies = Map.empty
+    , csImportedCoreBodies = Map.empty
     , csCoreSignatures = Map.empty
     , csTransparentValueAliases = Map.empty
     , csLevelOperatorAliases = Map.empty
@@ -1443,6 +1576,35 @@ initCheckState =
     , csImpossibleScrut = Nothing
     , csHoles = Map.empty
     , csSignatureHoles = Map.empty
+    }
+
+insertRecursiveSchemaOccurrence
+  :: RecursiveSchemaOccurrence
+  -> CheckState
+  -> CheckState
+insertRecursiveSchemaOccurrence occurrence state =
+  state
+    { csRecursiveSchemaOccurrences =
+        occurrence : csRecursiveSchemaOccurrences state
+    , csRecursiveSchemaOccurrencesByCaller =
+        Map.insertWith
+          (++)
+          (rsoCaller occurrence)
+          [occurrence]
+          (csRecursiveSchemaOccurrencesByCaller state)
+    }
+
+setRecursiveSchemaOccurrences
+  :: [RecursiveSchemaOccurrence]
+  -> CheckState
+  -> CheckState
+setRecursiveSchemaOccurrences occurrences state =
+  state
+    { csRecursiveSchemaOccurrences = occurrences
+    , csRecursiveSchemaOccurrencesByCaller =
+        Map.fromListWith
+          (++)
+          [(rsoCaller occurrence, [occurrence]) | occurrence <- occurrences]
     }
 
 recursiveSchemaEdgeRecorded :: CheckState -> Text -> Text -> Text -> Bool
@@ -1784,6 +1946,17 @@ bindCtxMQProvisional mode q n implocal ty ctx =
     [] -> bound
   where
     bound = bindCtxMQ mode q n implocal ty ctx
+
+-- | Borrow-aware form of 'bindCtxMQProvisional'. Declaration-header and
+-- explicit-forall inference must retain the complete source access contract
+-- while postponing only observation-mode selection.
+bindCtxMQBProvisional :: ObservationMode -> Q -> Text -> Bool -> Bool -> Value -> Ctx -> Ctx
+bindCtxMQBProvisional mode q n implocal borrowed ty ctx =
+  case ctxEntries bound of
+    entry : rest -> bound {ctxEntries = entry {ceModeProvisional = True} : rest}
+    [] -> bound
+  where
+    bound = bindCtxMQB mode q n implocal borrowed ty ctx
 
 -- | Bind a local with its complete telescope contract. Implicit-candidate
 -- status and borrowed access are independent properties; conflating them made
@@ -2441,6 +2614,12 @@ markGeneralizableLevelTermFor owner term =
                 (\owners meta -> Map.insertWith Set.union meta (Set.singleton owner) owners)
                 (csLevelGeneralizableOwners st)
                 metas
+          , csLevelGeneralizableMetasByOwner =
+              Map.insertWith
+                Set.union
+                owner
+                metas
+                (csLevelGeneralizableMetasByOwner st)
           }
 
 markGeneralizableLevelTerm :: Term -> CheckM ()
@@ -2539,6 +2718,15 @@ freshLevelInstantiationMeta = do
                     meta
                     (Set.singleton declaration)
                     (csLevelInstantiationOwners st)
+          , csLevelInstantiationMetasByOwner =
+              case owner of
+                Nothing -> csLevelInstantiationMetasByOwner st
+                Just declaration ->
+                  Map.insertWith
+                    Set.union
+                    declaration
+                    (Set.singleton meta)
+                    (csLevelInstantiationMetasByOwner st)
           }
     _ -> pure ()
   pure level
@@ -2675,6 +2863,8 @@ solveMeta m v = do
     next
       { csMetas = Map.insert m (Just v) (csMetas next)
       , csSolvedMetas = Set.insert m (csSolvedMetas next)
+      , csMetaAssignmentGenerations =
+          Map.insertWith (+) m 1 (csMetaAssignmentGenerations next)
       }
 
 -- | Solve a metavariable only when the candidate value is acyclic through the
@@ -2940,17 +3130,6 @@ qSubsumes qa qe = qa == qe || qInterval qa `contained` qInterval qe
         (_, Nothing) -> True
         (Nothing, Just _) -> False
         (Just h1, Just h2) -> h1 <= h2
-
--- | Outer-Pi observation-mode subsumption (§12.1.1, §30.2.0). In checking
--- direction, a function whose binder is parametric may stand where an
--- ordinary-binder function is expected: it accepts every ordinary argument
--- the expected contract permits, and more. The converse would let a caller
--- pass a parametrically-dependent argument to an ordinary-only function.
--- Like quantity subsumption, this is not definitional equality and is never
--- enabled in domains or nested type arguments.
-observationModeSubsumes :: ObservationMode -> ObservationMode -> Bool
-observationModeSubsumes actual expected =
-  actual == expected || (actual == Parametric && expected == Ordinary)
 
 -- | Reconcile one universe inequality with the module's pending constraint
 -- set. A blocked comparison is accepted provisionally, but never guessed in
@@ -4415,7 +4594,12 @@ synchronizeGeneratedConstraintInterfacesFor frontier before = do
       ( invalidateSemanticCaches
           stateWithArtifacts {csGlobals = repairedGlobals}
       )
-    synchronizeGeneratedConstraintInterfaces after
+    let nextFrontier =
+          Set.unions
+            [ generatedConstraintInterfacesAffectedBy caller after current
+            | caller <- Set.toAscList affectedCallers
+            ]
+    synchronizeGeneratedConstraintInterfacesFor (Just nextFrontier) after
     finalizePendingNominalSummaries
 
 generatedConstraintInterfacesAffectedBy
@@ -4514,6 +4698,65 @@ constraintOwnedAfterRetiringOccurrences st retired constraint =
                  )
              )
 
+deleteProvisionalUniverseInstantiations
+  :: Set Int
+  -> CheckState
+  -> CheckState
+deleteProvisionalUniverseInstantiations retired state
+  | Set.null retired = state
+  | otherwise =
+      let retiredMetas =
+            Set.fromList
+              [ meta
+              | identity <- Set.toList retired
+              , Just occurrence <-
+                  [Map.lookup identity (csProvisionalUniverseInstantiations state)]
+              , level <- puiFreshLevels occurrence
+              , meta <- levelMetas level
+              ]
+          deleteIndex identity owner =
+            Map.update
+              (\identities ->
+                 let retained = Set.delete identity identities
+                  in if Set.null retained then Nothing else Just retained)
+              owner
+          removeIdentity (byOwner, byConsumer) identity =
+            case Map.lookup identity (csProvisionalUniverseInstantiations state) of
+              Nothing -> (byOwner, byConsumer)
+              Just occurrence ->
+                ( deleteIndex identity (puiOwner occurrence) byOwner
+                , maybe
+                    byConsumer
+                    (\consumer -> deleteIndex identity consumer byConsumer)
+                    (puiConsumer occurrence)
+                )
+          (owners', consumers') =
+            Set.foldl'
+              removeIdentity
+              ( csProvisionalUniverseInstantiationsByOwner state
+              , csProvisionalUniverseInstantiationsByConsumer state
+              )
+              retired
+          trimMetasByOwner =
+            Map.mapMaybe
+              (\metas ->
+                 let retainedMetas = Set.difference metas retiredMetas
+                  in if Set.null retainedMetas then Nothing else Just retainedMetas)
+       in state
+            { csProvisionalUniverseInstantiations =
+                Map.withoutKeys
+                  (csProvisionalUniverseInstantiations state)
+                  retired
+            , csProvisionalUniverseInstantiationsByOwner = owners'
+            , csProvisionalUniverseInstantiationsByConsumer = consumers'
+            , csLevelInstantiationMetas =
+                Set.difference (csLevelInstantiationMetas state) retiredMetas
+            , csLevelInstantiationOwners =
+                Map.withoutKeys (csLevelInstantiationOwners state) retiredMetas
+            , csLevelInstantiationMetasByOwner =
+                trimMetasByOwner (csLevelInstantiationMetasByOwner state)
+            }
+
 -- | Commit a successfully principalized provisional occurrence. Its checked
 -- result no longer contains occurrence metas, so retaining the occurrence or
 -- constraints owned solely by it would leak transaction-local inference state
@@ -4538,12 +4781,8 @@ retireProvisionalUniverseOccurrences retired
                       retired
                 }
          in reindexLevelConstraints
-              st
-                { csProvisionalUniverseInstantiations =
-                    filter
-                      ((`Set.notMember` retired) . puiIdentity)
-                      (csProvisionalUniverseInstantiations st)
-                , csLevelConstraints = retainedConstraints
+              (deleteProvisionalUniverseInstantiations retired st)
+                { csLevelConstraints = retainedConstraints
                 , csLevelConstraintOwners =
                     Map.restrictKeys
                       (csLevelConstraintOwners st)
@@ -4722,11 +4961,10 @@ solveDeferredLevelConstraints final = do
   st <- get
   let prior = csLevelAssignments st
       activeOwner = csActiveUniverseDefinition st
-      belongsToActive constraint =
-        Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st) == activeOwner
       pendingConstraints
         | final = reverse (csLevelConstraints st)
-        | Just _ <- activeOwner = filter belongsToActive (reverse (csLevelConstraints st))
+        | Just owner <- activeOwner =
+            reverse (Map.findWithDefault [] owner (csLevelConstraintsByOwner st))
         | otherwise = []
       constraints = map (substituteLevelConstraintMetas prior) pendingConstraints
       run cs = solveLevelConstraints cs
@@ -4883,7 +5121,10 @@ solveFinalLevelConstraints initialState constraints = do
                       }
                   pure False
         PrincipalBoundaryDeferred -> pure False
-        PrincipalBoundaryRejected -> pure False
+        PrincipalBoundaryRejected failure -> do
+          reportPrincipalBoundaryFailure
+            diagnosticSpan declarations explicitSchema targets constraints failure
+          pure False
 
 -- | A blocked body-local level can share a maximum with rigid declaration
 -- parameters. If that maximum exceeds a rigid upper bound, retain each closed
@@ -4952,29 +5193,32 @@ settleActiveUniverseRequirements = do
 -- interface metas are deliberately excluded; only fresh instantiations made
 -- while specializing declaration telescopes are principalized here.
 principalizeBodyUniverseInstantiations :: GName -> Value -> Term -> CheckM Term
-principalizeBodyUniverseInstantiations owner interfaceType body = do
+principalizeBodyUniverseInstantiations owner interfaceType body0 = do
+  -- Solved term metavariables can contain fresh universe instantiations. The
+  -- declaration boundary must inspect their reified Core, otherwise those
+  -- levels appear only in the caller's later zonk and escape principalization.
+  body <- zonkTermM 0 body0
+  interface <- quoteIn emptyCtx interfaceType >>= zonkTermM 0
   st <- get
   let assignments = csLevelAssignments st
       bodyMetas = Set.fromList (levelMetasOfTerm (zonkLevels assignments body))
       interfaceMetas =
         Set.fromList
-          (levelMetasOfTerm (zonkLevels assignments (quote (ecOf st) 0 interfaceType)))
+          (levelMetasOfTerm (zonkLevels assignments interface))
       provisionalInstantiationMetas =
-        Set.fromList
-          [ meta
-          | occurrence <- csProvisionalUniverseInstantiations st
-          , let GName occurrenceModule _ = puiOwner occurrence
-          , occurrenceModule == csModule st
-          , puiOwner occurrence `Set.notMember` csFinalizedUniverseInterfaces st
-          , level <- puiFreshLevels occurrence
-          , meta <- levelMetas
-              (normalizeLevel (substituteLevelMetas assignments level))
-          ]
+        unmaterializedProvisionalUniverseMetas st
+          ( Map.findWithDefault
+              Set.empty
+              owner
+              (csProvisionalUniverseInstantiationsByConsumer st)
+          )
       recursiveCandidateInstantiationMetas =
         Set.fromList
           [ meta
-          | occurrence <- csRecursiveSchemaOccurrences st
-          , rsoCaller occurrence == owner
+          | occurrence <- Map.findWithDefault
+              []
+              owner
+              (csRecursiveSchemaOccurrencesByCaller st)
           , not (rsoExplicit occurrence)
           , rsoCallee occurrence `Set.member` csTerminationNames st
           , level <- rsoLevels occurrence
@@ -4988,17 +5232,12 @@ principalizeBodyUniverseInstantiations owner interfaceType body = do
               (Set.union provisionalInstantiationMetas recursiveCandidateInstantiationMetas)
           )
       ownerSymbols =
-        Set.insert owner . Set.fromList $
-          [ ctor
-          | (ctor, info) <- Map.toList (csCtors st)
-          , ciData info == owner
-          ]
+        Set.insert owner
+          (maybe Set.empty (Set.fromList . diCtors) (Map.lookup owner (csDatas st)))
       constraints =
-        [ substituteLevelConstraintMetas assignments constraint
-        | constraint <- csLevelConstraints st
-        , maybe False (`Set.member` ownerSymbols)
-            (Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st))
-        ]
+        map
+          (substituteLevelConstraintMetas assignments)
+          (levelConstraintsOwnedBy st ownerSymbols)
   if Set.null targets
     then normalizeProvisionalBodyReferences body
     else do
@@ -5009,9 +5248,9 @@ principalizeBodyUniverseInstantiations owner interfaceType body = do
       case inferred of
         PrincipalBoundarySolved candidate -> do
           installLevelAssignments candidate
-          normalizeProvisionalBodyReferences body
+          zonkTermM 0 body >>= normalizeProvisionalBodyReferences
         PrincipalBoundaryDeferred -> pure body
-        PrincipalBoundaryRejected -> pure body
+        PrincipalBoundaryRejected _ -> pure body
 
 -- | Close compiler-created declaration occurrences before deciding which
 -- interface levels belong to a generated declaration's own schema.  An
@@ -5034,12 +5273,6 @@ principalizeGeneratedInterfaceOccurrences owner protectedOrigins interface = do
   let assignments = csLevelAssignments st
       zonked = zonkLevels assignments interface
       interfaceMetas = Set.fromList (levelMetasOfTerm zonked)
-      ownedBy relation =
-        Set.fromList
-          [ meta
-          | (meta, owners) <- Map.toList relation
-          , owner `Set.member` owners
-          ]
       projected =
         Set.fromList
           . concatMap
@@ -5053,14 +5286,28 @@ principalizeGeneratedInterfaceOccurrences owner protectedOrigins interface = do
         projected
           ( Set.union protectedOrigins
               ( Set.difference
-                  (ownedBy (csLevelGeneralizableOwners st))
-                  (ownedBy (csLevelInstantiationOwners st))
+                  ( Map.findWithDefault
+                      Set.empty
+                      owner
+                      (csLevelGeneralizableMetasByOwner st)
+                  )
+                  (Map.findWithDefault
+                    Set.empty
+                    owner
+                    (csLevelInstantiationMetasByOwner st))
               )
           )
+      provisionalOccurrenceIds =
+        Map.findWithDefault
+          Set.empty
+          owner
+          (csProvisionalUniverseInstantiationsByConsumer st)
+      deferredDependencyMetas =
+        unmaterializedProvisionalUniverseMetas st provisionalOccurrenceIds
       targets =
         Set.difference
-          interfaceMetas
-          sourceOwned
+          (Set.difference interfaceMetas sourceOwned)
+          deferredDependencyMetas
       constraints =
         map
           (substituteLevelConstraintMetas assignments)
@@ -5078,8 +5325,36 @@ principalizeGeneratedInterfaceOccurrences owner protectedOrigins interface = do
     case inferred of
       PrincipalBoundarySolved candidate -> installLevelAssignments candidate
       PrincipalBoundaryDeferred -> pure ()
-      PrincipalBoundaryRejected -> pure ()
+      PrincipalBoundaryRejected _ -> pure ()
   zonkTermM 0 interface
+
+-- | Fresh levels of still-unmaterialized provisional declaration occurrences.
+-- Their callee SCC has not yet published the constraints that relate source
+-- and result positions, so selecting a principal value from the incomplete
+-- graph can only be premature. Callers defer these metas until
+-- 'materializeProvisionalUniverseConstraints' installs the complete callee
+-- interface; finalized and imported declarations are never included.
+unmaterializedProvisionalUniverseMetas
+  :: CheckState
+  -> Set Int
+  -> Set LevelMeta
+unmaterializedProvisionalUniverseMetas state occurrenceIds =
+  Set.fromList
+    [ meta
+    | identity <- Set.toList occurrenceIds
+    , Just occurrence <-
+        [Map.lookup identity (csProvisionalUniverseInstantiations state)]
+    , not (puiConstraintsMaterialized occurrence)
+    , let GName occurrenceModule _ = puiOwner occurrence
+    , occurrenceModule == csModule state
+    , puiOwner occurrence `Set.notMember` csFinalizedUniverseInterfaces state
+    , level <- puiFreshLevels occurrence
+    , meta <-
+        levelMetas
+          ( normalizeLevel
+              (substituteLevelMetas (csLevelAssignments state) level)
+          )
+    ]
 
 -- | Resolve unsolved universe metas for one finalized owner without rewriting
 -- its published rigid parameters. 'csFinalizedGlobalUniverseMetaMaps' is the
@@ -5787,7 +6062,42 @@ reportUniverseInferenceRequiresAnnotation diagnosticSpan declarations explicitSc
 data PrincipalBoundaryResult
   = PrincipalBoundarySolved !(Map LevelMeta Level)
   | PrincipalBoundaryDeferred
-  | PrincipalBoundaryRejected
+  | PrincipalBoundaryRejected !PrincipalBoundaryFailure
+
+data PrincipalBoundaryFailure
+  = PrincipalBoundarySolveFailure !LevelSolveError
+  | PrincipalBoundaryClassifierUnsatisfiable
+  | PrincipalBoundaryNoPointwiseLeast !PrincipalNonLeastWitness
+  | PrincipalBoundaryOutsidePortableFragment
+
+classifyPrincipalAtDeclarationBoundary
+  :: Set LevelMeta
+  -> [LevelConstraint]
+  -> (UniverseInferenceClass, PrincipalBoundaryResult)
+classifyPrincipalAtDeclarationBoundary targets constraints =
+  case solveLevelConstraintsFor targets constraints of
+    Left solveError ->
+      ( case solveError of
+          LevelResourceLimit {} -> InferenceOutsidePortableInferenceFragment
+          _ -> InferenceUnsatisfiable
+      , PrincipalBoundaryRejected (PrincipalBoundarySolveFailure solveError)
+      )
+    Right _ ->
+      case inferPrincipalLevelsFor targets constraints of
+        SolvedPrincipal assignments ->
+          (InferenceSolvedPrincipal, PrincipalBoundarySolved assignments)
+        Unsatisfiable ->
+          (InferenceUnsatisfiable, PrincipalBoundaryRejected PrincipalBoundaryClassifierUnsatisfiable)
+        NoPointwiseLeastSolution witness ->
+          ( InferenceNoPointwiseLeastSolution
+          , PrincipalBoundaryRejected (PrincipalBoundaryNoPointwiseLeast witness)
+          )
+        OutsidePortableInferenceFragment ->
+          ( InferenceOutsidePortableInferenceFragment
+          , PrincipalBoundaryRejected PrincipalBoundaryOutsidePortableFragment
+          )
+        BlockedByUnselectedMetas ->
+          (InferenceBlockedByUnselectedMetas, PrincipalBoundaryDeferred)
 
 inferPrincipalAtDeclarationBoundary
   :: Span
@@ -5796,50 +6106,17 @@ inferPrincipalAtDeclarationBoundary
   -> Set LevelMeta
   -> [LevelConstraint]
   -> CheckM PrincipalBoundaryResult
-inferPrincipalAtDeclarationBoundary diagnosticSpan declarations explicitSchema targets constraints =
-  -- Inconsistency dominates the portable-fragment classification. A system
-  -- with no model is not merely one whose principal solution needs an
-  -- annotation, even when its syntax also lies outside the assignable
-  -- fragment.
-  case solveLevelConstraintsFor targets constraints of
-    Left LevelResourceLimit {} -> do
-      recordOutcome InferenceOutsidePortableInferenceFragment Map.empty
-      reportUniverseInferenceRequiresAnnotation diagnosticSpan declarations explicitSchema targets constraints
-        "unknown: the exact solver crossed its resource boundary before a principal solution could be established"
-      pure PrincipalBoundaryRejected
-    Left solveError -> do
-      recordOutcome InferenceUnsatisfiable Map.empty
-      reportLevelSolveError solveError
-      pure PrincipalBoundaryRejected
-    Right _ ->
-      case inferPrincipalLevelsFor targets constraints of
-        SolvedPrincipal assignments -> do
-          recordOutcome InferenceSolvedPrincipal assignments
-          pure (PrincipalBoundarySolved assignments)
-        Unsatisfiable -> do
-          recordOutcome InferenceUnsatisfiable Map.empty
-          report $
-            diag SevError StageElaborate "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
-              (Just "kappa.universe.constraint") diagnosticSpan
-              "the selected universe constraint system is unsatisfiable (§11.1.3)"
-          pure PrincipalBoundaryRejected
-        NoPointwiseLeastSolution witness -> do
-          recordOutcome InferenceNoPointwiseLeastSolution Map.empty
-          reportNoPrincipalUniverseDiagnostic diagnosticSpan declarations explicitSchema targets constraints (Just witness)
-            "declaration universe constraints have valid solutions but no pointwise least solution (§11.1.3)"
-          pure PrincipalBoundaryRejected
-        OutsidePortableInferenceFragment -> do
-          recordOutcome InferenceOutsidePortableInferenceFragment Map.empty
-          reportUniverseInferenceRequiresAnnotation diagnosticSpan declarations explicitSchema targets constraints
-            "unknown: a semantic least solution may exist, but the constraint is outside the portable inference fragment"
-          pure PrincipalBoundaryRejected
-        BlockedByUnselectedMetas -> do
-          recordOutcome InferenceBlockedByUnselectedMetas Map.empty
-          -- This is not a source failure. At an intermediate declaration
-          -- boundary the unselected metas are usually legal
-          -- source-generalizable schema levels that have not yet been
-          -- replaced by rigid parameters.
-          pure PrincipalBoundaryDeferred
+inferPrincipalAtDeclarationBoundary _diagnosticSpan declarations _explicitSchema targets constraints = do
+  let (inferenceClass, result) =
+        classifyPrincipalAtDeclarationBoundary targets constraints
+      assignments = case result of
+        PrincipalBoundarySolved solved -> solved
+        _ -> Map.empty
+  -- Classification is deliberately diagnostic-free. Intermediate body and
+  -- publication passes may revisit the same still-open component; only the
+  -- complete semantic boundary commits a failure diagnostic.
+  recordOutcome inferenceClass assignments
+  pure result
   where
     recordOutcome inferenceClass assignments =
       modify' $ \state ->
@@ -5851,6 +6128,32 @@ inferPrincipalAtDeclarationBoundary diagnosticSpan declarations explicitSchema t
                 (csUniverseInferenceRecords state)
                 declarations
           }
+
+reportPrincipalBoundaryFailure
+  :: Span
+  -> [Text]
+  -> Bool
+  -> Set LevelMeta
+  -> [LevelConstraint]
+  -> PrincipalBoundaryFailure
+  -> CheckM ()
+reportPrincipalBoundaryFailure diagnosticSpan declarations explicitSchema targets constraints = \case
+  PrincipalBoundarySolveFailure LevelResourceLimit {} ->
+    reportUniverseInferenceRequiresAnnotation diagnosticSpan declarations explicitSchema targets constraints
+      "unknown: the exact solver crossed its resource boundary before a principal solution could be established"
+  PrincipalBoundarySolveFailure solveError ->
+    reportLevelSolveError solveError
+  PrincipalBoundaryClassifierUnsatisfiable ->
+    report $
+      diag SevError StageElaborate "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE"
+        (Just "kappa.universe.constraint") diagnosticSpan
+        "the selected universe constraint system is unsatisfiable (§11.1.3)"
+  PrincipalBoundaryNoPointwiseLeast witness ->
+    reportNoPrincipalUniverseDiagnostic diagnosticSpan declarations explicitSchema targets constraints (Just witness)
+      "declaration universe constraints have valid solutions but no pointwise least solution (§11.1.3)"
+  PrincipalBoundaryOutsidePortableFragment ->
+    reportUniverseInferenceRequiresAnnotation diagnosticSpan declarations explicitSchema targets constraints
+      "unknown: a semantic least solution may exist, but the constraint is outside the portable inference fragment"
 
 installLevelAssignments :: HasCallStack => Map LevelMeta Level -> CheckM ()
 installLevelAssignments new = do
@@ -6282,10 +6585,12 @@ unifyWith exact ctx =
       -- matching the explicit prefix against the closed fields and
       -- instantiating the row tail with the leftover fields as a
       -- closed residual row
-      (VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)], VRecordT fs)
-        | pm == preludeModule -> goOpenClosed (fuel - 1) lvl rowV prefixV fs
-      (VRecordT fs, VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)])
-        | pm == preludeModule -> goOpenClosed (fuel - 1) lvl rowV prefixV fs
+      (VGlobI openRecord [rowLevel] [(_, rowV), (_, prefixV)], VRecordT fs)
+        | openRecord == prelOpenRec ->
+            goOpenClosed (fuel - 1) lvl rowLevel rowV prefixV fs
+      (VRecordT fs, VGlobI openRecord [rowLevel] [(_, rowV), (_, prefixV)])
+        | openRecord == prelOpenRec ->
+            goOpenClosed (fuel - 1) lvl rowLevel rowV prefixV fs
       -- §13.2.10: signature types are equal iff the opaque label sets
       -- and the underlying record types agree
       (VSigT l1 v1, VSigT l2 v2)
@@ -6495,7 +6800,7 @@ unifyWith exact ctx =
           _ -> Nothing
     -- split closed fields fs into the open record's explicit prefix
     -- and a '__closedRow' residual solving the row tail (§11.3.1A)
-    goOpenClosed fuel lvl rowV prefixV fs = do
+    goOpenClosed fuel lvl rowLevel rowV prefixV fs = do
       pf <- forceM prefixV
       case pf of
         VRecordT pfs
@@ -6510,14 +6815,25 @@ unifyWith exact ctx =
                 then pure False
                 else do
                   let rest = [f | f@(l, _) <- fs, l `notElem` map fst pfs]
-                  goAt
-                    fuel
-                    False
-                    False
-                    lvl
-                    rowV
-                    (VGlobN prelClosedRow [(Expl, VRecordT rest)])
-        _ -> fallback lvl (VGlobN prelOpenRec [(Expl, rowV), (Expl, prefixV)]) (VRecordT fs)
+                  typeValueClassifierLevel ctx (VRecordT rest) >>= \case
+                    Nothing -> pure False
+                    Just restLevel -> do
+                      fits <- solveLevelInequality ctx restLevel rowLevel
+                      if not fits
+                        then pure False
+                        else
+                          goAt
+                            fuel
+                            False
+                            False
+                            lvl
+                            rowV
+                            (VGlobI prelClosedRow [rowLevel] [(Expl, VRecordT rest)])
+        _ ->
+          fallback
+            lvl
+            (VGlobI prelOpenRec [rowLevel] [(Expl, rowV), (Expl, prefixV)])
+            (VRecordT fs)
       where
         andAll [] = pure True
         andAll (m : ms) = m >>= \ok -> if ok then andAll ms else pure False
@@ -8200,6 +8516,49 @@ globalAppM g arguments = do
   headTerm <- globalHeadM g
   pure (foldl' (\term (icit, argument) -> CApp icit term argument) headTerm arguments)
 
+-- | Apply a compiler-generated global at an already-proved universe
+-- instantiation, checking each generated operand against the specialized
+-- telescope. This is the typed construction boundary for internal families
+-- such as @__openRec@: assembling raw 'CApp' nodes would let the caller claim
+-- a result universe independently of the intrinsic's declared contract.
+checkedGeneratedGlobalAppAtM
+  :: Ctx
+  -> Span
+  -> GName
+  -> [Level]
+  -> [(Icit, Term, Value)]
+  -> CheckM (Term, Value)
+checkedGeneratedGlobalAppAtM ctx site global universes arguments = do
+  definition <- gets (Map.lookup global . csGlobals)
+  case definition of
+    Nothing -> do
+      errAt site "E_INTERNAL_GENERATED_APPLICATION" Nothing
+        ("compiler-generated global interface is unavailable for '" <> gnameText global <> "'")
+      anyHole ctx
+    Just globalDefinition
+      | dutParameterCount (gdUniverses globalDefinition) /= length universes -> do
+          errAt site "E_INTERNAL_GENERATED_APPLICATION" Nothing
+            ("compiler-generated global has an invalid universe instantiation for '" <> gnameText global <> "'")
+          anyHole ctx
+      | otherwise -> do
+          (headTerm, headType) <-
+            specializeGlobalAt ctx global globalDefinition universes
+          apply headTerm headType arguments
+  where
+    apply term result [] = pure (term, result)
+    apply term functionType ((argumentIcit, argumentTerm, argumentType) : rest) =
+      forceM functionType >>= \case
+        VPiM _ expectedIcit _ _ _ domain closure
+          | argumentIcit == expectedIcit -> do
+              expectType ctx site argumentType domain
+              argumentValue <- evalIn ctx argumentTerm
+              result <- clApp closure argumentValue
+              apply (CApp argumentIcit term argumentTerm) result rest
+        _ -> do
+          errAt site "E_INTERNAL_GENERATED_APPLICATION" Nothing
+            ("compiler-generated application does not match the declared telescope of '" <> gnameText global <> "'")
+          anyHole ctx
+
 -- | Construct a checker-generated neutral value through the declaration's
 -- hidden-universe instantiation boundary. This is the value-level counterpart
 -- of 'globalHeadM'; using 'VGlobN' here would lose the fresh level spine when
@@ -8285,18 +8644,38 @@ instantiateProvisionalUniversesWith facet owner sourceMetas pinned term = do
   unless (null sourceMetas) $
     modify' $ \st ->
       let identity = csNextProvisionalUniverseInstantiation st
+          occurrence =
+            ProvisionalUniverseInstantiation
+              identity
+              facet
+              owner
+              consumer
+              sourceMetas
+              freshLevels
+              False
+              Set.empty
        in st
             { csProvisionalUniverseInstantiations =
-                ProvisionalUniverseInstantiation
+                Map.insert
                   identity
-                  facet
+                  occurrence
+                  (csProvisionalUniverseInstantiations st)
+            , csProvisionalUniverseInstantiationsByOwner =
+                Map.insertWith
+                  Set.union
                   owner
+                  (Set.singleton identity)
+                  (csProvisionalUniverseInstantiationsByOwner st)
+            , csProvisionalUniverseInstantiationsByConsumer =
+                maybe
+                  (csProvisionalUniverseInstantiationsByConsumer st)
+                  (\consumerOwner ->
+                     Map.insertWith
+                       Set.union
+                       consumerOwner
+                       (Set.singleton identity)
+                       (csProvisionalUniverseInstantiationsByConsumer st))
                   consumer
-                  sourceMetas
-                  freshLevels
-                  False
-                  Set.empty
-                  : csProvisionalUniverseInstantiations st
             , csNextProvisionalUniverseInstantiation = identity + 1
             }
   pure
@@ -8450,11 +8829,9 @@ recordRecursiveSchemaOccurrence occurrenceCtx explicit site callee levels = do
       , Map.member callee (csGlobals st) -> do
           assumptions <- effectiveLevelAssumptions (fromMaybe emptyCtx occurrenceCtx)
           modify' $ \current ->
-            current
-              { csRecursiveSchemaOccurrences =
-                  RecursiveSchemaOccurrence caller callee levels explicit assumptions site
-                    : csRecursiveSchemaOccurrences current
-              }
+            insertRecursiveSchemaOccurrence
+              (RecursiveSchemaOccurrence caller callee levels explicit assumptions site)
+              current
     _ -> pure ()
 
 -- | Specialize a semantic component stored under a declaration's universe
@@ -8719,9 +9096,9 @@ etaCtor :: EvalCtx -> GName -> [Level] -> Term -> Term
 etaCtor ec g universes cty = build 0 [] (eval ec [] cty)
   where
     build n acc fty = case force ec fty of
-      VPiM mode ic q _ name dom clo ->
+      VPiRuntimeM mode _ ic q _ name _ _ runtimeErasure dom clo ->
         CLamM mode ic q ("x" <> T.pack (show n)) $
-          build (n + 1) ((n, ic, coreCtorPayloadField ec n ic q dom, name) : acc) (evalClosure clo (VRigid n []))
+          build (n + 1) ((n, ic, coreCtorPayloadField ec n runtimeErasure ic q dom, name) : acc) (evalClosure clo (VRigid n []))
       _ ->
         -- KBackendIR Stage 0 / Perceus S1.3: annotate the saturated 'CCtor'
         -- with the constructor's TYPE telescope ('cty', a closed top-level term)
@@ -8735,8 +9112,8 @@ etaCtor ec g universes cty = build 0 [] (eval ec [] cty)
           | (i, ic, payload, name) <- reverse acc
           ]
     evalClosure (Closure env body) v = eval ec (v : env) body
-    coreCtorPayloadField ctx lvl ic q dom =
-      ic == Expl || Repr.runtimeConstructorField ctx lvl ic q dom
+    coreCtorPayloadField ctx lvl runtimeErasure ic q dom =
+      ic == Expl || Repr.runtimeConstructorPiField ctx lvl runtimeErasure ic q dom
 
 -- | §3.2.2 suggestion edit-distance threshold for a spelling of this
 -- length. Scales with the length so a one-character name does not match
@@ -8856,9 +9233,11 @@ resolveName ctx name =
       -- 'maybe-applicable' — the renamed reference type-checks only if
       -- the candidate happens to fit, so it is not 'machine-applicable'.
       let near = take 1 (closeSpellings n cands)
+          preludeIdentity = GName preludeModule n
           preludeWouldResolve =
-            Map.member (GName preludeModule n) (csGlobals st0)
-              || Map.member (GName preludeModule n) (csCtors st0)
+            Map.member preludeIdentity (csGlobals st0)
+              || Map.member preludeIdentity (csCtors st0)
+              || any ((== preludeIdentity) . wiName) wiredInPreludeNames
           unresolvedMessage =
             if csPreludeDisabled st0 && preludeWouldResolve
               then
@@ -9498,6 +9877,18 @@ extendLevelAssumption sp ctx (Just (lhs, rhs)) = do
       -- solver treats an inconsistent context as proving nothing, while the
       -- marker lets later formation checks suppress cascaded diagnostics.
       pure ctx {ctxLevelAssumptions = extended}
+
+-- | Replay an assumption that has already crossed a source validation
+-- boundary. Post-check annotation passes need the scoped solver context, but
+-- must not diagnose the same source binder a second time.
+replayCheckedLevelAssumption :: Ctx -> Maybe (Level, Level) -> Ctx
+replayCheckedLevelAssumption ctx = \case
+  Nothing -> ctx
+  Just (lhs, rhs) ->
+    ctx
+      { ctxLevelAssumptions =
+          insertAssumption lhs rhs (ctxLevelAssumptions ctx)
+      }
 
 -- | A synthesized erased proof metavariable is an obligation, not yet an
 -- authority.  Its proposition may scope the dependent remainder of the
@@ -10891,7 +11282,7 @@ constructRefinement ctx site sourceTerm baseType dictionary premises = do
               withProofs =
                 foldr
                   ( \(name, proposition, evidence) rest ->
-                      CLetM Ordinary Q0 name proposition evidence rest
+                      CLetRuntimeM Ordinary Q0 name RuntimeRelevant proposition evidence rest
                   )
                   body
                   proofBindings
@@ -10901,7 +11292,7 @@ constructRefinement ctx site sourceTerm baseType dictionary premises = do
           -- recording Q1 here would let generated Core move a linear source
           -- through an unrestricted call without the source QTT check.
           recordImplicitExpressionDemand site QW
-          pure (Just (CLetM Ordinary QW sourceName baseTypeTerm sourceTerm withProofs))
+          pure (Just (CLetRuntimeM Ordinary QW sourceName RuntimeRelevant baseTypeTerm sourceTerm withProofs))
   where
     bindPremise
       predicateMode
@@ -11293,7 +11684,8 @@ settleSelectedPendingProofDependencies selected = do
         value <- evalIn pendingCtx term
         solveMeta meta value
         retirePendingLevelEvidence meta
-      Nothing ->
+      Nothing -> do
+        recordPendingEvidenceAttempt meta refreshedTerm facts
         modify' $ \next ->
           next
             { csPending =
@@ -11428,10 +11820,11 @@ tryRefinementCoercion ctx site sourceTerm actual expected = do
                       Just body ->
                         pure
                           ( Just
-                              ( CLetM
+                              ( CLetRuntimeM
                                   Ordinary
                                   QW
                                   sourceName
+                                  RuntimeRelevant
                                   actualTerm
                                   sourceTerm
                                   body
@@ -11707,25 +12100,26 @@ recordExpectedImplicitRecursiveSchema ctx site term actual0 expected0 = do
         , Just caller <- csActiveUniverseDefinition st
         , Just sourceOccurrence <- listToMaybe
             [ occurrence
-            | occurrence <- csRecursiveSchemaOccurrences st
-            , rsoCaller occurrence == caller
+            | occurrence <- Map.findWithDefault
+                []
+                caller
+                (csRecursiveSchemaOccurrencesByCaller st)
             , rsoCallee occurrence == callee
             , not (rsoExplicit occurrence)
             , map normalizeLevel (rsoLevels occurrence) == map normalizeLevel occurrenceLevels
             ] -> do
               assumptions <- effectiveLevelAssumptions ctx
               modify' $ \current ->
-                current
-                  { csRecursiveSchemaOccurrences =
-                      RecursiveSchemaOccurrence
-                        (rsoCaller sourceOccurrence)
-                        callee
-                        targetLevels
-                        False
-                        assumptions
-                        site
-                        : csRecursiveSchemaOccurrences current
-                  }
+                insertRecursiveSchemaOccurrence
+                  ( RecursiveSchemaOccurrence
+                      (rsoCaller sourceOccurrence)
+                      callee
+                      targetLevels
+                      False
+                      assumptions
+                      site
+                  )
+                  current
               pure True
     _ -> pure False
 
@@ -12416,14 +12810,22 @@ isPropClosureFromTerm ctx sp sourceGoal goal = do
     propEvidence cx doms sourceProposition pv = do
       ec <- ec_
       pF <- forceHLevelCarrier pv
-      direct <- hLevelTraitEvidence cx sp prelIsProp pF
-      case direct of
-        Just evidence -> pure (Just evidence)
-        Nothing -> do
-          propositionGoal <- globalValueM prelIsProp [(Expl, pF)]
-          focusedLocalDerivation (ctxLen ctx) cx sp propositionGoal >>= \case
+      case pF of
+        -- Pi propositionhood has one canonical structural introduction. Trying
+        -- every visible local theorem before taking that rule makes an n-binder
+        -- law explore a bounded Cartesian product of its own value binders at
+        -- every recursive step. The generated pointwise premise still resolves
+        -- its non-Pi leaf through the ordinary local/instance ladder below.
+        VPiM {} -> structuralEvidence cx doms sourceProposition ec pF
+        _ -> do
+          direct <- hLevelTraitEvidence cx sp prelIsProp pF
+          case direct of
             Just evidence -> pure (Just evidence)
-            Nothing -> structuralEvidence cx doms sourceProposition ec pF
+            Nothing -> do
+              propositionGoal <- globalValueM prelIsProp [(Expl, pF)]
+              focusedLocalDerivation (ctxLen ctx) cx sp propositionGoal >>= \case
+                Just evidence -> pure (Just evidence)
+                Nothing -> structuralEvidence cx doms sourceProposition ec pF
 
     structuralEvidence cx doms sourceProposition ec pF =
       case pF of
@@ -13617,6 +14019,113 @@ goalHasUniverseFlex ctx value = do
           (quote (ecOf state) (ctxLen ctx) value)
   pure (not (null (levelMetasOfTerm term)))
 
+pendingEvidenceRetryIds :: Bool -> CheckM (Set MetaId)
+pendingEvidenceRetryIds forceAll = do
+  state <- get
+  pure $
+    Set.fromList
+      [ meta
+      | (meta, _, _, _, _) <- csPending state
+      , forceAll
+          || maybe
+               True
+               (not . dependencySnapshotIsCurrent (pendingEvidenceDependencyVersion state))
+               (Map.lookup meta (csPendingEvidenceAttempts state))
+      ]
+
+recordPendingEvidenceAttempt
+  :: MetaId
+  -> Term
+  -> [ScopedBoolFact]
+  -> CheckM ()
+recordPendingEvidenceAttempt evidence goal facts = do
+  state <- get
+  let factTerms = [term | ScopedBoolFact _ term _ <- facts]
+      dependencies =
+        Set.delete (PendingTermMeta evidence)
+          (pendingEvidenceDependencies state (goal : factTerms))
+      snapshot =
+        captureDependencySnapshot
+          (pendingEvidenceDependencyVersion state)
+          dependencies
+  modify' $ \next ->
+    next
+      { csPendingEvidenceAttempts =
+          Map.insert evidence snapshot (csPendingEvidenceAttempts next)
+      }
+
+pendingEvidenceDependencies
+  :: CheckState
+  -> [Term]
+  -> Set PendingEvidenceDependency
+pendingEvidenceDependencies state roots =
+  Set.unions
+    [ Set.map PendingTermMeta termMetas
+    , Set.map PendingLevelMeta levelMetas'
+    , Set.map PendingGlobal globals
+    ]
+  where
+    rootMetas = Set.fromList (concatMap metaIdsOf roots)
+    termMetas = closeClassifierMetas rootMetas rootMetas
+    classifierTerms =
+      [ micType classifier
+      | meta <- Set.toList termMetas
+      , Just classifier <- [Map.lookup meta (csMetaClassifiers state)]
+      ]
+    allTerms = roots ++ classifierTerms
+    levelMetas' = Set.fromList (concatMap levelMetasOfTerm allTerms)
+    globals = Set.unions (map globalsOfTerm allTerms)
+
+    closeClassifierMetas reached frontier
+      | Set.null frontier = reached
+      | otherwise =
+          let discovered =
+                Set.fromList
+                  [ dependency
+                  | meta <- Set.toList frontier
+                  , Just classifier <- [Map.lookup meta (csMetaClassifiers state)]
+                  , dependency <- metaIdsOf (micType classifier)
+                  ]
+              fresh = Set.difference discovered reached
+           in closeClassifierMetas (Set.union reached fresh) fresh
+
+pendingEvidenceDependencyVersion
+  :: CheckState
+  -> PendingEvidenceDependency
+  -> PendingEvidenceDependencyVersion
+pendingEvidenceDependencyVersion state = \case
+  PendingTermMeta meta ->
+    PendingTermMetaVersion
+      (Map.findWithDefault 0 meta (csMetaAssignmentGenerations state))
+  PendingLevelMeta meta ->
+    PendingLevelMetaVersion (Map.lookup meta (csLevelAssignments state))
+  PendingGlobal global ->
+    PendingGlobalVersion
+      ( fmap
+          (\definition ->
+             ( gdUniverses definition
+             , gdCoreType definition
+             , gdCoreBody definition
+             , gdReducible definition
+             ))
+          (Map.lookup global (csGlobals state))
+      )
+      ( fmap
+          (\constructor -> (ciUniverses constructor, ciType constructor))
+          (Map.lookup global (csCtors state))
+      )
+
+prunePendingEvidenceAttempts :: CheckM ()
+prunePendingEvidenceAttempts =
+  modify' $ \state ->
+    let live =
+          Set.fromList
+            [meta | (meta, _, _, _, _) <- csPending state]
+     in state
+          { csPendingEvidenceAttempts =
+              Map.restrictKeys (csPendingEvidenceAttempts state) live
+          }
+
 -- | Flush postponed trait goals after a body has been elaborated. A
 -- goal whose head is still an unsolved metavariable is kept pending
 -- (a later declaration's use site may determine the head, e.g. an
@@ -13726,14 +14235,22 @@ flushPendingWithPolicy final True deferLevelEvidence reportUnsolved = do
   -- defaulting. Isolated numeric evidence remains ambiguous and is left for
   -- the ordinary default below, so the open global instance set still cannot
   -- choose an otherwise unconstrained literal carrier.
-  pending <- gets csPending
+  ready <- pendingEvidenceRetryIds final
+  pending <- gets (filter ((`Set.member` ready) . pendingEntryMeta) . csPending)
   settlePendingNumericComponents pending
-  defaultPendingNumericGoals
+  defaultPendingNumericGoals ready
   flushPendingWithPolicy final False deferLevelEvidence reportUnsolved
 flushPendingWithPolicy final False deferLevelEvidence reportUnsolved = do
-  when reportUnsolved $
-    settlePendingEvidenceToFixedPoint final deferLevelEvidence
-  flushPendingPass final deferLevelEvidence reportUnsolved
+  if reportUnsolved
+    then do
+      attempted <- settlePendingEvidenceToFixedPoint final deferLevelEvidence
+      unless (Set.null attempted) $
+        flushPendingPassSelected attempted final deferLevelEvidence True
+    else do
+      ready <- pendingEvidenceRetryIds final
+      unless (Set.null ready) $
+        flushPendingPassSelected ready final deferLevelEvidence False
+  prunePendingEvidenceAttempts
 
 -- | Resolve pending evidence to a semantic fixed point before any diagnostic
 -- pass. A proof can depend on evidence captured in its branch facts, and that
@@ -13742,43 +14259,42 @@ flushPendingWithPolicy final False deferLevelEvidence reportUnsolved = do
 -- whether an otherwise valid proof is accepted. Non-reporting passes retain
 -- unresolved entries; solved entries and any evidence they unlock are
 -- monotone, so an unchanged progress key is the exact stopping condition.
-settlePendingEvidenceToFixedPoint :: Bool -> Bool -> CheckM ()
-settlePendingEvidenceToFixedPoint final deferLevelEvidence = go Set.empty
-  where
-    go seen = do
-      before <- pendingEvidenceProgressKey
-      if before `Set.member` seen
-        then pure ()
-        else do
-          flushPendingPass final deferLevelEvidence False
-          after <- pendingEvidenceProgressKey
-          if after == before
-            then pure ()
-            else go (Set.insert before seen)
-
-pendingEvidenceProgressKey
-  :: CheckM (Set MetaId, Set MetaId, Map LevelMeta Level)
-pendingEvidenceProgressKey = do
+settlePendingEvidenceToFixedPoint :: Bool -> Bool -> CheckM (Set MetaId)
+settlePendingEvidenceToFixedPoint final deferLevelEvidence = do
   state <- get
-  pure
-    ( Set.fromList
-        [ meta
-        | (meta, _, _, _, _) <- csPending state
-        ]
-    , csSolvedMetas state
-    , csLevelAssignments state
-    )
+  let budget = max 1 (Map.size (csMetas state) + length (csPending state))
+  go budget final Set.empty
+  where
+    go remaining forceAll attempted = do
+      ready <- pendingEvidenceRetryIds forceAll
+      if Set.null ready
+        then pure attempted
+        else
+          if remaining <= 0
+            then do
+              errAt noSpan "E_INTERNAL" (Just "kappa.internal.compiler")
+                "pending evidence dependency worklist exceeded its monotone step budget"
+              pure attempted
+            else do
+              flushPendingPassSelected ready final deferLevelEvidence False
+              go
+                (remaining - 1)
+                False
+                (Set.union attempted ready)
 
-flushPendingPass :: Bool -> Bool -> Bool -> CheckM ()
-flushPendingPass final deferLevelEvidence reportUnsolved = do
+-- | Retry only the selected evidence identities. Dormant entries are copied
+-- back to the queue in their original insertion order, so scheduling changes
+-- neither source-order diagnostics nor candidate precedence.
+flushPendingPassSelected :: Set MetaId -> Bool -> Bool -> Bool -> CheckM ()
+flushPendingPassSelected selected final deferLevelEvidence reportUnsolved = do
   st <- get
   let pend = reverse (csPending st)
   put st {csPending = []}
-  forM_ pend $ \(mid, goal, sp, ctx, bfs) -> do
-    reopenSolvedPendingMeta mid
-    stNow <- get
-    case Map.lookup mid (csMetas stNow) of
-      _ -> do
+  forM_ pend $ \entry@(mid, goal, sp, ctx, bfs) ->
+    if mid `Set.notMember` selected
+      then modify' $ \state -> state {csPending = entry : csPending state}
+      else do
+        reopenSolvedPendingMeta mid
         -- §6.1.5 defaults an otherwise unconstrained numeric-literal carrier
         -- only after inference for the enclosing declaration has completed.
         -- Earlier checkpoints must retain the flexible goal so later context
@@ -13873,7 +14389,8 @@ flushPendingPass final deferLevelEvidence reportUnsolved = do
             solveMeta mid v
             retirePendingLevelEvidence mid
           Nothing
-            | shouldDefer || not reportUnsolved ->
+            | shouldDefer || not reportUnsolved -> do
+                recordPendingEvidenceAttempt mid quotedGoal bfs
                 modify' $ \s -> s {csPending = (mid, goal, sp, ctx, bfs) : csPending s}
             | otherwise -> do
                 ambiguous <-
@@ -13953,6 +14470,8 @@ retirePendingLevelEvidence meta =
     st
       { csPendingLevelEvidence =
           Map.delete meta (csPendingLevelEvidence st)
+      , csPendingEvidenceAttempts =
+          Map.delete meta (csPendingEvidenceAttempts st)
       }
 
 -- | Resolve only the selected pending evidence entries. The rest of the queue
@@ -13974,7 +14493,12 @@ flushPendingSelectedWithPolicy defaultNumerics selected = do
   st <- get
   let (inside, outside) =
         List.partition (\(mid, _, _, _, _) -> mid `Set.member` selected) (csPending st)
-  put st {csPending = inside}
+  put
+    st
+      { csPending = inside
+      , csPendingEvidenceAttempts =
+          Map.withoutKeys (csPendingEvidenceAttempts st) selected
+      }
   flushPendingWithPolicy False defaultNumerics False False
   retained <- gets csPending
   modify' $ \state -> state {csPending = retained ++ outside}
@@ -14154,10 +14678,17 @@ pendingEvidenceComponentIn graph rawSeed = close seed Set.empty
 -- a later statement must not retroactively choose the first statement's
 -- literal carrier. The pending goal itself remains for the ordinary evidence
 -- ladder after its carrier has been fixed.
-defaultPendingNumericGoals :: CheckM ()
-defaultPendingNumericGoals = do
+defaultPendingNumericGoals :: Set MetaId -> CheckM ()
+defaultPendingNumericGoals selected = do
   pending <- gets csPending
-  forM_ pending $ \(_, goal, _, _, _) -> forceM goal >>= defaultNumericLiteralGoal
+  forM_ pending $ \(meta, goal, _, _, _) ->
+    when (meta `Set.member` selected) $
+      forceM goal >>= defaultNumericLiteralGoal
+
+defaultAllPendingNumericGoals :: CheckM ()
+defaultAllPendingNumericGoals = do
+  selected <- gets (Set.fromList . map pendingEntryMeta . csPending)
+  defaultPendingNumericGoals selected
 
 defaultNumericLiteralGoal :: Value -> CheckM ()
 defaultNumericLiteralGoal = \case
@@ -14904,18 +15435,19 @@ rowProof :: Value -> CheckM (Maybe Term)
 rowProof goal = do
   g <- forceM goal
   case g of
-    VGlobN (GName pm "LacksRec") [(_, rowV), (_, lblV)]
-      | pm == preludeModule -> do
+    VGlobI lacksRec [] [(_, rowV), (_, lblV)]
+      | lacksRec == prelLacksRec -> do
           row <- forceM rowV
           lbl <- forceM lblV
           case (row, lbl) of
-            (VGlobN (GName pm2 "__closedRow") [(_, fieldsV)], VLit (LitStr l))
-              | pm2 == preludeModule -> do
+            (VGlobI closedRow [_] [(_, fieldsV)], VLit (LitStr l))
+              | closedRow == prelClosedRow
+              -> do
                   fsF <- forceM fieldsV
                   case fsF of
                     VRecordT fs
                       | l `notElem` map fst fs ->
-                          Just <$> globalHeadM prelRowEvidence
+                          pure (Just (CGlobal prelRowEvidence []))
                     _ -> pure Nothing
             _ -> pure Nothing
     _ -> pure Nothing
@@ -15038,9 +15570,7 @@ matchingInstanceTrials
   -> CheckM (CheckState, [InstanceTrial])
 matchingInstanceTrials depth ctx trait goalUniverses goalArguments = do
   baseline <- get
-  let candidates =
-        sortOn ieDict
-          [entry | entry <- csInstances baseline, ieTrait entry == trait]
+  let candidates = Map.findWithDefault [] trait (csInstancesByTrait baseline)
   trials <- fmap catMaybes . forM candidates $ \entry -> do
     put baseline
     result <- tryInstance depth ctx goalUniverses goalArguments entry
@@ -19991,8 +20521,8 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTermAt d t0)
                             Nothing -> reduceKnownMatch (fuel - 1) s' ann resultAnn alts
                     CLet _ _ _ rhs body ->
                       go (fuel - 1) (substTopTermAt d rhs body)
-                    CLetRecM mode q n a rhs body ->
-                      pure (CLetRecM mode q n a rhs body)
+                    CLetRecRuntimeM mode q n runtimeErasure a rhs body ->
+                      pure (CLetRecRuntimeM mode q n runtimeErasure a rhs body)
                     CForceE delayed resultType -> do
                       delayed' <- go (fuel - 1) delayed
                       case delayed' of
@@ -20312,7 +20842,12 @@ isParametricKind :: Int -> Value -> CheckM Bool
 isParametricKind lvl value =
   forceM value >>= \case
     VSort _ -> pure True
-    VPiBoundFormedM Parametric FormationParametric _ Q0 False _ _ dom clo -> do
+    -- Formation is a derived representation fact, not part of the
+    -- §11.1.2.3B parametric-kind grammar. In particular, a higher-kinded
+    -- classifier inferred through a provisional application can carry an
+    -- ordinary formation tag while still having the required parametric,
+    -- erased binder contract.
+    VPiEvidenceM Parametric _ _ Q0 False _ Nothing _ dom clo -> do
       domainOk <- isParametricKind lvl dom
       if not domainOk
         then pure False
@@ -21378,14 +21913,187 @@ derivationGoalCoherent ctx site goal = do
           propositionGoal <- globalValueM prelIsProp [(Expl, goal)]
           isJust <$> isPropClosure ctx site propositionGoal
 
+-- | Emit the dedicated §3.2.6 diagnostic for an expression-position borrow
+-- marker. Keeping this marker in the parsed tree lets the enclosing
+-- declaration continue through ordinary checking without reinterpreting @&@
+-- as an operator or dropping the declaration during parser recovery.
+reportQuantityBorrowMarker :: Span -> CheckM ()
+reportQuantityBorrowMarker sp = do
+  diagnostics <- gets csDiags
+  unless
+    ( any
+        (\diagnostic ->
+           dCode diagnostic == "E_QUANTITY_BORROW_NOT_QUANTITY"
+             && dPrimary diagnostic == sp
+        )
+        diagnostics
+    ) $
+    report $
+      withPayload
+        ( withPayloadField "sourceExpression" "&" $
+            withPayloadField "expectedClassifier" "Quantity" $
+              withPayloadField "sourceOrigin" (T.pack (show sp)) $
+                withPayloadField "enclosingDeclaration" "<current declaration>" $
+                  withPayloadField "reason" "borrowed binder access is not a quantity" $
+                    withPayloadField
+                      "repairHint"
+                      "use (& x : A), (1 & x : A), or an interval quantity such as 1, <=1, >=1, or ω"
+                      (payloadKind "quantity-borrow-confusion")
+        ) $
+        diag
+          SevError
+          StageElaborate
+          "E_QUANTITY_BORROW_NOT_QUANTITY"
+          (Just "kappa.quantity.borrow-not-quantity")
+          sp
+          "'&' is not a Quantity; it is a borrowed binder access marker (§3.2.6, §12.1.1)"
+
 -- | Synthesize a type for @expr@, elaborating it to a core 'Term' along the
 -- way. Used wherever the term determines its own type (a variable, literal,
 -- application, projection, …). The dual is 'check'. This is a long @case@
 -- over 'Expr' constructors — one (or a few) arms per surface form, in
 -- roughly the 'Expr' family order from "Kappa.Syntax"; the arms that need
 -- an expected type to proceed (a bare lambda, say) defer to 'check'.
+--
+-- Non-empty list inference is deliberately anchored by the first element.
+-- Checking every nested singleton against a fresh unresolved meta makes each
+-- level replay the complete type accumulated below it. Besides being
+-- unnecessary, that turns deeply nested list syntax into a superlinear
+-- elaboration path. The first inferred element establishes the same
+-- homogeneous element type used to check the remaining elements.
+inferListLiteral :: Ctx -> [Expr] -> CheckM (Term, Value)
+inferListLiteral ctx elements = do
+  (term, listType, _) <- inferListLiteralWithTypeTerm ctx elements
+  pure (term, listType)
+
+-- | List inference retains the checked Core spelling of its result type so a
+-- surrounding list literal need not quote the complete nested semantic value
+-- again. This is an elaboration product, not a second source of truth: the
+-- returned term is built from the same fresh global universe instantiation as
+-- the returned value.
+inferListLiteralWithTypeTerm :: Ctx -> [Expr] -> CheckM (Term, Value, Term)
+inferListLiteralWithTypeTerm ctx elements = do
+  (elementType, elementTypeTerm, terms) <- case elements of
+    [] -> do
+      elementType <- freshMetaV ctx
+      elementTypeTerm <- quoteIn ctx elementType
+      pure (elementType, elementTypeTerm, [])
+    first : rest -> do
+      (firstTerm, firstType, firstTypeTerm) <- inferFirst first
+      restTerms <- mapM (\element -> check ctx element firstType) rest
+      pure (firstType, firstTypeTerm, firstTerm : restTerms)
+  listType <- globalValueM prelList [(Expl, elementType)]
+  listTypeTerm <- case listType of
+    VGlobI family universes [(_, _)]
+      | family == prelList ->
+          pure (CApp Expl (CGlobal family universes) elementTypeTerm)
+    _ -> quoteIn ctx listType
+  term <- buildListLiteral ctx listType elementType elementTypeTerm terms
+  pure (term, listType, listTypeTerm)
+  where
+    inferFirst expression@(EListLit nested _) = do
+      (term, value, typeTerm) <- inferListLiteralWithTypeTerm ctx nested
+      -- A list type is not a function, so implicit insertion is necessarily a
+      -- no-op. Keeping the ordinary call still checks that invariant through
+      -- the same path used for every inferred head expression.
+      (inserted, insertedType) <-
+        insertAllImplicits ctx (exprSpan expression) term value
+      pure (inserted, insertedType, typeTerm)
+    inferFirst expression = do
+      (term0, type0) <- infer ctx expression
+      (term, type') <- insertAllImplicits ctx (exprSpan expression) term0 type0
+      typeTerm <- quoteIn ctx type'
+      pure (term, type', typeTerm)
+
+checkListLiteral :: Ctx -> Value -> Value -> [Expr] -> CheckM Term
+checkListLiteral ctx listType elementType elements = do
+  terms <- mapM (\element -> check ctx element elementType) elements
+  elementTypeTerm <- quoteIn ctx elementType
+  buildListLiteral ctx listType elementType elementTypeTerm terms
+
+buildListLiteral :: Ctx -> Value -> Value -> Term -> [Term] -> CheckM Term
+buildListLiteral ctx listType elementType elementTypeTerm terms = do
+  fastListLiteral listType elementTypeTerm terms >>= \case
+    Just term -> pure term
+    Nothing -> generic
+  where
+    generic = do
+      nil <- generatedCtorAtM ctx listType prelNil
+      foldM
+        (\tailTerm headTerm ->
+          generatedCtorApplyAtM ctx listType prelCons [headTerm, tailTerm]
+        )
+        nil
+        (reverse terms)
+
+-- | List literal syntax names the canonical prelude family and constructors,
+-- so its desugaring may reuse their independently checked constructor
+-- interfaces. This avoids re-running general constructor application and
+-- conversion against the complete, growing nested-list type at every node.
+-- Every semantic premise is authenticated by identity and typed metadata;
+-- disagreement uses the ordinary generated-constructor path above.
+fastListLiteral :: Value -> Term -> [Term] -> CheckM (Maybe Term)
+fastListLiteral listType elementTypeTerm terms = do
+  state <- get
+  forcedListType <- forceM listType
+  case
+      ( forcedListType
+      , Map.lookup prelList (csDatas state)
+      , Map.lookup prelNil (csCtors state)
+      , Map.lookup prelCons (csCtors state)
+      )
+    of
+      ( VGlobI family universes [(_, _)]
+        , Just dataInfo
+        , Just nilInfo
+        , Just consInfo
+        )
+          | family == prelList
+          , diParamCount dataInfo == 1
+          , prelNil `elem` diCtors dataInfo
+          , prelCons `elem` diCtors dataInfo
+          , ciData nilInfo == prelList
+          , ciData consInfo == prelList
+          , null (ciSourceFields nilInfo)
+          , map fst (ciSourceFields consInfo) == [Expl, Expl]
+          , constructorUniverseArity nilInfo == length universes
+          , constructorUniverseArity consInfo == length universes -> do
+              nilEta <- specializedEta nilInfo prelNil universes
+              consEta <- specializedEta consInfo prelCons universes
+              pure $ do
+                nilTerm <-
+                  instantiateEtaConstructor
+                    [(Impl, elementTypeTerm)]
+                    nilEta
+                foldM
+                  (\tailTerm headTerm ->
+                    instantiateEtaConstructor
+                      [ (Impl, elementTypeTerm)
+                      , (Expl, headTerm)
+                      , (Expl, tailTerm)
+                      ]
+                      consEta
+                  )
+                  nilTerm
+                  (reverse terms)
+      _ -> pure Nothing
+  where
+    constructorUniverseArity = dutParameterCount . ciUniverses
+
+    specializedEta constructorInfo constructor universes = do
+      assignments <- gets csLevelAssignments
+      evaluator <- ec_
+      let constructorType =
+            specializeDeclarationUniverses
+              (ciUniverses constructorInfo)
+              universes
+              (zonkLevels assignments (ciType constructorInfo))
+      pure (etaCtor evaluator constructor universes constructorType)
 infer :: Ctx -> Expr -> CheckM (Term, Value)
 infer ctx expr = case expr of
+  EQuantityBorrowMarker sp -> do
+    reportQuantityBorrowMarker sp
+    anyHole ctx
   EDerive Nothing sp -> do
     errAt sp "E_DERIVE_EXPECTED_TYPE_REQUIRED" (Just "kappa.derive")
       "bare 'derive' requires a rigid expected type (§16.3.2A)"
@@ -21588,12 +22296,12 @@ infer ctx expr = case expr of
         )
     -- recovery: the invalid labels stand for opaque placeholders so
     -- the rest of the telescope still elaborates
-    phantoms <- forM (nub (map snd residualRefs)) $ \l -> RecordField l Ordinary FormationOrdinary QW Nothing <$> freshMetaV ctx
+    phantoms <- forM (nub (map snd residualRefs)) $ \l -> RecordField l Ordinary FormationOrdinary QW Nothing RuntimeRelevant <$> freshMetaV ctx
     case ordered of
       Nothing -> do
         errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
           "the field-dependency graph of this record type contains a cycle (§13.2.1)"
-        fields <- forM names $ \n -> RecordField n Ordinary FormationOrdinary QW Nothing <$> freshMeta
+        fields <- forM names $ \n -> RecordField n Ordinary FormationOrdinary QW Nothing RuntimeRelevant <$> freshMeta
         finish LZero fields
       Just fsOrdered -> do
         -- §13.2.1: elaborate the telescope in dependency order; later
@@ -21601,8 +22309,8 @@ infer ctx expr = case expr of
         fields <- goDep ctx phantoms fsOrdered
         -- §11.1: the record type lives in the max universe level of its
         -- field types (a `(ty : Type)` field forces Type1, not Type0).
-        let lvl = foldr levelMax LZero [l | (_, _, _, _, _, _, l) <- fields]
-        finish lvl [RecordField (nameText (rtfName f)) mode formation q bound t | (f, mode, formation, q, bound, t, _) <- fields]
+        let lvl = foldr levelMax LZero [l | (_, _, _, _, _, _, _, l) <- fields]
+        finish lvl [RecordField (nameText (rtfName f)) mode formation q bound runtimeErasure t | (f, mode, formation, q, bound, runtimeErasure, t, _) <- fields]
      where
       goDep _ _ [] = pure []
       goDep levelCtx done (f : rest) = do
@@ -21661,8 +22369,17 @@ infer ctx expr = case expr of
           withThis (Just thisMode) (levelAssumptionFromExpr levelCtx (Just t') (rtfType f))
         nextCtx0 <- extendLevelAssumption (nameSpan (rtfName f)) levelCtx mBound
         nextCtx <- registerLevelField nextCtx0 (nameText (rtfName f)) tV
-        let field = RecordField (nameText (rtfName f)) mode formation q mBound tV
-        ((f, mode, formation, q, mBound, t', lvl) :) <$> goDep nextCtx (field : done) rest
+        runtimeErasure <-
+          withThis (Just thisMode) $
+            selectBinderRuntimeErasure
+              levelCtx
+              (nameSpan (rtfName f))
+              q
+              RuntimeRelevant
+              tV
+        runtimeErasureValue <- traverse (evalIn levelCtx) runtimeErasure
+        let field = RecordField (nameText (rtfName f)) mode formation q mBound runtimeErasureValue tV
+        ((f, mode, formation, q, mBound, runtimeErasure, t', lvl) :) <$> goDep nextCtx (field : done) rest
       finish lvl fields = case mtail of
         -- §13.2.10: opaque members make the closed record a signature
         Nothing
@@ -21671,14 +22388,19 @@ infer ctx expr = case expr of
         Nothing -> pure (CRecordTQ fields, VSort lvl)
         -- §11.3.1A: open record with a contextual row tail
         Just tailE -> do
-          recRow <- globalValueM prelRecRow []
+          let recRow = VGlobI prelRecRow [] []
           rowTm <- check ctx tailE recRow
-          openRecHead <- globalHeadM prelOpenRec
-          pure
-            ( CApp Expl (CApp Expl openRecHead rowTm)
-                (CRecordTQ (sortOn rfName fields))
-            , VSort lvl
-            )
+          let prefixTerm = CRecordTQ (sortOn rfName fields)
+          (openRecord, resultType) <-
+            checkedGeneratedGlobalAppAtM
+              ctx
+              (exprSpan tailE)
+              prelOpenRec
+              [lvl]
+              [ (Expl, rowTm, recRow)
+              , (Expl, prefixTerm, VSort lvl)
+              ]
+          pure (openRecord, resultType)
   -- §14.2.1 associated static member family application:
   -- @Trait.Member args@ selects the member global owned by that resolved trait,
   -- then uses the ordinary application spine to instantiate trait parameters
@@ -21850,13 +22572,7 @@ infer ctx expr = case expr of
       _ -> do
         errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "force expects a Thunk or Need value"
         anyHole ctx
-  EListLit es _ -> do
-    elemT <- freshMetaV ctx
-    tms <- mapM (\e -> check ctx e elemT) es
-    listT <- globalValueM prelList [(Expl, elemT)]
-    nil <- generatedCtorAtM ctx listT prelNil
-    list <- foldM (\tailTerm headTerm -> generatedCtorApplyAtM ctx listT prelCons [headTerm, tailTerm]) nil (reverse tms)
-    pure (list, listT)
+  EListLit es _ -> inferListLiteral ctx es
   -- §20.5/§20.5.1: a map literal resolves duplicate keys (default: keep last),
   -- mirroring the map-comprehension lowering, so `{ 1: 10, 1: 20 }` keeps 20.
   EMapLit kvs sp -> do
@@ -22101,6 +22817,9 @@ check ctx expr expected0 = do
     EApp function _ -> canonicalReflectionQuery ctx function
     _ -> pure Nothing
   case (expr, expected) of
+    (EQuantityBorrowMarker sp, _) -> do
+      reportQuantityBorrowMarker sp
+      freshMetaFor ctx expected
     (EDerive explicitGoal sp, _) ->
       case explicitGoal of
         Nothing -> do
@@ -22339,6 +23058,14 @@ check ctx expr expected0 = do
     (EApp _ _, VSort _) -> do
       (tm, level) <- inferType ctx expr
       coerceTerm ctx (exprSpan expr) tm (VSort level) expected
+    -- Open-row extension is bidirectional.  In particular, the expected
+    -- prefix owns the universe occurrence of a newly introduced field; first
+    -- inferring the payload would create an unrelated bare-Type meta and make
+    -- a valid higher-ceiling extension depend on later invariant conversion.
+    (ERecordPatch base items sp, _) -> do
+      (term, actual) <- elabPatchWith False (Just expected) ctx base items sp
+      expectType ctx sp actual expected
+      pure term
     (EIf alts mels sp, _) -> checkIf ctx alts mels sp expected
     -- §18.1.21: a handler eliminates into the expected target carrier `m`
     -- (which may be `IO e` or another carrier, not only `Eff r`); thread the
@@ -22387,6 +23114,9 @@ check ctx expr expected0 = do
           body <- check (withVarReadBlock VarReadCrossesBoundary ctx) e a
           suspensionType <- quoteIn ctx expected
           pure (CLazyE body (Just suspensionType))
+    (EListLit elements _, VGlobN global [(_, elementType)])
+      | global == prelList ->
+          checkListLiteral ctx expected elementType elements
     (_, VGlobN g [(_, a)])
       | g == prelThunk -> suspendOrInfer CThunkE expected a
     (_, VGlobN g [(_, a)])
@@ -22825,12 +23555,18 @@ tagOf ctx v = do
   pure (semanticTypeTag ec (ctxLen ctx) v)
 
 inferType :: Ctx -> Expr -> CheckM (Term, Level)
+inferType ctx expression = do
+  (term, level) <- inferTypeRaw ctx expression
+  annotated <- annotateRuntimeErasedTelescope ctx (exprSpan expression) term
+  pure (annotated, level)
+
+inferTypeRaw :: Ctx -> Expr -> CheckM (Term, Level)
 -- A conditional type needs a fresh result ceiling before either branch is
 -- checked. Inferring through the generic expression path would solve its
 -- result meta from the first branch and only lift later branches, making the
 -- principal universe depend on source order. The level solver instead joins
 -- every branch constraint to the least ceiling (for example max u v).
-inferType ctx (EIf alts mels sp) =
+inferTypeRaw ctx (EIf alts mels sp) =
   do
     resultLevel <- freshLevelMeta
     tm <- checkIf (withVarReadBlock VarReadStaticPosition ctx) alts mels sp (VSort resultLevel)
@@ -22838,15 +23574,77 @@ inferType ctx (EIf alts mels sp) =
 -- A match in type position selects the type facet in its arms
 -- (dependent-match types, §17.1.4) and uses the same least-ceiling join as a
 -- conditional. Hard-coding Type0 here rejects valid higher-universe arms.
-inferType ctx (EMatch scrut cases msp) =
+inferTypeRaw ctx (EMatch scrut cases msp) =
   do
     resultLevel <- freshLevelMeta
     tm <- checkMatch (withVarReadBlock VarReadStaticPosition ctx) scrut cases msp (VSort resultLevel)
     pure (tm, resultLevel)
-inferType ctx e =
+inferTypeRaw ctx e =
   do
     (tm, ty) <- inferT ctx e
     goSortType ctx e tm ty
+
+-- | Attach the checked runtime calling-convention fact to each binder in a
+-- freshly elaborated Pi telescope. Evidence is selected in the lexical
+-- context preceding the binder, then later binders are classified under the
+-- extended context. This is the single typed authority consumed by argument
+-- checking, representation planning, and KBackendIR lowering.
+annotateRuntimeErasedTelescope :: Ctx -> Span -> Term -> CheckM Term
+annotateRuntimeErasedTelescope ctx site = \case
+  CPiRuntimeM mode formation icit quantity borrowed name assumption origin existing domain codomain -> do
+    domain' <- annotateRuntimeErasedTelescope ctx site domain
+    domainValue <- evalIn ctx domain'
+    runtimeErasure <- selectBinderRuntimeErasure ctx site quantity existing domainValue
+    let withAssumption = replayCheckedLevelAssumption ctx assumption
+    let nextCtx =
+          bindCtxMQB
+            mode
+            quantity
+            name
+            (icit == Impl)
+            borrowed
+            domainValue
+            withAssumption
+    codomain' <- annotateRuntimeErasedTelescope nextCtx site codomain
+    pure
+      ( CPiRuntimeM
+          mode
+          formation
+          icit
+          quantity
+          borrowed
+          name
+          assumption
+          origin
+          runtimeErasure
+          domain'
+          codomain'
+      )
+  other -> pure other
+
+-- | Select the non-syntactic runtime-erasure annotation for a checked binder.
+-- Quantity zero and kind classifiers already carry higher-priority canonical
+-- justifications in the Pi fields. Function classifiers additionally require
+-- erased ambient demand (§31.2), so an ordinary binder cannot acquire that
+-- occurrence-sensitive fact from classifier evidence alone.
+selectBinderRuntimeErasure
+  :: Ctx
+  -> Span
+  -> Q
+  -> RuntimeErasure Term
+  -> Value
+  -> CheckM (RuntimeErasure Term)
+selectBinderRuntimeErasure ctx site quantity existing classifier = do
+  evaluation <- ec_
+  if quantity == Q0
+      || Repr.valueDomainIsKind evaluation (ctxLen ctx) classifier
+      || Repr.runtimeErasureNeedsErasedDemand evaluation classifier
+    then pure RuntimeRelevant
+    else case existing of
+      RuntimeErased justification -> pure (RuntimeErased justification)
+      RuntimeRelevant ->
+        maybe RuntimeRelevant RuntimeErased
+          <$> argumentRuntimeErasedByEvidence ctx site classifier
 
 -- | Reduce an elaborated type-position @(term, inferred-type)@ pair to a
 -- @(term, universe-level)@ pair, or raise @E_NOT_A_TYPE@.  Shared by
@@ -23153,37 +23951,66 @@ elabForall ctx0 bs0 body = do
   where
     go ctx [] = inferType ctx body
     go ctx (b : rest) = do
-      (domTm, domLvl, coerced, mSource) <- case bType b of
+      (domTm, annotatedDomLvl, coerced, mSource, ownClassifierMeta) <- case bType b of
         Just t -> do
           domE <- normalizeBinderDomain ctx b t
           (tm, lvl, wasCoerced) <- withGeneralizableBareTypeLevels $
             if bImplicit b then inferTypeBoolProp' ctx domE else (\(x, l) -> (x, l, False)) <$> inferType ctx domE
-          pure (tm, lvl, wasCoerced, Just domE)
+          pure (tm, Just lvl, wasCoerced, Just domE, Nothing)
         Nothing -> do
-          level <- freshGeneralizableLevelMeta
-          pure (CSort level, levelSucc level, False, Nothing)
+          meta <- freshMetaId
+          pure (CMeta meta, Nothing, False, Nothing, Just meta)
       domV <- evalIn ctx domTm
       let nm = maybe "_" nameText (bName b)
           -- §11.3: every source @forall@ binder is implicit and quantity 0.
           -- Writing the domain changes domain inference, not application.
           ic = Impl
           ordinaryDefault = Q0
-      (mode, q) <- resolveBinderModeQ ctx b domV ordinaryDefault
+          prefix = bPrefix b
+          provisionalMode = fromMaybe Parametric (bpObservation prefix)
+          provisionalQuantity =
+            maybe
+              (if provisionalMode == Parametric then Q0 else ordinaryDefault)
+              (qOf . Just)
+              (bpQuantity prefix)
+      (initialMode, initialQuantity) <- case ownClassifierMeta of
+        Nothing -> resolveBinderModeQ ctx b domV ordinaryDefault
+        Just _ -> do
+          validateQuantityExpression ctx (bpQuantity prefix)
+          pure (provisionalMode, provisionalQuantity)
       mBound <- case mSource of
         Just source -> levelAssumptionFromExpr ctx (Just domTm) source
         _ -> pure Nothing
       ctxWithBound <- extendLevelAssumption (bSpan b) ctx mBound
-      let ctx' = bindCtxMQ mode q nm True domV ctxWithBound
+      let ctx' = case ownClassifierMeta of
+            Just _ | isNothing (bpObservation prefix) ->
+              bindCtxMQBProvisional initialMode initialQuantity nm True False domV ctxWithBound
+            _ -> bindCtxMQB initialMode initialQuantity nm True False domV ctxWithBound
       (restTm, restLvl) <- go ctx' rest
-      formation <- selectFormationMode ctx mode domV
+      (finalDomTm, finalDomain) <- case ownClassifierMeta of
+        Just _ -> finalizeInferredClassifier ctx domTm
+        Nothing -> do
+          value <- forceM domV
+          term <- quoteIn ctx value
+          pure (term, value)
+      (mode, q) <- case ownClassifierMeta of
+        Just _ -> resolveBinderModeQ ctx b finalDomain ordinaryDefault
+        Nothing -> pure (initialMode, initialQuantity)
+      domLvl <- case annotatedDomLvl of
+        Just level -> pure level
+        Nothing ->
+          typeValueClassifierLevel ctx finalDomain >>= \case
+            Just level -> pure level
+            Nothing -> freshGeneralizableLevelMeta
+      formation <- selectFormationMode ctx mode finalDomain
       let domContribution = formationContribution formation domLvl
       let (restTm', restCeiling) = formationCeilingTerm ctx' restLvl restTm
-      levelBinder <- isTypeLevelValue domV
+      levelBinder <- isTypeLevelValue finalDomain
       let escapes = levelBinder && ctxLen ctx `elem` levelVars restCeiling
       when escapes $
         reportUnboundedTelescope ctx' (bSpan b) "forall telescope" nm restCeiling
       pure
-        ( CPiBoundFormedM mode formation ic q False nm mBound domTm restTm'
+        ( CPiBoundFormedM mode formation ic q False nm mBound finalDomTm restTm'
         , levelMax domContribution (if escapes then LZero else restCeiling)
         )
 
@@ -23223,7 +24050,7 @@ elabExists ctx bs body sp = do
   (witFields, bodyCtx) <- goWits labelOf ctx [] (zip3 [0 ..] witNames bs)
   -- (internal label, type) oldest-first, with binder names exposed under
   -- 'this' for resolving later witness/body references
-  let witDone = [RecordField n mode formation q bound v | (n, _, mode, formation, q, bound, _, v, _) <- witFields]
+  let witDone = [RecordField n mode formation q bound RuntimeRelevant v | (n, _, mode, formation, q, bound, _, v, _) <- witFields]
   (rawBodyLvl, payloadFields0) <- withThis (Just (ThisType witDone)) (payloadView bodyCtx)
   let bodyLvl = formationCeiling bodyCtx rawBodyLvl
       payloadFields0' =
@@ -23237,13 +24064,14 @@ elabExists ctx bs body sp = do
   -- rename binder-name 'this' projections in the payload to the internal
   -- witness labels, mirroring the witness telescope
   let payloadFields =
-        [ field
-            { rfType = renameThisLabels labelOf (rfType field)
-            , rfLevelAssumption = renameLevelFieldAssumption labelOf (rfLevelAssumption field)
-            }
+        [ fmap (renameThisLabels labelOf)
+            ( field
+                { rfLevelAssumption = renameLevelFieldAssumption labelOf (rfLevelAssumption field)
+                }
+            )
         | field <- payloadFields0'
         ]
-      allFields = [RecordField lbl mode formation q bound t | (_, lbl, mode, formation, q, bound, t, _, _) <- witFields] ++ payloadFields
+      allFields = [RecordField lbl mode formation q bound RuntimeRelevant t | (_, lbl, mode, formation, q, bound, t, _, _) <- witFields] ++ payloadFields
       fields = allFields
       opaqs = sort [lbl | (_, lbl, _, _, _, _, _, _, _) <- witFields]
       -- §11.1: the existential's universe is the max over the witness
@@ -23285,7 +24113,7 @@ elabExists ctx bs body sp = do
       -- but record the field under its internal label
       let lbl = existsWitLabel i
           ent = (nm, lbl, mode, formation, q, mBound, t0'', tV, wlvl)
-      (later, finalCtx) <- goWits labelOf nextCtx (RecordField nm mode formation q mBound tV : done) rest
+      (later, finalCtx) <- goWits labelOf nextCtx (RecordField nm mode formation q mBound RuntimeRelevant tV : done) rest
       pure (ent : later, finalCtx)
     -- the payload view of the existential body (§13.2.11), with the
     -- universe level the body type inhabits
@@ -23304,12 +24132,11 @@ elabExists ctx bs body sp = do
       pure (bodyLvl, flds)
       where
         recFields fs = forM fs $ \field -> do
-          fty <- quoteIn bodyCtx (rfType field)
-          pure field {rfType = fty}
+          traverse (quoteIn bodyCtx) field
         -- one anonymous payload slot at quantity ω under the internal
         -- '⟨payload⟩' label (Spec.md 13316-13317, 13279-13280: not
         -- 'value', not source-addressable)
-        anonPayload tTm = pure [RecordField existsPayloadLabel Ordinary FormationOrdinary QW Nothing tTm]
+        anonPayload tTm = pure [RecordField existsPayloadLabel Ordinary FormationOrdinary QW Nothing RuntimeRelevant tTm]
 
 -- | Rewrite @this.<binderName>@ projections to @this.<internalLabel>@
 -- inside an elaborated existential member type, per the binder->label
@@ -23342,9 +24169,13 @@ renameThisLabels labelOf =
         | CGlob g <- e, g == thisG, Just lbl <- lookup f labelOf -> CProjM mode e lbl
         | otherwise -> CProjAtM mode (go e) f i
       CLamM mode ic q n b -> CLamM mode ic q n (go b)
-      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-        CPiEvidenceM mode formation ic q brw n assumption origin (go a) (go b)
-      CApp ic f a -> CApp ic (go f) (go a)
+      CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+        CPiRuntimeM mode formation ic q brw n assumption origin
+          (fmap go runtimeErasure)
+          (go a)
+          (go b)
+      CAppM ic runtimeErasure f a ->
+        CAppRuntime ic (fmap go runtimeErasure) (go f) (go a)
       CCtorI g universes ann arguments ->
         CCtorI g universes (fmap go ann)
           [argument {caTerm = go (caTerm argument)} | argument <- arguments]
@@ -23358,15 +24189,23 @@ renameThisLabels labelOf =
       CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
       CVariantT ms -> CVariantT (map go ms)
       CInject tag e -> CInject tag (go e)
-      CLetM mode q n a b c -> CLetM mode q n (go a) (go b) (go c)
-      CLetRecM mode q n a b c -> CLetRecM mode q n (go a) (go b) (go c)
-      CLetPolyM mode q n telescope a b c ->
-        CLetPolyM mode q n telescope (go a) (go b) (go c)
-      CLetRecPolyM mode q n telescope a b c ->
-        CLetRecPolyM mode q n telescope (go a) (go b) (go c)
+      CLetRuntimeM mode q n runtimeErasure a b c ->
+        CLetRuntimeM mode q n (fmap go runtimeErasure) (go a) (go b) (go c)
+      CLetRecRuntimeM mode q n runtimeErasure a b c ->
+        CLetRecRuntimeM mode q n (fmap go runtimeErasure) (go a) (go b) (go c)
+      CLetPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetPolyRuntimeM mode q n telescope (fmap go runtimeErasure) (go a) (go b) (go c)
+      CLetRecPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+        CLetRecPolyRuntimeM mode q n telescope (fmap go runtimeErasure) (go a) (go b) (go c)
       CLetRecGroupM telescope definitions body ->
         CLetRecGroupM telescope
-          [definition {clrdType = go (clrdType definition), clrdRhs = go (clrdRhs definition)} | definition <- definitions]
+          [ definition
+              { clrdRuntimeErasure = fmap go (clrdRuntimeErasure definition)
+              , clrdType = go (clrdType definition)
+              , clrdRhs = go (clrdRhs definition)
+              }
+          | definition <- definitions
+          ]
           (go body)
       CSealE ls e -> CSealE ls (go e)
       CSigT ls e -> CSigT ls (go e)
@@ -23444,16 +24283,20 @@ withArgIndexRetag act = do
   -- mismatch (§16.1), so when @dom@ is a universe the freshly emitted
   -- mismatches are retagged via 'retagNewMismatches'; for the ordinary
   -- (non-sort) domain this branch is a no-op.
-checkExplicitArg :: Ctx -> ObservationMode -> Q -> Expr -> Value -> CheckM Term
-checkExplicitArg ctx mode q e dom = do
+checkExplicitArg :: Ctx -> ObservationMode -> Q -> Bool -> RuntimeErasure Value -> Expr -> Value -> CheckM Term
+checkExplicitArg ctx mode q borrowed runtimeErasure e dom = do
   domF <- forceM dom
+  let evidenceErased = case runtimeErasure of
+        RuntimeErased _ -> True
+        RuntimeRelevant -> False
+  let effectiveQ = if evidenceErased then Q0 else q
   nBefore <- gets (length . csDiags)
   let ctx' =
-        if q == Q0
+        if effectiveQ == Q0
           then withVarReadBlock VarReadStaticPosition ctx
           else ctx
   let underArgumentDemand =
-        withArgIndexRetag . withDemand (demandOfQ q)
+        withArgIndexRetag . withDemand (demandOfQ effectiveQ)
       checkArgument = underArgumentDemand (check ctx' e dom)
       inferArgument = underArgumentDemand (infer ctx' e)
   -- Generic application uses the ordinary checking relation. In particular,
@@ -23498,7 +24341,7 @@ checkExplicitArg ctx mode q e dom = do
           else put stateBeforeExact >> pure Nothing
       else pure Nothing
   aTm <- maybe checkArgument pure exactArgument
-  finishExplicitArgument ctx mode q e aTm domF
+  finishExplicitArgument ctx mode q borrowed evidenceErased e aTm domF
   case domF of
     VSort _ -> retagNewMismatches nBefore
     _ -> pure ()
@@ -23522,16 +24365,30 @@ finishExplicitArgument
   :: Ctx
   -> ObservationMode
   -> Q
+  -> Bool
+  -> Bool
   -> Expr
   -> Term
   -> Value
   -> CheckM ()
-finishExplicitArgument ctx mode q expression term classifier = do
-  when (q == Q0) $
+finishExplicitArgument ctx mode q borrowed evidenceErased expression term classifier = do
+  evaluation <- ec_
+  -- Export the same checked erasure decision consumed by representation and
+  -- backend lowering. Quantity zero is only one erasure source: kind domains
+  -- and proof domains established RuntimeErased are static arguments too.
+  -- Usage receives the occurrence identity and never re-derives this fact
+  -- from source spelling or a hard-coded proof/operator name.
+  when (evidenceErased || Repr.runtimeErasedParam evaluation (ctxLen ctx) q classifier) $
     modify' $ \state ->
       state
         { csErasedArgumentSpans =
             Set.insert (exprSpan expression) (csErasedArgumentSpans state)
+        }
+  when borrowed $
+    modify' $ \state ->
+      state
+        { csBorrowedArgumentDemands =
+            Map.insert (exprSpan expression) q (csBorrowedArgumentDemands state)
         }
   when (mode == Ordinary) $ do
     observation <- observationJudgmentForTerm ctx term classifier
@@ -23540,6 +24397,291 @@ finishExplicitArgument ctx mode q expression term classifier = do
         (exprSpan expression)
         "ordinary application argument"
         observation
+
+-- | Occurrence-local §11.4.1 erasure evidence for an explicit argument. The
+-- equality case is structural: after elaboration identifies the canonical
+-- equality family, an authenticated @IsSet carrier@ dictionary proves every
+-- fiber proposition-valued and therefore @RuntimeErased@. The probe is
+-- transactional because absence of evidence is an ordinary runtime-relevant
+-- outcome, not a failed implicit request.
+argumentRuntimeErasedByEvidence :: Ctx -> Span -> Value -> CheckM (Maybe (ErasureJustification Term))
+argumentRuntimeErasedByEvidence ctx site classifier = do
+  runtimeErasureEvidenceAvailable ctx site classifier >>= \case
+    Nothing -> pure Nothing
+    Just (goal, evidence) ->
+      pure (Just (RuntimeErasedEvidence goal evidence goal))
+
+-- | Build the equality-specific §11.4.1 erasure certificate at the equality
+-- carrier's already-selected universe. This is intentionally used only after
+-- the primitive transport proof position has been authenticated: declaration
+-- binder annotation remains an observational, conservative probe and must not
+-- turn every standard-library equality binder into an eager instance search.
+exactTransportProofRuntimeErasure
+  :: Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe (ErasureJustification Term))
+exactTransportProofRuntimeErasure ctx site classifier = do
+  evaluation <- ec_
+  classifier' <- forceM classifier
+  case canonicalEqualityPayload evaluation classifier' of
+    Nothing -> pure Nothing
+    Just (carrier0, lhs, rhs) -> do
+      carrier <- forceM carrier0
+      isSetEvidence ctx site carrier >>= \case
+        Nothing -> pure Nothing
+        Just setEvidence ->
+          typeValueClassifierLevel ctx carrier >>= \case
+            Nothing -> pure Nothing
+            Just carrierLevel -> do
+              definition <- gets (Map.lookup prelIsPropEq . csGlobals)
+              case definition of
+                Just global
+                  | dutParameterCount (gdUniverses global) == 1 -> do
+                      (headTerm, _) <-
+                        specializeGlobalAt
+                          ctx
+                          prelIsPropEq
+                          global
+                          [carrierLevel]
+                      carrierTerm <- quoteIn ctx carrier
+                      lhsTerm <- quoteIn ctx lhs
+                      rhsTerm <- quoteIn ctx rhs
+                      let propositionEvidence =
+                            CApp Impl
+                              ( CApp Impl
+                                  (CApp Impl (CApp Impl headTerm carrierTerm) lhsTerm)
+                                  rhsTerm
+                              )
+                              setEvidence
+                      unaryTraitGoalForCarrier ctx prelRuntimeErased classifier' >>= \case
+                        Nothing -> pure Nothing
+                        Just runtimeGoal ->
+                          runtimeErasedEvidenceFromIsProp
+                            ctx
+                            site
+                            runtimeGoal
+                            classifier'
+                            propositionEvidence >>= \case
+                              Nothing -> pure Nothing
+                              Just runtimeEvidence -> do
+                                goal <- quoteIn ctx runtimeGoal >>= zonkTermM (ctxLen ctx)
+                                evidence <- zonkTermM (ctxLen ctx) runtimeEvidence
+                                state <- get
+                                pure
+                                  ( if null (unsolvedMetasOf state goal)
+                                      && null (unsolvedMetasOf state evidence)
+                                      then Just (RuntimeErasedEvidence goal evidence goal)
+                                      else Nothing
+                                  )
+                _ -> pure Nothing
+
+runtimeErasureEvidenceAvailable :: Ctx -> Span -> Value -> CheckM (Maybe (Term, Term))
+runtimeErasureEvidenceAvailable ctx site classifier = do
+  before <- get
+  local <- precheckedLocal before
+  selected <- case local of
+    Just exact -> pure (Just exact)
+    Nothing -> do
+      speculative <- probe before
+      afterProbe <- get
+      pure
+        ( if preexistingAssignmentsUnchanged before afterProbe
+            then speculative
+            else Nothing
+        )
+  finalized <- case selected of
+    Nothing -> pure Nothing
+    Just (goalValue, evidence) -> do
+      goal <- quoteIn ctx goalValue >>= zonkTermM (ctxLen ctx)
+      evidence' <- zonkTermM (ctxLen ctx) evidence
+      current <- get
+      pure $
+        if null (unsolvedMetasOf current goal)
+            && null (unsolvedMetasOf current evidence')
+            && all (< csNextMeta before) (levelMetasOfTerm goal)
+            && all (< csNextMeta before) (levelMetasOfTerm evidence')
+          then Just (goal, evidence')
+          else Nothing
+  -- Representation discovery is observational. In particular, successful
+  -- instance search must not refine declaration-kind metas or leave pending
+  -- evidence behind; the returned goal and evidence may mention only
+  -- declaration-owned level identities that predate the probe. Finalized Core
+  -- subsequently requires those identities to be generalized or solved.
+  put before
+  pure finalized
+  where
+    -- Local evidence was already type-checked when its context entry was
+    -- introduced. Looking it up and comparing its carrier are pure operations,
+    -- so this path must not be rejected merely because an unrelated older
+    -- solved meta lacks creation-depth metadata. The conservative assignment
+    -- stability guard remains mandatory for the speculative search below.
+    precheckedLocal initial =
+      tryQuoteIn ctx classifier >>= \case
+        Just classifierTerm
+          | null (unsolvedMetasOf initial classifierTerm) ->
+              exactLocalRuntimeErasureEvidence ctx classifier
+        _ -> pure Nothing
+
+    probe initial = do
+  -- This is an optional, read-only representation probe. A semantic value
+  -- captured from a deeper speculative context cannot produce evidence scoped
+  -- at the caller, and an unresolved classifier must not be refined merely by
+  -- asking whether it is erasable. Decline either case rather than routing it
+  -- through instance search (whose committed Core construction correctly
+  -- requires 'quoteIn').
+      tryQuoteIn ctx classifier >>= \case
+        Nothing -> pure Nothing
+        Just classifierTerm
+          | not (null (unsolvedMetasOf initial classifierTerm)) -> pure Nothing
+          | otherwise -> do
+              unaryTraitGoalForCarrier ctx prelRuntimeErased classifier >>= \case
+                Nothing -> pure Nothing
+                Just runtimeGoal -> do
+                  direct <- hLevelTraitEvidence ctx site prelRuntimeErased classifier
+                  case direct of
+                    Just evidence -> pure (Just (runtimeGoal, evidence))
+                    Nothing -> do
+                      unaryTraitGoalForCarrier ctx prelIsProp classifier >>= \case
+                        Nothing -> pure Nothing
+                        Just goal ->
+                          isPropClosure ctx site goal >>= \case
+                            Nothing -> pure Nothing
+                            Just propositionEvidence ->
+                              runtimeErasedEvidenceFromIsProp
+                                ctx
+                                site
+                                runtimeGoal
+                                classifier
+                                propositionEvidence >>= \case
+                                  Nothing -> pure Nothing
+                                  Just evidence -> pure (Just (runtimeGoal, evidence))
+
+-- | Materialize §11.4.1's intrinsic @IsProp P => RuntimeErased P@ rule as an
+-- ordinary typed Core application.  The checked bridge is intentionally kept
+-- in the prelude interface: final Core and KCore retain a replayable evidence
+-- identity instead of an anonymous empty dictionary whose type could only be
+-- recovered from ambient expectations.
+runtimeErasedEvidenceFromIsProp
+  :: Ctx
+  -> Span
+  -> Value
+  -> Value
+  -> Term
+  -> CheckM (Maybe Term)
+runtimeErasedEvidenceFromIsProp ctx site runtimeGoal carrier propositionEvidence =
+  case runtimeGoal of
+    VGlobI trait [level] [(Expl, _)]
+      | trait == prelRuntimeErased -> do
+          carrierTerm <- quoteIn ctx carrier
+          (evidence, evidenceType) <-
+            checkedGeneratedGlobalAppAtM
+              ctx
+              site
+              prelRuntimeErasedFromIsProp
+              [level]
+              [ (Impl, carrierTerm, VSort level)
+              , (Impl, propositionEvidence, VGlobI prelIsProp [level] [(Expl, carrier)])
+              ]
+          evaluation <- ec_
+          expected <- forceM runtimeGoal
+          evidenceType' <- forceM evidenceType
+          if convertible evaluation (ctxLen ctx) evidenceType' expected
+            then pure (Just evidence)
+            else pure Nothing
+      | otherwise -> pure Nothing
+    _ -> pure Nothing
+
+-- | Select a local @RuntimeErased carrier@ dictionary before constructing a
+-- fresh trait occurrence. The local's checked type is retained as the exact
+-- goal, including its already-selected universe instantiation. This keeps
+-- representation discovery read-only even before declaration universe metas
+-- have been generalized.
+exactLocalRuntimeErasureEvidence :: Ctx -> Value -> CheckM (Maybe (Value, Term))
+exactLocalRuntimeErasureEvidence ctx carrier = do
+  state <- get
+  let evaluation = ecOf state
+  go state evaluation 0 [] (ctxEntries ctx) >>= \case
+    Just selected -> pure (Just selected)
+    Nothing -> pure (thisEvidence state evaluation)
+  where
+    shadowName entry = [ceName entry | ceName entry `notElem` ["_", "_ev"]]
+    go _ _ _ _ [] = pure Nothing
+    go state evaluation index seen (entry : rest) = do
+      let level = ctxLen ctx - 1 - index
+          borrowEscapes =
+            ceBorrow entry && any (> level) (ctxBarriers ctx)
+          visible = ceName entry `notElem` seen
+          -- Keep the checked trait head neutral here. Forcing a trait goal
+          -- delta-unfolds its dictionary record and destroys the resolved
+          -- semantic identity needed to authenticate RuntimeErased.
+          candidateCarrier = case ceType entry of
+            VGlobI trait _ arguments
+              | trait == prelRuntimeErased ->
+                  case traitSemanticSpineIn state trait arguments of
+                    Just [(Expl, selectedCarrier)] -> Just selectedCarrier
+                    _ -> Nothing
+            _ -> Nothing
+          matches =
+            visible
+              && not borrowEscapes
+              && maybe False
+                (convertible evaluation (ctxLen ctx) carrier)
+                candidateCarrier
+       in if matches
+            then pure (Just (ceType entry, CVar index))
+            else go state evaluation (index + 1) (shadowName entry ++ seen) rest
+
+    -- Dependent record telescopes expose earlier fields through the semantic
+    -- @this@ root rather than ordinary de Bruijn locals. A prior erased
+    -- evidence field is therefore selected by its checked field identity and
+    -- retained as a projection; fabricating a dictionary would lose both its
+    -- type and its dependency on the record telescope.
+    thisEvidence state evaluation =
+      listToMaybe
+        [ (rfType field, CProjM (rfMode field) (CGlob thisG) (rfName field))
+        | field <- thisFields (csThis state)
+        , Just selectedCarrier <- [runtimeErasedCarrier state (rfType field)]
+        , convertible evaluation (ctxLen ctx) carrier selectedCarrier
+        ]
+
+    thisFields = \case
+      Just (ThisType fields) -> fields
+      Just (ThisTraitSibs fields) -> fields
+      Just (ThisValue _ fields) -> fields
+      Nothing -> []
+
+    runtimeErasedCarrier state = \case
+      VGlobI trait _ arguments
+        | trait == prelRuntimeErased ->
+            case traitSemanticSpineIn state trait arguments of
+              Just [(Expl, selectedCarrier)] -> Just selectedCarrier
+              _ -> Nothing
+      _ -> Nothing
+
+-- | An optional semantic probe may allocate and solve fresh internal metas,
+-- but it must not improve any assignment that existed at the call boundary.
+-- Otherwise evidence can depend on a speculative refinement that is erased by
+-- the surrounding rollback, leaving a closed-looking certificate whose source
+-- derivation is no longer well typed. This checks both term and universe metas;
+-- fresh entries are deliberately ignored because the returned Core term is
+-- independently zonked and closure-checked before it escapes.
+preexistingAssignmentsUnchanged :: CheckState -> CheckState -> Bool
+preexistingAssignmentsUnchanged before after =
+  all
+    (\(meta, assignment) ->
+       fmap isJust (Map.lookup meta (csMetas after)) == Just (isJust assignment)
+         && Map.lookup meta (csMetaAssignmentGenerations before)
+              == Map.lookup meta (csMetaAssignmentGenerations after))
+    (Map.toList (csMetas before))
+    && all
+      (\(meta, assignment) -> Map.lookup meta (csLevelAssignments after) == Just assignment)
+      (Map.toList (csLevelAssignments before))
+    && all
+      (\meta ->
+         meta >= csNextMeta before
+           || Map.member meta (csLevelAssignments before))
+      (Map.keys (csLevelAssignments after))
 
 -- | Instance-head higher-kinded arguments need both an exact check and the
 -- classifier that the argument actually synthesized.  Retaining only the
@@ -23554,10 +24696,12 @@ inferExactExplicitArg
   :: Ctx
   -> ObservationMode
   -> Q
+  -> Bool
+  -> RuntimeErasure Value
   -> Expr
   -> Value
   -> CheckM (Term, Set LevelMeta)
-inferExactExplicitArg ctx mode q expression expected = do
+inferExactExplicitArg ctx mode q borrowed runtimeErasure expression expected = do
   before <- get
   let preexistingMetaLimit = csNextMeta before
   diagnosticsBefore <- gets (length . csDiags)
@@ -23583,14 +24727,14 @@ inferExactExplicitArg ctx mode q expression expected = do
       put before
       checked <-
         withDefinitionalEqualityOnly
-          (checkExplicitArg ctx mode q expression expected)
+          (checkExplicitArg ctx mode q borrowed runtimeErasure expression expected)
       expectedClassifierLevels <- unresolvedExpectedClassifierLevels ctx expected
       pure (checked, Set.union sourceClassifierLevels expectedClassifierLevels)
     else do
       put before
       term' <-
         withDefinitionalEqualityOnly
-          (checkExplicitArg ctx mode q expression expected)
+          (checkExplicitArg ctx mode q borrowed runtimeErasure expression expected)
       expectedClassifierLevels <- unresolvedExpectedClassifierLevels ctx expected
       pure (term', expectedClassifierLevels)
 
@@ -23734,15 +24878,15 @@ data AppSlot
   = SlotKind ObservationMode Term Value
   | SlotInfer ObservationMode Term Value
   | SlotEvid ObservationMode Q Value Term Value
-  | SlotImpl ObservationMode Q Expr Value MetaId Value
+  | SlotImpl ObservationMode Q Bool (RuntimeErasure Value) Expr Value MetaId Value
   | -- | An explicit argument slot, carrying the placeholder meta's id
     -- and value plus a 'Bool' that records whether the function's
     -- codomain actually depends on this argument. When 'False' (a
     -- non-dependent arrow), the placeholder meta is solved directly
     -- (O(1)) instead of unified (O(size)), since it never reaches the
     -- result type — see 'step'.
-    SlotExpl ObservationMode Q Expr Value MetaId Value Bool
-  | SlotReady Icit Term
+    SlotExpl ObservationMode Q Bool (RuntimeErasure Value) Bool Expr Value MetaId Value Bool
+  | SlotReady Icit (RuntimeErasure Term) Term
 
 data AppResultPreparation
   = AppResultDefinitionallyReady
@@ -23776,7 +24920,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
           seeded <- expectedConstructorApplicationHead ctx f expected
           (fTm, fTy) <- maybe (infer ctx f) pure seeded
           planningMetasBefore <- gets csApplicationPlanningMetas
-          plan <- peel fTy args []
+          plan <- peel fTm fTy args []
           done <- case plan of
             Nothing -> pure Nothing
             Just (slots, resTy) -> do
@@ -23818,7 +24962,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
               (tm, ty) <- infer ctx (EApp f args)
               (tm1, ty1) <- insertAllImplicits ctx sp tm ty
               coerceTerm ctx sp tm1 ty1 expected
-    peel ty as0 acc = do
+    peel functionHead ty as0 acc = do
       tyF <- forceM ty
       case tyF of
         -- Generated declaration constraints precede the source telescope but
@@ -23834,12 +24978,12 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                   { csApplicationPlanningMetas =
                       Set.insert mid (csApplicationPlanningMetas state)
                   }
-              peel ty' as0 (SlotEvid mode q dom m mV : acc)
+              peel functionHead ty' as0 (SlotEvid mode q dom m mV : acc)
         -- A supplied implicit is planned with a placeholder exactly like an
         -- explicit operand. Result-type pre-unification may determine its
         -- domain, but the source payload is still checked against that domain
         -- under §16.1.7.2 before the placeholder is reconciled.
-        VPiBoundM mode Impl q _ _ _ dom clo
+        VPiRuntimeM mode _ Impl q borrowed _ _ _ runtimeErasure dom clo
           | ArgImplicit e : as <- as0 -> do
               (mid, placeholder) <- freshMetaForWithId ctx dom
               modify' $ \state ->
@@ -23850,9 +24994,10 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
               placeholderValue <- evalIn ctx placeholder
               ty' <- clApp clo placeholderValue
               peel
+                functionHead
                 ty'
                 as
-                (SlotImpl mode q e dom mid placeholderValue : acc)
+                (SlotImpl mode q borrowed runtimeErasure e dom mid placeholderValue : acc)
         -- kind-like implicits become bare placeholders; evidence
         -- implicits keep the ordinary resolution ladder, run after
         -- the result type has been unified with the expectation so
@@ -23876,9 +25021,13 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                 | kindLike = SlotKind mode m dom
                 | planningPlaceholder = SlotInfer mode m dom
                 | otherwise = SlotEvid mode q dom m mV
-          peel ty' as0 (slot : acc)
-        VPiM mode Expl q _ _ dom clo@(Closure _ cloBody)
+          peel functionHead ty' as0 (slot : acc)
+        VPiRuntimeM mode _ Expl q borrowed _ _ _ runtimeErasure dom clo@(Closure _ cloBody)
           | (ArgExplicit e : as) <- as0 -> do
+              let runtimeSafeProofPosition =
+                    runtimeSafeApplicationArgumentPosition
+                      functionHead
+                      (reverse (map appSlotIcit acc))
               (mid, placeholder) <- freshMetaForWithId ctx dom
               modify' $ \state ->
                 state
@@ -23888,7 +25037,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
               mV <- evalIn ctx placeholder
               ty' <- clApp clo mV
               let dep = coreUsesVar0 cloBody
-              peel ty' as ((SlotExpl mode q e dom mid mV dep) : acc)
+              peel functionHead ty' as ((SlotExpl mode q borrowed runtimeErasure runtimeSafeProofPosition e dom mid mV dep) : acc)
         _
           | [] <- as0 -> pure (Just (reverse acc, tyF))
           | otherwise -> pure Nothing
@@ -23900,8 +25049,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       resolveEvidenceSlot q dom placeholder placeholderValue >>= \case
         Just evidence -> pure (Just (CApp Impl tm evidence))
         Nothing -> pure Nothing
-    step tm (SlotReady icit argument) =
-      pure (Just (CApp icit tm argument))
+    step tm (SlotReady icit runtimeErasure argument) =
+      pure (Just (CAppRuntime icit runtimeErasure tm argument))
     step _ SlotImpl {} = pure Nothing
     step _ SlotExpl {} = pure Nothing
 
@@ -23911,15 +25060,15 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       case placeholder of
         CMeta meta
           | meta `Set.member` early ->
-              fmap (SlotReady Impl) <$>
+              fmap (SlotReady Impl RuntimeRelevant) <$>
                 resolveEvidenceSlot q dom placeholder placeholderValue
         _ -> pure (Just slot)
     prepareSlot _ slot@SlotReady {} = pure (Just slot)
-    prepareSlot _ (SlotImpl mode q expression dom mid placeholderValue) = do
+    prepareSlot _ (SlotImpl mode q borrowed runtimeErasure expression dom mid placeholderValue) = do
       flushPendingDeclaration
       domain <- forceM dom
       diagnosticsBefore <- gets (length . csDiags)
-      argument <- checkExplicitArg ctx mode q expression domain
+      argument <- checkExplicitArg ctx mode q borrowed runtimeErasure expression domain
       retagExplicitImplicitFailure diagnosticsBefore
       argumentValue <-
         checkedArgumentValue ctx (exprSpan expression) domain argument
@@ -23934,9 +25083,19 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                 then pure True
                 else unify ctx placeholder argumentValue
             _ -> unify ctx placeholder argumentValue
-      pure (SlotReady Impl argument <$ guard reconciled)
-    prepareSlot _ (SlotExpl mode q e dom mid mV dep) = do
-      aTm <- checkExplicitArg ctx mode q e dom
+      runtimeErasureTerm <- traverse (quoteIn ctx) runtimeErasure
+      pure (SlotReady Impl runtimeErasureTerm argument <$ guard reconciled)
+    prepareSlot _ (SlotExpl mode q borrowed runtimeErasure runtimeSafeProofPosition e dom mid mV dep) = do
+      selectedErasure <-
+        runtimeSafeApplicationArgumentErasureForPosition
+          ctx
+          (exprSpan e)
+          runtimeSafeProofPosition
+          e
+          dom
+          runtimeErasure
+      aTm <- checkExplicitArg ctx mode q borrowed selectedErasure e dom
+      selectedErasureTerm <- traverse (quoteIn ctx) selectedErasure
       aV <- checkedArgumentValue ctx (exprSpan e) dom aTm
       -- The placeholder meta 'mid' was substituted into the result type
       -- in 'peel'. When the codomain depends on this argument we must
@@ -23965,7 +25124,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                 else unify ctx mVf aV
             _ | dep -> unify ctx mVf aV
             _ -> pure True
-      pure (SlotReady Expl aTm <$ guard reconciled)
+      pure (SlotReady Expl selectedErasureTerm aTm <$ guard reconciled)
 
     resolveEvidenceSlot q dom placeholder placeholderValue = do
       -- §3.2.3 proof obligations are postponed to the pending queue even when
@@ -23990,6 +25149,14 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
         _ -> unify ctx placeholderForced evidenceValue
       pure (evidence <$ guard reconciled)
 
+    appSlotIcit = \case
+      SlotKind {} -> Impl
+      SlotInfer {} -> Impl
+      SlotEvid {} -> Impl
+      SlotImpl {} -> Impl
+      SlotExpl {} -> Expl
+      SlotReady icit _ _ -> icit
+
     -- A dictionary must move into the preparation phase only when a later
     -- source operand's domain observes one of its associated projections.
     -- Unrelated evidence retains the historical assembly order, avoiding
@@ -23997,8 +25164,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
     earlyEvidenceDependencies slots = do
       state <- get
       let domainMetas slot = case slot of
-            SlotImpl _ _ _ domain _ _ -> metasIn domain
-            SlotExpl _ _ _ domain _ _ _ -> metasIn domain
+            SlotImpl _ _ _ _ _ domain _ _ -> metasIn domain
+            SlotExpl _ _ _ _ _ _ domain _ _ _ -> metasIn domain
             _ -> Set.empty
           metasIn value =
             Set.fromList
@@ -25798,12 +26965,12 @@ elabSpineArg ctx sp captureRegions fTm fTy arg rest = do
     -- ('unsafeAssertProof'/'__unsafeAssertProof'), never on the goal type being
     -- 'String' — so a genuine 'String' type-former index elsewhere (which is a
     -- real ambiguity, e.g. a higher-ranked '∀ s:String' coercion) is untouched.
-    (ArgExplicit e, VPiBoundM mode Impl q _ _ assumption dom clo)
+    (ArgExplicit e, VPiRuntimeM mode _ Impl q borrowed _ assumption _ runtimeErasure dom clo)
       | isUnsafeAssertProofHead fTm -> do
           domF <- forceM dom
           case domF of
             VGlobN dg [] | dg == prelString -> do
-              aTm <- checkExplicitArg ctx mode q e dom
+              aTm <- checkExplicitArg ctx mode q borrowed runtimeErasure e dom
               aV <- checkedArgumentValue ctx (exprSpan e) dom aTm
               ty' <- clApp clo aV
               nextCtx <- extendLevelAssumption sp ctx assumption
@@ -25824,6 +26991,102 @@ isUnsafeAssertProofHead = go
           || g == GName preludeModule "__unsafeAssertProof"
       _ -> False
 
+-- | Select occurrence-local erasure only for a backend-specified
+-- runtime-safe eliminator argument. Ordinary calls must use the Pi binder's
+-- checked calling convention; changing a generic callee ABI from evidence
+-- available only at one call site would desynchronize its lambda and call.
+runtimeSafeApplicationArgumentErasure
+  :: Ctx
+  -> Span
+  -> Term
+  -> Expr
+  -> Value
+  -> RuntimeErasure Value
+  -> CheckM (RuntimeErasure Value)
+runtimeSafeApplicationArgumentErasure ctx site function expression classifier existing =
+  let (headTerm, arguments) = spineOfTerm function
+   in runtimeSafeApplicationArgumentErasureForPosition
+        ctx
+        site
+        (runtimeSafeApplicationArgumentPosition headTerm (map fst arguments))
+        expression
+        classifier
+        existing
+
+-- | The primitive equality eliminators are the only ordinary functions whose
+-- checked operational contract permits an occurrence-local proof-erasure
+-- decision without changing their calling convention. Authenticate both the
+-- resolved global and its source-telescope position. The proof classifier is
+-- handled separately after application planning has specialized it.
+runtimeSafeApplicationArgumentPosition :: Term -> [Icit] -> Bool
+runtimeSafeApplicationArgumentPosition function argumentIcities =
+  case termHeadGlob function of
+    Just global
+      | global == prelSubst ->
+          length argumentIcities >= 4
+            && all (== Impl) argumentIcities
+      | global == prelPathInd ->
+          length argumentIcities >= 5
+            && let (generatedPrefix, sourcePrefix) =
+                     splitAt (length argumentIcities - 5) argumentIcities
+                in all (== Impl) generatedPrefix
+                     && sourcePrefix == [Impl, Impl, Impl, Expl, Impl]
+    _ -> False
+
+runtimeSafeApplicationArgumentErasureForPosition
+  :: Ctx
+  -> Span
+  -> Bool
+  -> Expr
+  -> Value
+  -> RuntimeErasure Value
+  -> CheckM (RuntimeErasure Value)
+runtimeSafeApplicationArgumentErasureForPosition ctx site runtimeSafeProofPosition expression classifier existing =
+  case existing of
+    RuntimeErased _ -> pure existing
+    RuntimeRelevant ->
+      if runtimeSafeProofPosition
+        then do
+          before <- get
+          diagnosticsBefore <- gets (length . csDiags)
+          let staticCtx = withVarReadBlock VarReadStaticPosition ctx
+          (_, actualClassifier) <-
+            withArgIndexRetag
+              (withDemand (demandOfQ Q0) (infer staticCtx expression))
+          compatible <- unifyDefinitional ctx actualClassifier classifier
+          diagnosticsAfter <- gets (length . csDiags)
+          if diagnosticsAfter /= diagnosticsBefore || not compatible
+            then do
+              put before
+              pure RuntimeRelevant
+            else do
+              solvedClassifier <- forceM actualClassifier
+              evidence <-
+                exactTransportProofRuntimeErasure ctx site solvedClassifier >>= \case
+                  Just exact -> pure (Just exact)
+                  Nothing -> argumentRuntimeErasedByEvidence ctx site solvedClassifier
+              semanticEvidence <- traverse (traverse (evalIn ctx)) evidence
+              put before
+              pure (maybe RuntimeRelevant RuntimeErased semanticEvidence)
+        else pure RuntimeRelevant
+
+-- | A flexible application headed by a provisional declaration binder creates
+-- a transient generated Pi. Its domain mode cannot be selected until the
+-- argument's own classifier has been solved by the complete declaration.
+-- Finalization rewrites this origin to the ordinary source-interface origin;
+-- non-provisional inference retains the historical source-written contract.
+flexApplicationBinderOrigin :: Ctx -> Term -> BinderOrigin
+flexApplicationBinderOrigin ctx function =
+  case fst (spineOfTerm function) of
+    CVar index
+      | Just entry <- listToMaybe (drop index (ctxEntries ctx))
+      , ceModeProvisional entry || ceImplicitLocal entry && isDirectFlex (ceType entry) -> BinderGenerated
+    _ -> BinderSourceWritten
+  where
+    isDirectFlex = \case
+      VFlex _ [] -> True
+      _ -> False
+
 elabSpineArgGeneral :: Ctx -> Span -> [Value] -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
   case (arg, fTy) of
@@ -25840,7 +27103,7 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       resultType <- clApp closure proofValue
       nextCtx <- extendLevelAssumptionFromSynthesized sp ctx assumption proof
       elabSpineWith nextCtx sp (CApp Impl fTm proof) resultType (arg : rest)
-    (ArgImplicit e, VPiBoundM mode Impl q _ _ assumption dom clo) -> do
+    (ArgImplicit e, VPiRuntimeM mode _ Impl q borrowed _ assumption _ runtimeErasure dom clo) -> do
       -- §16.1.7.2: the explicit implicit argument's payload is elaborated
       -- against the selected implicit binder's demanded type 'dom'. If
       -- that elaboration fails, §3.1.4 mandates the portable
@@ -25854,7 +27117,7 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       flushPendingDeclaration
       dom' <- forceM dom
       n0 <- gets (length . csDiags)
-      aTm <- checkExplicitArg ctx mode q e dom'
+      aTm <- checkExplicitArg ctx mode q borrowed runtimeErasure e dom'
       retagExplicitImplicitFailure n0
       aV <- checkedArgumentValue ctx (exprSpan e) dom' aTm
       ty' <- clApp clo aV
@@ -25882,14 +27145,16 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       result <- elabSpineWith nextCtx sp (CApp Impl fTm iTm) ty' (arg : rest)
       when kindLike (validateInferredKindArgument ctx sp iTm dom)
       pure result
-    (ArgExplicit e, VPiBoundM mode Expl q borrowed _ assumption dom clo) -> do
-      aTm <- checkExplicitArg ctx mode q e dom
+    (ArgExplicit e, VPiRuntimeM mode _ Expl q borrowed _ assumption _ runtimeErasure dom clo) -> do
+      selectedErasure <- runtimeSafeApplicationArgumentErasure ctx (exprSpan e) fTm e dom runtimeErasure
+      aTm <- checkExplicitArg ctx mode q borrowed selectedErasure e dom
+      selectedErasureTerm <- traverse (quoteIn ctx) selectedErasure
       when borrowed $
         solveAnonymousBorrowRegion ctx sp captureRegions dom aTm
       aV <- checkedArgumentValue ctx (exprSpan e) dom aTm
       ty' <- clApp clo aV
       nextCtx <- extendLevelAssumption sp ctx assumption
-      elabSpineWith nextCtx sp (CApp Expl fTm aTm) ty' rest
+      elabSpineWith nextCtx sp (CAppRuntime Expl selectedErasureTerm fTm aTm) ty' rest
     -- a '~place' marker against a callable parameter: the place value
     -- is not an ordinary argument form.  §18.9.3 gives '~' meaning only
     -- through the do-item inout rewrite after resolving InoutParam metadata.
@@ -25916,11 +27181,19 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       (aTm, aTy) <- insertAllImplicits ctx (exprSpan e) aTm0 aTy0
       aTyF <- forceM aTy
       paramKind <- isParametricKind (ctxLen ctx) aTyF
-      let mode = if paramKind then Parametric else Ordinary
-          formation = if paramKind then FormationParametric else FormationOrdinary
       codM <- freshMeta
       domT <- quoteIn ctx aTyF
-      piV <- evalIn ctx (CPiFormedM mode formation Impl Q0 False "_a" domT codM)
+      let origin = flexApplicationBinderOrigin ctx fTm
+          -- A generated binder belongs to a provisional declaration
+          -- classifier. Its argument classifier may still be flexible here,
+          -- so an ordinary decision would be premature and would reject
+          -- later parametric uses before 'finalizeInferredClassifier' can
+          -- recompute the complete kind. The generated node is never
+          -- published with this provisional contract.
+          provisional = origin == BinderGenerated
+          mode = if provisional || paramKind then Parametric else Ordinary
+          formation = if provisional || paramKind then FormationParametric else FormationOrdinary
+      piV <- evalIn ctx (CPiEvidenceM mode formation Impl Q0 False "_a" Nothing origin domT codM)
       solveMeta m piV
       aV <- evalIn ctx aTm
       case piV of
@@ -25933,12 +27206,14 @@ elabSpineArgGeneral ctx sp captureRegions fTm fTy arg rest = do
       (aTm, aTy) <- insertAllImplicits ctx (exprSpan e) aTm0 aTy0
       aTyF <- forceM aTy
       paramKind <- isParametricKind (ctxLen ctx) aTyF
-      let mode = if paramKind then Parametric else Ordinary
-          q = if paramKind then Q0 else QW
-          formation = if paramKind then FormationParametric else FormationOrdinary
       codM <- freshMeta
       domT <- quoteIn ctx aTyF
-      piV <- evalIn ctx (CPiFormedM mode formation Expl q False "_a" domT codM)
+      let origin = flexApplicationBinderOrigin ctx fTm
+          provisional = origin == BinderGenerated
+          mode = if provisional || paramKind then Parametric else Ordinary
+          q = if provisional || paramKind then Q0 else QW
+          formation = if provisional || paramKind then FormationParametric else FormationOrdinary
+      piV <- evalIn ctx (CPiEvidenceM mode formation Expl q False "_a" Nothing origin domT codM)
       solveMeta m piV
       aV <- evalIn ctx aTm
       case piV of
@@ -26510,19 +27785,41 @@ elabRecordLit ctx items sp = do
     let e = fromMaybe (EVar n) mv -- punning
     (tm, ty) <- infer ctx e
     (tm1, ty1) <- insertAllImplicits ctx (nameSpan n) tm ty
+    recordUsageExpressionType ctx e ty1
     observation <- observationJudgmentForTerm ctx tm1 ty1
     when (ojMode observation == Parametric) $
       reportParametricPromotion (nameSpan n) "record-field" observation
-    pure (nameText n, q, tm1, ty1)
-  forM_ (duplicatesOf [n | (n, _, _, _) <- rs]) $ \n ->
+    runtimeErasure <-
+      selectBinderRuntimeErasure ctx (nameSpan n) q RuntimeRelevant ty1
+        >>= traverse (evalIn ctx)
+    pure (nameText n, q, tm1, ty1, runtimeErasure)
+  forM_ (duplicatesOf [n | (n, _, _, _, _) <- rs]) $ \n ->
     errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
       ("record literal has duplicate field '" <> n <> "'")
   -- evaluate fields in source order via lets, assemble canonically
-  let sorted = sortOn (\(n, _, _, _) -> n) rs
+  let sorted = sortOn (\(n, _, _, _, _) -> n) rs
   pure
-    ( CRecordV [(n, tm) | (n, _, tm, _) <- sorted]
-    , VRecordTQ [RecordField n Ordinary FormationOrdinary q Nothing ty | (n, q, _, ty) <- sorted]
+    ( CRecordV [(n, tm) | (n, _, tm, _, _) <- sorted]
+    , VRecordTQ [RecordField n Ordinary FormationOrdinary q Nothing runtimeErasure ty | (n, q, _, ty, runtimeErasure) <- sorted]
     )
+
+recordUsageExpressionType :: Ctx -> Expr -> Value -> CheckM ()
+recordUsageExpressionType ctx expression ty = do
+  typeTerm0 <- quoteIn ctx ty
+  typeTerm <- zonkTermM (ctxLen ctx) typeTerm0
+  state <- get
+  when (null (unsolvedMetasOf state typeTerm)) $
+    case delaborateType ctx (exprSpan expression) typeTerm of
+      Nothing -> pure ()
+      Just sourceType ->
+        modify' $ \current ->
+          current
+            { csUsageExpressionTypes =
+                Map.insert
+                  (exprSpan expression)
+                  sourceType
+                  (csUsageExpressionTypes current)
+            }
 
 -- | Project one named source field from an authenticated constructor subset.
 --
@@ -26530,8 +27827,8 @@ elabRecordLit ctx items sp = do
 -- but it cannot determine preceding payload binders that do not occur in the
 -- result. A later dependent field must therefore be instantiated with the
 -- exact projection terms of those preceding binders. This routine walks the
--- checked source telescope in declaration order, recursively constructs those
--- projections, and only then reads the requested field type.
+-- checked source telescope in declaration order, constructs each predecessor
+-- projection at most once, and only then reads the requested field type.
 --
 -- The same result drives both explicit payload projection and erased hidden
 -- projection, keeping the term used in the dependent type identical to the
@@ -26547,20 +27844,42 @@ nominalConstructorSourceFieldProjection
   -> CheckM (Maybe (Term, ObservationMode, Icit, Q, Value))
 nominalConstructorSourceFieldProjection
   ctx receiverTerm receiverType constructors targetName site =
-    go Set.empty targetName
+    evalStateT (project targetName) (Map.empty, Set.empty)
   where
-    go seen fieldName
-      | fieldName `Set.member` seen = pure Nothing
-      | otherwise = do
-          state <- get
+    -- A late field may depend on every preceding source field. Re-elaborating
+    -- each predecessor recursively gives the recurrence T(n) = sum T(i),
+    -- which made a 15-field ordinary constructor allocate roughly 2^15 full
+    -- constructor spines. The projection is a pure function of this checked
+    -- receiver, constructor subset, and field identity, while the associated
+    -- unifications are monotone, so cache each result for this projection
+    -- query. The active set retains the old fail-closed cycle behavior.
+    project fieldName = do
+      (cache, active) <- get
+      case Map.lookup fieldName cache of
+        Just result -> pure result
+        Nothing
+          | fieldName `Set.member` active -> pure Nothing
+          | otherwise -> do
+              put (cache, Set.insert fieldName active)
+              result <- compute fieldName
+              modify' $ \(completed, pending) ->
+                ( Map.insert fieldName result completed
+                , Set.delete fieldName pending
+                )
+              pure result
+
+    compute fieldName = do
+          state <- lift get
           details <-
             forM constructors $ \constructor ->
               case Map.lookup constructor (csCtors state) of
                 Nothing -> pure Nothing
                 Just info -> do
                   (universes, _, arguments, namedBinders, explicitFields) <-
-                    instantiateConstructorForFields
-                      ctx constructor info receiverType site
+                    lift
+                      ( instantiateConstructorForFields
+                          ctx constructor info receiverType site
+                      )
                   let sourceCount = length (ciSourceFields info)
                       sourceBinders =
                         drop (length namedBinders - sourceCount) namedBinders
@@ -26593,17 +27912,18 @@ nominalConstructorSourceFieldProjection
                                         (Just (CProjM priorMode receiverTerm priorName))
                                     Expl ->
                                       fmap (\(term, _, _, _, _) -> term)
-                                        <$> go (Set.insert fieldName seen) priorName
+                                        <$> project priorName
                                 case (priorTerm, drop argumentIndex arguments) of
                                   (Just exactTerm, argument : _) -> do
-                                    argumentValue <- evalIn ctx (caTerm argument)
-                                    exactValue <- evalIn ctx exactTerm
-                                    unify ctx argumentValue exactValue
+                                    argumentValue <-
+                                      lift (evalIn ctx (caTerm argument))
+                                    exactValue <- lift (evalIn ctx exactTerm)
+                                    lift (unify ctx argumentValue exactValue)
                                   _ -> pure False)
                           if not hydrated
                             then pure Nothing
                             else do
-                              targetType' <- forceM targetType
+                              targetType' <- lift (forceM targetType)
                               let explicitIndex =
                                     elemIndex
                                       targetArgumentIndex
@@ -26624,7 +27944,7 @@ nominalConstructorSourceFieldProjection
                                     , targetType'
                                     )
                                 )
-          evalContext <- ec_
+          evalContext <- lift ec_
           case sequence details of
             Just
               ( first@(_, _, _, _, _, _, firstMode, firstIcit, firstQuantity, firstType)
@@ -26645,7 +27965,7 @@ nominalConstructorSourceFieldProjection
                         Impl ->
                           pure (Just (CProjM firstMode receiverTerm fieldName))
                         Expl -> do
-                          annotation <- quoteIn ctx receiverType
+                          annotation <- lift (quoteIn ctx receiverType)
                           let makeAlt
                                 ( constructor
                                   , universes
@@ -26684,7 +28004,7 @@ nominalConstructorSourceFieldProjection
                                             )
                                       Nothing -> pure Nothing
                               makeAlt _ = pure Nothing
-                          alternatives <- traverse makeAlt (first : rest)
+                          alternatives <- lift (traverse makeAlt (first : rest))
                           pure
                             ( CMatch receiverTerm (Just annotation) Nothing
                                 <$> sequence alternatives
@@ -26719,6 +28039,14 @@ elabDot ctx e member = do
       , Just op <- find ((== nameText mname) . eoiName) (eliOps eli) ->
           effOpSelection ctx (nameSpan mname) eli op
     _ -> elabDotOrdinary ctx e member mname
+
+recordErasedProjection :: Expr -> DotMember -> CheckM ()
+recordErasedProjection receiver member =
+  modify' $ \state ->
+    state
+      { csErasedExpressionSpans =
+          Set.insert (exprSpan (EDot receiver member)) (csErasedExpressionSpans state)
+      }
 
 elabDotOrdinary :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
 elabDotOrdinary ctx e member mname = do
@@ -27111,6 +28439,8 @@ elabDotUnqualified ctx e member mname = do
         VRecordTQ fields
           | Just field <- find ((== nameText mn0) . rfName) fields -> do
               fty' <- substThisInto ctx tm1 (rfType field)
+              when (rfQ field == Q0) $
+                recordErasedProjection e member
               let f = nameText mn0
                   names = map rfName fields
                   proj
@@ -27160,8 +28490,8 @@ elabDotUnqualified ctx e member mname = do
                        <> "' (fields: " <> T.intercalate ", " visibleFields <> ")")
                   anyHole ctx
         -- §11.3.1A: explicit-prefix projection on an open record
-        VGlobN (GName pm "__openRec") [_, (_, prefixV)]
-          | pm == preludeModule -> do
+        VGlobI openRecord [_] [_, (_, prefixV)]
+          | openRecord == prelOpenRec -> do
               pf <- forceM prefixV
               case pf of
                 VRecordT fs
@@ -27183,6 +28513,8 @@ elabDotUnqualified ctx e member mname = do
           case (Map.lookup headG (csTraits st), semanticSpine) of
             (Just ti, Just arguments)
               | nameText mn0 `elem` tiMembers ti -> do
+                  when (Map.lookup (nameText mn0) (tiMemberQs ti) == Just Q0) $
+                    recordErasedProjection e member
                   let memberMode = Map.findWithDefault Ordinary (nameText mn0) (tiMemberModes ti)
                       projected = CProjM memberMode tm1 (nameText mn0)
                   memberTypeOf
@@ -27215,7 +28547,9 @@ elabDotUnqualified ctx e member mname = do
                         (nameText mn0)
                         (nameSpanOf member)
                         >>= \case
-                          Just (projected, _, Expl, _, fieldType) ->
+                          Just (projected, _, Expl, fieldQuantity, fieldType) -> do
+                            when (fieldQuantity == Q0) $
+                              recordErasedProjection e member
                             pure (projected, fieldType)
                           _ ->
                             hiddenConstructorFieldProjection
@@ -27357,7 +28691,8 @@ elabDotUnqualified ctx e member mname = do
                 (nameSpan fieldName)
                 >>= \case
                   Just (projected, _, Impl, Q0, fieldType) ->
-                    pure (Just (projected, fieldType))
+                    recordErasedProjection e member
+                      >> pure (Just (projected, fieldType))
                   _ -> pure Nothing
         _ -> pure Nothing
       where
@@ -27530,12 +28865,200 @@ instantiateTraitMemberType ctx site trait traitUniverses member arguments doneFi
               (,) field <$> evalIn ctx term
           clApp closure (VRecordV (sortOn fst fields))
         _ -> pure ty
+
     peelSemantic activeCtx ty (argument : rest) =
       case ty of
         VPi Impl _ _ _ _ closure -> do
           codomain <- clApp closure argument
           peelGenerated activeCtx codomain rest
         _ -> pure ty
+
+traitMemberSiblingTypesAt
+  :: Span
+  -> GName
+  -> [Level]
+  -> TraitInfo
+  -> [Term]
+  -> Ctx
+  -> [(Text, Term)]
+  -> [(Text, Term)]
+  -> CheckM [RecordField Value]
+traitMemberSiblingTypesAt site trait traitUniverses info argumentTerms ctx supers = go []
+  where
+    go _ [] = pure []
+    go preceding ((member, memberTerm) : rest) = do
+      arguments <- mapM (evalIn ctx) argumentTerms
+      memberType <-
+        instantiateTraitMemberType
+          ctx
+          site
+          trait
+          traitUniverses
+          member
+          arguments
+          (supers ++ preceding)
+      let field =
+            RecordField
+              member
+              (Map.findWithDefault Ordinary member (tiMemberModes info))
+              FormationOrdinary
+              (Map.findWithDefault QW member (tiMemberQs info))
+              Nothing
+              RuntimeRelevant
+              memberType
+      (field :) <$> go (preceding ++ [(member, memberTerm)]) rest
+
+checkTraitMemberExpressionAgainst
+  :: ObservationMode
+  -> Ctx
+  -> Value
+  -> [Binder]
+  -> Maybe Expr
+  -> Expr
+  -> Span
+  -> CheckM Term
+checkTraitMemberExpressionAgainst memberMode ctx memberType binders resultType body site =
+  case binders of
+    [] ->
+      checkObservedExpr
+        ctx
+        "ordinary trait member"
+        memberMode
+        (maybe body (\ty -> EAscription body ty site) resultType)
+        memberType
+    _ -> checkTraitMemberLambdaAgainst ctx memberType binders body site
+
+checkTraitMemberLambdaAgainst
+  :: Ctx
+  -> Value
+  -> [Binder]
+  -> Expr
+  -> Span
+  -> CheckM Term
+checkTraitMemberLambdaAgainst ctx ty binders body site = do
+  forced <- case binders of
+    [] -> forceM ty
+    _ -> peelCapturesM ty
+  case (binders, forced) of
+    ([], _) -> check ctx body forced
+    (binder : rest, VPiBoundM mode Impl quantity _ name assumption domain closure)
+      | not (bImplicit binder)
+      , mode == Parametric || (nameText <$> bName binder) /= Just name -> do
+          withBound <- extendLevelAssumption site ctx assumption
+          let nextCtx = bindCtxMQ mode quantity name True domain withBound
+          codomain <- clApp closure (VRigid (ctxLen ctx) [])
+          CLamM mode Impl quantity name
+            <$> checkTraitMemberLambdaAgainst nextCtx codomain (binder : rest) body site
+    (binder : rest, VPiBoundM mode icit quantity _ name assumption domain closure) -> do
+      withBound <- extendLevelAssumption site ctx assumption
+      let binderName = fromMaybe name (nameText <$> bName binder)
+          nextCtx = bindCtxMQ mode quantity binderName (icit == Impl) domain withBound
+      codomain <- clApp closure (VRigid (ctxLen ctx) [])
+      CLamM mode icit quantity binderName
+        <$> checkTraitMemberLambdaAgainst nextCtx codomain rest body site
+    (_ : _, _) -> do
+      errAt site "E_SIGNATURE_ARITY" (Just "kappa-hs.type.signature-arity")
+        "trait member has more parameters than its checked member type"
+      check ctx body forced
+
+-- | Open the checked prefix shared by a trait-member accessor and its hidden
+-- default template.  The count is structural: generated universe evidence,
+-- owning-trait parameters, and the abstract dictionary binder.  Source
+-- binders belonging to the member itself remain in the returned member type.
+peelTraitMemberPrefix
+  :: Span
+  -> Int
+  -> Ctx
+  -> Value
+  -> CheckM (Maybe (Ctx, Value, [(ObservationMode, Icit, Q, Text)]))
+peelTraitMemberPrefix site = go []
+  where
+    go binders 0 activeCtx ty = pure (Just (activeCtx, ty, reverse binders))
+    go binders remaining activeCtx ty = do
+      forced <- forceM ty
+      case forced of
+        VPiBoundM mode icit quantity _ name assumption domain closure -> do
+          withBound <- extendLevelAssumption site activeCtx assumption
+          let nextCtx = bindCtxMQ mode quantity name (icit == Impl) domain withBound
+          codomain <- clApp closure (VRigid (ctxLen activeCtx) [])
+          go ((mode, icit, quantity, name) : binders) (remaining - 1) nextCtx codomain
+        _ -> do
+          errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+            "checked trait-member interface ended before its abstract trait prefix"
+          pure Nothing
+
+wrapTraitMemberPrefix
+  :: [(ObservationMode, Icit, Q, Text)]
+  -> Term
+  -> Term
+wrapTraitMemberPrefix binders body =
+  foldr
+    (\(mode, icit, quantity, name) -> CLamM mode icit quantity name)
+    body
+    binders
+
+-- | Specialize a source-free checked ordinary-default template.  The hidden
+-- declaration has exactly the member accessor's universe/type telescope, so
+-- the owning trait occurrence fixes the leading universe prefix and only a
+-- member-local suffix is freshened.  The abstract dictionary is supplied as
+-- an ordinary checked argument; no source body is re-elaborated here.
+instantiateCheckedTraitDefault
+  :: Ctx
+  -> Span
+  -> GName
+  -> [Level]
+  -> [Term]
+  -> [(Text, Term)]
+  -> GName
+  -> CheckM (Term, Value)
+instantiateCheckedTraitDefault ctx site trait traitUniverses argumentTerms dictionaryFields defaultGlobal = do
+  definitions <- gets csGlobals
+  case Map.lookup defaultGlobal definitions of
+    Nothing -> do
+      errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+        "checked trait default template is missing from the semantic environment"
+      anyHole ctx
+    Just definition -> do
+      let totalUniverses = dutParameterCount (gdUniverses definition)
+      if length traitUniverses > totalUniverses
+        then do
+          errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+            "checked trait default template has fewer universe parameters than its owning trait"
+          anyHole ctx
+        else do
+          suffix <- replicateM (totalUniverses - length traitUniverses) freshLevelInstantiationMeta
+          let universes = traitUniverses ++ suffix
+          recordRecursiveSchemaOccurrence (Just ctx) False site defaultGlobal universes
+          (template, templateType) <- specializeGlobalAt ctx defaultGlobal definition universes
+          argumentValues <- mapM (evalIn ctx) argumentTerms
+          traitParameterClassifiers
+            ctx
+            site
+            trait
+            traitUniverses
+            [(Impl, value) | value <- argumentValues] >>= \case
+              Nothing -> do
+                errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+                  "checked trait default has an argument without a checked classifier"
+                anyHole ctx
+              Just classifiers -> do
+                let dictionaryTerm = CRecordV (sortOn fst dictionaryFields)
+                    dictionaryTypeTerm =
+                      foldl
+                        (CApp Impl)
+                        (CGlobal trait traitUniverses)
+                        argumentTerms
+                dictionaryType <- evalIn ctx dictionaryTypeTerm
+                applyGeneratedCoreSpine
+                  ctx
+                  site
+                  template
+                  templateType
+                  ( [ (Impl, term, classifier)
+                    | (term, classifier) <- zip argumentTerms classifiers
+                    ]
+                      ++ [(Impl, dictionaryTerm, dictionaryType)]
+                  )
 
 -- | Specialize a declaration at an authenticated leading universe prefix.
 -- Trait-member accessors are the primary user: their owning trait occurrence
@@ -27676,13 +29199,10 @@ globalTermWithUniversePrefix ctx site global prefix = do
                         (csLevelInstantiationMetas current)
                         (csLevelInstantiationMetas baseline)
                     baselineOccurrences =
-                      Set.fromList
-                        (map puiIdentity (csProvisionalUniverseInstantiations baseline))
+                      Map.keysSet (csProvisionalUniverseInstantiations baseline)
                     localOccurrences =
                       Set.difference
-                        ( Set.fromList
-                            (map puiIdentity (csProvisionalUniverseInstantiations current))
-                        )
+                        (Map.keysSet (csProvisionalUniverseInstantiations current))
                         baselineOccurrences
                 principalizeLevelOccurrence
                   0
@@ -27844,6 +29364,10 @@ carrierArgumentClassifier ctx site carrier sourceType =
 
 memberGlobal :: GName -> Text -> GName
 memberGlobal (GName m t) member = GName m (t <> "." <> member)
+
+traitDefaultGlobal :: GName -> Text -> GName
+traitDefaultGlobal (GName m trait) member =
+  GName m (trait <> ".#default." <> member)
 
 -- | Resolve @Trait.Member@ only when both source components identify an
 -- associated static member of that exact trait. The returned head is the
@@ -28188,12 +29712,41 @@ sourceNameResolvesTo state identity source =
 
 -- record patch (§13.2.5): closed records, '='-updates and ':='-extends.
 elabPatch :: Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
-elabPatch = elabPatchWith False
+elabPatch = elabPatchWith False Nothing
+
+-- | Validate the source-level patch identity contract before the receiver's
+-- runtime representation is known.  §13.2.5 makes these properties of one
+-- patch expression, so closed records, open rows, dependent records, and
+-- constructor-backed records must not acquire different answers.
+validatePatchSourceItems :: [PatchItem] -> Span -> CheckM Bool
+validatePatchSourceItems items fallbackSpan = do
+  let violations = patchSourceViolations fallbackSpan items
+  forM_ violations $ \case
+    DuplicateUpdatePath site path ->
+      errAt site "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
+        ("record patch updates path '" <> path <> "' more than once (§13.2.5)")
+    DuplicateExtensionLabel site label ->
+      errAt site "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa-hs.row.extension-duplicate")
+        ("row extension introduces label '" <> label <> "' more than once (§13.2.6)")
+    UpdatePrefixConflict site path ->
+      errAt site "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
+        ("record patch updates both '" <> path <> "' and a path beneath it (§13.2.5)")
+    MixedPatchLabelConflict site label ->
+      errAt site "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
+        ("record patch uses label '" <> label <> "' for both update and extension (§13.2.5)")
+  pure (null violations)
 
 -- @nested@ selects the §13.2.5 path diagnostic for unknown fields.
-elabPatchWith :: Bool -> Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
-elabPatchWith _ ctx e [PatchSection recv rhs] sp = elabSectionUpdate ctx e recv rhs sp
-elabPatchWith nested ctx e items sp = do
+elabPatchWith :: Bool -> Maybe Value -> Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabPatchWith _ _ ctx e [PatchSection recv rhs] sp = elabSectionUpdate ctx e recv rhs sp
+elabPatchWith nested expected ctx e items sp = do
+  sourceValid <- if nested then pure True else validatePatchSourceItems items sp
+  if sourceValid
+    then elabPatchValidated nested expected ctx e items sp
+    else anyHole ctx
+
+elabPatchValidated :: Bool -> Maybe Value -> Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabPatchValidated nested expected ctx e items sp = do
   (tm, ty) <- infer ctx e
   (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
   t <- forceM ty1
@@ -28210,21 +29763,10 @@ elabPatchWith nested ctx e items sp = do
     VRecordTQ qfs | dep -> elabDependentPatch ctx tm1 qfs items sp
     VRecordTQ qfs -> do
       let fs = [(rfName field, rfType field) | field <- qfs]
-      let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
-          extendNames = [nameText n | PatchExtend n _ <- items]
-          -- nested paths (§13.2.5): group by head segment
+      let -- nested paths (§13.2.5): group by head segment
           nestedHeads =
             foldr (\n acc -> if nameText n `elem` map nameText acc then acc else n : acc) []
               [h | PatchUpdate ((False, h) : _ : _) _ <- items]
-      forM_ (duplicatesOf updateNames) $ \n ->
-        errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
-          ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
-      forM_ (duplicatesOf extendNames) $ \n ->
-        errAt sp "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa-hs.row.extension-duplicate")
-          ("row extension introduces label '" <> n <> "' more than once (§13.2.6)")
-      forM_ [h | h <- nestedHeads, nameText h `elem` updateNames] $ \h ->
-        errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
-          ("record patch both replaces '" <> nameText h <> "' and updates a path beneath it (§13.2.5)")
       groupUps <- forM nestedHeads $ \h -> do
         let subItems =
               [ PatchUpdate restPath v
@@ -28233,7 +29775,7 @@ elabPatchWith nested ctx e items sp = do
               ]
         if nameText h `elem` map fst fs
           then do
-            (htm, _) <- elabPatchWith True ctx (EDot e (DotName h)) subItems sp
+            (htm, _) <- elabPatchWith True Nothing ctx (EDot e (DotName h)) subItems sp
             pure (Just (nameText h, htm, Nothing))
           else do
             errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
@@ -28288,7 +29830,7 @@ elabPatchWith nested ctx e items sp = do
               (\acc p -> if fst p `elem` map fst acc then acc else acc ++ [p])
               []
               [(n, (vt, vty)) | (n, vt, Just vty) <- entries, n `notElem` map fst fs]
-          allFields = sortOn rfName (qfs ++ [RecordField n Ordinary FormationOrdinary QW Nothing vty | (n, (_, vty)) <- news])
+          allFields = sortOn rfName (qfs ++ [RecordField n Ordinary FormationOrdinary QW Nothing RuntimeRelevant vty | (n, (_, vty)) <- news])
           fields =
             [ ( n
               , fromMaybe
@@ -28300,11 +29842,11 @@ elabPatchWith nested ctx e items sp = do
             ]
       pure (CRecordV fields, VRecordTQ allFields)
     -- §13.2.6 row extension over an open record (§11.3.1A)
-    VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)]
-      | pm == preludeModule -> do
+    VGlobI openRecord [rowLevel] [(_, rowV), (_, prefixV)]
+      | openRecord == prelOpenRec -> do
           pf <- forceM prefixV
           case pf of
-            VRecordT fs -> elabOpenPatch ctx tm1 rowV fs items sp
+            VRecordTQ fields -> elabOpenPatch ctx tm1 rowLevel rowV fields items expected sp
             _ -> do
               errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
                 "record patch requires a record"
@@ -28339,19 +29881,12 @@ elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
         if length namedFields /= length fieldTys || null namedFields
           then notCtorPatchable
           else do
-            let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
-                nestedHeads =
+            let nestedHeads =
                   foldr (\n acc -> if nameText n `elem` map nameText acc then acc else n : acc) []
                     [h | PatchUpdate ((False, h) : _ : _) _ <- items]
-            forM_ (duplicatesOf updateNames) $ \n ->
-              errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
-                ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
             forM_ (duplicatesOf [nameText n | PatchExtend n _ <- items]) $ \n ->
               errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
                 ("constructor-field patch cannot extend field '" <> n <> "'; ':=' is only defined for row records (§13.2.6)")
-            forM_ [h | h <- nestedHeads, nameText h `elem` updateNames] $ \h ->
-              errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
-                ("record patch both replaces '" <> nameText h <> "' and updates a path beneath it (§13.2.5)")
             groupUps <- forM nestedHeads $ \h -> do
               let subItems =
                     [ PatchUpdate restPath v
@@ -28360,7 +29895,7 @@ elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
                     ]
               if nameText h `elem` namedNames
                 then do
-                  (htm, _) <- elabPatchWith True ctx (EDot e (DotName h)) subItems sp
+                  (htm, _) <- elabPatchWith True Nothing ctx (EDot e (DotName h)) subItems sp
                   pure (Just (nameText h, htm))
                 else do
                   errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
@@ -28471,14 +30006,15 @@ elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
 -- | Row extension and explicit-prefix update on an open record
 -- (§13.2.6, §11.3.1A): 'rec.{ l := v }' requires 'LacksRec r l'
 -- evidence in scope and appends the field to the explicit prefix.
-elabOpenPatch :: Ctx -> Term -> Value -> [(Text, Value)] -> [PatchItem] -> Span -> CheckM (Term, Value)
-elabOpenPatch ctx tm1 rowV fs items sp = do
+elabOpenPatch :: Ctx -> Term -> Level -> Value -> [RecordField Value] -> [PatchItem] -> Maybe Value -> Span -> CheckM (Term, Value)
+elabOpenPatch ctx tm1 rowLevel rowV fields items expected sp = do
+  expectedSelection <- expectedOpenPatchFields ctx rowLevel rowV fields items expected
   results <- forM items $ \case
     PatchExtend n v
-      | Just fty <- lookup (nameText n) fs -> do
+      | Just field <- find ((== nameText n) . rfName) fields -> do
           errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.lacks-failed")
             ("row extension ':=' introduces '" <> nameText n <> "', but the record already has that field (§13.2.6)")
-          vt <- check ctx v fty
+          vt <- checkObservedExpr ctx "open-record extension field" (rfMode field) v (rfType field)
           pure (Just (nameText n, vt, Nothing))
       | otherwise -> do
           -- §13.2.1 uniqueness side condition: the residual row must
@@ -28486,30 +30022,35 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
           goal <-
             globalValueM prelLacksRec
               [(Expl, rowV), (Expl, VLit (LitStr (nameText n)))]
-          saved <- get
-          _ <- resolveImplicitQ ctx (nameSpan n) QW goal
-          after <- get
-          when (length (csDiags after) /= length (csDiags saved)) $ do
-            put saved
+          evidence <- exactLacksRecEvidence ctx (nameSpan n) goal
+          when (isNothing evidence) $
             errAt (nameSpan n) "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.lacks-failed")
               ( "extending the open row with '" <> nameText n
                   <> "' requires a 'LacksRec r " <> nameText n <> "' constraint in scope (§13.2.1, §13.2.6)"
               )
-          (vt0, vty0) <- infer ctx v
-          (vt, vty) <- insertAllImplicits ctx (exprSpan v) vt0 vty0
-          pure (Just (nameText n, vt, Just vty))
+          (vt, field) <- case snd <$> expectedSelection >>= Map.lookup (nameText n) of
+            Just expectedField -> do
+              value <- checkObservedExpr ctx "open-record extension field" (rfMode expectedField) v (rfType expectedField)
+              pure (value, expectedField)
+            Nothing -> do
+              (vt0, vty0) <- infer ctx v
+              (value, valueType) <- insertAllImplicits ctx (exprSpan v) vt0 vty0
+              synthesized <- synthesizedOpenPatchField ctx (nameSpan n) (nameText n) valueType
+              pure (value, synthesized)
+          pure (Just (nameText n, vt, Just field))
     PatchUpdate [(_, n)] (PatchValue v)
-      | Just fty <- lookup (nameText n) fs -> do
-          vt <- check ctx v fty
+      | Just field <- find ((== nameText n) . rfName) fields -> do
+          vt <- checkObservedExpr ctx "open-record patch field" (rfMode field) v (rfType field)
           pure (Just (nameText n, vt, Nothing))
     _ -> do
       errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
         "this update item is not supported on an open record (§13.2.5)"
       pure Nothing
   let entries = catMaybes results
-      newFields = [(n, vty) | (n, _, Just vty) <- entries]
-  prefixTms <- mapM (\(n, v) -> (,) n <$> quoteIn ctx v) (sortOn fst (fs ++ newFields))
-  prefixV' <- evalIn ctx (CRecordT prefixTms)
+      newFields = [field | (_, _, Just field) <- entries]
+      prefixFields = sortOn rfName (fields ++ newFields)
+  prefixTerms <- mapM (traverse (quoteIn ctx)) prefixFields
+  prefixV' <- evalIn ctx (CRecordTQ prefixTerms)
   rowExtendHead <- globalHeadM prelRowExtend
   let tm' =
         foldl
@@ -28524,8 +30065,108 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
           )
           tm1
           entries
-  openRecT <- globalValueM prelOpenRec [(Expl, rowV), (Expl, prefixV')]
+  rowTerm <- quoteIn ctx rowV
+  prefixTerm <- quoteIn ctx prefixV'
+  prefixLevel <- typeValueClassifierLevel ctx prefixV' >>= \case
+    Just level -> pure level
+    Nothing -> do
+      errAt sp "E_UNIVERSE_CONSTRAINT_UNSATISFIABLE" (Just "kappa.universe.constraint")
+        "the updated open-record prefix has no statically known universe ceiling"
+      pure (levelSucc rowLevel)
+  let resultLevel = maybe (levelMax rowLevel prefixLevel) fst expectedSelection
+      rowType = VGlobI prelRecRow [] []
+  (openRecTerm, _) <-
+    checkedGeneratedGlobalAppAtM
+      ctx
+      sp
+      prelOpenRec
+      [resultLevel]
+      [ (Expl, rowTerm, rowType)
+      , (Expl, prefixTerm, VSort prefixLevel)
+      ]
+  openRecT <- evalIn ctx openRecTerm >>= forceM
   pure (tm', openRecT)
+
+-- | Choose the same omitted-mode defaults as an ordinary source field when
+-- row extension must synthesize its result type.  Expected-type checking uses
+-- the expected field's already-checked metadata instead.
+synthesizedOpenPatchField :: Ctx -> Span -> Text -> Value -> CheckM (RecordField Value)
+synthesizedOpenPatchField ctx site name valueType = do
+  parametricKind <- isParametricKind (ctxLen ctx) valueType
+  let mode = if parametricKind then Parametric else Ordinary
+      quantity = if parametricKind then Q0 else QW
+  formation <- selectFormationMode ctx mode valueType
+  runtimeErasure <-
+    selectBinderRuntimeErasure ctx site quantity RuntimeRelevant valueType
+      >>= traverse (evalIn ctx)
+  pure
+    (RecordField name mode formation quantity Nothing runtimeErasure valueType)
+
+-- | Select the side-condition evidence used by open-row extension without
+-- routing absence through the ordinary implicit resolver.  Absence is the
+-- condition diagnosed by the caller, while a closed residual row is proved by
+-- the compiler-owned structural rule.  The proof is static and never enters
+-- the generated runtime term.
+exactLacksRecEvidence :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+exactLacksRecEvidence ctx site goal =
+  localCandidate ctx site Q0 goal >>= \case
+    Just evidence -> pure (Just evidence)
+    Nothing -> rowProof goal
+
+-- | Authenticate an expected open-row result before using it to check newly
+-- introduced fields.  The residual row identity, complete prefix labels, and
+-- every pre-existing field type must agree.  A failed probe restores checker
+-- state and falls back to synthesis; it never guesses a field type from a
+-- merely similar expected shape.
+expectedOpenPatchFields
+  :: Ctx
+  -> Level
+  -> Value
+  -> [RecordField Value]
+  -> [PatchItem]
+  -> Maybe Value
+  -> CheckM (Maybe (Level, Map Text (RecordField Value)))
+expectedOpenPatchFields _ _ _ _ _ Nothing = pure Nothing
+expectedOpenPatchFields ctx rowLevel rowV fields items (Just expected0) = do
+  before <- get
+  expected <- forceM expected0
+  selected <- case expected of
+    VGlobI openRecord [expectedLevel] [(_, expectedRow), (_, expectedPrefix)]
+      | openRecord == prelOpenRec
+      -> do
+          sameRow <- unify ctx rowV expectedRow
+          prefix <- forceM expectedPrefix
+          let expectedFields = case prefix of
+                VRecordTQ targetFields -> Just targetFields
+                _ -> Nothing
+              introduced =
+                [ nameText name
+                | PatchExtend name _ <- items
+                , nameText name `notElem` map rfName fields
+                ]
+              requiredLabels = sort (map rfName fields ++ nub introduced)
+          case expectedFields of
+            Just target
+              | sameRow
+              , map rfName target == requiredLabels -> do
+                  oldFieldsAgree <- allFieldsAgree
+                    [ maybe
+                        (pure False)
+                        (unify ctx (rfType actual) . rfType)
+                        (find ((== rfName actual) . rfName) target)
+                    | actual <- fields
+                    ]
+                  prefixFits <- solveLevelInequality ctx rowLevel expectedLevel
+                  pure ((expectedLevel, Map.fromList [(rfName field, field) | field <- target]) <$ guard (oldFieldsAgree && prefixFits))
+            _ -> pure Nothing
+    _ -> pure Nothing
+  case selected of
+    Just target -> pure (Just target)
+    Nothing -> put before >> pure Nothing
+  where
+    allFieldsAgree [] = pure True
+    allFieldsAgree (checkField : rest) =
+      checkField >>= \ok -> if ok then allFieldsAgree rest else pure False
 
 -- | Projection-section update @lhs.{ (.member args) = rhs }@
 -- (§13.2.5, §30.2.2.4): the member must resolve to a stable field, a
@@ -28544,7 +30185,7 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
       -- a plain stable field: FillPlace, i.e. the ordinary update
       (VRecordT fs, [DotName mn], _)
         | nameText mn `elem` map fst fs, null sArgs ->
-            elabPatchWith False ctx baseE [PatchUpdate [(False, mn)] (PatchValue rhs)] sp
+            elabPatchWith False Nothing ctx baseE [PatchUpdate [(False, mn)] (PatchValue rhs)] sp
       (_, _, Just pj)
         | pjSelector pj ->
             case (sArgs, nub (pjYields pj)) of
@@ -28552,7 +30193,7 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
               ([], [(_, path@(_ : _))]) ->
                 case members of
                   [DotName mn] ->
-                    elabPatchWith False ctx baseE
+                    elabPatchWith False Nothing ctx baseE
                       [PatchUpdate [(False, Name seg (nameSpan mn)) | seg <- path] (PatchValue rhs)] sp
                   _ -> unsupportedTarget (baseTm, baseTy)
               ([], [(_, [])]) -> do
@@ -28603,8 +30244,8 @@ elabSeal ctx e tyE sp = do
   (sTm, _) <- inferType ctx tyE
   sV <- forceM =<< evalIn ctx sTm
   case sV of
-    VGlobN (GName pm "__openRec") _
-      | pm == preludeModule -> do
+    VGlobI openRecord [_] _
+      | openRecord == prelOpenRec -> do
           errAt sp "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa-hs.seal.open-record")
             "the ascribed type of 'seal ... as ...' must be a closed record type; an open record with a residual row is not a sealing signature (§13.2.10)"
           anyHole ctx
@@ -28703,7 +30344,7 @@ elabSeal ctx e tyE sp = do
       let nm = rfName field
       fty' <- substThisInto ctx (CRecordV (sortOn fst doneV)) (rfType field)
       tm <- withThis (Just (ThisValue doneV doneT)) (check ctx fe fty')
-      let field' = field {rfType = fty'}
+      field' <- traverse (substThisInto ctx (CRecordV (sortOn fst doneV))) field
       ((nm, tm) :) <$> goLit ((nm, tm) : doneV) (field' : doneT) rest
 
 -- | §13.2.11 existential introduction (Spec.md 13347-13364).
@@ -29008,11 +30649,11 @@ elabOpenExists ctx e ns pat body sp = do
       let assemble payload =
             foldr
               (\(i, (nm, field), wtyTm) b ->
-                 CLetM (rfMode field) (rfQ field) nm wtyTm
+                 CLetRuntimeM (rfMode field) (rfQ field) nm RuntimeRelevant wtyTm
                    (CProjM (rfMode field) (CVar i) (rfName field)) b)
               payload
               (zip3 [0 ..] (zip names witFs) (map snd witAcc))
-          close payload = CLetM Ordinary QW "__pkg" pkgTyTm eTm (assemble payload)
+          close payload = CLetRuntimeM Ordinary QW "__pkg" RuntimeRelevant pkgTyTm eTm (assemble payload)
           payMatch = CMatch payTm (Just payTyTm) Nothing [CaseAlt patC Nothing bodyTm]
           whole = close payMatch
           removedBinders = ctxLen ctx2 - ctxLen ctx
@@ -29088,7 +30729,7 @@ varUsedAt = go
 -- 'this' and checks against its field type with 'this' substituted.
 elabDependentRecordLit :: Ctx -> [RecItem] -> [(Text, Value)] -> Span -> CheckM (Term, Value)
 elabDependentRecordLit ctx items fs =
-  elabDependentRecordLitQ ctx items [RecordField n Ordinary FormationOrdinary QW Nothing t | (n, t) <- fs]
+  elabDependentRecordLitQ ctx items [RecordField n Ordinary FormationOrdinary QW Nothing RuntimeRelevant t | (n, t) <- fs]
 
 elabDependentRecordLitQ :: Ctx -> [RecItem] -> [RecordField Value] -> Span -> CheckM (Term, Value)
 elabDependentRecordLitQ ctx items qfs sp = do
@@ -29140,7 +30781,7 @@ elabDependentRecordLitQ ctx items qfs sp = do
       tm <-
         withThis (Just (ThisValue doneV doneT))
           (checkObservedExpr ctx "ordinary record field" (rfMode field) e fty')
-      let field' = field {rfType = fty'}
+      field' <- traverse (substThisInto ctx (CRecordV (sortOn fst doneV))) field
       ((nm, tm) :) <$> goLit ((nm, tm) : doneV) (field' : doneT) rest
 
 -- | A record update on a §13.2.1 dependent record: updated fields check
@@ -29161,9 +30802,6 @@ elabDependentPatch ctx baseTm qfs items sp = do
       unsupportedAt (patchItemSpan it sp)
         "this update form is not supported on a dependent record"
       pure Nothing
-  forM_ (duplicatesOf (map fst ups)) $ \n ->
-    errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
-      ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
   annotated <- forM qfs $ \field -> do
     let nm = rfName field
         fty = rfType field
@@ -29204,7 +30842,7 @@ elabDependentPatch ctx baseTm qfs items sp = do
           withThis (Just (ThisValue doneV doneT))
             (checkObservedExpr ctx "ordinary dependent record patch field" (rfMode field) v fty')
         Nothing -> pure (CProjM (rfMode field) baseTm nm)
-      let field' = field {rfType = fty'}
+      field' <- traverse (substThisInto ctx (CRecordV (sortOn fst doneV))) field
       ((nm, tm) :) <$> goUp ups ((nm, tm) : doneV) (field' : doneT) rest
     patchItemSpan it dflt = case it of
       PatchUpdate ((_, n) : _) _ -> nameSpan n
@@ -29272,7 +30910,14 @@ elabLambdaWith allowInoutBinders provisionalInference ctx0 bs0 body0 sp mexpecte
   -- diagnosed before the closure boundary turns the same source occurrence into
   -- a generic current-read-crosses-boundary error.  Keep only repairs that do
   -- not lift any current reads out of the lambda.
-  (pre, body1) <- liftCurrentReadsExpr ctx0 (exprSpan body0) body0
+  let lambdaBinders =
+        Set.fromList
+          [ nameText name
+          | binder <- bs0
+          , name <- maybeToList (bName binder)
+          ]
+  (pre, body1) <-
+    liftCurrentReadsExprWithShadow ctx0 lambdaBinders (exprSpan body0) body0
   let body = if null pre then body1 else body0
   -- the lambda is a closure boundary: borrowed implicit locals from
   -- the surrounding scope may not be captured into it (§16.3.3)
@@ -29379,7 +31024,7 @@ finalizeLocalLambdaContracts defaultUnsolved ctx0 binders0 rhs0 ty0 = do
   go ctx0 binders0 rhs ty
   where
     go _ [] rhs ty = pure (rhs, ty)
-    go ctx (binder : binders) (CLamM oldMode ic oldQ name body) (CPiEvidenceM _ oldFormation tyIcit _ borrowed tyName assumption origin domain codomain)
+    go ctx (binder : binders) (CLamM oldMode ic oldQ name body) (CPiRuntimeM _ oldFormation tyIcit _ borrowed tyName assumption origin oldRuntimeErasure domain codomain)
       | ic == tyIcit = do
           domainValue0 <- evalIn ctx domain >>= forceM
           case domainValue0 of
@@ -29388,7 +31033,7 @@ finalizeLocalLambdaContracts defaultUnsolved ctx0 binders0 rhs0 ty0 = do
               (body', codomain') <- go ctx' binders body codomain
               pure
                 ( CLamM oldMode ic oldQ name body'
-                , CPiEvidenceM oldMode oldFormation tyIcit oldQ borrowed tyName assumption origin domain codomain'
+                , CPiRuntimeM oldMode oldFormation tyIcit oldQ borrowed tyName assumption origin oldRuntimeErasure domain codomain'
                 )
             _ -> do
               domainValue <- case domainValue0 of
@@ -29428,10 +31073,17 @@ finalizeLocalLambdaContracts defaultUnsolved ctx0 binders0 rhs0 ty0 = do
                     | otherwise = oldQ
                   ctx' = bindCtxMQB mode quantity name (ic == Impl) borrowed domainValue ctx
               formation <- selectFormationMode ctx mode domainValue
+              runtimeErasure <-
+                selectBinderRuntimeErasure
+                  ctx
+                  (bSpan binder)
+                  quantity
+                  oldRuntimeErasure
+                  domainValue
               (body', codomain') <- go ctx' binders body codomain
               pure
                 ( CLamM mode ic quantity name body'
-                , CPiEvidenceM mode formation tyIcit quantity borrowed tyName assumption origin domainTerm codomain'
+                , CPiRuntimeM mode formation tyIcit quantity borrowed tyName assumption origin runtimeErasure domainTerm codomain'
                 )
     go _ _ rhs ty = pure (rhs, ty)
 
@@ -29781,20 +31433,11 @@ collapseInferredGeneralizableLevelEqualities firstConstraint candidates
             , lower `Set.member` candidates
             , upper `Set.member` candidates
             ]
-          vertices =
-            Set.toAscList
-              (Set.fromList (concat [[lower, upper] | (lower, upper) <- edges]))
-          graph =
-            [ (meta, meta, [upper | (lower, upper) <- edges, lower == meta])
-            | meta <- vertices
-            ]
           aliases =
             Map.fromList
               [ (meta, LMeta representative)
-              | component <- stronglyConnComp graph
-              , let members = case component of
-                      AcyclicSCC member -> [member]
-                      CyclicSCC cyclicMembers -> sort cyclicMembers
+              | members <- DirectedGraph.stronglyConnectedComponents
+                  (DirectedGraph.fromEdges edges)
               , representative <- take 1 members
               , meta <- drop 1 members
               ]
@@ -29900,7 +31543,10 @@ generalizeLocalDeclarationUniversesWithRolesRaw firstMeta firstConstraint _ctx d
           -- the invalid schema successful.
           installLevelAssignments candidate
         PrincipalBoundaryDeferred -> pure ()
-        PrincipalBoundaryRejected -> pure ()
+        PrincipalBoundaryRejected failure ->
+          reportPrincipalBoundaryFailure
+            diagnosticSpan declarationIdentities (isJust explicitCount)
+            minimizable localConstraints0 failure
   collapseInferredGeneralizableLevelEqualities firstConstraint generalizable
   st <- get
   let assignments = csLevelAssignments st
@@ -30022,11 +31668,11 @@ elabLetItemsWith
   -> CheckM (Term, Value)
 elabLetItemsWith ctx0 binds finish = go ctx0 binds []
   where
-    mkLet (_, mode, q, n, telescope, tyT, rhs, isRec, _) b
-      | dutParameterCount telescope > 0 && isRec = CLetRecPolyM mode q n telescope tyT rhs b
-      | dutParameterCount telescope > 0 = CLetPolyM mode q n telescope tyT rhs b
-      | isRec = CLetRecM mode q n tyT rhs b
-      | otherwise = CLetM mode q n tyT rhs b
+    mkLet (_, mode, q, n, telescope, tyT, rhs, isRec, _, _, runtimeErasure) b
+      | dutParameterCount telescope > 0 && isRec = CLetRecPolyRuntimeM mode q n telescope runtimeErasure tyT rhs b
+      | dutParameterCount telescope > 0 = CLetPolyRuntimeM mode q n telescope runtimeErasure tyT rhs b
+      | isRec = CLetRecRuntimeM mode q n runtimeErasure tyT rhs b
+      | otherwise = CLetRuntimeM mode q n runtimeErasure tyT rhs b
     sourceBinders = \case
       ELambda _ binders _ _ -> binders
       _ -> []
@@ -30038,34 +31684,42 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
       flushPendingDeclaration
       finalized <- mapM finalizeBinding bindings
       pure (List.foldl' (flip mkLet) bodyTm finalized)
-    finalizeBinding binding@(bindingCtx, mode, q, name, telescope, tyTm, rhsTm, isRec, binders)
-      | null binders = pure binding
-      | otherwise = do
-          (rhsTm', tyTm') <- finalizeLocalLambdaContracts True bindingCtx binders rhsTm tyTm
-          validationCtx <-
-            if isRec
-              then do
-                tyValue <- evalIn bindingCtx tyTm'
-                let recursiveValue = VRigid (ctxLen bindingCtx) []
-                    bound
-                      | dutParameterCount telescope > 0 =
-                          bindCtxLetUniverseMode
-                            name False tyValue recursiveValue telescope
-                            Nothing Nothing mode Nothing bindingCtx
-                      | otherwise =
-                          bindCtxLetProjOpMode
-                            name False tyValue recursiveValue
-                            Nothing Nothing mode Nothing bindingCtx
-                pure (setTopCoreQ q bound)
-              else pure bindingCtx
-          validateInferredLambdaGeneralization
-            (maybe noSpan bSpan (listToMaybe binders))
-            [name]
-            validationCtx
-            binders
-            rhsTm'
-            tyTm'
-          pure (bindingCtx, mode, q, name, telescope, tyTm', rhsTm', isRec, binders)
+    finalizeBinding binding@(bindingCtx, mode, q, name, telescope, tyTm, rhsTm, isRec, binders, site) = do
+      finalized@(_, _, _, _, _, tyTm', _, _, _, _) <-
+        if null binders
+          then pure binding
+          else do
+            (rhsTm', tyTm') <- finalizeLocalLambdaContracts True bindingCtx binders rhsTm tyTm
+            validationCtx <-
+              if isRec
+                then do
+                  tyValue <- evalIn bindingCtx tyTm'
+                  let recursiveValue = VRigid (ctxLen bindingCtx) []
+                      bound
+                        | dutParameterCount telescope > 0 =
+                            bindCtxLetUniverseMode
+                              name False tyValue recursiveValue telescope
+                              Nothing Nothing mode Nothing bindingCtx
+                        | otherwise =
+                            bindCtxLetProjOpMode
+                              name False tyValue recursiveValue
+                              Nothing Nothing mode Nothing bindingCtx
+                  pure (setTopCoreQ q bound)
+                else pure bindingCtx
+            validateInferredLambdaGeneralization
+              (maybe noSpan bSpan (listToMaybe binders))
+              [name]
+              validationCtx
+              binders
+              rhsTm'
+              tyTm'
+            pure (bindingCtx, mode, q, name, telescope, tyTm', rhsTm', isRec, binders, site)
+      classifier <- evalIn bindingCtx tyTm'
+      runtimeErasure <-
+        selectBinderRuntimeErasure bindingCtx site q RuntimeRelevant classifier
+      pure (appendRuntimeErasure finalized runtimeErasure)
+    appendRuntimeErasure (bindingCtx, mode, q, name, telescope, tyTm, rhsTm, isRec, binders, site) runtimeErasure =
+      (bindingCtx, mode, q, name, telescope, tyTm, rhsTm, isRec, binders, site, runtimeErasure)
     finalizeResolvedLambda ctx rhs rhsTm rhsTy
       | null binders = pure (rhsTm, rhsTy)
       | otherwise = do
@@ -30234,7 +31888,7 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
       modify' $ \state -> state {csActiveLocalRecursiveSchemaScope = Nothing}
       let groupType =
             CRecordTQ
-              [ RecordField name mode formation (qOf (bpQuantity prefix)) Nothing typeTerm
+              [ RecordField name mode formation (qOf (bpQuantity prefix)) Nothing RuntimeRelevant typeTerm
               | (name, prefix, typeTerm, _, mode, formation) <- checked
               ]
           groupRhs = CRecordV [(name, term) | (name, _, _, term, _, _) <- checked]
@@ -30355,17 +32009,33 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
           }
       restoreSchema
       (bodyTerm, bodyType) <- go groupCtxFinal rest []
+      recursiveDefinitions <-
+        forM (zip checked signatures) $
+          \( (name, prefix, typeTerm, term, mode, _)
+            , (_, _, _, bindingSpan, _, _)
+            ) -> do
+              let typeTerm' = Map.findWithDefault typeTerm name finalizedTypes
+              typeValue <- evalIn ctx typeTerm'
+              runtimeErasure <-
+                selectBinderRuntimeErasure
+                  ctx
+                  bindingSpan
+                  (qOf (bpQuantity prefix))
+                  RuntimeRelevant
+                  typeValue
+              pure
+                CoreLocalRecDef
+                  { clrdMode = mode
+                  , clrdQuantity = qOf (bpQuantity prefix)
+                  , clrdName = name
+                  , clrdRuntimeErasure = runtimeErasure
+                  , clrdType = typeTerm'
+                  , clrdRhs = Map.findWithDefault term name finalizedRhs
+                  }
       let recursiveTerm =
             CLetRecGroupM
               telescope
-              [ CoreLocalRecDef
-                  mode
-                  (qOf (bpQuantity prefix))
-                  name
-                  (Map.findWithDefault typeTerm name finalizedTypes)
-                  (Map.findWithDefault term name finalizedRhs)
-              | (name, prefix, typeTerm, term, mode, _) <- checked
-              ]
+              recursiveDefinitions
               bodyTerm
       whole <- wrapLets acc recursiveTerm
       pure (whole, bodyType)
@@ -30546,7 +32216,7 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
                 | otherwise =
                     bindCtxLetProjOpMode (nameText n) implocal tyV' rhsV Nothing Nothing (ojMode observation) (Just (ojOrigin observation)) ctx
               ctx' = setTopCoreQ q bindLocal
-          continue ctx' rest ((ctx, ojMode observation, q, nameText n, telescope, tyTm', tm', False, sourceBinders rhs) : acc)
+          continue ctx' rest ((ctx, ojMode observation, q, nameText n, telescope, tyTm', tm', False, sourceBinders rhs, sp) : acc)
         else do
           let ctxRec = bindCtx (nameText n) implocal tyV ctx
           tm <- check ctxRec rhs tyV
@@ -30562,7 +32232,7 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
                     bindCtxLetUniverseMode (nameText n) implocal tyV' (VRigid (ctxLen ctx) []) telescope Nothing Nothing (ojMode observation) (Just (ojOrigin observation)) ctx
                 | otherwise =
                     bindCtxLetProjOpMode (nameText n) implocal tyV' (VRigid (ctxLen ctx) []) Nothing Nothing (ojMode observation) (Just (ojOrigin observation)) ctx
-          continue ctxFinal rest ((ctx, ojMode observation, q, nameText n, telescope, tyTm', tm', True, sourceBinders rhs) : acc)
+          continue ctxFinal rest ((ctx, ojMode observation, q, nameText n, telescope, tyTm', tm', True, sourceBinders rhs, sp) : acc)
     goBinding continue ctx (LetBind implocal prefix pat0 mty rhs sp) rest acc = do
       firstMeta <- gets csNextMeta
       firstConstraint <- gets csNextLevelConstraint
@@ -30629,12 +32299,12 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
                 EVar pn | Just _ <- lookupCtx (nameText pn) ctx ->
                   addCtxAlias (nameText n) (nameText pn) ctx1
                 _ -> ctx1
-          continue ctx' rest ((ctx, ojMode observation, q, nameText n, telescope, rhsTyTm', rhsTm', False, sourceBinders rhs) : acc)
+          continue ctx' rest ((ctx, ojMode observation, q, nameText n, telescope, rhsTyTm', rhsTm', False, sourceBinders rhs, sp) : acc)
         PWild _ -> do
           rhsTyTm <- quoteIn ctx rhsTy
           rhsV <- evalIn ctx rhsTm
           let ctx' = bindCtxLet "_" False rhsTy rhsV ctx
-          continue ctx' rest ((ctx, Ordinary, QW, "_", emptyDeclarationUniverseTelescope, rhsTyTm, rhsTm, False, sourceBinders rhs) : acc)
+          continue ctx' rest ((ctx, Ordinary, QW, "_", emptyDeclarationUniverseTelescope, rhsTyTm, rhsTm, False, sourceBinders rhs, sp) : acc)
         _ -> do
           rhsTyF <- forceM rhsTy
           let mProj = case (pat, rhsTyF) of
@@ -30677,8 +32347,8 @@ elabLetItemsWith ctx0 binds finish = go ctx0 binds []
               (ctxFin, projBinds) <- bindFields ctxS 0 named
               (bodyTm, bodyTy) <- goUnder ctxFin rest
               checkIrrefutable ctx pat rhsTy sp
-              let inner = foldr (\(mode, fieldQ, nm, tyT, tm) b -> CLetM mode fieldQ nm tyT tm b) bodyTm projBinds
-                  whole = CLetM Ordinary (qOf (bpQuantity prefix)) scrutN rhsTyTm rhsTm inner
+              let inner = foldr (\(mode, fieldQ, nm, tyT, tm) b -> CLetRuntimeM mode fieldQ nm RuntimeRelevant tyT tm b) bodyTm projBinds
+                  whole = CLetRuntimeM Ordinary (qOf (bpQuantity prefix)) scrutN RuntimeRelevant rhsTyTm rhsTm inner
               wrapped <- wrapLets acc whole
               pure (wrapped, bodyTy)
             Nothing -> do
@@ -31488,8 +33158,8 @@ elabScopedEffect ctx eff dsp = do
               }
           wrap body
             | parameterCount > 0 =
-                CLetPolyM Ordinary Q0 nm telescope ifaceKindTm' ifaceHead body
-            | otherwise = CLetM Ordinary Q0 nm ifaceKindTm' ifaceHead body
+                CLetPolyRuntimeM Ordinary Q0 nm telescope RuntimeRelevant ifaceKindTm' ifaceHead body
+            | otherwise = CLetRuntimeM Ordinary Q0 nm RuntimeRelevant ifaceKindTm' ifaceHead body
       pure (ctx', wrap)
 
 -- | Effect-label resolution (§18.1): a §9.3.1.1 lexically scoped effect in
@@ -31817,6 +33487,7 @@ effOpSelection ctx opSp rawEffectInfo rawOperation = do
                   (teFormation entry)
                   (teQ entry)
                   (teLevelAssumption entry)
+                  RuntimeRelevant
                   (shiftTerm (na - i) 0 (teDomain entry))
               | (i, entry) <- zip [0 ..] args
               ]
@@ -31996,7 +33667,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
               wrapImplicitPi (mode, formation, q, borrowed, name, assumption, domain) codomain =
                 CPiEvidenceM mode formation Impl q borrowed name assumption BinderSourceWritten domain codomain
               annotateClause name clauseType clause =
-                CLetM Ordinary QW name clauseType clause (CVar 0)
+                CLetRuntimeM Ordinary QW name RuntimeRelevant clauseType clause (CVar 0)
           bT <- freshMetaV ctx
           -- §18.1.21: the handler eliminates into a target carrier `m`. By
           -- default (and for an `Eff r` expectation) that is `Eff residual`;
@@ -32112,7 +33783,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                   (ps, _) -> do
                     let tupTy =
                           VRecordTQ
-                            [ RecordField (effTupleField i) (teMode entry) (teFormation entry) (teQ entry) (teLevelAssumption entry) v
+                            [ RecordField (effTupleField i) (teMode entry) (teFormation entry) (teQ entry) (teLevelAssumption entry) RuntimeRelevant v
                             | (i, (entry, v)) <- zip [0 ..] (zip (eoiArgs op) opArgVs)
                             ]
                         c0 = bindCtx "__payload" False tupTy ctxSk
@@ -32290,14 +33961,14 @@ elabEffDo ctx0 row aT items0 sp = do
             tyTm <- quoteIn c rhsTy
             observation <- observationJudgmentForTerm c rhsTm rhsTy
             let c' = bindCtxLetProjOpMode (nameText n) False rhsTy rhsV Nothing Nothing (ojMode observation) (Just (ojOrigin observation)) c
-            CLetM (ojMode observation) QW (nameText n) tyTm rhsTm <$> go c' rest
+            CLetRuntimeM (ojMode observation) QW (nameText n) RuntimeRelevant tyTm rhsTm <$> go c' rest
           _ -> do
             tyTm <- quoteIn c rhsTy
             let c0 = bindCtx "__b" False rhsTy c
             (patC, c', patternRefinements) <- elabPattern c0 pat rhsTy
             body <- withPatternRefinements patternRefinements (go c' rest)
             sTyTm <- quoteIn c0 rhsTy
-            pure (CLetM Ordinary QW "__b" tyTm rhsTm (CMatch (CVar 0) (Just sTyTm) Nothing [CaseAlt patC Nothing body]))
+            pure (CLetRuntimeM Ordinary QW "__b" RuntimeRelevant tyTm rhsTm (CMatch (CVar 0) (Just sTyTm) Nothing [CaseAlt patC Nothing body]))
       -- §18.7 Stage-4a: `defer e` in an Eff do-block.  Lower to an `__effDefer`
       -- node sequenced before the rest; the whole block is wrapped in
       -- `__effDoscope` (above), so the registered action runs masked-LIFO on
@@ -32570,7 +34241,7 @@ elabApplicativeDo ctx expected actions lets finalExpression boundNames site = do
               "this Applicative do block has a higher-order carrier shape this implementation cannot apply (§G.2)"
             pure expected
       term <- check ctx expression actionType
-      defaultPendingNumericGoals
+      defaultAllPendingNumericGoals
       valueType' <- forceM valueType
       pure (pattern', term, valueType')
 
@@ -32898,7 +34569,7 @@ elabMonadDo ctx me items0 sp
                 a <- freshMetaV c
                 tm <- checkAction c a e
                 registerDiscardedResult c (exprSpan e) a
-                defaultPendingNumericGoals
+                defaultAllPendingNumericGoals
                 writes <- writtenRefFacetsExecutedExpr c e
                 escapes <- escapedRefFacetsExecutedExpr c e
                 let cAfter = applyVarCurrentEffects writes escapes c
@@ -33175,7 +34846,7 @@ elabMonadDo ctx me items0 sp
       itemTypeInStep <- quoteIn cStep itemType
       actionTypeInItem <- quoteIn cItem loopActionType
       let boundBody =
-            CLetM Ordinary QW "__item" itemTypeInStep itemProjection
+            CLetRuntimeM Ordinary QW "__item" RuntimeRelevant itemTypeInStep itemProjection
               ( CMatch
                   (CVar 0)
                   (Just (shiftTerm 1 0 itemTypeInStep))
@@ -33253,7 +34924,7 @@ elabMonadDo ctx me items0 sp
           target
           loopCall
           (CLamM Ordinary Expl QW "__completion" consumeCompletion)
-      pure (CLetRecM Ordinary QW loopName loopTypeTerm loopRhs loopResult)
+      pure (CLetRecRuntimeM Ordinary QW loopName RuntimeRelevant loopTypeTerm loopRhs loopResult)
       where
         optionUniverses value =
           forceM value >>= \case
@@ -33419,7 +35090,7 @@ elabMonadDo ctx me items0 sp
           let branch = CIf (CVar 0) thenAct (shiftTo cCond elseAct)
           monadBind cLoop boolT unitT (shiftTo cLoop condAct) (CLamM Ordinary Expl QW "__cond" branch)
       after <- bindDiscardFrom target cLoop cAfterLoop unitT (CVar 0) rest
-      pure (CLetRecM Ordinary QW loopName loopTyTm loopRhs after)
+      pure (CLetRecRuntimeM Ordinary QW loopName RuntimeRelevant loopTyTm loopRhs after)
 
     isAbruptLoopItem = \case
       DoBreak {} -> True
@@ -34707,26 +36378,33 @@ erasedFieldsForConstructor depth constructor fieldTypes = do
     Nothing -> []
     Just info ->
       [ ConstructorFieldPath constructor sourceIndex
-      | (sourceIndex, ((icit, quantity), fieldType)) <-
+      | (sourceIndex, ((icit, quantity, runtimeErasure), fieldType)) <-
           zip [0 :: Int ..]
             (zip (constructorSourceContracts info) fieldTypes)
       , not
-          (Repr.runtimeConstructorField
+          (Repr.runtimeConstructorPiField
             evaluation
             depth
+            runtimeErasure
             icit
             quantity
             fieldType)
       ]
 
-constructorSourceContracts :: CtorInfo -> [(Icit, Q)]
+-- | Source-field contracts projected from the finalized constructor Pi.
+-- The erasure bit is checker-selected authority: consumers may specialize the
+-- field type, but must not rerun evidence search or discard this annotation.
+-- Evidence terms themselves remain on 'ciType' and are authenticated at the
+-- typed-Core boundary; these layout queries need only the selected/relevant
+-- distinction.
+constructorSourceContracts :: CtorInfo -> [(Icit, Q, RuntimeErasure ())]
 constructorSourceContracts info =
   drop (length binders - length (ciSourceFields info)) binders
   where
     binders = collect (ciType info)
     collect = \case
-      CPiBoundM _ icit quantity _ _ _ _ body ->
-        (icit, quantity) : collect body
+      CPiRuntimeM _ _ icit quantity _ _ _ _ runtimeErasure _ body ->
+        (icit, quantity, fmap (const ()) runtimeErasure) : collect body
       _ -> []
 
 deriveExactNaturalRepresentationCertificate
@@ -34809,23 +36487,25 @@ constructorRuntimeShape depth represented constructor =
         guard (length contracts == length fieldTypes)
         let runtime =
               [ (sourceIndex, fieldType)
-              | (sourceIndex, ((icit, quantity), fieldType)) <-
+              | (sourceIndex, ((icit, quantity, runtimeErasure), fieldType)) <-
                   zip [0 :: Int ..] (zip contracts fieldTypes)
-              , Repr.runtimeConstructorField
+              , Repr.runtimeConstructorPiField
                   evaluation
                   depth
+                  runtimeErasure
                   icit
                   quantity
                   fieldType
               ]
             erased =
               [ ConstructorFieldPath constructor sourceIndex
-              | (sourceIndex, ((icit, quantity), fieldType)) <-
+              | (sourceIndex, ((icit, quantity, runtimeErasure), fieldType)) <-
                   zip [0 :: Int ..] (zip contracts fieldTypes)
               , not
-                  (Repr.runtimeConstructorField
+                  (Repr.runtimeConstructorPiField
                     evaluation
                     depth
+                    runtimeErasure
                     icit
                     quantity
                     fieldType)
@@ -35160,14 +36840,7 @@ inhabRuntimeRecordField :: Ctx -> Int -> RecordField Value -> CheckM Bool
 inhabRuntimeRecordField ctx fieldOffset field = do
   evaluation <- ec_
   pure
-    ( not
-        ( Repr.runtimeErasedParam
-            evaluation
-            (ctxLen ctx + fieldOffset)
-            (rfQ field)
-            (rfType field)
-        )
-    )
+    (not (Repr.runtimeErasedRecordField evaluation (ctxLen ctx + fieldOffset) field))
 
 inhabRuntimeCtorFieldMask
   :: Ctx
@@ -35184,13 +36857,14 @@ inhabRuntimeCtorFieldMask ctx represented constructor =
         let contracts = constructorSourceContracts info
         guard (length contracts == length fieldTypes)
         pure
-          [ Repr.runtimeConstructorField
+          [ Repr.runtimeConstructorPiField
               evaluation
               (ctxLen ctx + fieldOffset)
+              runtimeErasure
               icit
               quantity
               fieldType
-          | (fieldOffset, ((icit, quantity), fieldType)) <-
+          | (fieldOffset, ((icit, quantity, runtimeErasure), fieldType)) <-
               zip [0 :: Int ..] (zip contracts fieldTypes)
           ]
     _ -> pure Nothing
@@ -37095,7 +38769,7 @@ instantiateConstructorForFields ctx ctorG ci scrutTy _ = do
     peel level t arguments namedBinders fields = do
       t' <- forceM t
       case t' of
-        VPiM mode icit quantity _ name domain closure -> do
+        VPiRuntimeM mode _ icit quantity _ name _ _ runtimeErasure domain closure -> do
           -- Every constructor placeholder has an authoritative Pi domain.
           -- Retain it so unification can enforce the placeholder's lexical
           -- creation depth and cannot solve an outer constructor argument with
@@ -37106,7 +38780,7 @@ instantiateConstructorForFields ctx ctorG ci scrutTy _ = do
           ec <- ec_
           let payload =
                 icit == Expl
-                  || Repr.runtimeConstructorField ec level icit quantity domain
+                  || Repr.runtimeConstructorPiField ec level runtimeErasure icit quantity domain
               argumentIndex = length arguments
               argument = ConstructorArg icit payload (Just name) metaTerm
               namedBinders' =
@@ -40734,7 +42408,19 @@ exprHasCurrentRead ctx = go Set.empty
 -- binding in ordinary value position becomes a generated MonadRef.readRef action
 -- bound immediately before the residual expression; @ref x@ remains a pure atom.
 liftCurrentReadsExpr :: Ctx -> Span -> Expr -> CheckM ([DoItem], Expr)
-liftCurrentReadsExpr ctx _ = go Set.empty
+liftCurrentReadsExpr ctx = liftCurrentReadsExprWithShadow ctx Set.empty
+
+-- | Preprocess an expression whose enclosing construct has already reserved
+-- source binders but has not yet extended the semantic context.  This is the
+-- lambda-entry case: semantic probes in the mutable-read pass must neither
+-- resolve a binder through an outer mutable binding nor report it unresolved.
+liftCurrentReadsExprWithShadow
+  :: Ctx
+  -> Set Text
+  -> Span
+  -> Expr
+  -> CheckM ([DoItem], Expr)
+liftCurrentReadsExprWithShadow ctx initialShadow _ = go initialShadow
   where
     current shadow n =
       nameText n `Set.notMember` shadow
@@ -40911,7 +42597,7 @@ liftCurrentReadsExpr ctx _ = go Set.empty
     repairWrongFacet shadow f args = do
       st0 <- get
       let (headArgs, _) = span isImplicitArg args
-      resolvedRefHead f headArgs >>= \case
+      resolvedRefHead shadow f headArgs >>= \case
         Nothing -> pure args
         Just api -> do
           before <- gets (length . csDiags)
@@ -40959,9 +42645,15 @@ liftCurrentReadsExpr ctx _ = go Set.empty
             (\(n, rebuild) -> (n, \r -> EAscription (rebuild r) ty sp)) <$> currentRefArg e
           _ -> Nothing
 
-    resolvedRefHead :: Expr -> [Arg] -> CheckM (Maybe (Text, RefOpEvidence))
-    resolvedRefHead f headArgs =
-      fmap refHead <$> resolveRefOpExpr ctx f headArgs
+    resolvedRefHead
+      :: Set Text
+      -> Expr
+      -> [Arg]
+      -> CheckM (Maybe (Text, RefOpEvidence))
+    resolvedRefHead shadow f headArgs =
+      case f of
+        EVar name | nameText name `Set.member` shadow -> pure Nothing
+        _ -> fmap refHead <$> resolveRefOpExpr ctx f headArgs
 
     refHead :: (ExplicitRefOp, RefOpEvidence) -> (Text, RefOpEvidence)
     refHead = \case
@@ -41013,6 +42705,8 @@ liftCurrentReadsExpr ctx _ = go Set.empty
           else map (const False) args
       where
         calleeRuntimeType sh = \case
+          EVar n
+            | nameText n `Set.member` sh -> pure Nothing
           EVar n
             | current sh n
             , Just (_, entry) <- lookupCtx (nameText n) ctx
@@ -42275,7 +43969,7 @@ elabElabDo ctx0 aTy items0 sp = do
       observation <- observationJudgmentForTerm ctx rhsTm rhsTy
       restTm <- go resultUniverses (bindCtxLetProjOpMode nm False rhsTy rhsV Nothing Nothing (ojMode observation) (Just (ojOrigin observation)) ctx) rest
       tyTm' <- quoteIn ctx rhsTy
-      pure (CLetM (ojMode observation) QW nm tyTm' rhsTm restTm)
+      pure (CLetRuntimeM (ojMode observation) QW nm RuntimeRelevant tyTm' rhsTm restTm)
 
 -- ── §22 Derivation-shape reflection ──────────────────────────────────
 
@@ -42384,8 +44078,8 @@ shapeInspectRecordOp _ctx sp tyV target = do
           VCtor
             (gShape "RecordShape")
             [listValue [shapeFieldValue (Just nm) i | (i, nm) <- zip [0 ..] ordered]]
-    VGlobN (GName pm "__openRec") _
-      | pm == preludeModule -> do
+    VGlobI openRecord [_] _
+      | openRecord == prelOpenRec -> do
           errAt sp "KAPPA_DERIVING_SHAPE_NOT_CLOSED_RECORD" shapeFamily
             "Phase 0 record shape inspection requires a closed record type; open record types are reserved for a later phase (§22.1)"
           pure (Left ())
@@ -43610,6 +45304,12 @@ setCheckInstances :: [InstanceEntry] -> CheckState -> CheckState
 setCheckInstances entries st =
   st
     { csInstances = entries
+    , csInstancesByTrait =
+        Map.map (sortOn ieDict) $
+          Map.fromListWith (++)
+            [ (ieTrait entry, [entry])
+            | entry <- entries
+            ]
     , csInstanceUniverseInterfaces =
         Map.fromListWith
           (flip (++))
@@ -43637,7 +45337,8 @@ globalValueIsUniverseInterface aliases global definition =
 -- lifts and result classifiers against an incomplete callee schema. Constructor
 -- facets participate independently but follow a deferred parent data facet.
 declarationUniverseDeferralClosure :: CheckState -> Set GName -> Set GName
-declarationUniverseDeferralClosure st roots = go roots
+declarationUniverseDeferralClosure st roots =
+  DirectedGraph.reachableFrom reverseDependencies roots
   where
     globals =
       Map.filterWithKey
@@ -43655,25 +45356,19 @@ declarationUniverseDeferralClosure st roots = go roots
           ++ traitTerms global
           ++ maybe [] pure (Map.lookup global (csCoreBodies st))
     constructorDependencies info = globalsOfTerm (ciType info)
-    go known =
-      let dependentGlobals =
-            Map.keysSet
-              ( Map.filterWithKey
-                  (\global definition ->
-                     not . Set.null $
-                       Set.intersection known (globalDependencies global definition))
-                  globals
-              )
-          dependentConstructors =
-            Map.keysSet
-              ( Map.filter
-                  (\info ->
-                     ciData info `Set.member` known
-                       || not (Set.null (Set.intersection known (constructorDependencies info))))
-                  constructors
-              )
-          next = Set.unions [known, dependentGlobals, dependentConstructors]
-       in if next == known then known else go next
+    reverseDependencies =
+      DirectedGraph.fromEdges
+        ( [ (dependency, global)
+          | (global, definition) <- Map.toAscList globals
+          , dependency <- Set.toAscList (globalDependencies global definition)
+          ]
+            ++ [ (dependency, constructor)
+               | (constructor, info) <- Map.toAscList constructors
+               , dependency <-
+                   Set.toAscList
+                     (Set.insert (ciData info) (constructorDependencies info))
+               ]
+        )
 
 constraintMetaClosure :: Set LevelMeta -> [LevelConstraint] -> Set LevelMeta
 constraintMetaClosure roots constraints =
@@ -43783,30 +45478,44 @@ projectGeneralizableLevelMetas assignments origins =
 -- as the payload lower bound in @List A : Type u@ and lets a caller invent an
 -- unrelated schema parameter for the result classifier.
 materializeProvisionalUniverseConstraintsFor :: Set GName -> CheckM ()
-materializeProvisionalUniverseConstraintsFor owners =
-  materializeProvisionalUniverseConstraintsWhere
-    (\occurrence -> puiOwner occurrence `Set.member` owners)
+materializeProvisionalUniverseConstraintsFor owners = do
+  occurrenceIds <- gets $ \state ->
+    Set.unions
+      [ Map.findWithDefault
+          Set.empty
+          owner
+          (csProvisionalUniverseInstantiationsByOwner state)
+      | owner <- Set.toList owners
+      ]
+  materializeProvisionalUniverseConstraints occurrenceIds
 
 -- | Materialize only occurrences retained by the selected declaration bodies.
 -- This is the body-completion counterpart of the callee-oriented SCC helper
 -- above: it closes a completed consumer without touching uses retained by
 -- still-open declarations.
 materializeProvisionalUniverseConstraintsConsumedBy :: Set GName -> CheckM ()
-materializeProvisionalUniverseConstraintsConsumedBy consumers =
-  materializeProvisionalUniverseConstraintsWhere
-    (\occurrence ->
-       maybe False (`Set.member` consumers) (puiConsumer occurrence))
+materializeProvisionalUniverseConstraintsConsumedBy consumers = do
+  occurrenceIds <- gets $ \state ->
+    Set.unions
+      [ Map.findWithDefault
+          Set.empty
+          consumer
+          (csProvisionalUniverseInstantiationsByConsumer state)
+      | consumer <- Set.toList consumers
+      ]
+  materializeProvisionalUniverseConstraints occurrenceIds
 
-materializeProvisionalUniverseConstraintsWhere
-  :: (ProvisionalUniverseInstantiation -> Bool)
+materializeProvisionalUniverseConstraints
+  :: Set Int
   -> CheckM ()
-materializeProvisionalUniverseConstraintsWhere selected = do
+materializeProvisionalUniverseConstraints occurrenceIds = do
   st <- get
-  let isSelected occurrence =
-        not (puiConstraintsMaterialized occurrence)
-          && selected occurrence
-      occurrences = reverse (filter isSelected (csProvisionalUniverseInstantiations st))
-      constructorIndex = constructorsByData (csCtors st)
+  let occurrences =
+        [ occurrence
+        | identity <- Set.toAscList occurrenceIds
+        , Just occurrence <- [Map.lookup identity (csProvisionalUniverseInstantiations st)]
+        , not (puiConstraintsMaterialized occurrence)
+        ]
   forM_ occurrences $ \occurrence -> do
     current <- get
     let assignments = csLevelAssignments current
@@ -43814,7 +45523,11 @@ materializeProvisionalUniverseConstraintsWhere selected = do
         owner = puiOwner occurrence
         ownerSet =
           Set.insert owner
-            (Map.keysSet (Map.findWithDefault Map.empty owner constructorIndex))
+            ( maybe
+                Set.empty
+                (Set.fromList . diCtors)
+                (Map.lookup owner (csDatas current))
+            )
         -- The dependency SCC has already selected its principal assignment.
         -- Instantiate that solved judgment, not the stale pre-solve metas
         -- retained in the module-wide constraint log. Otherwise a minimized
@@ -43884,19 +45597,130 @@ materializeProvisionalUniverseConstraintsWhere selected = do
     modify' $ \state ->
       state
         { csProvisionalUniverseInstantiations =
-            [ if puiIdentity candidate == puiIdentity occurrence
-                then
-                  candidate
-                    { puiConstraintsMaterialized = True
-                    , puiMaterializedConstraintIds =
-                        Set.union
-                          materializedIds
-                          (puiMaterializedConstraintIds candidate)
-                    }
-                else candidate
-            | candidate <- csProvisionalUniverseInstantiations state
-            ]
+            Map.adjust
+              (\candidate ->
+                 candidate
+                   { puiConstraintsMaterialized = True
+                   , puiMaterializedConstraintIds =
+                       Set.union
+                         materializedIds
+                         (puiMaterializedConstraintIds candidate)
+                   })
+              (puiIdentity occurrence)
+              (csProvisionalUniverseInstantiations state)
         }
+
+-- | Whether an initial header-boundary pass may minimize checker-created
+-- occurrence levels in source-explicit interfaces whose bodies are still
+-- deferred.  Completed-body closeout must preserve every unrelated deferred
+-- interface: repeating the header exception there makes elaboration
+-- quadratic and lets unrelated source order participate in principalization.
+data DeferredExplicitUniverseTreatment
+  = MinimizeDeferredExplicitUniverses
+  | PreserveDeferredExplicitUniverses
+  deriving (Eq)
+
+-- | Positive scopes are used for incremental body closeout; the ordinary
+-- module boundary retains its natural negative deferral set.  Keeping the two
+-- representations explicit prevents a one-owner closeout from allocating and
+-- rescanning the complement of the whole current module.
+data DeclarationUniverseScope
+  = GeneralizeAllExcept !(Set GName)
+  | GeneralizeOnly !(Set GName)
+
+declarationUniverseScopeContains :: DeclarationUniverseScope -> GName -> Bool
+declarationUniverseScopeContains scope owner =
+  case scope of
+    GeneralizeAllExcept deferred -> owner `Set.notMember` deferred
+    GeneralizeOnly selected -> owner `Set.member` selected
+
+restrictDeclarationUniverseScope
+  :: DeclarationUniverseScope
+  -> Map GName value
+  -> Map GName value
+restrictDeclarationUniverseScope scope values =
+  case scope of
+    GeneralizeAllExcept deferred -> Map.withoutKeys values deferred
+    GeneralizeOnly selected -> Map.restrictKeys values selected
+
+mapSelectedKeysWithKey
+  :: Ord key
+  => Set key
+  -> (key -> value -> value)
+  -> Map key value
+  -> Map key value
+mapSelectedKeysWithKey selected transform values =
+  Set.foldl'
+    (\updated key -> Map.adjust (transform key) key updated)
+    values
+    selected
+
+-- | Reverse identity index used while body declarations close.  Header-owned
+-- interfaces are indexed once; each completed Core body contributes one
+-- incremental entry.  Universe publication changes only telescope spines, not
+-- referenced global identities, so the index remains valid across SCC
+-- rebuilds and avoids rediscovering every consumer at each body boundary.
+type UniversePublicationConsumers = Map GName (Set GName)
+
+universePublicationOwnerTerms :: CheckState -> Map GName [Term]
+universePublicationOwnerTerms state =
+  let ec = ecOf state
+   in Map.unionsWith
+        (++)
+        [ Map.mapWithKey
+            (\owner definition ->
+               globalCoreType ec definition
+                 : maybe [] pure (Map.lookup owner (csCoreBodies state)))
+            (csGlobals state)
+        , Map.map (map snd . tiSupers) (csTraits state)
+        , constructorInterfaceTermsByOwner (csCtors state)
+        , Map.fromListWith
+            (++)
+            [ ( ieDict entry
+              , map CSort (ieTraitUniverses entry)
+                  ++ iePremises entry
+                  ++ ieHead entry
+              )
+            | entry <- csInstances state
+            ]
+        , Map.fromListWith
+            (++)
+            [ ( piDictG entry
+              , map teDomain (piFvTele entry)
+                  ++ piPremTms entry
+                  ++ piArgTms entry
+              )
+            | Just entry <- Map.elems (csPreInstances state)
+            ]
+        , Map.mapWithKey
+            (\owner _ -> effectUniverseInterfaceTerms state owner)
+            (csEffectInterfaces state)
+        , Map.map
+            (\case
+               PendingTraitNominalSummary _ _ clauses _ -> clauses
+               PendingDataNominalSummary {} -> [])
+            (csNominalSummaryRequests state)
+        ]
+
+extendUniversePublicationConsumers
+  :: Map GName [Term]
+  -> UniversePublicationConsumers
+  -> UniversePublicationConsumers
+extendUniversePublicationConsumers ownerTerms consumers0 =
+  Map.foldlWithKey'
+    (\consumers owner terms ->
+       Set.foldl'
+         (\index target -> Map.insertWith Set.union target (Set.singleton owner) index)
+         consumers
+         (Set.unions (map globalsOfTerm terms)))
+    consumers0
+    ownerTerms
+
+universePublicationConsumers :: CheckState -> UniversePublicationConsumers
+universePublicationConsumers state =
+  extendUniversePublicationConsumers
+    (universePublicationOwnerTerms state)
+    Map.empty
 
 -- | Minimize each declaration SCC's own result-classifier metas before
 -- provisional dependency occurrences are materialized. A callee such as
@@ -43906,13 +45730,20 @@ materializeProvisionalUniverseConstraintsWhere selected = do
 -- Parameter-position metas and fresh dependency instantiations are left for
 -- the complete SCC generalizer below.
 minimizeOwnedDeclarationClassifiers
-  :: Set GName
+  :: DeferredExplicitUniverseTreatment
+  -> DeclarationUniverseScope
   -> Set GName
   -> Set GName
   -> Set GName
   -> Set GName
   -> CheckM ()
-minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals sourceCtors deferredGlobals =
+minimizeOwnedDeclarationClassifiers
+    deferredExplicitTreatment
+    scope
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors =
   do
   st0 <- get
   let currentModule = csModule st0
@@ -43925,11 +45756,17 @@ minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals s
                -- universe schema is already a complete public interface.
                -- Close its checker-created occurrence levels before another
                -- declaration can observe the signature.
-               && ( g `Set.notMember` deferredGlobals
-                      || dutExplicit (gdUniverses definition)
+               && ( declarationUniverseScopeContains scope g
+                      || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                             && dutExplicit (gdUniverses definition)
+                         )
                   )
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
-          (csGlobals st0)
+          ( case deferredExplicitTreatment of
+              MinimizeDeferredExplicitUniverses -> csGlobals st0
+              PreserveDeferredExplicitUniverses ->
+                restrictDeclarationUniverseScope scope (csGlobals st0)
+          )
       candidateNames = Map.keysSet globals
       ec0 = ecOf st0
       constructorTerms =
@@ -43964,13 +45801,25 @@ minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals s
               in ciData info `Set.member` candidateNames
                    && ctor `Set.notMember` csFinalizedUniverseInterfaces st0
                    && ciData info `Set.notMember` csFinalizedUniverseInterfaces st0
-                   && (ctor `Set.notMember` deferredGlobals || ownerExplicit)
-                   && (ciData info `Set.notMember` deferredGlobals || ownerExplicit)
+                   && ( declarationUniverseScopeContains scope ctor
+                          || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                                 && ownerExplicit
+                             )
+                      )
+                   && ( declarationUniverseScopeContains scope (ciData info)
+                          || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                                 && ownerExplicit
+                             )
+                      )
                    && (ctor `Set.notMember` preexistingCtors || ctor `Set.member` sourceCtors))
-          (csCtors st0)
+          ( case deferredExplicitTreatment of
+              MinimizeDeferredExplicitUniverses -> csCtors st0
+              PreserveDeferredExplicitUniverses ->
+                restrictDeclarationUniverseScope scope (csCtors st0)
+          )
       eligibleConstructorsByData = constructorsByData eligibleConstructors
       generalizableByOwner =
-        levelMetasByOwner (csLevelGeneralizableOwners st0)
+        csLevelGeneralizableMetasByOwner st0
   forM_ components $ \component -> do
     st <- get
     let ec = ecOf st
@@ -44035,7 +45884,7 @@ minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals s
         case inferred of
           PrincipalBoundarySolved candidate -> installLevelAssignments candidate
           PrincipalBoundaryDeferred -> pure ()
-          PrincipalBoundaryRejected -> pure ()
+          PrincipalBoundaryRejected _ -> pure ()
     -- A dependency's principal source-meta image is now fixed. Materialize its
     -- recorded fresh specializations before the next (dependent) SCC is
     -- minimized, so caller result classifiers see the callee's equalities and
@@ -44048,118 +45897,6 @@ instance Semigroup DeclarationUniverseRoles where
 
 instance Monoid DeclarationUniverseRoles where
   mempty = DeclarationUniverseRoles Set.empty Set.empty
-
--- | During header elaboration an inferred declaration is referenced through
--- a provisional telescope containing every level meta visible in its raw
--- interface. Principalization may later minimize some of those positions or
--- identify them with retained parameters. The finalized reference must apply
--- the resulting telescope morphism; merely preserving the provisional spine
--- gives one global two incompatible arities.
-data UniverseReferenceProjection = UniverseReferenceProjection
-  { urpSourceArity :: !Int
-  , urpRetainedPositions :: ![Int]
-  }
-  deriving (Eq, Show)
-
--- | Global and constructor facets share the 'GName' namespace but may have
--- different universe schemas (notably @data T = T@).  Keep their provisional
--- spine projections separate so finalization cannot apply the constructor
--- telescope to the type facet or vice versa.
-data UniverseReferenceProjections = UniverseReferenceProjections
-  { urpGlobals :: !(Map (GName, Int) UniverseReferenceProjection)
-  , urpConstructors :: !(Map (GName, Int) UniverseReferenceProjection)
-  , urpExactGlobals :: !(Map (GName, [Level]) UniverseReferenceProjection)
-  , urpExactConstructors :: !(Map (GName, [Level]) UniverseReferenceProjection)
-  }
-  deriving (Eq, Show)
-
-deriveUniverseReferenceProjection
-  :: Map LevelMeta Level
-  -> [LevelMeta]
-  -> [LevelMeta]
-  -> Maybe UniverseReferenceProjection
-deriveUniverseReferenceProjection assignments sourceMetas retainedMetas =
-  deriveUniverseReferenceProjectionToLevels
-    assignments sourceMetas (map LMeta retainedMetas)
-
-deriveUniverseReferenceProjectionToLevels
-  :: Map LevelMeta Level
-  -> [LevelMeta]
-  -> [Level]
-  -> Maybe UniverseReferenceProjection
-deriveUniverseReferenceProjectionToLevels assignments sourceMetas retainedLevels = do
-  positions <- traverse positionOf retainedLevels
-  guard (length positions == length (nub positions))
-  pure (UniverseReferenceProjection (length sourceMetas) positions)
-  where
-    sourceImages =
-      [ normalizeLevel (substituteLevelMetas assignments (LMeta sourceMeta))
-      | sourceMeta <- sourceMetas
-      ]
-    positionOf retained =
-      List.findIndex (== normalizeLevel retained) sourceImages
-
-uniqueUniverseReferenceProjections
-  :: Ord key
-  => [(key, Maybe UniverseReferenceProjection)]
-  -> Map key UniverseReferenceProjection
-uniqueUniverseReferenceProjections alternatives =
-  Map.mapMaybe selectProjection
-    (Map.fromListWith (++) [(key, [projection]) | (key, projection) <- alternatives])
-  where
-    selectProjection possibilities =
-      case sequence possibilities of
-        Just projections -> case nub projections of
-          [projection] -> Just projection
-          _ -> Nothing
-        Nothing -> Nothing
-
-rewriteProvisionalUniverseReferences
-  :: UniverseReferenceProjections
-  -> Term
-  -> Term
-rewriteProvisionalUniverseReferences projections term =
-  mapPatternConstructorUniverses projectConstructorSpine (walk 0 term)
-  where
-    walk depth = mapTermWithDepth rewrite depth
-
-    projectConstructorSpine target universes =
-      case
-          Map.lookup (target, universes) (urpExactConstructors projections)
-            <|> Map.lookup (target, length universes) (urpConstructors projections) of
-        Just projection
-          | length universes == urpSourceArity projection ->
-              [universes !! position | position <- urpRetainedPositions projection]
-        _ -> universes
-
-    rewrite depth = \case
-      CGlobal target universes
-        | Just projection <-
-            Map.lookup (target, universes) (urpExactGlobals projections)
-              <|> Map.lookup (target, length universes) (urpGlobals projections)
-        , length universes == urpSourceArity projection ->
-            Just
-              ( CGlobal target
-                  [ universes !! position
-                  | position <- urpRetainedPositions projection
-                  ]
-              )
-      CCtorI target universes annotation arguments
-        | Just projection <-
-            Map.lookup (target, universes) (urpExactConstructors projections)
-              <|> Map.lookup (target, length universes) (urpConstructors projections)
-        , length universes == urpSourceArity projection ->
-            -- 'mapTermWithDepth' is pre-order.  Recurse explicitly when this
-            -- node is rewritten so nested references are projected too.
-            Just
-              ( CCtorI target
-                  [ universes !! position
-                  | position <- urpRetainedPositions projection
-                  ]
-                  (fmap (walk depth) annotation)
-                  [argument {caTerm = walk depth (caTerm argument)} | argument <- arguments]
-              )
-      _ -> Nothing
 
 -- | Unconditional atomic inequalities form a preorder on level metas. By
 -- antisymmetry, every strongly connected component denotes one universe
@@ -44175,10 +45912,7 @@ equivalentLevelMetaAssignments
 equivalentLevelMetaAssignments protectedGeneralizable generalizable minimizable constraints =
   Map.fromList
     [ (meta, LMeta representative)
-    | component <- stronglyConnComp graph
-    , let members = case component of
-            AcyclicSCC meta -> [meta]
-            CyclicSCC metas -> sort metas
+    | members <- DirectedGraph.stronglyConnectedComponents graph
     , let representative =
             List.minimumBy (\left right -> compare (priority left) (priority right)) members
     , meta <- members
@@ -44206,11 +45940,7 @@ equivalentLevelMetaAssignments protectedGeneralizable generalizable minimizable 
       , LMeta lower <- [normalizeLevel (lcLhs constraint)]
       , LMeta upper <- [normalizeLevel (lcRhs constraint)]
       ]
-    vertices = Set.toAscList (Set.fromList (concat [[lower, upper] | (lower, upper) <- edges]))
-    graph =
-      [ (meta, meta, [upper | (lower, upper) <- edges, lower == meta])
-      | meta <- vertices
-      ]
+    graph = DirectedGraph.fromEdges edges
 
 -- | A source-generalizable level remains a schema parameter unless the
 -- completed declaration constraints determine it uniquely (§11.1.2.4A).
@@ -44223,61 +45953,7 @@ uniquelyDeterminedLevelMetaAssignments
   -> Set LevelMeta
   -> [LevelConstraint]
   -> Map LevelMeta Level
-uniquelyDeterminedLevelMetaAssignments protectedGeneralizable generalizable constraints =
-  Map.fromList
-    [ (meta, candidate)
-    | meta <- Set.toAscList generalizable
-    , let target = Set.singleton meta
-    , Right solution <- [solveLevelConstraintsFor target unconditional]
-    , let candidate =
-            normalizeLevel
-              (Map.findWithDefault LZero meta (lsAssignments solution))
-    , meta `notElem` levelMetas candidate
-    -- A different source-generalizable identity is not a closed solution for
-    -- this declaration. Collapsing the two here makes one declaration's
-    -- schema depend on an unrelated owner's SCC order; any true same-SCC
-    -- equality has already been quotient-ed by
-    -- 'equivalentLevelMetaAssignments'.
-    , Set.null
-        ( Set.intersection protectedGeneralizable
-            (Set.fromList (levelMetas candidate))
-        )
-    , constrainedLeq (LMeta meta) candidate
-    , constrainedLeq candidate (LMeta meta)
-    ]
-  where
-    unconditional =
-      [ constraint
-      | constraint <- constraints
-      , null (assumptionsList (lcAssumptions constraint))
-      ]
-    -- 'proveLevelLeq' deliberately blocks on metas because its public use is
-    -- rigid proof checking. At principalization time these exact constraints
-    -- are the facts being solved, so use their directed reachability without
-    -- treating a meta as a rigid proof identity. Expanding a maximum on the
-    -- lower side is the ordinary join-semilattice elimination law.
-    edges =
-      nub
-        [ (normalizeLevel lower, normalizeLevel (lcRhs constraint))
-        | constraint <- unconditional
-        , lower <- flattenLowerMax (lcLhs constraint)
-        ]
-    constrainedLeq lower upper =
-      proveLevelLeq emptyAssumptions lower upper == Proved
-        || reachable Set.empty [normalizeLevel lower]
-      where
-        target = normalizeLevel upper
-        reachable _ [] = False
-        reachable seen (current : rest)
-          | current == target = True
-          | current `Set.member` seen = reachable seen rest
-          | otherwise =
-              reachable
-                (Set.insert current seen)
-                ([next | (source, next) <- edges, source == current] ++ rest)
-    flattenLowerMax = \case
-      LMax left right -> flattenLowerMax left ++ flattenLowerMax right
-      level -> [level]
+uniquelyDeterminedLevelMetaAssignments = uniquelyDeterminedLevelAssignmentsFor
 
 -- | Classify the universe occurrences in one declaration interface as required
 -- by §11.1.3. Parameter domains expose reusable universe choices and therefore
@@ -44336,15 +46012,28 @@ constructorInterfaceTermsByOwner =
 -- meta in an explicit declaration is instead a minimization obligation and is
 -- never appended to the written telescope.
 principalizeDeclarationUniverses
-  :: Set GName
+  :: DeferredExplicitUniverseTreatment
+  -> DeclarationUniverseScope
   -> Set GName
   -> Set GName
   -> Set GName
   -> Set GName
   -> CheckM ()
-principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sourceCtors deferredGlobals =
+principalizeDeclarationUniverses
+    deferredExplicitTreatment
+    scope
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors =
   do
-  minimizeOwnedDeclarationClassifiers preexisting preexistingCtors sourceGlobals sourceCtors deferredGlobals
+  minimizeOwnedDeclarationClassifiers
+    deferredExplicitTreatment
+    scope
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors
   st0 <- get
   let currentModule0 = csModule st0
       globals0 =
@@ -44352,19 +46041,19 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
           (\g@(GName owner _) _ ->
              owner == currentModule0
                && g `Set.notMember` csFinalizedUniverseInterfaces st0
-               && g `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
-          (csGlobals st0)
+          (restrictDeclarationUniverseScope scope (csGlobals st0))
       ctors0 =
         Map.filterWithKey
           (\g@(GName owner _) info ->
              owner == currentModule0
                && g `Set.notMember` csFinalizedUniverseInterfaces st0
                && ciData info `Set.notMember` csFinalizedUniverseInterfaces st0
-               && g `Set.notMember` deferredGlobals
-               && ciData info `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
+               && declarationUniverseScopeContains scope (ciData info)
                && (g `Set.notMember` preexistingCtors || g `Set.member` sourceCtors))
-          (csCtors st0)
+          (restrictDeclarationUniverseScope scope (csCtors st0))
       ec0 = ecOf st0
       universeInterfaceValues0 = csUniverseInterfaceValues st0
       existingAssignments = csLevelAssignments st0
@@ -44422,9 +46111,9 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
           (\g@(GName owner _) _ ->
              owner == currentModule
                && g `Set.notMember` csFinalizedUniverseInterfaces componentState
-               && g `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
-          (csGlobals componentState)
+          (restrictDeclarationUniverseScope scope (csGlobals componentState))
       candidateNames = Map.keysSet globals
       ec = ecOf componentState
       universeInterfaceValues = csUniverseInterfaceValues componentState
@@ -44474,17 +46163,13 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
           , meta <- Set.toList (Set.fromList (concatMap levelMetasOfTerm terms))
           , meta `Set.member` csLevelInstantiationMetas componentState
           ]
-      instantiationOwners =
+      generalizableByOwner =
+        csLevelGeneralizableMetasByOwner componentState
+      instantiationByOwner =
         Map.unionWith
           Set.union
-          (csLevelInstantiationOwners componentState)
-          artifactInstantiationOwners
-      generalizableByOwner =
-        levelMetasByOwner
-          (csLevelGeneralizableOwners componentState)
-      instantiationByOwner =
-        levelMetasByOwner
-          instantiationOwners
+          (csLevelInstantiationMetasByOwner componentState)
+          (levelMetasByOwner artifactInstantiationOwners)
       dependencies g =
         Set.toList . Set.intersection candidateNames . Set.unions . map globalsOfTerm $
           Map.findWithDefault [] g rawTraitInterfaceTerms
@@ -44520,6 +46205,11 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
               Set.union
               (csLevelInstantiationOwners state)
               artifactInstantiationOwners
+        , csLevelInstantiationMetasByOwner =
+            Map.unionWith
+              Set.union
+              (csLevelInstantiationMetasByOwner state)
+              (levelMetasByOwner artifactInstantiationOwners)
         }
   forM_ components $ \component -> do
       st <- get
@@ -44663,7 +46353,7 @@ principalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sour
           case inferred of
             PrincipalBoundarySolved candidate -> installLevelAssignments candidate
             PrincipalBoundaryDeferred -> pure ()
-            PrincipalBoundaryRejected -> pure ()
+            PrincipalBoundaryRejected _ -> pure ()
   -- Source-generalizable identities are quotient-ed and uniquely solved only
   -- after every minimizable classifier/occurrence choice in the semantic SCC
   -- has reached its principal value. Reversing these phases can project a
@@ -44706,17 +46396,13 @@ principalizeOwnedGeneralizableMetas semanticComponents minimizableOrigins =
       generalizableByComponent =
         Map.map
           ( levelMetasOwnedBy
-              ( levelMetasByOwner
-                  (csLevelGeneralizableOwners initialState)
-              )
+              (csLevelGeneralizableMetasByOwner initialState)
           )
           componentOwners
       constraints =
-        [ substituteLevelConstraintMetas initialAssignments constraint
-        | constraint <- csLevelConstraints initialState
-        , maybe False (`Set.member` eligibleOwners)
-            (Map.lookup (lcIdentity constraint) (csLevelConstraintOwners initialState))
-        ]
+        map
+          (substituteLevelConstraintMetas initialAssignments)
+          (levelConstraintsOwnedBy initialState eligibleOwners)
       constraintGroups =
         Map.fromListWith (++)
           [ ( owner >>= (`Map.lookup` ownerComponents)
@@ -44756,9 +46442,7 @@ principalizeOwnedGeneralizableMetas semanticComponents minimizableOrigins =
       determinedGeneralizableByComponent =
         Map.map
           ( levelMetasOwnedBy
-              ( levelMetasByOwner
-                  (csLevelGeneralizableOwners determinedState)
-              )
+              (csLevelGeneralizableMetasByOwner determinedState)
           )
           componentOwners
       determinedConstraintGroups =
@@ -44766,10 +46450,9 @@ principalizeOwnedGeneralizableMetas semanticComponents minimizableOrigins =
           [ ( owner >>= (`Map.lookup` ownerComponents)
             , [zonkConstraint constraint]
             )
-          | constraint <- csLevelConstraints determinedState
+          | constraint <- levelConstraintsOwnedBy determinedState eligibleOwners
           , let owner =
                   Map.lookup (lcIdentity constraint) (csLevelConstraintOwners determinedState)
-          , maybe False (`Set.member` eligibleOwners) owner
           ]
       projectedGeneralizableFor = \case
         Nothing -> Set.empty
@@ -44801,8 +46484,38 @@ principalizeOwnedGeneralizableMetas semanticComponents minimizableOrigins =
 -- declaration parameters: solve their connected constraints and choose the
 -- least level for an otherwise unconstrained occurrence.
 principalizeFinalizedOccurrenceUniverses :: Set GName -> Set GName -> Set GName -> CheckM ()
-principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGlobals =
-  do
+principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGlobals = do
+  principalizeFinalizedOccurrenceUniversesInScope
+    preexisting
+    sourceGlobals
+    (GeneralizeAllExcept deferredGlobals)
+
+principalizeFinalizedOccurrenceUniversesInScope
+  :: Set GName
+  -> Set GName
+  -> DeclarationUniverseScope
+  -> CheckM ()
+principalizeFinalizedOccurrenceUniversesInScope preexisting sourceGlobals scope = do
+  st <- get
+  let currentModule = csModule st
+      eligible owner@(GName moduleName _) =
+        moduleName == currentModule
+          && declarationUniverseScopeContains scope owner
+          && (owner `Set.notMember` preexisting || owner `Set.member` sourceGlobals)
+      eligibleOwners =
+        Set.filter eligible
+          (Map.keysSet (restrictDeclarationUniverseScope scope (csGlobals st)))
+      includeUnowned = case scope of
+        GeneralizeAllExcept _ -> True
+        GeneralizeOnly _ -> False
+  principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners
+
+-- | The owner-indexed form of 'principalizeFinalizedOccurrenceUniverses'.
+-- Incremental body closeout already knows the completed declaration component;
+-- retaining that positive set avoids rebuilding its whole-module complement on
+-- every body while running the identical selected-meta solver.
+principalizeFinalizedOccurrenceUniversesFor :: Bool -> Set GName -> CheckM ()
+principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners = do
   st <- get
   let currentModule = csModule st
       assignments = csLevelAssignments st
@@ -44811,21 +46524,26 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
         not . null . levelMetas $
           normalizeLevel (substituteLevelMetas assignments (LMeta origin))
       unresolvedOwnedOwners =
-        Set.unions
-          [ owners
-          | (origin, owners) <- Map.toList (csLevelInstantiationOwners st)
-          , unresolved origin
-          ]
-      unresolvedUnownedInstantiationOrigins =
-        Set.difference
-          (Set.filter unresolved (csLevelInstantiationMetas st))
-          (Map.keysSet (csLevelInstantiationOwners st))
-      eligible g@(GName owner _) =
-        owner == currentModule
-          && g `Set.notMember` deferredGlobals
-          && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals)
+        Set.filter
+          (\owner ->
+             any unresolved
+               (Set.toList
+                 (Map.findWithDefault
+                   Set.empty
+                   owner
+                   (csLevelInstantiationMetasByOwner st))))
+          eligibleOwners
+      unresolvedUnownedInstantiationOrigins
+        | includeUnowned =
+            Set.difference
+              (Set.filter unresolved (csLevelInstantiationMetas st))
+              (Map.keysSet (csLevelInstantiationOwners st))
+        | otherwise = Set.empty
       eligibleGlobals =
-        Map.filterWithKey (\global _ -> eligible global) (csGlobals st)
+        Map.filterWithKey
+          (\global@(GName owner _) _ ->
+             owner == currentModule && global `Set.member` eligibleOwners)
+          (Map.restrictKeys (csGlobals st) eligibleOwners)
       projectedUnownedInstantiationMetas =
         Set.fromList
           [ projected
@@ -44869,6 +46587,16 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
         ]
       observableMetas =
         Set.fromList (concatMap levelMetasOfTerm (interfaceTerms ++ bodyTerms))
+      ownedInstantiationOrigins =
+        Set.unions
+          [ Map.findWithDefault
+              Set.empty
+              owner
+              (csLevelInstantiationMetasByOwner st)
+          | owner <- Set.toList currentSymbols
+          ]
+      candidateInstantiationOrigins =
+        Set.union ownedInstantiationOrigins unresolvedUnownedInstantiationOrigins
       relevantInstantiationOrigins =
         Set.filter
           (\origin ->
@@ -44883,7 +46611,7 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
                    || ( origin `Set.member` unresolvedUnownedInstantiationOrigins
                           && not (Set.null (Set.intersection observableMetas projected))
                       ))
-          (csLevelInstantiationMetas st)
+          candidateInstantiationOrigins
       instantiationMetas =
         Set.fromList
           [ projected
@@ -44894,21 +46622,33 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
           ]
       generalizableMetas =
         Set.union
-          (projectGeneralizableLevelMetas assignments (csLevelGeneralizableMetas st))
+          ( projectGeneralizableLevelMetas assignments
+              ( Set.unions
+                  [ Map.findWithDefault
+                      Set.empty
+                      owner
+                      (csLevelGeneralizableMetasByOwner st)
+                  | owner <- Set.toList currentSymbols
+                  ]
+              )
+          )
           ( durGeneralizable
               (mconcat (map declarationUniverseRoles interfaceTerms))
           )
       provisionalInstantiationMetas =
-        Set.fromList
-          [ meta
-          | occurrence <- csProvisionalUniverseInstantiations st
-          , not (puiConstraintsMaterialized occurrence)
-          , let GName occurrenceModule _ = puiOwner occurrence
-          , occurrenceModule == currentModule
-          , puiOwner occurrence `Set.notMember` csFinalizedUniverseInterfaces st
-          , level <- puiFreshLevels occurrence
-          , meta <- levelMetas
-              (normalizeLevel (substituteLevelMetas assignments level))
+        unmaterializedProvisionalUniverseMetas st provisionalOccurrenceIds
+      provisionalOccurrenceIds =
+        Set.unions
+          [ Map.findWithDefault
+              Set.empty
+              owner
+              (csProvisionalUniverseInstantiationsByOwner st)
+              `Set.union`
+            Map.findWithDefault
+              Set.empty
+              owner
+              (csProvisionalUniverseInstantiationsByConsumer st)
+          | owner <- Set.toList currentSymbols
           ]
       currentConstraints =
         concat
@@ -45022,7 +46762,11 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
       identityAlternatives =
         Map.fromListWith (++)
           [ (meta, [level])
-          | occurrence <- csRecursiveSchemaOccurrences st
+          | caller <- Set.toList currentSymbols
+          , occurrence <- Map.findWithDefault
+              []
+              caller
+              (csRecursiveSchemaOccurrencesByCaller st)
           , alternatives <- maybeToList (identityCandidate occurrence)
           , (meta, level) <- alternatives
           ]
@@ -45070,13 +46814,13 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
         case inferred of
           PrincipalBoundarySolved candidate -> installLevelAssignments candidate
           PrincipalBoundaryDeferred -> pure ()
-          PrincipalBoundaryRejected -> pure ()
+          PrincipalBoundaryRejected _ -> pure ()
     else do
       -- Re-enter with the identity defaults materialized so target components
       -- and constraints are recomputed from the new substitution. Each chosen
       -- meta disappears from 'identityCandidate', so recursion decreases.
       installLevelAssignments identityDefaults
-      principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGlobals
+      principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners
 
 -- | Close solver-local universe occurrences in body-complete declarations
 -- without publishing their declaration telescope early. Source metas remain
@@ -45086,11 +46830,8 @@ principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGloba
 -- complete semantic SCC boundary.
 closeCompletedProvisionalBodyUniverses
   :: Set GName
-  -> Set GName
-  -> Set GName
-  -> Set GName
   -> CheckM ()
-closeCompletedProvisionalBodyUniverses preexisting sourceGlobals deferredGlobals owners
+closeCompletedProvisionalBodyUniverses owners
   | Set.null owners = pure ()
   | otherwise = do
       rewriteCompletedBodyUniverses owners
@@ -45105,21 +46846,7 @@ closeCompletedProvisionalBodyUniverses preexisting sourceGlobals deferredGlobals
               owners
       unless (Set.null unresolvedOwners) $ do
         materializeProvisionalUniverseConstraintsConsumedBy unresolvedOwners
-        beforeSolve <- get
-        let currentModule = csModule beforeSolve
-            unrelatedCurrentGlobals =
-              Set.fromList
-                [ global
-                | global@(GName ownerModule _) <- Map.keys (csGlobals beforeSolve)
-                , ownerModule == currentModule
-                , global `Set.notMember` unresolvedOwners
-                ]
-            scopedDeferredGlobals =
-              Set.union deferredGlobals unrelatedCurrentGlobals
-        principalizeFinalizedOccurrenceUniverses
-          preexisting
-          sourceGlobals
-          scopedDeferredGlobals
+        principalizeFinalizedOccurrenceUniversesFor False unresolvedOwners
         rewriteCompletedBodyUniverses unresolvedOwners
 
 -- | Reflect already-solved body-local universe occurrences into retained Core
@@ -45145,25 +46872,26 @@ rewriteCompletedBodyUniverses owners = do
                   (sourceMetas owner)
             }
       bodies' =
-        Map.mapWithKey
-          (\owner body ->
-             if owner `Set.member` owners
-               then rewriteBody owner body
-               else body)
+        Set.foldl'
+          (\bodies owner -> Map.adjust (rewriteBody owner) owner bodies)
           (csCoreBodies st)
+          owners
       stateWithBodies = st {csCoreBodies = bodies'}
       globals' =
-        Map.mapWithKey
-          (\owner definition ->
+        Set.foldl'
+          (\globals owner ->
              case Map.lookup owner bodies' of
-               Just body
-                 | owner `Set.member` owners ->
-                     globalDefWithCanonicalCoreBody
+               Nothing -> globals
+               Just body ->
+                 Map.adjust
+                   ( globalDefWithCanonicalCoreBody
                        stateWithBodies
                        body
-                       definition
-               _ -> definition)
+                   )
+                   owner
+                   globals)
           (csGlobals st)
+          owners
   put
     ( invalidateSemanticCaches
         stateWithBodies {csGlobals = globals'}
@@ -45205,25 +46933,78 @@ traitMemberOwnerUniverseMetas state accessor accessorType =
 -- acyclic dependency forward precisely the metas that represented that
 -- dependency during header elaboration.
 generalizeDeclarationUniverses :: Set GName -> Set GName -> Set GName -> Set GName -> Set GName -> CheckM ()
-generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals sourceCtors deferredGlobals =
+generalizeDeclarationUniverses
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors
+    deferredGlobals =
+  generalizeDeclarationUniversesWith
+    MinimizeDeferredExplicitUniverses
+    (GeneralizeAllExcept deferredGlobals)
+    Nothing
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors
+
+generalizeDeclarationUniversesWith
+  :: DeferredExplicitUniverseTreatment
+  -> DeclarationUniverseScope
+  -> Maybe UniversePublicationConsumers
+  -> Set GName
+  -> Set GName
+  -> Set GName
+  -> Set GName
+  -> CheckM ()
+generalizeDeclarationUniversesWith
+    deferredExplicitTreatment
+    scope
+    knownPublicationConsumers
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors =
   do
   captureState <- get
   let captureModule = csModule captureState
       finalizedAtCapture = csFinalizedUniverseInterfaces captureState
+      captureGlobals =
+        case deferredExplicitTreatment of
+          MinimizeDeferredExplicitUniverses -> csGlobals captureState
+          PreserveDeferredExplicitUniverses ->
+            restrictDeclarationUniverseScope scope (csGlobals captureState)
+      captureConstructors =
+        case deferredExplicitTreatment of
+          MinimizeDeferredExplicitUniverses -> csCtors captureState
+          PreserveDeferredExplicitUniverses ->
+            restrictDeclarationUniverseScope scope (csCtors captureState)
       capturableGlobals =
         Map.filterWithKey
           (\g@(GName owner _) _ ->
              owner == captureModule
                && g `Set.notMember` finalizedAtCapture
+               && ( declarationUniverseScopeContains scope g
+                      || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                             && g `Map.notMember` csProvisionalGlobalUniverseMetas captureState
+                         )
+                  )
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
-          (csGlobals captureState)
+          captureGlobals
       capturableConstructors =
         Map.filterWithKey
-          (\g@(GName owner _) _ ->
+          (\g@(GName owner _) info ->
              owner == captureModule
                && g `Set.notMember` finalizedAtCapture
+               && ( ( declarationUniverseScopeContains scope g
+                        && declarationUniverseScopeContains scope (ciData info)
+                      )
+                      || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                             && g `Map.notMember` csProvisionalConstructorUniverseMetas captureState
+                         )
+                  )
                && (g `Set.notMember` preexistingCtors || g `Set.member` sourceCtors))
-          (csCtors captureState)
+          captureConstructors
       capturedGlobalMetas =
         Map.mapWithKey
           (\g gd ->
@@ -45249,7 +47030,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             (csProvisionalConstructorUniverseMetas state)
             capturedConstructorMetas
       }
-  principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGlobals
+
+  principalizeFinalizedOccurrenceUniversesInScope preexisting sourceGlobals scope
   provisionalState <- get
   let provisionalModule = csModule provisionalState
       finalizedInterfaces = csFinalizedUniverseInterfaces provisionalState
@@ -45257,17 +47039,17 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         Map.filterWithKey
           (\g@(GName owner _) _ ->
              owner == provisionalModule
-               && g `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
                && (g `Set.notMember` preexisting || g `Set.member` sourceGlobals))
-          (csGlobals provisionalState)
+          (restrictDeclarationUniverseScope scope (csGlobals provisionalState))
       provisionalCtors =
         Map.filterWithKey
           (\g@(GName owner _) info ->
              owner == provisionalModule
-               && g `Set.notMember` deferredGlobals
-               && ciData info `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
+               && declarationUniverseScopeContains scope (ciData info)
                && (g `Set.notMember` preexistingCtors || g `Set.member` sourceCtors))
-          (csCtors provisionalState)
+          (restrictDeclarationUniverseScope scope (csCtors provisionalState))
       provisionalGlobalMetas =
         Map.restrictKeys
           (csProvisionalGlobalUniverseMetas provisionalState)
@@ -45276,107 +47058,117 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         Map.restrictKeys
           (csProvisionalConstructorUniverseMetas provisionalState)
           (Map.keysSet provisionalCtors)
-      provisionalGeneralizableOwners =
-        csLevelGeneralizableOwners provisionalState
+      provisionalGeneralizableMetasByOwner =
+        csLevelGeneralizableMetasByOwner provisionalState
       hasDeferredExplicitInterfaces =
-        any
-          (\(g, definition) ->
-             g `Set.member` deferredGlobals
-               && g `Set.notMember` finalizedInterfaces
-               && dutExplicit (gdUniverses definition))
-          (Map.toList (csGlobals provisionalState))
+        case scope of
+          GeneralizeOnly _ -> False
+          GeneralizeAllExcept deferredGlobals ->
+            any
+              (\(g, definition) ->
+                 g `Set.member` deferredGlobals
+                   && g `Set.notMember` finalizedInterfaces
+                   && dutExplicit (gdUniverses definition))
+              (Map.toList (Map.restrictKeys (csGlobals provisionalState) deferredGlobals))
       hasUnfinalizedInterfaces =
         any (`Set.notMember` finalizedInterfaces) (Map.keys provisionalGlobals)
           || any (`Set.notMember` finalizedInterfaces) (Map.keys provisionalCtors)
-  when (hasUnfinalizedInterfaces || hasDeferredExplicitInterfaces) $
+  when
+      ( hasUnfinalizedInterfaces
+          || ( deferredExplicitTreatment == MinimizeDeferredExplicitUniverses
+                 && hasDeferredExplicitInterfaces
+             )
+      ) $
     principalizeDeclarationUniverses
-      preexisting preexistingCtors sourceGlobals sourceCtors deferredGlobals
+      deferredExplicitTreatment
+      scope
+      preexisting preexistingCtors sourceGlobals sourceCtors
   -- Principalizing declaration SCCs materializes every recorded use of their
   -- provisional telescope.  Those freshly materialized occurrence metas were
   -- intentionally excluded from the pass above while their callees were still
   -- provisional; close them now, before generalized parameters replace the
   -- declaration-local source metas and make the residual constraints escape
   -- their owning telescope.
-  principalizeFinalizedOccurrenceUniverses preexisting sourceGlobals deferredGlobals
+  principalizeFinalizedOccurrenceUniversesInScope preexisting sourceGlobals scope
   st <- get
   let currentModule = csModule st
       candidates =
         Map.filterWithKey
           (\g@(GName owner _) gd ->
              owner == currentModule
-               && g `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
                && g `Set.notMember` csFinalizedUniverseInterfaces st
                && ( g `Set.notMember` preexisting
                       || g `Set.member` sourceGlobals
                   )
           )
-          (csGlobals st)
+          (restrictDeclarationUniverseScope scope (csGlobals st))
       ctorCandidates =
         Map.filterWithKey
           (\g@(GName owner _) ci ->
              owner == currentModule
-               && g `Set.notMember` deferredGlobals
-               && ciData ci `Set.notMember` deferredGlobals
+               && declarationUniverseScopeContains scope g
+               && declarationUniverseScopeContains scope (ciData ci)
                && g `Set.notMember` csFinalizedUniverseInterfaces st
                && (g `Set.notMember` preexistingCtors || g `Set.member` sourceCtors)
           )
-          (csCtors st)
+          (restrictDeclarationUniverseScope scope (csCtors st))
   unless (Map.null candidates && Map.null ctorCandidates) $ do
     let ec = ecOf st
         assignments = csLevelAssignments st
         finalizedInterfaces = csFinalizedUniverseInterfaces st
         publicationTargets =
           Set.union (Map.keysSet candidates) (Map.keysSet ctorCandidates)
-        ownerTerms =
-          Map.unionsWith
-            (++)
-            [ Map.mapWithKey
-                (\owner definition ->
-                   globalCoreType ec definition
-                     : maybe [] pure (Map.lookup owner (csCoreBodies st)))
-                (csGlobals st)
-            , Map.map (map snd . tiSupers) (csTraits st)
-            , constructorInterfaceTermsByOwner (csCtors st)
-            , Map.fromListWith
-                (++)
-                [ ( ieDict entry
-                  , map CSort (ieTraitUniverses entry)
-                      ++ iePremises entry
-                      ++ ieHead entry
-                  )
-                | entry <- csInstances st
-                ]
-            , Map.fromListWith
-                (++)
-                [ ( piDictG entry
-                  , map teDomain (piFvTele entry)
-                      ++ piPremTms entry
-                      ++ piArgTms entry
-                  )
-                | Just entry <- Map.elems (csPreInstances st)
-                ]
-            , Map.mapWithKey
-                (\owner _ -> effectUniverseInterfaceTerms st owner)
-                (csEffectInterfaces st)
-            , Map.map
-                (\case
-                   PendingTraitNominalSummary _ _ clauses _ -> clauses
-                   PendingDataNominalSummary {} -> [])
-                (csNominalSummaryRequests st)
+        publicationOccurrenceIds =
+          Set.unions
+            [ Map.findWithDefault
+                Set.empty
+                owner
+                (csProvisionalUniverseInstantiationsByOwner st)
+            | owner <- Set.toList publicationTargets
+            ]
+        publicationOccurrences =
+          mapMaybe
+            (`Map.lookup` csProvisionalUniverseInstantiations st)
+            (Set.toAscList publicationOccurrenceIds)
+        publicationOccurrencesByOwner =
+          Map.fromListWith (++)
+            [ (puiOwner occurrence, [occurrence])
+            | occurrence <- publicationOccurrences
+            ]
+        publicationOccurrencesFor owners =
+          concat
+            [ Map.findWithDefault [] owner publicationOccurrencesByOwner
+            | owner <- Set.toList owners
             ]
         publicationAffectedOwners =
-          Map.keysSet
-            ( Map.filter
-                (\terms ->
-                   not . Set.null . Set.intersection publicationTargets . Set.unions $
-                     map globalsOfTerm terms)
-                ownerTerms
-            )
+          case knownPublicationConsumers of
+            Just consumers ->
+              Set.unions
+                [ Map.findWithDefault Set.empty target consumers
+                | target <- Set.toList publicationTargets
+                ]
+            Nothing ->
+              let consumers = universePublicationConsumers st
+               in Set.unions
+                    [ Map.findWithDefault Set.empty target consumers
+                    | target <- Set.toList publicationTargets
+                    ]
+        universeRewriteOwners =
+          Set.filter
+            (`gnameInModule` currentModule)
+            (Set.union publicationTargets publicationAffectedOwners)
         ownerNeedsUniverseRewrite owner =
-          gnameInModule owner currentModule
-            && ( owner `Set.member` publicationTargets
-                   || owner `Set.member` publicationAffectedOwners
-               )
+          owner `Set.member` universeRewriteOwners
+        constructorRewriteOwners =
+          Set.unions
+            [ Set.intersection universeRewriteOwners (Map.keysSet (csCtors st))
+            , Set.unions
+                [ maybe Set.empty (Set.fromList . diCtors)
+                    (Map.lookup family (csDatas st))
+                | family <- Set.toList universeRewriteOwners
+                ]
+            ]
         constructorNeedsUniverseRewrite constructor info =
           ownerNeedsUniverseRewrite constructor
             || ownerNeedsUniverseRewrite (ciData info)
@@ -45468,13 +47260,14 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   (normalizeLevel (substituteLevelMetas assignments (LMeta origin)))
             ]
         sourceGeneralizableMetasFor owners =
-          projectGeneralizableLevelMetas assignments . Set.fromList $
-            [ meta
-            | (meta, metaOwners) <- Map.toList provisionalGeneralizableOwners
-            , not (Set.null (Set.intersection owners metaOwners))
-            ]
+          projectGeneralizableLevelMetas assignments
+            (levelMetasOwnedBy provisionalGeneralizableMetasByOwner owners)
         projectedInstantiationMetas =
-          projectOrigins (csLevelInstantiationMetas st)
+          projectOrigins
+            ( levelMetasOwnedBy
+                (csLevelInstantiationMetasByOwner st)
+                publicationTargets
+            )
         candidateNames = Map.keysSet candidates
         originalRawCtorTermsByOwner =
           constructorInterfaceTermsByOwner ctorCandidates
@@ -45504,6 +47297,18 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             | (identity, component) <- zip [(0 :: Int) ..] components
             , global <- component
             ]
+        componentsByIdentity =
+          Map.fromList (zip [(0 :: Int) ..] components)
+        constructorNamesByFamily =
+          Map.fromListWith Set.union
+            [ (ciData info, Set.singleton constructor)
+            | (constructor, info) <- Map.toList ctorCandidates
+            ]
+        componentCtorNamesFor component =
+          Set.unions
+            [ Map.findWithDefault Set.empty family constructorNamesByFamily
+            | family <- component
+            ]
         roleMetas sourceGeneralizableMetas classify term =
           let retained = classify term
               schemaBearing = schemaBearingLevelMetas term
@@ -45518,12 +47323,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                 (levelMetasOfTerm term)
         componentMetas types traits universeValues ctorTerms component =
           let componentSet = Set.fromList component
-              componentCtorNames =
-                Set.fromList
-                  [ ctor
-                  | (ctor, info) <- Map.toList ctorCandidates
-                  , ciData info `Set.member` componentSet
-                  ]
+              componentCtorNames = componentCtorNamesFor component
               componentOwners = Set.union componentSet componentCtorNames
               sourceGeneralizableMetas =
                 sourceGeneralizableMetasFor componentOwners
@@ -45566,52 +47366,45 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                 , meta `Set.member` durGeneralizable roles
                 , meta `Set.member` schemaBearing
                 ]
+        globalMetasForComponent types traits universeValues ctorTerms component =
+          let metas = componentMetas types traits universeValues ctorTerms component
+           in Map.fromList
+                [ (g, if explicit || finalized then [] else orderedMetas)
+                | g <- component
+                , let explicit =
+                        maybe False (dutExplicit . gdUniverses) (Map.lookup g candidates)
+                      finalized = g `Set.member` finalizedInterfaces
+                      ownerPrefix =
+                        case Map.lookup g originalRawTypes of
+                          Nothing -> []
+                          Just declarationType ->
+                            nub
+                              [ projected
+                              | raw <-
+                                  traitMemberOwnerUniverseMetas
+                                    st
+                                    g
+                                    declarationType
+                              , projected <-
+                                  levelMetas
+                                    ( normalizeLevel
+                                        ( substituteLevelMetas
+                                            assignments
+                                            (LMeta raw)
+                                        )
+                                    )
+                              ]
+                      memberGeneralizable =
+                        sourceGeneralizableMetasFor (Set.singleton g)
+                      retainedOwnerPrefix =
+                        filter (`Set.member` memberGeneralizable) ownerPrefix
+                      orderedMetas = nub (retainedOwnerPrefix ++ metas)
+                ]
         globalMetasFor types traits universeValues ctorTerms =
-          List.foldl'
-            (\known component ->
-               let metas = componentMetas types traits universeValues ctorTerms component
-                in foldr
-                     (\g ->
-                        let explicit = maybe False (dutExplicit . gdUniverses) (Map.lookup g candidates)
-                            finalized = g `Set.member` finalizedInterfaces
-                            ownerPrefix =
-                              case Map.lookup g originalRawTypes of
-                                Nothing -> []
-                                Just declarationType ->
-                                  nub
-                                    [ projected
-                                    | raw <-
-                                        traitMemberOwnerUniverseMetas
-                                          st
-                                          g
-                                          declarationType
-                                    , projected <-
-                                        levelMetas
-                                          ( normalizeLevel
-                                              ( substituteLevelMetas
-                                                  assignments
-                                                  (LMeta raw)
-                                              )
-                                          )
-                                    ]
-                            memberGeneralizable =
-                              sourceGeneralizableMetasFor (Set.singleton g)
-                            retainedOwnerPrefix =
-                              filter
-                                (`Set.member` memberGeneralizable)
-                                ownerPrefix
-                            orderedMetas =
-                              nub
-                                ( retainedOwnerPrefix
-                                    ++ metas
-                                )
-                         in Map.insert
-                              g
-                              (if explicit || finalized then [] else orderedMetas))
-                     known
-                     component)
-            Map.empty
-            components
+          Map.unions
+            [ globalMetasForComponent types traits universeValues ctorTerms component
+            | component <- components
+            ]
         -- Constructor references expose the enclosing family schema as their
         -- source-written prefix. Levels introduced by constructor-local
         -- binders form an inferred suffix: they are fresh at each constructor
@@ -45676,7 +47469,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             initialConstructorProjections
             Map.empty
             Map.empty
-        globalProjectionsFor retained =
+        globalProjectionsFor owners retained =
           uniqueUniverseReferenceProjections
             [ ( (g, length sourceMetas)
               , deriveUniverseReferenceProjection
@@ -45684,13 +47477,14 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   sourceMetas
                   (Map.findWithDefault [] g retained)
               )
-            | (g, sourceSpines) <- Map.toList provisionalGlobalMetas
+            | (g, sourceSpines) <-
+                Map.toList (Map.restrictKeys provisionalGlobalMetas owners)
             , Just gd <- [Map.lookup g candidates]
             , not (dutExplicit (gdUniverses gd))
             , g `Set.notMember` finalizedInterfaces
             , sourceMetas <- sourceSpines
             ]
-        constructorProjectionsFor retained =
+        constructorProjectionsFor owners retained =
           uniqueUniverseReferenceProjections
             [ ( (g, length sourceMetas)
               , deriveUniverseReferenceProjection
@@ -45698,12 +47492,13 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   sourceMetas
                   (Map.findWithDefault [] g retained)
               )
-            | (g, sourceSpines) <- Map.toList provisionalCtorMetas
+            | (g, sourceSpines) <-
+                Map.toList (Map.restrictKeys provisionalCtorMetas owners)
             , Map.member g ctorCandidates
             , g `Set.notMember` finalizedInterfaces
             , sourceMetas <- sourceSpines
             ]
-        exactGlobalProjectionsFor retained =
+        exactGlobalProjectionsFor owners retained =
           uniqueUniverseReferenceProjections
             [ ( (puiOwner occurrence, occurrenceSpine)
               , deriveUniverseReferenceProjection
@@ -45711,7 +47506,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   (puiSourceMetas occurrence)
                   (Map.findWithDefault [] (puiOwner occurrence) retained)
               )
-            | occurrence <- csProvisionalUniverseInstantiations st
+            | occurrence <- publicationOccurrencesFor owners
             , puiFacet occurrence == ProvisionalGlobalFacet
             , Just gd <- [Map.lookup (puiOwner occurrence) candidates]
             , not (dutExplicit (gdUniverses gd))
@@ -45722,7 +47517,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   , map zonkRawLevel (puiFreshLevels occurrence)
                   ]
             ]
-        exactConstructorProjectionsFor retained =
+        exactConstructorProjectionsFor owners retained =
           uniqueUniverseReferenceProjections
             [ ( (puiOwner occurrence, occurrenceSpine)
               , deriveUniverseReferenceProjection
@@ -45730,7 +47525,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   (puiSourceMetas occurrence)
                   (Map.findWithDefault [] (puiOwner occurrence) retained)
               )
-            | occurrence <- csProvisionalUniverseInstantiations st
+            | occurrence <- publicationOccurrencesFor owners
             , puiFacet occurrence == ProvisionalConstructorFacet
             , Map.member (puiOwner occurrence) ctorCandidates
             , puiOwner occurrence `Set.notMember` finalizedInterfaces
@@ -45740,45 +47535,182 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   , map zonkRawLevel (puiFreshLevels occurrence)
                   ]
             ]
-        settleProjections fuel projections =
-          let normalize =
-                zonkRawLevels
-                  . rewriteProvisionalUniverseReferences projections
-                  . zonkRawTerm
-              types = Map.map normalize originalRawTypes
-              traits = Map.map (map normalize) originalRawInterfaceTerms
-              universeValues = Map.map normalize originalRawUniverseValues
-              ctorTerms = Map.map normalize originalRawCtorTerms
-              retainedGlobals = globalMetasFor types traits universeValues ctorTerms
-              retainedConstructors = ctorMetasFor retainedGlobals ctorTerms
-              next =
-                UniverseReferenceProjections
-                  (globalProjectionsFor retainedGlobals)
-                  (constructorProjectionsFor retainedConstructors)
-                  (exactGlobalProjectionsFor retainedGlobals)
-                  (exactConstructorProjectionsFor retainedConstructors)
-           in if next == projections || fuel <= (0 :: Int)
-                then
-                  ( projections
-                  , types
-                  , traits
-                  , universeValues
-                  , ctorTerms
-                  , retainedGlobals
-                  , retainedConstructors
-                  )
-                else settleProjections (fuel - 1) next
-        ( referenceProjections
-          , _rawTypes
-          , _rawTraitTerms
-          , _rawUniverseValues
-          , _rawCtorTerms
-          , globalMetas
-          , ctorMetas
-          ) =
-          settleProjections
-            (Map.size candidates + Map.size ctorCandidates + 1)
+        ordinaryGlobalProjectionKeys owners =
+          Set.fromList
+            [ (g, length sourceMetas)
+            | (g, sourceSpines) <-
+                Map.toList (Map.restrictKeys provisionalGlobalMetas owners)
+            , sourceMetas <- sourceSpines
+            ]
+        ordinaryConstructorProjectionKeys owners =
+          Set.fromList
+            [ (g, length sourceMetas)
+            | (g, sourceSpines) <-
+                Map.toList (Map.restrictKeys provisionalCtorMetas owners)
+            , sourceMetas <- sourceSpines
+            ]
+        exactProjectionKeys facet owners =
+          Set.fromList
+            [ (puiOwner occurrence, occurrenceSpine)
+            | occurrence <- publicationOccurrencesFor owners
+            , puiFacet occurrence == facet
+            , occurrenceSpine <-
+                nub
+                  [ puiFreshLevels occurrence
+                  , map zonkRawLevel (puiFreshLevels occurrence)
+                  ]
+            ]
+        replaceProjectionKeys keys replacements existing =
+          Map.union replacements (Map.withoutKeys existing keys)
+        projectionKeysFor componentOwners constructorOwners =
+          ( ordinaryGlobalProjectionKeys componentOwners
+          , ordinaryConstructorProjectionKeys constructorOwners
+          , exactProjectionKeys ProvisionalGlobalFacet componentOwners
+          , exactProjectionKeys ProvisionalConstructorFacet constructorOwners
+          )
+        componentProjectionKeys =
+          Map.map
+            (\component ->
+               let componentOwners = Set.fromList component
+                   constructorOwners = componentCtorNamesFor component
+                in projectionKeysFor componentOwners constructorOwners)
+            componentsByIdentity
+        componentProjectionSlice
+            (globalKeys, constructorKeys, exactGlobalKeys, exactConstructorKeys)
+            projections =
+          ( Map.restrictKeys
+              (urpGlobals projections)
+              globalKeys
+          , Map.restrictKeys
+              (urpConstructors projections)
+              constructorKeys
+          , Map.restrictKeys
+              (urpExactGlobals projections)
+              exactGlobalKeys
+          , Map.restrictKeys
+              (urpExactConstructors projections)
+              exactConstructorKeys
+          )
+        replaceComponentProjections
+            componentOwners
+            constructorOwners
+            (globalKeys, constructorKeys, exactGlobalKeys, exactConstructorKeys)
+            retainedGlobals
+            retainedConstructors
+            projections =
+          UniverseReferenceProjections
+            ( replaceProjectionKeys
+                globalKeys
+                (globalProjectionsFor componentOwners retainedGlobals)
+                (urpGlobals projections)
+            )
+            ( replaceProjectionKeys
+                constructorKeys
+                (constructorProjectionsFor constructorOwners retainedConstructors)
+                (urpConstructors projections)
+            )
+            ( replaceProjectionKeys
+                exactGlobalKeys
+                (exactGlobalProjectionsFor componentOwners retainedGlobals)
+                (urpExactGlobals projections)
+            )
+            ( replaceProjectionKeys
+                exactConstructorKeys
+                (exactConstructorProjectionsFor constructorOwners retainedConstructors)
+                (urpExactConstructors projections)
+            )
+        componentDependents =
+          Map.unionWith
+            Set.union
+            (Map.fromList [(identity, Set.singleton identity) | identity <- Map.keys componentsByIdentity])
+            ( Map.fromListWith Set.union
+                [ (dependencyIdentity, Set.singleton consumerIdentity)
+                | (consumerIdentity, component) <- Map.toList componentsByIdentity
+                , global <- component
+                , dependency <- dependencies (dependencyTerms global)
+                , Just dependencyIdentity <- [Map.lookup dependency componentIdentities]
+                ]
+            )
+        settleProjectionComponent identity projections =
+          case
+              ( Map.lookup identity componentsByIdentity
+              , Map.lookup identity componentProjectionKeys
+              ) of
+            (Just component, Just projectionKeys) ->
+              let componentOwners = Set.fromList component
+                  constructorOwners = componentCtorNamesFor component
+                  normalize =
+                    zonkRawLevels
+                      . rewriteProvisionalUniverseReferences projections
+                      . zonkRawTerm
+                  types =
+                    Map.map normalize
+                      (Map.restrictKeys originalRawTypes componentOwners)
+                  traits =
+                    Map.map (map normalize)
+                      (Map.restrictKeys originalRawInterfaceTerms componentOwners)
+                  universeValues =
+                    Map.map normalize
+                      (Map.restrictKeys originalRawUniverseValues componentOwners)
+                  ctorTerms =
+                    Map.map normalize
+                      (Map.restrictKeys originalRawCtorTerms constructorOwners)
+                  retainedGlobals =
+                    globalMetasForComponent
+                      types traits universeValues ctorTerms component
+                  retainedConstructors =
+                    ctorMetasFor retainedGlobals ctorTerms
+                  next =
+                    replaceComponentProjections
+                      componentOwners
+                      constructorOwners
+                      projectionKeys
+                      retainedGlobals
+                      retainedConstructors
+                      projections
+                  changed =
+                    componentProjectionSlice projectionKeys next
+                      /= componentProjectionSlice projectionKeys projections
+               in (changed, next)
+            _ -> (False, projections)
+        projectionPositionBudget =
+          sum
+            [ length sourceMetas + 1
+            | sourceSpines <- Map.elems provisionalGlobalMetas
+            , sourceMetas <- sourceSpines
+            ]
+            + sum
+                [ length sourceMetas + 1
+                | sourceSpines <- Map.elems provisionalCtorMetas
+                , sourceMetas <- sourceSpines
+                ]
+        projectionStepBudget =
+          max 1
+            ( (Map.size componentsByIdentity + 1)
+                * (projectionPositionBudget + Map.size componentsByIdentity + 1)
+            )
+        projectionOutcome =
+          stabilizeWorklist
+            projectionStepBudget
+            componentDependents
+            settleProjectionComponent
+            (Map.keysSet componentsByIdentity)
             initialProjections
+        (projectionConverged, referenceProjections) =
+          case projectionOutcome of
+            WorklistConverged projections -> (True, projections)
+            WorklistExhausted _ projections -> (False, projections)
+        normalizeFinal =
+          zonkRawLevels
+            . rewriteProvisionalUniverseReferences referenceProjections
+            . zonkRawTerm
+        finalTypes = Map.map normalizeFinal originalRawTypes
+        finalTraits = Map.map (map normalizeFinal) originalRawInterfaceTerms
+        finalUniverseValues = Map.map normalizeFinal originalRawUniverseValues
+        finalCtorTerms = Map.map normalizeFinal originalRawCtorTerms
+        globalMetas =
+          globalMetasFor finalTypes finalTraits finalUniverseValues finalCtorTerms
+        ctorMetas = ctorMetasFor globalMetas finalCtorTerms
         rawValuesForRewrite =
           Map.map
             ( zonkRawLevels
@@ -45791,9 +47723,24 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         -- instantiated universe spines; copying a dependency's declaration
         -- parameters into the client would change the client's schema and
         -- make telescope size grow transitively through the module.
+        constraintRewriteOwners =
+          Set.unions
+            [ universeRewriteOwners
+            , constructorRewriteOwners
+            , publicationTargets
+            ]
+        selectedConstraintIds =
+          constraintIdsForOwnersAndOccurrences
+            (csLevelConstraintsByOwner st)
+            constraintRewriteOwners
+            [ puiMaterializedConstraintIds occurrence
+            | occurrence <- publicationOccurrences
+            ]
         constraints =
-          [ substituteLevelConstraintMetas assignments c
-          | c <- csLevelConstraints st
+          [ substituteLevelConstraintMetas assignments constraint
+          | owner <- Set.toAscList constraintRewriteOwners
+          , constraint <-
+              Map.findWithDefault [] owner (csLevelConstraintsByOwner st)
           ]
         constraintMetas c =
           nub (levelMetas (lcLhs c) ++ levelMetas (lcRhs c))
@@ -46021,7 +47968,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                   }
                 else gd
         globalsRebuilt0 =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\g gd ->
                case Map.lookup g candidates of
                  Just candidate -> rebuild g candidate
@@ -46052,7 +48000,7 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                      , not (any (equivalentUniverseConstraint constraint) before)
                      ]
                if null added then Nothing else Just added)
-            globalsRebuilt0
+            (Map.restrictKeys globalsRebuilt0 publicationTargets)
         completionConstraintDeltas =
           Map.unionWith
             (\left right -> dedupeUniverseConstraints (left ++ right))
@@ -46143,7 +48091,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         -- Only a physically present caller proof binder or a rigidly
         -- established closed witness may discharge the new argument.
         globalsWithRepairedCoreTypes =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\g gd ->
                if not (ownerNeedsUniverseRewrite g)
                  then gd
@@ -46178,7 +48127,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         repairedTypeContext =
           (ecOf st) {ecGlobals = Globals globalsWithRepairedCoreTypes}
         globalsRebuilt =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\g gd ->
                if ownerNeedsUniverseRewrite g
                  then
@@ -46237,13 +48187,12 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             dropTraitParameters _ _ = Nothing
         rebuildTraitDictionaryInterface globals trait info definition = do
           value <- gdValue definition
-          memberFields <- finalizedTraitMemberFields globals trait info
           let context = (ecOf st) {ecGlobals = Globals globals}
-              rebuild remaining = \case
+              rebuild memberFields remaining = \case
                 CLamM mode icit quantity name body
                   | remaining > 0 ->
                       CLamM mode icit quantity name
-                        (rebuild (remaining - 1) body)
+                        (rebuild memberFields (remaining - 1) body)
                 CRecordTQ fields
                   | remaining == 0 ->
                       CRecordTQ
@@ -46257,25 +48206,58 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                         | field <- fields
                         ]
                 term -> term
-              rebuilt = rebuild (tiParamCount info) (quote context 0 value)
-          guard (termScopedAt 0 rebuilt)
-          pure definition {gdValue = Just (eval context [] rebuilt)}
+              checkedInterface = quote context 0 value
+              rebuilt =
+                maybe
+                  checkedInterface
+                  (\memberFields ->
+                     rebuild memberFields (tiParamCount info) checkedInterface)
+                  (finalizedTraitMemberFields globals trait info)
+              rebuiltValue = eval context [] rebuilt
+              -- Universe repair may transiently insert evidence carrying the
+              -- provisional metas of a member projection.  The checked NbE
+              -- value normalizes that evidence away while retaining the
+              -- structural record telescope.  Persist only that canonical,
+              -- closed interface; an open interface must never become
+              -- artifact or KCore authority.
+              closedInterface = quote context 0 rebuiltValue
+          guard
+            ( termScopedAt 0 closedInterface
+                && null (metaIdsOf closedInterface)
+                && null (levelMetasOfTerm closedInterface)
+            )
+          pure
+            definition
+              { gdValue = Just rebuiltValue
+              , gdRecordInterface = Just closedInterface
+              }
+        traitRewriteOwners =
+          Set.intersection
+            (Map.keysSet (csTraits st))
+            ( Set.union
+                universeRewriteOwners
+                ( Set.fromList
+                    [ trait
+                    | member <- Set.toList universeRewriteOwners
+                    , Just trait <- [Map.lookup member (csTraitMemberOwners st)]
+                    ]
+                )
+            )
         globalsWithTraitInterfaces =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            traitRewriteOwners
             (\global definition ->
-               if not (ownerNeedsUniverseRewrite global)
-                 then definition
-                 else
-                   fromMaybe definition $ do
-                     info <- Map.lookup global (csTraits st)
-                     rebuildTraitDictionaryInterface
-                       globalsRebuilt
-                       global
-                       info
-                       definition)
+               fromMaybe definition $ do
+                 info <- Map.lookup global (csTraits st)
+                 rebuildTraitDictionaryInterface
+                   globalsRebuilt
+                   global
+                   info
+                   definition)
             globalsRebuilt
         traits' =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\g info ->
                case Map.lookup g globalMetas of
                  Nothing
@@ -46306,7 +48288,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             )
             (csTraits st)
         nominalSummaryRequests' =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\family request ->
                if not (ownerNeedsUniverseRewrite family)
                  then request
@@ -46359,7 +48342,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                  PendingDataNominalSummary {} -> request)
             (csNominalSummaryRequests st)
         ctors' =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            constructorRewriteOwners
             (\g ci ->
                case Map.lookup g ctorCandidates of
                  Nothing
@@ -46408,7 +48392,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
             )
             (csCtors st)
         coreBodies' =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\g body ->
                if not (ownerNeedsUniverseRewrite g)
                  then body
@@ -46475,7 +48460,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
         stateWithRebuiltGlobals =
           st {csGlobals = globalsWithTraitInterfaces}
         globals' =
-          Map.mapWithKey
+          mapSelectedKeysWithKey
+            universeRewriteOwners
             (\global definition ->
                if ownerNeedsUniverseRewrite global
                  then
@@ -46636,7 +48622,8 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
           Map.union finalizedGlobalMetaMaps finalizedConstructorMetaMaps
         pendingCoreSignatures =
           Map.withoutKeys
-            ( Map.mapWithKey
+            ( mapSelectedKeysWithKey
+                universeRewriteOwners
                 (\global signature ->
                    if not (ownerNeedsUniverseRewrite global)
                      then signature
@@ -46720,11 +48707,17 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                     , lcAssumptions =
                         transformAssumptions (lcAssumptions constraint)
                     }
+    unless projectionConverged $
+      errAt
+        (Span "<universe-inference>" (Pos 1 1) (Pos 1 1))
+        "E_INTERNAL"
+        Nothing
+        "declaration universe projection closeout did not converge within its finite monotone-worklist bound"
     let finalizedSymbols = Set.union (Map.keysSet candidates) (Map.keysSet ctorCandidates)
         retiredOccurrenceIds =
           Set.fromList
             [ puiIdentity occurrence
-            | occurrence <- csProvisionalUniverseInstantiations st
+            | occurrence <- publicationOccurrences
             , puiOwner occurrence `Set.member` finalizedSymbols
             , let retainedMetas =
                     case puiFacet occurrence of
@@ -46740,21 +48733,42 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                 ]
             , null (urpRetainedPositions projection)
             ]
+        retainSelectedConstraint rawConstraint =
+          let constraint =
+                substituteLevelConstraintMetas assignments rawConstraint
+           in if not (generalizedConstraint constraint)
+                && constraintOwnedAfterRetiringOccurrences
+                     st
+                     retiredOccurrenceIds
+                     constraint
+                then Just (transformRetainedConstraint constraint)
+                else Nothing
         retainedConstraints =
-          map transformRetainedConstraint
-            ( filter
-                (\constraint ->
-                   not (generalizedConstraint constraint)
-                     && constraintOwnedAfterRetiringOccurrences
-                          st
-                          retiredOccurrenceIds
-                          constraint)
-                constraints
-            )
-    put . reindexLevelConstraints $
-      invalidateSemanticCaches $
-      setCheckInstances instances' $
-        st
+          rewriteSelectedConstraints
+            selectedConstraintIds
+            retainSelectedConstraint
+            (csLevelConstraints st)
+        retainedConstraintIds = Set.fromList (map lcIdentity retainedConstraints)
+        retiredConstraintIds =
+          Set.difference selectedConstraintIds retainedConstraintIds
+        stateWithoutFinalizedOccurrences =
+          deleteProvisionalUniverseInstantiations publicationOccurrenceIds st
+        retainedConstraintProvenance =
+          Map.map
+            (\provenance ->
+               provenance
+                 { lcpProvisionalOccurrences =
+                     Set.difference
+                       (lcpProvisionalOccurrences provenance)
+                       retiredOccurrenceIds
+                 })
+            (Map.withoutKeys (csLevelConstraintProvenance st) retiredConstraintIds)
+    when projectionConverged $
+      ( put . reindexLevelConstraints $
+          invalidateSemanticCaches $
+          setCheckInstances instances' $
+          setRecursiveSchemaOccurrences recursiveSchemaOccurrences' $
+            stateWithoutFinalizedOccurrences
           { csGlobals = globals'
           , csTraits = traits'
           , csNominalSummaryRequests = nominalSummaryRequests'
@@ -46768,20 +48782,12 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
               Map.union
                 finalizedGlobalMetaMaps
                 (csFinalizedGlobalUniverseMetaMaps st)
-          , csRecursiveSchemaOccurrences = recursiveSchemaOccurrences'
-          , csProvisionalUniverseInstantiations =
-              filter
-                (\occurrence -> puiOwner occurrence `Set.notMember` finalizedSymbols)
-                (csProvisionalUniverseInstantiations st)
           , csLevelConstraints = retainedConstraints
           , csLevelConstraintOwners =
-              Map.restrictKeys
-                (csLevelConstraintOwners st)
-                (Set.fromList (map lcIdentity retainedConstraints))
+              Map.restrictKeys (csLevelConstraintOwners st) retainedConstraintIds
           , csLevelConstraintSpans =
-              Map.restrictKeys
-                (csLevelConstraintSpans st)
-                (Set.fromList (map lcIdentity retainedConstraints))
+              Map.restrictKeys (csLevelConstraintSpans st) retainedConstraintIds
+          , csLevelConstraintProvenance = retainedConstraintProvenance
           , csFinalizedUniverseInterfaces =
               Set.unions
                 [ csFinalizedUniverseInterfaces st
@@ -46789,7 +48795,41 @@ generalizeDeclarationUniverses preexisting preexistingCtors sourceGlobals source
                 , Map.keysSet ctorCandidates
                 ]
           }
-    finalizePendingNominalSummaries
+      )
+        >> finalizePendingNominalSummaries
+
+-- | Generalize exactly one completed declaration component.  Incremental body
+-- closeout carries the positive SCC identity directly; it never constructs the
+-- complement of the current module.
+-- Rebuild propagation inside 'generalizeDeclarationUniverses' is deliberately
+-- unchanged, so every consumer of a newly published call spine is still
+-- rewritten regardless of whether that consumer is itself a candidate.
+generalizeDeclarationUniverseOwners
+  :: Set GName
+  -> Set GName
+  -> Set GName
+  -> Set GName
+  -> UniversePublicationConsumers
+  -> Set GName
+  -> CheckM ()
+generalizeDeclarationUniverseOwners
+    preexisting
+    preexistingCtors
+    sourceGlobals
+    sourceCtors
+    publicationConsumers
+    owners
+  | Set.null owners = pure ()
+  | otherwise =
+      generalizeDeclarationUniversesWith
+        PreserveDeferredExplicitUniverses
+        (GeneralizeOnly owners)
+        (Just publicationConsumers)
+        preexisting
+        preexistingCtors
+        sourceGlobals
+        sourceCtors
+
 -- | Check a resolved module: two passes (headers then bodies), per the
 -- preceding-signature recursion rule (§15.16, §9.2).
 checkModule :: CheckState -> Module -> (CheckState, Diagnostics)
@@ -46945,34 +48985,51 @@ checkModule st0 m =
         -- built from the member quantities.
         finalizeTraitMemberRepresentations
         finalizeDerivedRefinementDeclarations (modDecls m)
-        let elaborateBodies _ [] = pure ()
-            elaborateBodies remaining (declaration : rest) = do
+        initialPublicationState <- get
+        let initialPublicationConsumers =
+              universePublicationConsumers initialPublicationState
+            elaborateBodies _ _ _ [] = pure ()
+            elaborateBodies remaining closeIndex publicationConsumers0 (declaration : rest) = do
               bodyPassIn siglessLets declaration
               current <- get
               let completedBodies =
                     Set.intersection remaining
                       (declarationBodyUniverseOwners current declaration)
-                  remaining' = Set.difference remaining completedBodies
-                  componentClosed owner =
-                    case Map.lookup owner (csCoreBodies current) of
-                      Nothing -> False
-                      Just body ->
-                        Set.null
-                          ( Set.intersection remaining'
-                              (expandedGlobalsOfTerm current body)
-                          )
-                  completedComponents =
-                    Set.filter componentClosed completedBodies
-                  completedOwners = Set.difference termNames remaining'
-                  closedOwners = Set.filter componentClosed completedOwners
+                  completedBodiesWithCore =
+                    Set.filter (`Map.member` csCoreBodies current) completedBodies
+                  -- A body diagnostic can leave an owner without retained
+                  -- Core.  Keep that identity open so callers cannot publish
+                  -- through a body that was never available for dependency
+                  -- analysis.
+                  remaining' = Set.difference remaining completedBodiesWithCore
+                  completedBodyTerms =
+                    Map.map pure
+                      (Map.restrictKeys
+                        (csCoreBodies current)
+                        completedBodiesWithCore)
+                  publicationConsumers =
+                    extendUniversePublicationConsumers
+                      completedBodyTerms
+                      publicationConsumers0
+                  openDependencies owner =
+                    fmap
+                      (Set.intersection remaining . expandedGlobalsOfTerm current)
+                      (Map.lookup owner (csCoreBodies current))
+                  (completedComponents, closeIndex') =
+                    recordDependencyCompletions
+                      completedBodiesWithCore
+                      openDependencies
+                      closeIndex
+                  newlyClosedTermOwners =
+                    Set.intersection termNames completedComponents
                   needsUniverseClose owner =
                     owner `Set.notMember` csFinalizedUniverseInterfaces current
                       && maybe
                            False
                            (not . globalDefinitionBodyUniversesReplayable)
                            (Map.lookup owner (csGlobals current))
-                  newlyClosedUniverseOwners =
-                    Set.filter needsUniverseClose closedOwners
+                  ownersNeedingProvisionalClose =
+                    Set.filter needsUniverseClose newlyClosedTermOwners
               -- Body checking can add further interface-closed obligations.
               -- Publish those proof binders only for a completed dependency
               -- component, so following declarations elaborate the complete
@@ -46982,12 +49039,12 @@ checkModule st0 m =
               -- in 'remaining'' must see one order-independent solve.
               mapM_ materializeOwnedInterfaceUniverseProofs
                 (Set.toAscList completedComponents)
-              unless (Set.null newlyClosedUniverseOwners) $ do
-                closeCompletedProvisionalBodyUniverses
-                  preexisting
-                  sourceGlobals
-                  (Set.difference deferredInterfaces closedOwners)
-                  newlyClosedUniverseOwners
+              unless (Set.null ownersNeedingProvisionalClose) $ do
+                -- Replayability is an owner-local solver fact, not an SCC
+                -- membership test.  Rewrite the complete closed component so
+                -- any subsequent publication remains atomic across mutual
+                -- callers even when only one body introduced occurrence metas.
+                closeCompletedProvisionalBodyUniverses newlyClosedTermOwners
                 afterClose <- get
                 let unresolvedOwners =
                       Set.filter
@@ -46996,19 +49053,38 @@ checkModule st0 m =
                              False
                              (not . globalDefinitionBodyUniversesReplayable)
                              (Map.lookup owner (csGlobals afterClose)))
-                        newlyClosedUniverseOwners
+                        newlyClosedTermOwners
                 unless (Set.null unresolvedOwners) $ do
                   beforeIncrementalGeneralization <- get
-                  generalizeDeclarationUniverses
+                  generalizeDeclarationUniverseOwners
                     preexisting
                     preexistingCtors
                     sourceGlobals
                     sourceCtors
-                    (Set.difference deferredInterfaces closedOwners)
-                  synchronizeGeneratedConstraintInterfaces
+                    publicationConsumers
+                    newlyClosedTermOwners
+                  afterIncrementalGeneralization <- get
+                  let changedInterfaces =
+                        Set.unions
+                          [ generatedConstraintInterfacesAffectedBy
+                              owner
+                              beforeIncrementalGeneralization
+                              afterIncrementalGeneralization
+                          | owner <- Set.toAscList newlyClosedTermOwners
+                          ]
+                  synchronizeGeneratedConstraintInterfacesFor
+                    (Just changedInterfaces)
                     beforeIncrementalGeneralization
-              elaborateBodies remaining' rest
-        elaborateBodies (Set.union termNames deferredInstanceDictionaries) (modDecls m)
+              elaborateBodies
+                remaining'
+                closeIndex'
+                publicationConsumers
+                rest
+        elaborateBodies
+          (Set.union termNames deferredInstanceDictionaries)
+          emptyDependencyFrontier
+          initialPublicationConsumers
+          (modDecls m)
         -- Finalize body-owned occurrence choices before committing deferred
         -- evidence. Generated level propositions may mention those occurrence
         -- metas, so final evidence search must observe the principal SCC
@@ -47192,7 +49268,7 @@ compactCompletedModuleUniverseState st
   | not (Map.null (csLevelConstraintIndex st)) = st
   | not (Map.null (csPendingLevelEvidence st)) = st
   | not (Map.null (csPendingUniverseProofs st)) = st
-  | not (null (csProvisionalUniverseInstantiations st)) = st
+  | not (Map.null (csProvisionalUniverseInstantiations st)) = st
   | isJust (csActiveUniverseDefinition st) = st
   | otherwise =
       invalidateSemanticCaches
@@ -47203,11 +49279,17 @@ compactCompletedModuleUniverseState st
           , csLevelAssignmentBudget = emptyLevelAssignmentGraphBudget
           , csLevelGeneralizableMetas = Set.empty
           , csLevelGeneralizableOwners = Map.empty
+          , csLevelGeneralizableMetasByOwner = Map.empty
           , csLevelInstantiationMetas = Set.empty
           , csLevelInstantiationOwners = Map.empty
+          , csLevelInstantiationMetasByOwner = Map.empty
+          , csProvisionalUniverseInstantiations = Map.empty
+          , csProvisionalUniverseInstantiationsByOwner = Map.empty
+          , csProvisionalUniverseInstantiationsByConsumer = Map.empty
           , csProvisionalGlobalUniverseMetas = Map.empty
           , csProvisionalConstructorUniverseMetas = Map.empty
           , csRecursiveSchemaOccurrences = []
+          , csRecursiveSchemaOccurrencesByCaller = Map.empty
           , csBareTypeLevels = Map.empty
           }
 
@@ -47318,7 +49400,9 @@ materializeOwnedInterfaceUniverseProofs owner = do
               [ UniverseConstraint
                   (resolve (lcLhs constraint))
                   (resolve (lcRhs constraint))
-              | constraint <- orderLevelConstraintsBySignatureOccurrence st (csLevelConstraints st)
+              | constraint <-
+                  orderLevelConstraintsBySignatureOccurrence st
+                    (Map.findWithDefault [] owner (csLevelConstraintsByOwner st))
               , previewValid
               , admissible constraint
               ]
@@ -47355,9 +49439,7 @@ previewOwnedInterfaceUniverseAssignments owner definition st =
             { lcLhs = initialResolve (lcLhs constraint)
             , lcRhs = initialResolve (lcRhs constraint)
             }
-        | constraint <- csLevelConstraints st
-        , Map.lookup (lcIdentity constraint) (csLevelConstraintOwners st)
-            == Just owner
+        | constraint <- Map.findWithDefault [] owner (csLevelConstraintsByOwner st)
         ]
       relevantMetas = constraintMetaClosure interfaceMetas ownedConstraints
       ownedGeneralizableOrigins =
@@ -47634,11 +49716,26 @@ headerPassInRaw siglessLets = \case
           pure (isNothing global && isNothing schemaLevel)
         )
         (nub (freeLower tyE))
-    kvs <- mapM (const (freshMetaV emptyCtx)) fvs
-    let ctx0 = foldl (\c (v, k) -> bindCtxMQProvisional Parametric Q0 v False k c) emptyCtx (zip fvs kvs)
+    (ctx0, inferredBindersReversed) <-
+      foldM
+        ( \(prefixCtx, accumulated) variable -> do
+            kind <- freshMetaV prefixCtx
+            let extended =
+                  bindCtxMQProvisional
+                    Parametric
+                    Q0
+                    variable
+                    False
+                    kind
+                    prefixCtx
+            pure (extended, (variable, kind, prefixCtx) : accumulated)
+        )
+        (emptyCtx, [])
+        fvs
+    let inferredBinders = reverse inferredBindersReversed
     diagCount0 <- gets (length . csDiags)
     (tyTm0, _) <- withNamedCallableInoutSignature tyE (inferType ctx0 tyE)
-    universalBinders <- forM (zip fvs kvs) $ \(v, kv) -> do
+    universalBinders <- forM inferredBinders $ \(v, kv, prefixCtx) -> do
       kv' <- forceM kv
       kind <- case kv' of
         VFlex m [] -> do
@@ -47646,9 +49743,9 @@ headerPassInRaw siglessLets = \case
           solveMeta m (VSort level)
           pure (VSort level)
         _ -> pure kv'
-      kindTm <- quoteIn emptyCtx kind
+      kindTm <- quoteIn prefixCtx kind
       markGeneralizableLevelTerm kindTm
-      paramKind <- isParametricKind 0 kind
+      paramKind <- isParametricKind (ctxLen prefixCtx) kind
       pure (v, if paramKind then Parametric else Ordinary, if paramKind then FormationParametric else FormationOrdinary, if paramKind then Q0 else QW, kindTm)
     let tyTm = foldr (\(v, mode, formation, q, kT) acc -> CPiFormedM mode formation Impl q False v kT acc) tyTm0 universalBinders
     tyV <- evalIn emptyCtx tyTm
@@ -47953,8 +50050,9 @@ prepareDataFamilyHeaderIn
   -> CheckM (Telescope, Term, Level)
 prepareDataFamilyHeaderIn baseCtx captureTele (DataDecl n params mkind _) sp = do
   g <- ownName n
-  provisionalParamTele <- elabTele baseCtx params
-  paramCtx <- extendTeleCtx baseCtx provisionalParamTele
+  rawParamTele <- elabTele baseCtx params
+  let provisionalParamTele = zipWith provisionalSourceDeclarationParam params rawParamTele
+  paramCtx <- extendSourceDeclarationTeleCtx baseCtx (zip params provisionalParamTele)
   (sortT, dataLevel) <- dataResultSort paramCtx mkind sp
   let provisionalTyTm = foldr telePi sortT (captureTele ++ provisionalParamTele)
   tyV <- evalIn emptyCtx provisionalTyTm
@@ -47990,8 +50088,8 @@ rewriteConstructorResultHead owner universes = go
 -- fields are ordinary independently selected schema instances.
 rewriteConstructorTypeResultHead :: GName -> [Level] -> Term -> Term
 rewriteConstructorTypeResultHead owner universes = \case
-  CPiEvidenceM mode formation icit quantity borrowed name assumption origin domain codomain ->
-    CPiEvidenceM
+  CPiRuntimeM mode formation icit quantity borrowed name assumption origin runtimeErasure domain codomain ->
+    CPiRuntimeM
       mode
       formation
       icit
@@ -48000,6 +50098,7 @@ rewriteConstructorTypeResultHead owner universes = \case
       name
       assumption
       origin
+      runtimeErasure
       domain
       (rewriteConstructorTypeResultHead owner universes codomain)
   result -> rewriteConstructorResultHead owner universes result
@@ -48026,7 +50125,7 @@ finishDataHeaderIn
   forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ _ <- ctors]) $ \dn ->
     errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
       ("duplicate constructor '" <> dn <> "' in data declaration")
-  paramCtx <- extendTeleCtx baseCtx provisionalParamTele
+  paramCtx <- extendSourceDeclarationTeleCtx baseCtx (zip params provisionalParamTele)
   familyUniverseCount <-
     gets (maybe 0 (dutParameterCount . gdUniverses) . Map.lookup g . csGlobals)
   preparedCtors <- forM ctors $ \(CtorDecl cn constructorUniverses binders mgadt _) -> do
@@ -48117,7 +50216,14 @@ finishDataHeaderIn
                 familyConstraints
                 ctyWithProofArguments
                 (CRecordV [])
-        cty <- zonkTermM 0 cty0
+        ctyZonked <- zonkTermM 0 cty0
+        -- Constructor types are assembled programmatically from telescope
+        -- entries, so they do not pass through 'inferType'. Attach the same
+        -- lexical RuntimeErasure authority here after the complete telescope
+        -- has been zonked: later fields may select evidence from earlier
+        -- constructor binders, and every downstream layout consumer must see
+        -- that exact checked decision.
+        cty <- annotateRuntimeErasedTelescope emptyCtx sp ctyZonked
         modify' $ \st ->
           st
             { csCtors =
@@ -48254,7 +50360,7 @@ inferPendingNominalRoles pending = do
       PendingDataNominalSummary _ parameterCount constructors _ ->
         dataNominalRequirements frozen family roles parameterCount constructors
       PendingTraitNominalSummary _ _ clauses _ ->
-        traitNominalRequirements roles clauses
+        traitNominalRequirements roles family clauses
 
 -- | Evidence authority consumed by the role fixed point.  The key includes
 -- the nominal block, declaration-universe parameter, and normalized one-hole
@@ -48655,6 +50761,7 @@ dataNominalSignatureClosure frozenMonotone tentativeRoles family dataParameterCo
               [] NominalTransformRepresentation
           ]
     Just definition -> do
+      let familyUniverseArity = dutParameterCount (gdUniverses definition)
       pointClauses <- fmap concat . forM constructors $ \constructor ->
         case Map.lookup constructor constructorTable of
           Nothing -> do
@@ -48666,9 +50773,14 @@ dataNominalSignatureClosure frozenMonotone tentativeRoles family dataParameterCo
             requirements <-
               nominalRequirementsFromConstructor
                 frozenMonotone family tentativeRoles dataParameterCount (ciType info)
-            pure [nominalClosureClause ClausePointConstructor ("constructor:" <> gKey constructor) requirements (ciType info)]
+            pure
+              [ nominalClosureClause familyUniverseArity ClausePointConstructor
+                  ("constructor:" <> gKey constructor) requirements (ciType info)
+              ]
       let familyType = globalCoreType ec definition
-          sortClause = nominalClosureClause ClauseSortDeclaration ("family:" <> gKey family) [] familyType
+          sortClause =
+            nominalClosureClause familyUniverseArity ClauseSortDeclaration
+              ("family:" <> gKey family) [] familyType
           generated kind label point =
             point
               { nccKind = kind
@@ -48690,7 +50802,7 @@ dataNominalSignatureClosure frozenMonotone tentativeRoles family dataParameterCo
           , owner == family
           ]
           ( makeNominalSignatureClosure
-              (dutParameterCount (gdUniverses definition))
+              familyUniverseArity
               (declarationConstraintSummary (dutParameterCount (gdUniverses definition)) familyType)
               physicalSaturationArity
               clauses
@@ -48717,11 +50829,17 @@ traitNominalSignatureClosure tentativeRoles family saturationArity clauses site 
               [] NominalTransformRepresentation
           ]
     Just definition -> do
+      let familyUniverseArity = dutParameterCount (gdUniverses definition)
       memberClauses <- forM (zip [0 :: Int ..] clauses) $ \(index, term) -> do
-        requirements <- traitNominalRequirements tentativeRoles [term]
-        pure (nominalClosureClause ClauseGeneratedProjection ("projection:" <> gKey family <> ":" <> T.pack (show index)) requirements term)
+        requirements <- traitNominalRequirements tentativeRoles family [term]
+        pure
+          ( nominalClosureClause familyUniverseArity ClauseGeneratedProjection
+              ("projection:" <> gKey family <> ":" <> T.pack (show index)) requirements term
+          )
       let familyType = globalCoreType ec definition
-          sortClause = nominalClosureClause ClauseSortDeclaration ("family:" <> gKey family) [] familyType
+          sortClause =
+            nominalClosureClause familyUniverseArity ClauseSortDeclaration
+              ("family:" <> gKey family) [] familyType
           dictionaryClause =
             NominalClosureClause ClausePointConstructor ("dictionary:" <> gKey family)
               (concatMap nccBinders memberClauses)
@@ -48736,7 +50854,7 @@ traitNominalSignatureClosure tentativeRoles family saturationArity clauses site 
       physicalSaturationArity <- nominalPhysicalSaturationArity family saturationArity
       pure $
         makeNominalSignatureClosure
-          (dutParameterCount (gdUniverses definition))
+          familyUniverseArity
           (declarationConstraintSummary (dutParameterCount (gdUniverses definition)) familyType)
           physicalSaturationArity
           ( sortClause
@@ -48746,8 +50864,14 @@ traitNominalSignatureClosure tentativeRoles family saturationArity clauses site 
               : memberClauses
           )
 
-nominalClosureClause :: NominalClauseKind -> Text -> [RoleRequirement] -> Term -> NominalClosureClause
-nominalClosureClause kind identity requirements = go []
+nominalClosureClause
+  :: Int
+  -> NominalClauseKind
+  -> Text
+  -> [RoleRequirement]
+  -> Term
+  -> NominalClosureClause
+nominalClosureClause familyUniverseArity kind identity requirements = go []
   where
     go binders (CPiEvidenceM mode formation ic quantity borrowed _ assumption _ domain codomain) =
       go
@@ -48770,12 +50894,23 @@ nominalClosureClause kind identity requirements = go []
         codomain
     go binders result =
       NominalClosureClause kind identity binders (nominalTypeFingerprint result)
-        (map requirementAction requirements)
+        (mapMaybe requirementAction requirements)
         NominalPreserveRepresentation
 
     requirementAction = \case
-      RequireCovariant index _ -> NominalCovariantUse index
-      RequireInvariant index _ -> NominalInvariantUse index
+      RequireCovariant index _
+        | familyUniverseParameter index -> Just (NominalCovariantUse index)
+      RequireInvariant index _
+        | familyUniverseParameter index -> Just (NominalInvariantUse index)
+      _ -> Nothing
+
+    -- Constructor schemas begin with the enclosing family's universe
+    -- telescope and may append constructor-local universes. Only the prefix
+    -- participates in the family's role action; the suffix remains in the
+    -- clause fingerprint and is independently scoped at each constructor use.
+    -- KCore replay enforces the same boundary by stable universe identity.
+    familyUniverseParameter index =
+      index >= 0 && index < familyUniverseArity
 
 -- | Certify a compiler-seeded, universe-closed data family through the same
 -- normalized nominal closure consumed by source declarations. Seeded logical
@@ -48819,6 +50954,7 @@ certifyClosedBuiltinData family state = do
       Left ("seeded closed nominal family contains an open universe obligation: " <> gKey family)
   let sortClause =
         nominalClosureClause
+          0
           ClauseSortDeclaration
           ("family:" <> gKey family)
           []
@@ -48827,6 +50963,7 @@ certifyClosedBuiltinData family state = do
         zipWith
           (\constructor info ->
              nominalClosureClause
+               0
                ClausePointConstructor
                ("constructor:" <> gKey constructor)
                []
@@ -48878,9 +51015,16 @@ nominalTypeFingerprint = stableNominalHash . renderStructuralTermKey . alphaType
   where
     alphaType = \case
       CLamM mode ic quantity _ body -> CLamM mode ic quantity "_" (alphaType body)
-      CPiEvidenceM mode formation ic quantity borrowed _ assumption origin domain codomain ->
-        CPiEvidenceM mode formation ic quantity borrowed "_" assumption origin (alphaType domain) (alphaType codomain)
-      CApp ic function argument -> CApp ic (alphaType function) (alphaType argument)
+      CPiRuntimeM mode formation ic quantity borrowed _ assumption origin runtimeErasure domain codomain ->
+        CPiRuntimeM mode formation ic quantity borrowed "_" assumption origin
+          (fmap alphaType runtimeErasure)
+          (alphaType domain)
+          (alphaType codomain)
+      CAppM ic runtimeErasure function argument ->
+        CAppRuntime ic
+          (fmap alphaType runtimeErasure)
+          (alphaType function)
+          (alphaType argument)
       CUniverseLift from to evidence term -> CUniverseLift from to evidence (alphaType term)
       CSchemaLift owner source target roles evidence certificate sourceArguments targetArguments term ->
         CSchemaLift owner source target roles evidence certificate
@@ -48905,29 +51049,56 @@ nominalTypeFingerprint = stableNominalHash . renderStructuralTermKey . alphaType
 -- data constructors; an unrecognized type operation is invariant.
 traitNominalRequirements
   :: Map GName [UniverseVariance]
+  -> GName
   -> [Term]
   -> CheckM [RoleRequirement]
-traitNominalRequirements tentativeRoles terms =
-  fmap (nub . sort . concat) (mapM requirements terms)
+traitNominalRequirements tentativeRoles family terms = do
+  (trusted, initialDepth, universeArity) <- nominalRoleEvidenceContext family
+  fmap (nub . sort . concat) (mapM (go trusted initialDepth universeArity) terms)
   where
-    requirements term =
-      go (stripNominalWrappers term)
-
-    go = \case
+    go trusted depth universeArity = \case
+      liftTerm@(CUniverseLift from to proof inner)
+        | validateUniverseEvidenceRelationUnder trusted depth universeArity (from, to) proof -> do
+            innerRequirements <- go trusted depth universeArity inner
+            pure
+              ( requirementsForUniverseRole
+                  "trait dictionary field uses a classifier-only universe lift"
+                  Covariant
+                  (concatMap levelParams [from, to])
+                  ++ innerRequirements
+              )
+        | otherwise ->
+            pure
+              [ RequireInvariant parameter
+                  "trait dictionary field has unauthenticated universe-lift evidence"
+              | parameter <- levelParamsOfTerm liftTerm
+              ]
+      CSchemaLift owner source target roles evidence certificate sourceArguments targetArguments inner -> do
+        (_, wrapperRequirements) <-
+          sourceSchemaLiftRoleRequirements
+            trusted depth universeArity
+            "trait dictionary field uses a certified nominal schema lift"
+            owner source target roles evidence certificate sourceArguments targetArguments
+        innerRequirements <- go trusted depth universeArity inner
+        pure
+          ( wrapperRequirements
+              ++ innerRequirements
+          )
       CSort level ->
         pure [RequireCovariant parameter "trait dictionary field stores a type code or witness" | parameter <- levelParams level]
-      CPiEvidenceM _ _ _ _ _ _ _ _ domain codomain -> do
+      CPiEvidenceM _ _ _ _ _ _ assumption _ domain codomain -> do
         let domainRequirements =
               [ RequireInvariant parameter "trait dictionary function domain uses a declaration universe"
-              | parameter <- levelParamsOfTerm domain
+              | parameter <- roleLevelParamsOfTerm domain
               ]
-        codomainRequirements <- go (stripNominalWrappers codomain)
+            trusted' = maybe trusted (\(lower, upper) -> insertAssumption lower upper trusted) assumption
+        codomainRequirements <- go trusted' (depth + 1) universeArity codomain
         pure (domainRequirements ++ codomainRequirements)
       nominal -> do
         certified <- requirementsFromCertifiedNominal nominal
         pure $ fromMaybe
           [ RequireInvariant parameter "trait dictionary field uses a universe under an unverified operation"
-          | parameter <- levelParamsOfTerm nominal
+          | parameter <- roleLevelParamsOfTerm nominal
           ]
           certified
 
@@ -48936,14 +51107,23 @@ traitNominalRequirements tentativeRoles terms =
       case headTerm of
         CGlobal nested levels -> do
           externalSummary <- gets (Map.lookup nested . csGlobals) >>= pure . (>>= gdNominalSummary)
-          let certifiedRoles =
-                Map.lookup nested tentativeRoles
-                  <|> (ncsRoles <$> (externalSummary >>= \summary ->
-                        guard (verifyNominalCumulativitySummary summary && ncsFamilyIdentity summary == gKey nested)
-                          >> pure summary))
+          localAuthority <- case Map.lookup nested tentativeRoles of
+            Nothing -> pure Nothing
+            Just localRoles -> do
+              saturation <- nominalPhysicalSaturationArity nested 0
+              pure (Just (localRoles, saturation))
+          let externalAuthority = do
+                summary <- externalSummary
+                guard
+                  ( verifyNominalCumulativitySummary summary
+                      && ncsFamilyIdentity summary == gKey nested
+                  )
+                pure (ncsRoles summary, ncsSaturationArity summary)
+              certifiedAuthority = localAuthority <|> externalAuthority
           pure $ do
-            roles <- certifiedRoles
+            (roles, saturation) <- certifiedAuthority
             guard (length levels == length roles)
+            guard (length arguments == saturation)
             pure
               ( concat
                   [ case role of
@@ -48955,10 +51135,27 @@ traitNominalRequirements tentativeRoles terms =
               )
         _ -> pure Nothing
 
-    stripNominalWrappers = \case
-      CUniverseLift _ _ _ inner -> stripNominalWrappers inner
-      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripNominalWrappers inner
-      term -> term
+-- | Trusted universe context for nominal role replay. The finalized typed
+-- family interface, not evidence embedded in an occurrence, supplies proof
+-- authority and the physical binder depth.
+nominalRoleEvidenceContext :: GName -> CheckM (Assumptions, Int, Int)
+nominalRoleEvidenceContext family = do
+  state <- get
+  pure $ case Map.lookup family (csGlobals state) of
+    Nothing -> (emptyAssumptions, 0, 0)
+    Just definition ->
+      let universeArity = dutParameterCount (gdUniverses definition)
+          familyType = globalCoreType (ecOf state) definition
+          trusted =
+            foldl'
+              (\assumptions constraint ->
+                 insertAssumption (ucLower constraint) (ucUpper constraint) assumptions)
+              emptyAssumptions
+              (declarationUniverseConstraints universeArity familyType)
+       in (trusted, piArity familyType, universeArity)
+  where
+    piArity (CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) = 1 + piArity codomain
+    piArity _ = 0
 
 installDataNominalSummary
   :: GName -> Maybe UniverseSchema -> NominalSignatureClosure -> Span -> CheckM ()
@@ -49020,7 +51217,19 @@ installDataNominalSummary family sourceSchema closure site = do
         else
           errAt site "E_KCORE_SCHEMA_CERTIFICATE_INVALID"
             (Just "kappa.kcore.schema-certificate-invalid")
-            "the generated nominal action certificate failed independent replay"
+            ( "the generated nominal action certificate for " <> gKey family
+                <> " failed independent replay (universe arity "
+                <> T.pack (show (nscUniverseArity closure))
+                <> "; clause actions "
+                <> T.pack
+                     ( show
+                         [ (nccIdentity clause, nccRoleActions clause)
+                         | clause <- nscClauses closure
+                         , not (null (nccRoleActions clause))
+                         ]
+                     )
+                <> ")"
+            )
   where
     schemaParameterName index =
       fromMaybe ("^u#" <> T.pack (show index)) $ do
@@ -49056,9 +51265,9 @@ nominalRequirementsFromConstructor
   -> Term
   -> CheckM [RoleRequirement]
 nominalRequirementsFromConstructor frozenMonotone family tentativeRoles dataParameterCount term = do
-  schemaArity <- gets $ \state ->
-    maybe 0 (dutParameterCount . gdUniverses) (Map.lookup family (csGlobals state))
-  goFields (dropPis dataParameterCount (dropDeclarationConstraints schemaArity term))
+  (trusted, initialDepth, schemaArity) <- nominalRoleEvidenceContext family
+  goFields trusted initialDepth schemaArity
+    (dropPis dataParameterCount (dropDeclarationConstraints schemaArity term))
   where
     dropDeclarationConstraints arity candidate =
       case declarationUniverseConstraintBinder arity candidate of
@@ -49072,7 +51281,7 @@ nominalRequirementsFromConstructor frozenMonotone family tentativeRoles dataPara
     dropPis count (CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) = dropPis (count - 1) codomain
     dropPis _ term = term
 
-    goFields (CPiEvidenceM _ _ _ _ _ name assumption _ domain codomain) = do
+    goFields trusted depth schemaArity (CPiEvidenceM _ _ _ _ _ name assumption _ domain codomain) = do
       domainRequirements <- case assumption of
         -- Declaration constraints have already been removed by exact
         -- declaration-telescope identity above. A remaining checked
@@ -49088,19 +51297,45 @@ nominalRequirementsFromConstructor frozenMonotone family tentativeRoles dataPara
               ]
                 ++ requirementsForLevel name upper
             )
-        Nothing -> requirementsForDomain name domain
-      rest <- goFields codomain
+        Nothing -> requirementsForDomain trusted depth schemaArity name domain
+      let trusted' =
+            maybe trusted (\(lower, upper) -> insertAssumption lower upper trusted) assumption
+      rest <- goFields trusted' (depth + 1) schemaArity codomain
       pure (domainRequirements ++ rest)
-    goFields _ = pure []
+    goFields _ _ _ _ = pure []
 
-    requirementsForDomain field term =
-      case stripNominalWrappers term of
+    requirementsForDomain trusted depth schemaArity field term =
+      case term of
+        liftTerm@(CUniverseLift from to proof inner)
+          | validateUniverseEvidenceRelationUnder trusted depth schemaArity (from, to) proof -> do
+              innerRequirements <- requirementsForDomain trusted depth schemaArity field inner
+              pure
+                ( requirementsForUniverseRole
+                    ("constructor field " <> field <> " uses a classifier-only universe lift")
+                    Covariant
+                    (concatMap levelParams [from, to])
+                    ++ innerRequirements
+                )
+          | otherwise ->
+              pure
+                [ RequireInvariant parameter
+                    ("constructor field " <> field <> " has unauthenticated universe-lift evidence")
+                | parameter <- levelParamsOfTerm liftTerm
+                ]
+        CSchemaLift owner source target roles evidence certificate sourceArguments targetArguments inner -> do
+          let reason = "constructor field " <> field <> " uses a certified nominal schema lift"
+          (_, wrapperRequirements) <-
+            sourceSchemaLiftRoleRequirements
+              trusted depth schemaArity
+              reason owner source target roles evidence certificate sourceArguments targetArguments
+          innerRequirements <- requirementsForDomain trusted depth schemaArity field inner
+          pure (wrapperRequirements ++ innerRequirements)
         CSort level ->
           pure (requirementsForLevel field level)
         nominal -> do
           certified <- requirementsFromCertifiedNominal field nominal
           pure $ fromMaybe
-            [RequireInvariant parameter ("constructor field " <> field <> " uses the universe under a runtime type operation") | parameter <- levelParamsOfTerm nominal]
+            [RequireInvariant parameter ("constructor field " <> field <> " uses the universe under a runtime type operation") | parameter <- roleLevelParamsOfTerm nominal]
             certified
 
     requirementsForLevel field = go
@@ -49132,18 +51367,27 @@ nominalRequirementsFromConstructor frozenMonotone family tentativeRoles dataPara
                 ]
 
     requirementsFromCertifiedNominal field term = do
-      let (headTerm, _) = spineOfTerm term
+      let (headTerm, arguments) = spineOfTerm term
       case headTerm of
         CGlobal nested levels -> do
           externalSummary <- gets (Map.lookup nested . csGlobals) >>= pure . (>>= gdNominalSummary)
-          let certifiedRoles =
-                Map.lookup nested tentativeRoles
-                  <|> (ncsRoles <$> (externalSummary >>= \summary ->
-                        guard (verifyNominalCumulativitySummary summary && ncsFamilyIdentity summary == gKey nested)
-                          >> pure summary))
+          localAuthority <- case Map.lookup nested tentativeRoles of
+            Nothing -> pure Nothing
+            Just localRoles -> do
+              saturation <- nominalPhysicalSaturationArity nested 0
+              pure (Just (localRoles, saturation))
+          let externalAuthority = do
+                summary <- externalSummary
+                guard
+                  ( verifyNominalCumulativitySummary summary
+                      && ncsFamilyIdentity summary == gKey nested
+                  )
+                pure (ncsRoles summary, ncsSaturationArity summary)
+              certifiedAuthority = localAuthority <|> externalAuthority
           pure $ do
-            roles <- certifiedRoles
+            (roles, saturation) <- certifiedAuthority
             guard (length levels == length roles)
+            guard (length arguments == saturation)
             pure . concat $
               [ case role of
                   Invariant -> [RequireInvariant parameter ("constructor field " <> field <> " uses invariant nominal family " <> gKey nested) | parameter <- levelParams level]
@@ -49153,10 +51397,392 @@ nominalRequirementsFromConstructor frozenMonotone family tentativeRoles dataPara
               ]
         _ -> pure Nothing
 
-    stripNominalWrappers = \case
-      CUniverseLift _ _ _ inner -> stripNominalWrappers inner
-      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripNominalWrappers inner
-      term -> term
+-- | Validate the complete source-side shape of a nominal schema lift before
+-- using its role vector. KCore independently checks the same evidence and
+-- saturation facts. Source role publication must not infer a more permissive
+-- certificate from malformed Core merely because an endpoint vector happened
+-- to have the expected length.
+--
+-- For a valid lift, ordinary source arguments and proof evidence are not part
+-- of the represented target type; callers recurse through target arguments.
+-- For a malformed lift, every universe visible in either endpoint or argument
+-- is conservatively invariant. The inner represented term is still analysed
+-- by the caller.
+sourceSchemaLiftRoleRequirements
+  :: Assumptions
+  -> Int
+  -> Int
+  -> Text
+  -> GName
+  -> [Level]
+  -> [Level]
+  -> [UniverseVariance]
+  -> [SchemaRoleEvidence]
+  -> SchemaActionCertificateId
+  -> [Term]
+  -> [Term]
+  -> CheckM (Bool, [RoleRequirement])
+sourceSchemaLiftRoleRequirements trusted depth universeArity reason owner source target roles evidence certificate sourceArguments targetArguments = do
+  summary <- gets (Map.lookup owner . csGlobals) >>= pure . (>>= gdNominalSummary)
+  alignments <- zipWithM sourceSchemaArgumentAligns sourceArguments targetArguments
+  let argumentsAligned = all fst alignments
+      alignmentRequirements = concatMap snd alignments
+  let authorityValid = case summary of
+        Just checkedSummary ->
+          verifyNominalCumulativitySummary checkedSummary
+            && ncsFamilyIdentity checkedSummary == gKey owner
+            && ncsRoles checkedSummary == roles
+            && ncsCertificateId checkedSummary == certificate
+            && ncsSaturationArity checkedSummary == length sourceArguments
+        Nothing -> False
+      metadataValid =
+        authorityValid
+          && length roles == length source
+          && length roles == length target
+          && length roles == length evidence
+          && length sourceArguments == length targetArguments
+          && argumentsAligned
+          && and
+            [ schemaRoleEvidenceMatches role roleEvidence from to
+            | (role, roleEvidence, from, to) <- zip4 roles evidence source target
+            ]
+      validRequirements =
+        concat
+          [ requirementsForUniverseRole reason role (levelParams from ++ levelParams to)
+          | (role, from, to) <- zip3 roles source target
+          ]
+          ++ alignmentRequirements
+      malformedRequirements =
+        requirementsForUniverseRole
+          "malformed source nominal schema lift fails closed during role publication"
+          Invariant
+          ( levelParamsOfTerm
+              ( CSchemaLift
+                  owner source target roles evidence certificate
+                  sourceArguments targetArguments (CRecordV [])
+              )
+          )
+  pure
+    ( metadataValid
+    , if metadataValid then validRequirements else malformedRequirements
+    )
+  where
+    schemaRoleEvidenceMatches Invariant SchemaInvariantEvidence from to =
+      normalizeLevel from == normalizeLevel to
+    schemaRoleEvidenceMatches Covariant (SchemaCovariantEvidence proof) from to =
+      validateUniverseEvidenceRelationUnder trusted depth universeArity (from, to) proof
+    schemaRoleEvidenceMatches Irrelevant SchemaIrrelevantEvidence _ _ = True
+    schemaRoleEvidenceMatches _ _ _ _ = False
+
+    sourceSchemaArgumentAligns sourceArgument targetArgument
+      | sourceArgument == targetArgument = pure (True, [])
+    sourceSchemaArgumentAligns sourceArgument (CUniverseLift from to proof inner) =
+      if validateUniverseEvidenceRelationUnder trusted depth universeArity (from, to) proof
+        then do
+          (aligned, innerRequirements) <- sourceSchemaArgumentAligns sourceArgument inner
+          pure
+            ( aligned
+            , requirementsForUniverseRole
+                "aligned nominal argument uses an authenticated universe lift"
+                Covariant
+                (levelParams from ++ levelParams to)
+                ++ innerRequirements
+            )
+        else pure (False, [])
+    sourceSchemaArgumentAligns sourceArgument
+      (CSchemaLift nested nestedSource nestedTarget nestedRoles nestedEvidence nestedCertificate nestedSourceArguments nestedTargetArguments inner) = do
+        (nestedValid, nestedRequirements) <-
+          sourceSchemaLiftRoleRequirements
+            trusted depth universeArity
+            "nested source argument uses a certified nominal schema lift"
+            nested nestedSource nestedTarget nestedRoles nestedEvidence nestedCertificate
+            nestedSourceArguments nestedTargetArguments
+        if nestedValid
+          then do
+            (aligned, innerRequirements) <- sourceSchemaArgumentAligns sourceArgument inner
+            pure (aligned, nestedRequirements ++ innerRequirements)
+          else pure (False, nestedRequirements)
+    sourceSchemaArgumentAligns _ _ = pure (False, [])
+
+
+-- | Focused producer-side invariant for proof-only metadata. This invokes the
+-- same role requirement function used by trait publication, rather than the
+-- lower-level occurrence collector tested independently in CoreOps.
+sourceRoleMetadataInvarianceChecks :: Bool
+sourceRoleMetadataInvarianceChecks =
+  directRoles == expectedRoles
+    && fixedPointRoles family == Just expectedRoles
+    && fixedPointRoles malformedFamily == Just [Invariant, Invariant, Invariant]
+    && fixedPointRoles missingEvidenceFamily == Just [Invariant, Invariant, Irrelevant]
+    && fixedPointRoles contradictoryEvidenceFamily == Just [Invariant, Invariant, Irrelevant]
+    && fixedPointRoles argumentArityFamily == Just [Invariant, Invariant, Invariant]
+    && fixedPointRoles forgedRoleFamily == Just [Invariant, Invariant, Irrelevant]
+    && fixedPointRoles forgedCertificateFamily == Just [Invariant, Invariant, Irrelevant]
+    && fixedPointRoles forgedEvidenceFamily == Just [Invariant, Invariant, Invariant]
+    && fixedPointRoles nestedMalformedFamily == Just [Invariant, Invariant, Invariant]
+    && fixedPointRoles partialFamily == Just [Invariant]
+    && nccRoleActions constructorLocalUniverseClause == [NominalCovariantUse 0]
+    && installedSummaryRoles family == Just expectedRoles
+    && installedSummaryRoles dataFamily == Just expectedRoles
+  where
+    family = GName (ModuleName ["test", "role-metadata"]) "Family"
+    malformedFamily = GName (ModuleName ["test", "role-metadata"]) "Malformed"
+    missingEvidenceFamily = GName (ModuleName ["test", "role-metadata"]) "MissingEvidence"
+    contradictoryEvidenceFamily = GName (ModuleName ["test", "role-metadata"]) "ContradictoryEvidence"
+    argumentArityFamily = GName (ModuleName ["test", "role-metadata"]) "ArgumentArity"
+    forgedRoleFamily = GName (ModuleName ["test", "role-metadata"]) "ForgedRole"
+    forgedCertificateFamily = GName (ModuleName ["test", "role-metadata"]) "ForgedCertificate"
+    forgedEvidenceFamily = GName (ModuleName ["test", "role-metadata"]) "ForgedEvidence"
+    nestedMalformedFamily = GName (ModuleName ["test", "role-metadata"]) "NestedMalformed"
+    partialFamily = GName (ModuleName ["test", "role-metadata"]) "Partial"
+    dataFamily = GName (ModuleName ["test", "role-metadata"]) "DataFamily"
+    dataConstructor = GName (ModuleName ["test", "role-metadata"]) "MkDataFamily"
+    liftFamily = GName (ModuleName ["test", "role-metadata"]) "LiftFamily"
+    expectedRoles = [Covariant, Covariant, Irrelevant, Irrelevant, Irrelevant]
+    constructorLocalUniverseClause =
+      nominalClosureClause
+        1
+        ClausePointConstructor
+        "test.role-metadata.constructor-local-universe"
+        [ RequireCovariant 0 "family prefix"
+        , RequireInvariant 1 "constructor-local suffix"
+        ]
+        (CSort (LParam 1))
+    proofAt index = CSort (LParam index)
+    erasedAt index =
+      RuntimeErased
+        (RuntimeErasedEvidence (proofAt index) (proofAt index) (proofAt index))
+    evidence =
+      UniverseEvidence
+        [UniverseEvidenceStep (LParam 0) (LParam 1) [(LParam 0, LParam 1)]]
+    liftClosure =
+      makeNominalSignatureClosure
+        1
+        []
+        1
+        [ NominalClosureClause
+            ClauseSortDeclaration
+            "test.role-metadata.LiftFamily"
+            []
+            "Type"
+            [NominalCovariantUse 0]
+            NominalPreserveRepresentation
+        ]
+    liftSummary =
+      makeNominalCumulativitySummary
+        (gKey liftFamily)
+        [Covariant]
+        [False]
+        liftClosure
+        Nothing
+    lifted = CUniverseLift (LParam 0) (LParam 1) evidence (CSort LZero)
+    schemaLifted =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaCovariantEvidence evidence]
+        (ncsCertificateId liftSummary)
+        [proofAt 3]
+        [proofAt 3]
+        (CSort LZero)
+    erasedArgument = CAppM Expl (erasedAt 4) (CGlob prelUnit) (CGlob prelUnit)
+    clauses = [lifted, schemaLifted, erasedArgument]
+    requirements =
+      evalState
+        (traitNominalRequirements Map.empty family clauses)
+        directState
+    directRoles = inferUniverseRoles 5 requirements
+    malformedClause =
+      CSchemaLift
+        prelList
+        [LParam 0, LParam 1]
+        [LParam 2]
+        [Covariant]
+        [SchemaCovariantEvidence evidence]
+        (SchemaActionCertificateId "test.source-role-metadata.malformed")
+        []
+        []
+        (CSort LZero)
+    missingEvidenceClause =
+      CSchemaLift
+        prelList
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        []
+        (SchemaActionCertificateId "test.source-role-metadata.missing-evidence")
+        []
+        []
+        (CSort LZero)
+    contradictoryEvidenceClause =
+      CSchemaLift
+        prelList
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaInvariantEvidence]
+        (SchemaActionCertificateId "test.source-role-metadata.contradictory-evidence")
+        []
+        []
+        (CSort LZero)
+    argumentArityClause =
+      CSchemaLift
+        prelList
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaCovariantEvidence evidence]
+        (SchemaActionCertificateId "test.source-role-metadata.argument-arity")
+        [proofAt 2]
+        []
+        (CSort LZero)
+    forgedRoleClause =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Irrelevant]
+        [SchemaIrrelevantEvidence]
+        (ncsCertificateId liftSummary)
+        [CSort LZero]
+        [CSort LZero]
+        (CSort LZero)
+    forgedCertificateClause =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaCovariantEvidence evidence]
+        (SchemaActionCertificateId "test.source-role-metadata.forged")
+        [CSort LZero]
+        [CSort LZero]
+        (CSort LZero)
+    forgedEvidenceClause =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaCovariantEvidence (UniverseEvidence [UniverseEvidenceStep (LParam 2) (LParam 2) []])]
+        (ncsCertificateId liftSummary)
+        [CSort LZero]
+        [CSort LZero]
+        (CSort LZero)
+    nestedMalformedArgument =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        []
+        (ncsCertificateId liftSummary)
+        [proofAt 2]
+        [CSort LZero]
+        (CSort LZero)
+    nestedMalformedClause =
+      CSchemaLift
+        liftFamily
+        [LParam 0]
+        [LParam 1]
+        [Covariant]
+        [SchemaCovariantEvidence evidence]
+        (ncsCertificateId liftSummary)
+        [CSort LZero]
+        [nestedMalformedArgument]
+        (CSort LZero)
+    partialClause = CGlobal liftFamily [LParam 0]
+    definition arity =
+      globalDefWithUniverses
+        (DeclarationUniverseTelescope arity True)
+        (GlobalDef (VSort LZero) Nothing False)
+    definitionWithConstraint arity =
+      globalDefWithCoreType
+        ( CPiEvidenceM
+            Ordinary FormationOrdinary Impl Q0 False "uLe"
+            (Just (LParam 0, LParam 1)) BinderGenerated
+            (CSort LZero) (CSort LZero)
+        )
+        (definition arity)
+    directState =
+      initCheckState
+        { csGlobals =
+            Map.fromList
+              [ (family, definitionWithConstraint 5)
+              , (liftFamily, globalDefWithNominalSummary liftSummary (definition 1))
+              ]
+        }
+    fixedPointState =
+      initCheckState
+        { csGlobals =
+            Map.fromList
+              [ (family, definitionWithConstraint 5)
+              , (malformedFamily, definition 3)
+              , (missingEvidenceFamily, definition 3)
+              , (contradictoryEvidenceFamily, definition 3)
+              , (argumentArityFamily, definition 3)
+              , (forgedRoleFamily, definition 3)
+              , (forgedCertificateFamily, definition 3)
+              , (forgedEvidenceFamily, definition 3)
+              , (nestedMalformedFamily, definition 3)
+              , (partialFamily, definition 1)
+              , (dataFamily, definitionWithConstraint 5)
+              , (liftFamily, globalDefWithNominalSummary liftSummary (definition 1))
+              ]
+        , csCtors =
+            Map.singleton
+              dataConstructor
+              CtorInfo
+                { ciData = dataFamily
+                , ciUniverses = DeclarationUniverseTelescope 5 True
+                , ciType =
+                    CPiFormedM
+                      Ordinary FormationOrdinary Expl QW False "field"
+                      schemaLifted
+                      (CGlobal dataFamily (map LParam [0 .. 4]))
+                , ciFields = []
+                , ciSourceFields = []
+                }
+        }
+    pending =
+      Map.fromList
+        [ (family, PendingTraitNominalSummary Nothing 0 clauses noSpan)
+        , (malformedFamily, PendingTraitNominalSummary Nothing 0 [malformedClause] noSpan)
+        , (missingEvidenceFamily, PendingTraitNominalSummary Nothing 0 [missingEvidenceClause] noSpan)
+        , (contradictoryEvidenceFamily, PendingTraitNominalSummary Nothing 0 [contradictoryEvidenceClause] noSpan)
+        , (argumentArityFamily, PendingTraitNominalSummary Nothing 0 [argumentArityClause] noSpan)
+        , (forgedRoleFamily, PendingTraitNominalSummary Nothing 0 [forgedRoleClause] noSpan)
+        , (forgedCertificateFamily, PendingTraitNominalSummary Nothing 0 [forgedCertificateClause] noSpan)
+        , (forgedEvidenceFamily, PendingTraitNominalSummary Nothing 0 [forgedEvidenceClause] noSpan)
+        , (nestedMalformedFamily, PendingTraitNominalSummary Nothing 0 [nestedMalformedClause] noSpan)
+        , (partialFamily, PendingTraitNominalSummary Nothing 0 [partialClause] noSpan)
+        , (dataFamily, PendingDataNominalSummary Nothing 0 [dataConstructor] noSpan)
+        ]
+    fixedPoint =
+      evalState
+        (do
+          (roles, _, _) <- inferPendingNominalRoles pending
+          pure roles
+        )
+        fixedPointState
+    fixedPointRoles owner = Map.lookup owner fixedPoint
+    publishable = Map.restrictKeys pending (Set.fromList [family, dataFamily])
+    publicationState =
+      fixedPointState
+        { csNominalSummaryRequests = publishable
+        , csDirtyNominalSummaries = Map.keysSet publishable
+        , csFinalizedUniverseInterfaces = Map.keysSet publishable
+        }
+    installedSummaries =
+      evalState
+        (do
+          finalizePendingNominalSummaries
+          gets (Map.mapMaybe (fmap ncsRoles . gdNominalSummary) . csGlobals)
+        )
+        publicationState
+    installedSummaryRoles owner = Map.lookup owner installedSummaries
 
 -- | Elaborate a data family's declared result universe. The annotation is a
 -- universe term such as @Type3@, not a type that must itself inhabit Type0.
@@ -49747,6 +52373,30 @@ extendTeleCtx = foldM step
       c' <- extendLevelAssumption noSpan c mBound
       pure (bindCtxMQB mode q nm (ic == Impl) borrowed domV c')
 
+-- | Extend a declaration context with source parameters whose omitted
+-- classifiers are still being inferred from the declaration body. The
+-- telescope stores the current provisional contract; the context flag tells
+-- observation analysis and flexible application inference to recompute that
+-- contract from the classifier solved by later uses.
+extendSourceDeclarationTeleCtx :: Ctx -> [(Binder, TelescopeEntry)] -> CheckM Ctx
+extendSourceDeclarationTeleCtx = foldM step
+  where
+    step c (binder, TelescopeEntry ic storedMode _formation storedQ borrowed nm domTm mBound) = do
+      domV <- evalIn c domTm
+      c' <- extendLevelAssumption noSpan c mBound
+      if isNothing (bType binder)
+        then do
+          let prefix = bPrefix binder
+              mode = fromMaybe Parametric (bpObservation prefix)
+              quantity =
+                maybe
+                  (if mode == Parametric then Q0 else headerBinderQ binder)
+                  (qOf . Just)
+                  (bpQuantity prefix)
+          pure (bindCtxMQBProvisional mode quantity nm (ic == Impl) borrowed domV c')
+        else
+          pure (bindCtxMQB storedMode storedQ nm (ic == Impl) borrowed domV c')
+
 elabTele' :: Telescope -> [Binder] -> CheckM Telescope
 elabTele' tele bs = do
   ctx <- teleCtx tele
@@ -49808,6 +52458,78 @@ elabTele ctx (b : rest) = do
   formation <- selectFormationMode ctx finalMode domV
   pure (TelescopeEntry ic finalMode formation finalQ (isJust (bpBorrow (bPrefix b))) nm domTm mBound : restT)
 
+-- | Finalize a classifier inferred through applications of provisional
+-- binders. Flexible application records only those synthesized Pi nodes as
+-- transient 'BinderGenerated' binders. Once the surrounding declaration has
+-- supplied every constraint, recursively choose each generated domain's
+-- observation/quantity contract and publish it as an ordinary interface Pi.
+-- A still-unconstrained classifier receives the §11.3/§11.3.3 Type default.
+finalizeInferredClassifier :: Ctx -> Term -> CheckM (Term, Value)
+finalizeInferredClassifier ctx classifierTerm = do
+  classifier0 <- evalIn ctx classifierTerm >>= forceM
+  classifier <- defaultFlexible classifier0
+  quoted <- quoteIn ctx classifier
+  finalizeQuoted ctx quoted
+  where
+    defaultFlexible = \case
+      VFlex meta [] -> do
+        level <- freshLevelMeta
+        solveMeta meta (VSort level)
+        markGeneralizableLevelTerm (CSort level)
+        pure (VSort level)
+      value -> pure value
+
+    finalizeQuoted activeCtx raw = do
+      term <- zonkTermM (ctxLen activeCtx) raw
+      case term of
+        CPiRuntimeM oldMode oldFormation icit oldQuantity borrowed name assumption origin runtimeErasure domain codomain -> do
+          (domain', domainValue) <- finalizeInferredClassifier activeCtx domain
+          let transient = origin == BinderGenerated && isNothing assumption
+          domainIsParametricKind <- isParametricKind (ctxLen activeCtx) domainValue
+          let mode
+                | transient && domainIsParametricKind = Parametric
+                | transient = Ordinary
+                | otherwise = oldMode
+              quantity
+                | transient && domainIsParametricKind = Q0
+                | transient && icit == Impl = Q0
+                | transient = QW
+                | otherwise = oldQuantity
+              formation
+                | transient && domainIsParametricKind = FormationParametric
+                | transient = FormationOrdinary
+                | otherwise = oldFormation
+              publishedOrigin = if transient then BinderSourceWritten else origin
+          withAssumption <- extendLevelAssumption noSpan activeCtx assumption
+          let codomainCtx =
+                bindCtxMQB
+                  mode
+                  quantity
+                  name
+                  (icit == Impl)
+                  borrowed
+                  domainValue
+                  withAssumption
+          (codomain', _) <- finalizeInferredClassifier codomainCtx codomain
+          let finalized =
+                CPiRuntimeM
+                  mode
+                  formation
+                  icit
+                  quantity
+                  borrowed
+                  name
+                  assumption
+                  publishedOrigin
+                  runtimeErasure
+                  domain'
+                  codomain'
+          value <- evalIn activeCtx finalized >>= forceM
+          pure (finalized, value)
+        _ -> do
+          value <- evalIn activeCtx term >>= forceM
+          pure (term, value)
+
 -- | Finalize a generated telescope after its use sites have constrained the
 -- provisional domain metas. This is shared by GADT locals and instance-head
 -- variables so higher-kinded and row variables retain their inferred domains
@@ -49815,15 +52537,7 @@ elabTele ctx (b : rest) = do
 finalizeGeneratedTelescope :: Ctx -> Telescope -> CheckM Telescope
 finalizeGeneratedTelescope _ [] = pure []
 finalizeGeneratedTelescope ctx (entry : rest) = do
-  domain0 <- evalIn ctx (teDomain entry) >>= forceM
-  domain <- case domain0 of
-    VFlex meta [] -> do
-      level <- freshLevelMeta
-      solveMeta meta (VSort level)
-      markGeneralizableLevelTerm (CSort level)
-      pure (VSort level)
-    value -> pure value
-  domainTm <- quoteIn ctx domain
+  (domainTm, domain) <- finalizeInferredClassifier ctx (teDomain entry)
   markGeneralizableLevelTerm domainTm
   paramKind <- isParametricKind (ctxLen ctx) domain
   let mode = if paramKind then Parametric else Ordinary
@@ -49842,14 +52556,13 @@ finalizeGeneratedTelescope ctx (entry : rest) = do
 finalizeSourceDeclarationTelescope :: Ctx -> [(Binder, TelescopeEntry)] -> CheckM Telescope
 finalizeSourceDeclarationTelescope _ [] = pure []
 finalizeSourceDeclarationTelescope ctx ((binder, entry) : rest) = do
-  domain0 <- evalIn ctx (teDomain entry) >>= forceM
-  domain <- case domain0 of
-    VFlex meta [] -> do
-      level <- freshLevelMeta
-      solveMeta meta (VSort level)
-      pure (VSort level)
-    value -> pure value
-  domainTm <- quoteIn ctx domain
+  (domainTm, domain) <-
+    if isNothing (bType binder)
+      then finalizeInferredClassifier ctx (teDomain entry)
+      else do
+        value <- evalIn ctx (teDomain entry) >>= forceM
+        term <- quoteIn ctx value
+        pure (term, value)
   when (isNothing (bType binder)) $
     markGeneralizableLevelTerm domainTm
   (mode, quantity) <-
@@ -49888,6 +52601,25 @@ headerBinderQ b
   | isNothing (bType b)
   , isNothing (bpQuantity (bPrefix b)) = Q0
   | otherwise = binderQ b
+
+-- | The published placeholder for a declaration with source-unannotated
+-- parameters must carry the same deferred observation contract as its local
+-- elaboration context. Otherwise the first recursive use can solve the kind
+-- meta while a later use is rejected against a stale ordinary Pi. The final
+-- declaration telescope replaces this provisional mode and quantity from the
+-- completely solved classifier.
+provisionalSourceDeclarationParam :: Binder -> TelescopeEntry -> TelescopeEntry
+provisionalSourceDeclarationParam binder entry
+  | isNothing (bType binder) =
+      let prefix = bPrefix binder
+          mode = fromMaybe Parametric (bpObservation prefix)
+          quantity =
+            maybe
+              (if mode == Parametric then Q0 else headerBinderQ binder)
+              (qOf . Just)
+              (bpQuantity prefix)
+       in entry {teMode = mode, teQ = quantity}
+  | otherwise = entry
 
 elabUnderParams :: Telescope -> Expr -> CheckM (Term, Value)
 elabUnderParams tele e = do
@@ -50004,13 +52736,7 @@ traitMemberResultRuntimeErased ctx site memberType = do
           go nextCtx result
         result -> do
           resultF <- forceM result
-          evaluation <- ec_
-          case canonicalEqualityPayload evaluation resultF of
-            Just (carrier, _, _) ->
-              isJust <$> isSetEvidence activeCtx site carrier
-            Nothing -> do
-              goal <- globalValueM prelIsProp [(Expl, resultF)]
-              isJust <$> isPropClosure activeCtx site goal
+          isJust <$> runtimeErasureEvidenceAvailable activeCtx site resultF
 
 -- | Complete the runtime-erasure classification of current-module trait
 -- members after all instance heads have been registered and header universe
@@ -50058,8 +52784,8 @@ headerTrait (TraitDecl supers n params members) sp = do
   g <- ownName n
   noteDefinition g sp
   rawParamTele <- elabTele emptyCtx params
-  let provisionalParamTele = zipWith provisionalTraitParam params rawParamTele
-  pctx <- teleCtx provisionalParamTele
+  let provisionalParamTele = zipWith provisionalSourceDeclarationParam params rawParamTele
+  pctx <- extendSourceDeclarationTeleCtx emptyCtx (zip params provisionalParamTele)
   -- supertrait premises (§14.1.4): their evidence is carried as
   -- dictionary fields, projected by the compiler as ordinary evidence
   -- projections (§14.2.1); a parenthesized premise list (C1 a, C2 a)
@@ -50091,7 +52817,7 @@ headerTrait (TraitDecl supers n params members) sp = do
       derivedMemberNames =
         Set.fromList [nameText mn | TraitDerived mn _ _ <- members]
   provisionalMemberFields <- forM memberNames $ \member ->
-    RecordField member Ordinary FormationOrdinary QW Nothing <$> freshMetaV pctx
+    RecordField member Ordinary FormationOrdinary QW Nothing RuntimeRelevant <$> freshMetaV pctx
   let derivedMemberDeclarations =
         [ (nameText member, memberType, memberSpan)
         | TraitDerived member memberType memberSpan <- members
@@ -50195,7 +52921,7 @@ headerTrait (TraitDecl supers n params members) sp = do
         mtyV <- evalIn pctx mtyTm
         pure (mtyTm, mtyV, runtimeErased)
       memberName (mn, _, _, _, _, _, _, _, _) = mn
-      memberTerm (mn, tm, _, mode, formation, q, _, _, _) = RecordField mn mode formation q Nothing tm
+      memberTerm (mn, tm, _, mode, formation, q, _, _, _) = RecordField mn mode formation q Nothing RuntimeRelevant tm
       memberQ mn = case T.uncons mn of
         Just (c, _) | c >= 'A' && c <= 'Z' -> Q0
         _ -> QW
@@ -50220,7 +52946,7 @@ headerTrait (TraitDecl supers n params members) sp = do
                   else memberQ (nameText mn)
           mode <- (\isKind -> if isKind then Parametric else Ordinary) <$> isParametricKind (ctxLen pctx) mtyV
           formation <- selectFormationMode pctx mode mtyV
-          let field = RecordField (nameText mn) mode formation q Nothing mtyV
+          let field = RecordField (nameText mn) mode formation q Nothing RuntimeRelevant mtyV
           goMembers
             (acc ++ [field])
             ( ( nameText mn
@@ -50267,7 +52993,7 @@ headerTrait (TraitDecl supers n params members) sp = do
                       else memberQ (nameText mn)
               mode <- (\isKind -> if isKind then Parametric else Ordinary) <$> isParametricKind (ctxLen pctx) mtyV
               formation <- selectFormationMode pctx mode mtyV
-              let field = RecordField (nameText mn) mode formation q Nothing mtyV
+              let field = RecordField (nameText mn) mode formation q Nothing RuntimeRelevant mtyV
               goMembers
                 (acc ++ [field])
                 ( ( nameText mn
@@ -50294,16 +53020,19 @@ headerTrait (TraitDecl supers n params members) sp = do
   let memberTerms = map memberTerm ms
       dictBody =
         CRecordTQ . sortOn rfName $
-          [RecordField fn Ordinary FormationOrdinary QW Nothing tm | (fn, tm) <- supPairs] ++ memberTerms
+          [RecordField fn Ordinary FormationOrdinary QW Nothing RuntimeRelevant tm | (fn, tm) <- supPairs] ++ memberTerms
       dictTm = foldr (\entry acc -> CLamM (teMode entry) (teIcit entry) (teQ entry) (teName entry) acc) dictBody paramTele
   traitUniverses <- provisionalDeclarationUniverses [tyTm]
   tyV <- evalIn emptyCtx tyTm
   dictV <- evalIn emptyCtx dictTm
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g
-    ( globalDefWithObservationMode
-        Ordinary
-        (GlobalDef tyV (Just dictV) False)
+    ( ( globalDefWithObservationMode
+          Ordinary
+          (GlobalDef tyV (Just dictV) False)
+      )
+        { gdRecordInterface = Just dictTm
+        }
     )
   modify' $ \st ->
     st
@@ -50318,14 +53047,7 @@ headerTrait (TraitDecl supers n params members) sp = do
             (csNominalSummaryRequests st)
       , csDirtyNominalSummaries = Set.insert g (csDirtyNominalSummaries st)
       }
-  defaultOwner <- gets csModule
-  defaultEmbedded <- gets csEmbeddedLoad
-  let defaults =
-        Map.fromList
-          [ (nameText dn, (defaultOwner, defaultEmbedded, ld))
-          | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _ _ _ _) _ <- members
-          ]
-      supTms = [(fn, foldr (\entry acc -> CLamM (teMode entry) (teIcit entry) (teQ entry) (teName entry) acc) sTm paramTele) | (fn, sTm) <- supPairs]
+  let supTms = [(fn, foldr (\entry acc -> CLamM (teMode entry) (teIcit entry) (teQ entry) (teName entry) acc) sTm paramTele) | (fn, sTm) <- supPairs]
   modify' $ \st ->
     invalidateSemanticCaches
       ( st
@@ -50343,7 +53065,7 @@ headerTrait (TraitDecl supers n params members) sp = do
                         ]
                     )
                     (Map.fromList [(mn, q) | (mn, _, _, _, _, q, _, _, _) <- ms])
-                    defaults
+                    Map.empty
                     supTms
                     derivedMemberNames
                     derivedSuperFields
@@ -50445,19 +53167,6 @@ headerTrait (TraitDecl supers n params members) sp = do
             g
             (csTraits state)
       }
-
-  where
-    provisionalTraitParam binder entry
-      | isNothing (bType binder) =
-          let prefix = bPrefix binder
-              mode = fromMaybe Parametric (bpObservation prefix)
-              quantity =
-                maybe
-                  (if mode == Parametric then Q0 else headerBinderQ binder)
-                  (qOf . Just)
-                  (bpQuantity prefix)
-           in entry {teMode = mode, teQ = quantity}
-      | otherwise = entry
 
 -- | Validate the declaration-owned authority for fresh trait-evidence
 -- construction (§14.1.1A).  Conventional certificates use a compact checked
@@ -50939,6 +53648,13 @@ bodyPass d =
 
     bodyPass' = \case
       DLet mods ld sp -> elabLetDecl mods ld sp
+      DTrait _ trait traitSpan -> do
+        forM_ (trMembers trait) $ \case
+          TraitDefault definition _ ->
+            mapM_ reportQuantityBorrowMarker
+              (quantityBorrowMarkerSpans (ldBody definition))
+          _ -> pure ()
+        elaborateTraitDefaults trait traitSpan
       DInstance inst sp -> elabInstance inst sp
       DPattern mods ld sp -> elabActivePatternDecl mods ld sp
       DProjection mods n bs ty body sp -> elabProjectionDecl mods n bs ty body sp
@@ -50953,6 +53669,154 @@ bodyPass d =
         unsupportedAt sp "top-level splices are not supported by this implementation"
       DUnsafeAssert akind inner sp -> elabUnsafeAssert akind inner sp
       _ -> pure ()
+
+-- | Elaborate every ordinary trait default once in the abstract trait
+-- context (§14.2).  The resulting hidden declaration has the exact checked
+-- telescope of the public member accessor: generated universe evidence,
+-- trait parameters, an abstract dictionary, and then the member's own
+-- binders.  Instances subsequently specialize this Core template; they never
+-- retain or re-check the source 'LetDef'.
+elaborateTraitDefaults :: TraitDecl -> Span -> CheckM ()
+elaborateTraitDefaults trait declarationSite = do
+  traitGlobal <- ownName (trName trait)
+  traitDefinition <- gets (Map.lookup traitGlobal . csGlobals)
+  traitInfo <- gets (Map.lookup traitGlobal . csTraits)
+  case (traitDefinition, traitInfo) of
+    (Just ownerDefinition, Just info) -> do
+      let traitUniverseCount = dutParameterCount (gdUniverses ownerDefinition)
+          traitUniverses = map LParam [0 .. traitUniverseCount - 1]
+          parameterCount = tiParamCount info
+      forM_ (trMembers trait) $ \case
+        TraitDefault definition defaultSite ->
+          case ldName definition of
+            Nothing ->
+              errAt defaultSite "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+                "an ordinary trait default is missing its declared member identity"
+            Just memberName -> do
+              let member = nameText memberName
+                  accessor = memberGlobal traitGlobal member
+                  defaultGlobal = traitDefaultGlobal traitGlobal member
+              memberDefinition <- gets (Map.lookup accessor . csGlobals)
+              case memberDefinition of
+                Nothing ->
+                  errAt defaultSite "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+                    ("ordinary default member '" <> member <> "' has no checked member interface")
+                Just checkedInterface -> do
+                  state <- get
+                  let interfaceType = globalCoreType (ecOf state) checkedInterface
+                      proofCount =
+                        length
+                          ( declarationUniverseConstraints
+                              (dutParameterCount (gdUniverses checkedInterface))
+                              interfaceType
+                          )
+                      prefixCount = proofCount + parameterCount + 1
+                  peelTraitMemberPrefix
+                    defaultSite
+                    prefixCount
+                    emptyCtx
+                    (gdType checkedInterface) >>= \case
+                      Nothing -> pure ()
+                      Just (memberCtx, memberType, prefixBinders) -> do
+                        let argumentTerms =
+                              [ CVar (parameterCount - index)
+                              | index <- [0 .. parameterCount - 1]
+                              ]
+                            dictionary = CVar 0
+                            superterms =
+                              [ (field, CProjM Ordinary dictionary field)
+                              | (field, _) <- tiSupers info
+                              ]
+                            memberTerms =
+                              [ ( field
+                                , CProjM
+                                    (Map.findWithDefault Ordinary field (tiMemberModes info))
+                                    dictionary
+                                    field
+                                )
+                              | field <- tiMembers info
+                              ]
+                        siblingTypes <-
+                          traitMemberSiblingTypesAt
+                            defaultSite
+                            traitGlobal
+                            traitUniverses
+                            info
+                            argumentTerms
+                            memberCtx
+                            superterms
+                            memberTerms
+                        checked <-
+                          withThis (Just (ThisTraitSibs siblingTypes)) $
+                            checkTraitMemberExpressionAgainst
+                              (Map.findWithDefault Ordinary member (tiMemberModes info))
+                              memberCtx
+                              memberType
+                              (ldBinders definition)
+                              Nothing
+                              (ldBody definition)
+                              defaultSite
+                        let closed =
+                              wrapTraitMemberPrefix
+                                prefixBinders
+                                (substThisTm dictionary checked)
+                        principalized <-
+                          principalizeBodyUniverseInstantiations
+                            traitGlobal
+                            (gdType checkedInterface)
+                            closed
+                        zonked <- zonkTermM 0 principalized
+                        current <- get
+                        let finalizedTemplate =
+                              zonkTermWith
+                                (\_ _ -> Nothing)
+                                (resolveFinalizedOwnerLevel current accessor)
+                                0
+                                zonked
+                            finalized =
+                              termScopedAt 0 finalizedTemplate
+                                && null (unsolvedMetasOf current finalizedTemplate)
+                                && null (levelMetasOfTerm finalizedTemplate)
+                        if not finalized
+                          then do
+                            errAt defaultSite "E_UNSOLVED_METAVARIABLE"
+                              (Just "kappa.type.unsolved-metavariable")
+                              ( "ordinary default member '" <> member
+                                  <> "' did not close to source-free checked Core"
+                              )
+                          else
+                            modify' $ \current ->
+                              let prototype =
+                                    checkedInterface
+                                      { gdNominalSummary = Nothing
+                                      , gdRecordInterface = Nothing
+                                      , gdReducible = True
+                                      }
+                                  installed =
+                                    globalDefWithCanonicalCoreBody current finalizedTemplate prototype
+                                  traits' =
+                                    Map.adjust
+                                      (\traitInfo' ->
+                                         traitInfo'
+                                           { tiDefaults =
+                                               Map.insert member defaultGlobal (tiDefaults traitInfo')
+                                           })
+                                      traitGlobal
+                                      (csTraits current)
+                               in invalidateSemanticCaches
+                                    current
+                                      { csGlobals =
+                                          Map.insert defaultGlobal installed (csGlobals current)
+                                      , csCoreBodies =
+                                          Map.insert defaultGlobal finalizedTemplate (csCoreBodies current)
+                                      , csFinalizedUniverseInterfaces =
+                                          Set.insert defaultGlobal (csFinalizedUniverseInterfaces current)
+                                      , csTraits = traits'
+                                      }
+        _ -> pure ()
+    _ ->
+      errAt declarationSite "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+        "trait defaults cannot be elaborated before the checked trait interface exists"
 
 -- | Commit declaration-scoped named-hole obligations after every inference
 -- mechanism for that declaration has run. A solved shared meta is ordinary
@@ -51642,9 +54506,13 @@ placesToThis n = go 0
         | otherwise -> t
       CGlobal _ _ -> t
       CLamM mode ic q nm b -> CLamM mode ic q nm (go (d + 1) b)
-      CPiEvidenceM mode formation ic q brw nm assumption origin a b ->
-        CPiEvidenceM mode formation ic q brw nm assumption origin (go d a) (go (d + 1) b)
-      CApp ic f a -> CApp ic (go d f) (go d a)
+      CPiRuntimeM mode formation ic q brw nm assumption origin runtimeErasure a b ->
+        CPiRuntimeM mode formation ic q brw nm assumption origin
+          (fmap (go d) runtimeErasure)
+          (go d a)
+          (go (d + 1) b)
+      CAppM ic runtimeErasure f a ->
+        CAppRuntime ic (fmap (go d) runtimeErasure) (go d f) (go d a)
       CUniverseLift from to evidence inner ->
         CUniverseLift from to evidence (go d inner)
       CSchemaLift family source target roles evidence certificate sourceArguments targetArguments inner ->
@@ -51667,17 +54535,20 @@ placesToThis n = go 0
       CProjAtM mode e f i -> CProjAtM mode (go d e) f i
       CVariantT ms -> CVariantT (map (go d) ms)
       CInject tag e -> CInject tag (go d e)
-      CLetM mode q nm a b c -> CLetM mode q nm (go d a) (go d b) (go (d + 1) c)
-      CLetRecM mode q nm a b c -> CLetRecM mode q nm (go d a) (go (d + 1) b) (go (d + 1) c)
-      CLetPolyM mode q nm telescope a b c ->
-        CLetPolyM mode q nm telescope (go d a) (go d b) (go (d + 1) c)
-      CLetRecPolyM mode q nm telescope a b c ->
-        CLetRecPolyM mode q nm telescope (go d a) (go (d + 1) b) (go (d + 1) c)
+      CLetRuntimeM mode q nm runtimeErasure a b c ->
+        CLetRuntimeM mode q nm (fmap (go d) runtimeErasure) (go d a) (go d b) (go (d + 1) c)
+      CLetRecRuntimeM mode q nm runtimeErasure a b c ->
+        CLetRecRuntimeM mode q nm (fmap (go d) runtimeErasure) (go d a) (go (d + 1) b) (go (d + 1) c)
+      CLetPolyRuntimeM mode q nm telescope runtimeErasure a b c ->
+        CLetPolyRuntimeM mode q nm telescope (fmap (go d) runtimeErasure) (go d a) (go d b) (go (d + 1) c)
+      CLetRecPolyRuntimeM mode q nm telescope runtimeErasure a b c ->
+        CLetRecPolyRuntimeM mode q nm telescope (fmap (go d) runtimeErasure) (go d a) (go (d + 1) b) (go (d + 1) c)
       CLetRecGroupM telescope definitions body ->
         let d' = d + length definitions
          in CLetRecGroupM telescope
               [ definition
-                  { clrdType = go d (clrdType definition)
+                  { clrdRuntimeErasure = fmap (go d) (clrdRuntimeErasure definition)
+                  , clrdType = go d (clrdType definition)
                   , clrdRhs = go d' (clrdRhs definition)
                   }
               | definition <- definitions
@@ -52448,15 +55319,19 @@ verifyTerminationSccIn ambient tds = do
       explicit = [tdDecreases (tfDecl f) | f <- funs]
   case explicit of
     _ | all isNothing explicit -> do
-          structural <- structuralSccOK funMap Nothing
+          edges <- collectSccEdges funMap
+          structural <- structuralSccOKWithEdges funMap Nothing edges
           if structural
             then pure TerminationConversionSafe
-            else boolCert TerminationTotalOnly <$> inferredMeasureSccOK funMap
+            else boolCert TerminationTotalOnly <$> inferredMeasureSccOKWithEdges edges funMap
       | any isNothing explicit -> pure TerminationUnverified
       | all isStructuralDec explicit -> do
           valid <- validateStructuralSelections funs
           if valid
-            then boolCert TerminationConversionSafe <$> structuralSccOK funMap (Just (structuralSelections funs))
+            then do
+              edges <- collectSccEdges funMap
+              boolCert TerminationConversionSafe
+                <$> structuralSccOKWithEdges funMap (Just (structuralSelections funs)) edges
             else pure TerminationUnverified
       | all isMeasureDec explicit -> do
           -- A `decreases <measure>` annotation states intent, but if the
@@ -52477,10 +55352,11 @@ verifyTerminationSccIn ambient tds = do
           -- unfolds during conversion — perturbing downstream analyses such
           -- as match exhaustiveness. Clearing the termination warning must
           -- not silently alter reduction behavior.
-          struct <- structuralSccOK funMap Nothing
+          edges <- collectSccEdges funMap
+          struct <- structuralSccOKWithEdges funMap Nothing edges
           if struct
             then pure TerminationTotalOnly
-            else boolCert TerminationTotalOnly <$> measureSccOK funMap
+            else boolCert TerminationTotalOnly <$> measureSccOKWithEdges funMap edges
       | otherwise -> pure TerminationUnverified
   where
     boolCert yes ok = if ok then yes else TerminationUnverified
@@ -52529,8 +55405,8 @@ data InferredMeasureShape
 -- each ordered difference of two integer parameters. Every candidate is
 -- handed to the same proof-producing call-edge checker used for explicit
 -- measures; no source spelling or unchecked heuristic can certify an SCC.
-inferredMeasureSccOK :: Map GName TermFun -> CheckM Bool
-inferredMeasureSccOK funMap
+inferredMeasureSccOKWithEdges :: Maybe [CallEdge] -> Map GName TermFun -> CheckM Bool
+inferredMeasureSccOKWithEdges edges funMap
   | Map.null funMap = pure False
   | otherwise = tryShapes candidateShapes
   where
@@ -52560,7 +55436,7 @@ inferredMeasureSccOK funMap
       case sequence measured of
         Nothing -> tryShapes rest
         Just candidateMap -> do
-          accepted <- measureSccOK candidateMap
+          accepted <- measureSccOKWithEdges candidateMap edges
           if accepted then pure True else tryShapes rest
 
 withInferredMeasure :: InferredMeasureShape -> TermFun -> CheckM (Maybe TermFun)
@@ -52916,6 +55792,11 @@ data PartialCall = PartialCall
   }
   deriving stock (Show)
 
+data SccReferenceMode
+  = AnySccReference
+  | IncompleteSccClosure
+  deriving stock (Eq)
+
 collectFunEdges :: Map GName TermFun -> TermFun -> CheckM (Maybe [CallEdge])
 collectFunEdges funMap src =
   go (tfDepth src) parameterOrigins Map.empty Set.empty [] [] (tfBody src)
@@ -52937,8 +55818,9 @@ collectFunEdges funMap src =
         case partialCallOf d ho t of
           Just pc | Set.member (pcTarget pc) sccNames, partialCallComplete pc ->
             collectApplication d sub ho esc facts boolFacts t
-          _ ->
-            if containsSccReference d ho esc t
+          _ -> do
+            exposesRecursiveCall <- reducibleApplicationContainsSccReference d ho esc t
+            if exposesRecursiveCall
               then do
                 tNorm <- normalizeTermAt d t
                 if tNorm /= t
@@ -52969,8 +55851,9 @@ collectFunEdges funMap src =
       CPi _ _ _ _ a b -> joinEdges <$> go d sub ho esc facts boolFacts a <*> go (d + 1) sub ho esc facts boolFacts b
       CLet _ _ a b c -> do
         ra <- go d sub ho esc facts boolFacts a
+        exposesRecursiveCall <- reducibleApplicationContainsSccReference d ho esc b
         bNorm <-
-          if containsSccReference d ho esc b
+          if exposesRecursiveCall
             then normalizeTermAt d b
             else pure b
         let normalizedPartial =
@@ -53273,8 +56156,9 @@ collectFunEdges funMap src =
     goArg d sub ho esc facts boolFacts t = do
       if opaqueRecursiveEscape t
         then pure Nothing
-        else
-          if containsSccReference d ho esc t
+        else do
+          exposesRecursiveCall <- reducibleApplicationContainsSccReference d ho esc t
+          if exposesRecursiveCall
             then do
               tNorm <- normalizeTermAt d t
               if tNorm /= t && opaqueRecursiveEscape tNorm
@@ -53296,100 +56180,143 @@ collectFunEdges funMap src =
       CLazyE t _ -> containsSccReference d ho esc t
       _ -> False
 
-    containsSccReference :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
-    containsSccReference d ho esc = \case
-      CGlob g -> Set.member g sccNames
-      CVar i -> Map.member (d - 1 - i) ho || Set.member (d - 1 - i) esc
-      CLam _ _ _ b -> containsSccReference (d + 1) ho esc b
-      CPi _ _ _ _ a b -> containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b
-      CApp _ f a -> containsSccReference d ho esc f || containsSccReference d ho esc a
-      CCtor _ _ as -> any (containsSccReference d ho esc) as
-      CMatch s _ _ alts ->
-        containsSccReference d ho esc s
-          || any
-            ( \(CaseAlt pat gd b) ->
-                let d' = d + patBindersC pat
-                 in maybe False (containsSccReference d' ho esc) gd || containsSccReference d' ho esc b
+    -- Normalizing an application can reveal a recursive call only when its
+    -- head is definitionally reducible. Testing every application subtree
+    -- with 'containsSccReference' before descending makes a left-associated
+    -- Core spine quadratic. Opaque heads cannot expose a hidden call; their
+    -- function and arguments are visited exactly once by 'collectApplication',
+    -- where a partial recursive closure remains a fail-closed escape.
+    reducibleApplicationContainsSccReference
+      :: Int -> Map Int PartialCall -> Set Int -> Term -> CheckM Bool
+    reducibleApplicationContainsSccReference d ho esc term =
+      case spineOfTerm term of
+        (headTerm, arguments) -> do
+          reducible <- reducibleApplicationHead headTerm
+          pure
+            ( reducible
+                && ( containsIncompleteSccClosure d ho esc headTerm
+                       || any (containsIncompleteSccClosure d ho esc . snd) arguments
+                   )
             )
-            alts
-      CRecordT fs -> any (containsSccReference d ho esc . snd) fs
-      CRecordV fs -> any (containsSccReference d ho esc . snd) fs
-      CProj e _ -> containsSccReference d ho esc e
-      CProjAt e _ _ -> containsSccReference d ho esc e
-      CVariantT ms -> any (containsSccReference d ho esc) ms
-      CInject _ e -> containsSccReference d ho esc e
-      CLet _ _ a b c ->
-        containsSccReference d ho esc a || containsSccReference d ho esc b || containsSccReference (d + 1) ho esc c
-      CLetRec _ _ a b c ->
-        containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b || containsSccReference (d + 1) ho esc c
-      CLetPolyM _ _ _ _ a b c ->
-        containsSccReference d ho esc a || containsSccReference d ho esc b || containsSccReference (d + 1) ho esc c
-      CLetRecPolyM _ _ _ _ a b c ->
-        containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b || containsSccReference (d + 1) ho esc c
-      CLetRecGroupM _ definitions body ->
-        let depth' = d + length definitions
-         in any (containsSccReference d ho esc . clrdType) definitions
-              || any (containsSccReference depth' ho esc . clrdRhs) definitions
-              || containsSccReference depth' ho esc body
-      CDo _ items -> containsSccReferenceItems d ho esc items
-      CSealE _ e -> containsSccReference d ho esc e
-      CSigT _ e -> containsSccReference d ho esc e
-      CUniverseLift _ _ _ e -> containsSccReference d ho esc e
-      CSchemaLift _ _ _ _ _ _ _ _ e -> containsSccReference d ho esc e
-      CThunkE e _ -> containsSccReference d ho esc e
-      CLazyE e _ -> containsSccReference d ho esc e
-      CForceE e _ -> containsSccReference d ho esc e
-      CIf a b c -> any (containsSccReference d ho esc) [a, b, c]
-      CQuote _ slots -> any (containsSccReference d ho esc) slots
-      _ -> False
 
-    containsSccReferenceItems :: Int -> Map Int PartialCall -> Set Int -> [KItem] -> Bool
-    containsSccReferenceItems _ _ _ [] = False
-    containsSccReferenceItems d ho esc (item : rest) =
-      containsSccReferenceK d ho esc item
-        || containsSccReferenceItems (advanceKItemDepth d item) ho esc rest
+    reducibleApplicationHead :: Term -> CheckM Bool
+    reducibleApplicationHead = \case
+      CGlobI global _ ->
+        gets (maybe False gdReducible . Map.lookup global . csGlobals)
+      CLamM {} -> pure True
+      CLetM {} -> pure True
+      CLetPolyM {} -> pure True
+      CProj (CRecordV {}) _ -> pure True
+      CProjAt (CRecordV {}) _ _ -> pure True
+      CUniverseLift _ _ _ term -> reducibleApplicationHead term
+      CSchemaLift _ _ _ _ _ _ _ _ term -> reducibleApplicationHead term
+      CSealE _ term -> reducibleApplicationHead term
+      _ -> pure False
 
-    containsSccReferenceK :: Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
-    containsSccReferenceK d ho esc = \case
-      KBind _ _ t _ -> containsSccReference d ho esc t
-      KLet _ _ t -> containsSccReference d ho esc t
+    containsSccReference :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    containsSccReference = containsSccReferenceWith AnySccReference
+
+    containsIncompleteSccClosure :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    containsIncompleteSccClosure = containsSccReferenceWith IncompleteSccClosure
+
+    containsSccReferenceWith
+      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    containsSccReferenceWith mode d ho esc term =
+      case term of
+        CGlobI g _ -> Set.member g sccNames
+        CVar i -> Map.member (d - 1 - i) ho || Set.member (d - 1 - i) esc
+        CLam _ _ _ b -> at (d + 1) b
+        CPi _ _ _ _ a b -> here a || at (d + 1) b
+        CApp _ f a
+          | mode == IncompleteSccClosure
+          , Just call <- partialCallOf d ho term
+          , partialCallComplete call ->
+              any (here . snd) (pcArgs call)
+          | otherwise -> here f || here a
+        CCtor _ _ as -> any here as
+        CMatch s _ _ alts ->
+          here s
+            || any
+              ( \(CaseAlt pat gd b) ->
+                  let d' = d + patBindersC pat
+                   in maybe False (at d') gd || at d' b
+              )
+              alts
+        CRecordT fs -> any (here . snd) fs
+        CRecordV fs -> any (here . snd) fs
+        CProj e _ -> here e
+        CProjAt e _ _ -> here e
+        CVariantT ms -> any here ms
+        CInject _ e -> here e
+        CLet _ _ a b c -> here a || here b || at (d + 1) c
+        CLetRec _ _ a b c -> here a || at (d + 1) b || at (d + 1) c
+        CLetPolyM _ _ _ _ a b c -> here a || here b || at (d + 1) c
+        CLetRecPolyM _ _ _ _ a b c -> here a || at (d + 1) b || at (d + 1) c
+        CLetRecGroupM _ definitions body ->
+          let depth' = d + length definitions
+           in any (here . clrdType) definitions
+                || any (at depth' . clrdRhs) definitions
+                || at depth' body
+        CDo _ items -> containsSccReferenceItemsWith mode d ho esc items
+        CSealE _ e -> here e
+        CSigT _ e -> here e
+        CUniverseLift _ _ _ e -> here e
+        CSchemaLift _ _ _ _ _ _ _ _ e -> here e
+        CThunkE e _ -> here e
+        CLazyE e _ -> here e
+        CForceE e _ -> here e
+        CIf a b c -> any here [a, b, c]
+        CQuote _ slots -> any here slots
+        _ -> False
+      where
+        here = containsSccReferenceWith mode d ho esc
+        at depth = containsSccReferenceWith mode depth ho esc
+
+    containsSccReferenceItemsWith
+      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> [KItem] -> Bool
+    containsSccReferenceItemsWith _ _ _ _ [] = False
+    containsSccReferenceItemsWith mode d ho esc (item : rest) =
+      containsSccReferenceKWith mode d ho esc item
+        || containsSccReferenceItemsWith mode (advanceKItemDepth d item) ho esc rest
+
+    containsSccReferenceKWith
+      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
+    containsSccReferenceKWith mode d ho esc = \case
+      KBind _ _ t _ -> here t
+      KLet _ _ t -> here t
       KLetQ _ t m ->
-        containsSccReference d ho esc t
+        here t
           || maybe
             False
             (\(rejectionPattern, rejection) ->
-               containsSccReference
+               containsSccReferenceWith mode
                  (d + patBindersC rejectionPattern)
                  ho
                  esc
                  rejection)
             m
-      KExpr t -> containsSccReference d ho esc t
-      KVarItem _ initT actT _ -> containsSccReference d ho esc initT || containsSccReference d ho esc actT
-      KAssign lhs _ rhs actT _ ->
-        containsSccReference d ho esc lhs
-          || containsSccReference d ho esc rhs
-          || containsSccReference d ho esc actT
-      KReturn t -> containsSccReference d ho esc t
+      KExpr t -> here t
+      KVarItem _ initT actT _ -> here initT || here actT
+      KAssign lhs _ rhs actT _ -> here lhs || here rhs || here actT
+      KReturn t -> here t
       KWhile _ c b e ->
-        containsSccReference d ho esc (kCondTerm c)
-          || containsSccReferenceItems d ho esc b
-          || maybe False (containsSccReferenceItems d ho esc) e
+        here (kCondTerm c)
+          || items d b
+          || maybe False (items d) e
       KFor _ pattern' s b e ->
-        containsSccReference d ho esc s
-          || containsSccReferenceItems (d + patBindersC pattern') ho esc b
-          || maybe False (containsSccReferenceItems d ho esc) e
+        here s
+          || items (d + patBindersC pattern') b
+          || maybe False (items d) e
       KIf alts e ->
-        any
-          (\(c, b) ->
-             containsSccReference d ho esc c
-               || containsSccReferenceItems d ho esc b)
-          alts
-          || maybe False (containsSccReferenceItems d ho esc) e
-      KDefer _ t -> containsSccReference d ho esc t
-      KUsing _ a r -> containsSccReference d ho esc a || containsSccReference d ho esc r
-      KSubDo _ b -> containsSccReferenceItems d ho esc b
+        any (\(c, b) -> here c || items d b) alts
+          || maybe False (items d) e
+      KDefer _ t -> here t
+      KUsing _ a r -> here a || here r
+      KSubDo _ b -> items d b
       _ -> False
+      where
+        here = containsSccReferenceWith mode d ho esc
+        items depth = containsSccReferenceItemsWith mode depth ho esc
 
     partialCallOf :: Int -> Map Int PartialCall -> Term -> Maybe PartialCall
     partialCallOf d ho t = case spineOfTerm t of
@@ -53659,7 +56586,18 @@ patternStructuralBinderOrigins depth context scrutinee =
 
 structuralSccOK :: Map GName TermFun -> Maybe (Map GName [Text]) -> CheckM Bool
 structuralSccOK funMap selectedNames = do
-  mEdges <- collectSccEdges funMap
+  edges <- collectSccEdges funMap
+  structuralSccOKWithEdges funMap selectedNames edges
+
+-- | Check a structural certificate against one authenticated call-edge
+-- snapshot. Inferred measures change only the proposed rank, so sibling
+-- certificate attempts must not re-traverse and re-normalize the SCC bodies.
+structuralSccOKWithEdges
+  :: Map GName TermFun
+  -> Maybe (Map GName [Text])
+  -> Maybe [CallEdge]
+  -> CheckM Bool
+structuralSccOKWithEdges funMap selectedNames mEdges = do
   case mEdges of
     Nothing -> pure False
     Just edges -> do
@@ -53915,6 +56853,11 @@ data MeasureCall = MeasureCall
 
 measureSccOK :: Map GName TermFun -> CheckM Bool
 measureSccOK funMap = do
+  edges <- collectSccEdges funMap
+  measureSccOKWithEdges funMap edges
+
+measureSccOKWithEdges :: Map GName TermFun -> Maybe [CallEdge] -> CheckM Bool
+measureSccOKWithEdges funMap mEdges = do
   let specs = map tfMeasure (Map.elems funMap)
   if any isNothing specs
     then pure False
@@ -53923,7 +56866,6 @@ measureSccOK funMap = do
       if not compatible
         then pure False
         else do
-          mEdges <- collectSccEdges funMap
           case mEdges of
             Nothing -> pure False
             Just edges -> case traverse (measureCallOfEdge funMap) edges of
@@ -54840,6 +57782,7 @@ data InstantiatedRefinementField = InstantiatedRefinementField
   , irfArgumentIndex :: !Int
   , irfMode :: !ObservationMode
   , irfQuantity :: !Q
+  , irfRuntimeErasure :: !(RuntimeErasure ())
   , irfType :: !Value
   , irfArgument :: !ConstructorArg
   }
@@ -54891,16 +57834,18 @@ deriveRefinementViewShapeSettled sourceSpan targetTerm = do
           let sourceFieldCount = length (ciSourceFields constructorInfo)
               sourceBinders =
                 drop (length namedBinders - sourceFieldCount) namedBinders
+              sourceContracts = constructorSourceContracts constructorInfo
               instantiatedFields0 =
                 [ InstantiatedRefinementField
                     sourceIndex
                     argumentIndex
                     mode
                     quantity
+                    runtimeErasure
                     fieldType
                     argument
-                | (sourceIndex, (argumentIndex, _fieldName, mode, quantity, fieldType)) <-
-                    zip [0 :: Int ..] sourceBinders
+                | (sourceIndex, ((argumentIndex, _fieldName, mode, quantity, fieldType), (_icit, _sourceQuantity, runtimeErasure))) <-
+                    zip [0 :: Int ..] (zip sourceBinders sourceContracts)
                 , Just argument <- [arguments `atMay` argumentIndex]
                 ]
           connectedEvidence <-
@@ -54916,9 +57861,10 @@ deriveRefinementViewShapeSettled sourceSpan targetTerm = do
           let retainedFields =
                 [ field
                 | field <- instantiatedFields
-                , Repr.runtimeConstructorField
+                , Repr.runtimeConstructorPiField
                     ec
                     (irfArgumentIndex field)
+                    (irfRuntimeErasure field)
                     (caIcit (irfArgument field))
                     (irfQuantity field)
                     (irfType field)
@@ -56570,7 +59516,7 @@ registerInstanceHeadAs dictG premises hd sp = do
               pure (term, Set.empty)
           pure (CGlob g, [], checkedArguments)
       fvTele <- finalizeGeneratedTelescope emptyCtx fvTele0
-      let higherKindClassifierLevels = Set.unions (map snd checkedArguments)
+      let headClassifierLevels = Set.unions (map snd checkedArguments)
       let teleLen = length fvTele + length premises
           argTms = map fst checkedArguments
       register
@@ -56580,7 +59526,7 @@ registerInstanceHeadAs dictG premises hd sp = do
         fvTele
         premTms
         argTms
-        higherKindClassifierLevels
+        headClassifierLevels
         teleLen
       where
         bindHeadVariable context entry = do
@@ -56596,36 +59542,45 @@ registerInstanceHeadAs dictG premises hd sp = do
                 domain
                 withBound
             )
-    register g traitHead traitUniverses fvTele premTms argTms higherKindClassifierLevels teleLen = do
+    register g traitHead traitUniverses fvTele premTms argTms headClassifierLevels teleLen = do
       -- register the instance before checking members so member bodies
       -- can use the instance being defined (recursive instances, §14.3)
       (dictTyTerm0, _) <- instDictTy fvTele premTms traitHead argTms
       instantiationLevels <- gets csLevelInstantiationMetas
-      let sourceLevels =
+      let binderSourceLevels =
             Set.fromList
-                  [ meta
-                  | entry <- fvTele
-                  , meta <-
-                      levelMetasOfTerm (teDomain entry)
-                        ++ maybe [] (\(lower, upper) -> levelMetas lower ++ levelMetas upper)
-                             (teLevelAssumption entry)
-                  ]
-                  `Set.union` Set.unions
-                    (map schemaBearingLevelMetas (premTms ++ argTms))
+              [ meta
+              | entry <- fvTele
+              , meta <-
+                  levelMetasOfTerm (teDomain entry)
+                    ++ maybe [] (\(lower, upper) -> levelMetas lower ++ levelMetas upper)
+                         (teLevelAssumption entry)
+              ]
+          sourceLevels =
+            binderSourceLevels
+              `Set.union` Set.unions
+                (map schemaBearingLevelMetas (premTms ++ argTms))
           -- An ordinary declaration occurrence is minimized before the
-          -- generated dictionary is published.  A higher-kinded trait
-          -- parameter is different: its checked classifier is part of the
-          -- instance head's public contract.  For example, the universe at
-          -- which @Applicative (IO e)@ accepts its result argument must remain
-          -- abstract even though the matching @IO@ occurrence introduced it.
-          -- Preserve exactly those levels authenticated by a Pi classifier;
-          -- a first-order head such as @Eq TypeLevel@ still has no protected
-          -- occurrence level and therefore retains its principal Type0
-          -- specialization.
+          -- generated dictionary is published. A trait parameter instantiated
+          -- by a generated head binder is different: its checked classifier
+          -- is part of the instance head's public contract. This covers both
+          -- @instance C a@ and higher-kinded heads such as
+          -- @Applicative (IO e)@.
+          -- A generated free-variable binder is itself declaration syntax:
+          -- every level in its inferred domain belongs to the dictionary
+          -- schema even when unification also records that identity as an
+          -- occurrence meta.  Provenance sets cease to be disjoint after
+          -- unification, so subtracting all occurrence identities here made
+          -- @instance C a@ spuriously monomorphic at Type0.  Occurrence-only
+          -- levels in the premise/head remain minimizable.  A first-order
+          -- head such as @Eq TypeLevel@ has no generated binder level and
+          -- therefore still retains its principal Type0 specialization.
           protectedSourceLevels =
-            Set.union
-              (Set.difference sourceLevels instantiationLevels)
-              higherKindClassifierLevels
+            Set.unions
+              [ binderSourceLevels
+              , Set.difference sourceLevels instantiationLevels
+              , headClassifierLevels
+              ]
       dictTyTerm <-
         principalizeGeneratedInterfaceOccurrences
           dictG
@@ -56634,8 +59589,14 @@ registerInstanceHeadAs dictG premises hd sp = do
       dictTy <- evalIn emptyCtx dictTyTerm
       -- §11.1.2.3A/§14.3: principal occurrence choices have been removed
       -- above.  The remaining normalized head and premises are the generated
-      -- declaration's user-observable schema boundary.
-      markDeclarationSchemaLevelCandidates dictG dictTyTerm
+      -- declaration's user-observable schema boundary. Generated declarations
+      -- do not acquire source provenance merely because an omitted global
+      -- occurrence appears in a Pi domain: only the binder/interface levels
+      -- authenticated above are schema parameters. The ordinary structural
+      -- marker would promote the trait occurrence itself and publish
+      -- @u <= v@ instead of selecting its principal least value @v = u@.
+      forM_ (Set.toAscList protectedSourceLevels) $ \meta ->
+        markGeneralizableLevelTermFor dictG (CSort (LMeta meta))
       schemaCount <- gets (Map.size . csActiveUniverseSchema)
       let schema = DeclarationUniverseTelescope schemaCount (schemaCount > 0)
       addGlobal dictG
@@ -56700,16 +59661,16 @@ instCheckHeadArgs _ _ [] = pure []
 instCheckHeadArgs ctx ty (e : es) = do
   t <- forceM ty
   case t of
-    VPiM mode Expl q _ _ dom clo -> do
+    VPiRuntimeM mode _ Expl q borrowed _ _ _ runtimeErasure dom clo -> do
       -- Trait heads are type-position syntax (§14.3.1A). A parametric type
       -- witness may therefore instantiate a universe-classified trait
       -- parameter even when the dictionary's parameter quantity is not Q0;
       -- this does not expose the witness as an ordinary term value.
       domF <- forceM dom
       (tm, classifierLevels) <- case domF of
-        VPiEvidenceM {} -> inferExactExplicitArg ctx mode q e dom
+        VPiEvidenceM {} -> inferExactExplicitArg ctx mode q borrowed runtimeErasure e dom
         _ -> do
-          checked <- checkExplicitArg ctx mode q e dom
+          checked <- checkExplicitArg ctx mode q borrowed runtimeErasure e dom
           pure (checked, Set.empty)
       v <- evalIn ctx tm
       rest <- clApp clo v >>= \cod -> instCheckHeadArgs ctx cod es
@@ -56864,10 +59825,11 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                       )
                   )
               Nothing -> case Map.lookup mn (tiDefaults ti) of
-                -- the trait's default definition fills the member (§14.2.3)
-                -- the default's own annotation mentions trait parameters
-                -- and is superseded by the instantiated member type
-                Just (_defaultOwner, defaultEmbedded, LetDef _ _ _ _ _ dbinders _ ddec dbody) -> do
+                -- The trait's source-free checked template fills the member
+                -- (§14.2).  Its interface is the member accessor interface, so
+                -- specialization uses the selected trait universes and the
+                -- partial dictionary assembled at this exact completion point.
+                Just defaultGlobal -> do
                   memberTyV <-
                     memberSigInstance
                       g
@@ -56876,31 +59838,25 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                       argTms
                       ctxP'
                       (catMaybes superFields ++ reverse done)
-                  (tm, terminationBody) <-
-                    withEmbeddedDefaultProvenance defaultEmbedded $
-                      checkInstanceMember
-                        g
-                        traitUniverses
-                        ti
-                        argTms
-                        ctxP'
-                        (catMaybes superFields)
-                        (reverse done)
-                        memberMode
-                        memberTyV
-                        dbinders
-                        Nothing
-                        dbody
-                        sp
+                  (tm, instantiatedType) <-
+                    instantiateCheckedTraitDefault
+                      ctxP'
+                      sp
+                      g
+                      traitUniverses
+                      argTms
+                      (catMaybes superFields ++ reverse done)
+                      defaultGlobal
+                  expectType ctxP' sp instantiatedType memberTyV
                   pure
                     ( Just
                         ( (mn, tm)
                         , InstanceMemberTermination
                             mn
                             memberTyV
-                            dbinders
-                            ddec
-                            terminationBody
+                            []
+                            Nothing
+                            tm
                             sp
                         )
                     )
@@ -57113,23 +60069,6 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
         (x : _) -> Just x
         [] -> Nothing
 
-    withEmbeddedDefaultProvenance False action = action
-    withEmbeddedDefaultProvenance True action = do
-      oldAllow <- gets csAllowUnsafeIntrinsics
-      oldEmbedded <- gets csEmbeddedLoad
-      modify' $ \state ->
-        state
-          { csAllowUnsafeIntrinsics = True
-          , csEmbeddedLoad = True
-          }
-      result <- action
-      modify' $ \state ->
-        state
-          { csAllowUnsafeIntrinsics = oldAllow
-          , csEmbeddedLoad = oldEmbedded
-          }
-      pure result
-
     checkInstanceMemberTerminationSccs ambient trait dictionary terminations = do
       state <- get
       let identities =
@@ -57285,19 +60224,19 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
         doneFields
 
     checkMemberAgainst memberMode ctx memberTy mbinders mResTy mbody msp =
-      case mbinders of
-        [] ->
-          checkObservedExpr
-            ctx
-            "ordinary trait member"
-            memberMode
-            (maybe mbody (\t -> EAscription mbody t msp) mResTy)
-            memberTy
-        _ -> checkLambdaAgainst ctx memberTy mbinders mbody msp
+      checkTraitMemberExpressionAgainst
+        memberMode
+        ctx
+        memberTy
+        mbinders
+        mResTy
+        mbody
+        msp
 
     checkInstanceMember trait traitUniverses info argTms ctx supers done memberMode memberTy mbinders mResTy mbody msp = do
       siblingTypes <-
-        instanceMemberSiblingTypes
+        traitMemberSiblingTypesAt
+          msp
           trait
           traitUniverses
           info
@@ -57373,7 +60312,8 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
               yName = Name "__derive_member_y" generatedSpan
               proofName = Name "__derive_member_proof" generatedSpan
           siblingTypes <-
-            instanceMemberSiblingTypes
+            traitMemberSiblingTypesAt
+              generatedSpan
               trait
               traitUniverses
               info
@@ -57467,7 +60407,8 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
         else do
           baseline <- get
           siblingTypes <-
-            instanceMemberSiblingTypes
+            traitMemberSiblingTypesAt
+              site
               trait
               traitUniverses
               info
@@ -57498,52 +60439,6 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                     else diagnostic
               unless declaredDerived (put baseline)
               pure Nothing
-
-    instanceMemberSiblingTypes trait traitUniverses info argTms ctx supers = go []
-      where
-        go _ [] = pure []
-        go preceding ((member, memberTerm) : rest) = do
-          memberType <-
-            memberSigInstance
-              trait
-              traitUniverses
-              member
-              argTms
-              ctx
-              (supers ++ preceding)
-          let field =
-                RecordField
-                  member
-                  (Map.findWithDefault Ordinary member (tiMemberModes info))
-                  FormationOrdinary
-                  (Map.findWithDefault QW member (tiMemberQs info))
-                  Nothing
-                  memberType
-          (field :) <$> go (preceding ++ [(member, memberTerm)]) rest
-
-    checkLambdaAgainst ctx ty binders body msp = do
-      t <- case binders of
-        [] -> forceM ty
-        _ -> peelCapturesM ty
-      case (binders, t) of
-        ([], _) -> check ctx body t
-        (b : rest, VPiBoundM mode Impl q _ nm assumption dom clo)
-          | not (bImplicit b)
-          , mode == Parametric || (nameText <$> bName b) /= Just nm -> do
-              withBound <- extendLevelAssumption msp ctx assumption
-              let ctx' = bindCtxMQ mode q nm True dom withBound
-              cod <- clApp clo (VRigid (ctxLen ctx) [])
-              CLamM mode Impl q nm <$> checkLambdaAgainst ctx' cod (b : rest) body msp
-        (b : rest, VPiBoundM mode ic q _ nm assumption dom clo) -> do
-          withBound <- extendLevelAssumption msp ctx assumption
-          let bn = fromMaybe nm (nameText <$> bName b)
-              ctx' = bindCtxMQ mode q bn (ic == Impl) dom withBound
-          cod <- clApp clo (VRigid (ctxLen ctx) [])
-          CLamM mode ic q bn <$> checkLambdaAgainst ctx' cod rest body msp
-        (_ : _, _) -> do
-          errAt msp "E_SIGNATURE_ARITY" (Just "kappa-hs.type.signature-arity")
-            "instance member has more parameters than the trait member type"
-          check ctx body t
 
 -- | Evidence for a trait goal: the local implicit context first
 -- (§16.3.3), then the instance set (§14.3.1), then §14.3.3 supertrait

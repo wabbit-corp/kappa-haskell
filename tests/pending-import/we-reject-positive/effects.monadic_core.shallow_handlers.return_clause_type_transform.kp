@@ -37,3 +37,5 @@ let collectOne comp =
 
 --! assertNoErrors
 --! assertType collectOne Eff <[yield : Yield Int]> Unit -> Eff <[ ]> (List Int)
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

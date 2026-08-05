@@ -17,4 +17,4 @@ let leak xs =
         yield x
     ]
 
--- STATUS(a0497523): FAIL — no diagnostics: the parser's borrowed-items flag is dropped during comprehension lowering (Check.hs `S.CFor refut _ pat src _`), so x binds as an ordinary ω item and the escape is accepted; BorrowItemsIntoQuery is never consulted.
+-- STATUS(74742dfd): FAIL — no diagnostic message matches /[Ee]scape|BorrowItemsIntoQuery|BorrowView|instance|borrow|region/ (no diagnostics)

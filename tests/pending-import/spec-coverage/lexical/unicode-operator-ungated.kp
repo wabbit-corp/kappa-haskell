@@ -14,4 +14,4 @@ module main
 bad : Bool
 let bad = 1 ≤ 2 --!! E_FEATURE_INACTIVE
 
--- STATUS(a0497523): FAIL — ungated Unicode operator is rejected with family-less E_UNEXPECTED_CHARACTER (lexer operator-char set is ASCII-only, so the E_FEATURE_INACTIVE unicode-operator path in Lexer.hs is unreachable); spec wants a kappa.feature.gated rejection
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.feature.gated was produced; no diagnostic error[E_FEATURE_INACTIVE] was produced (saw: E_UNEXPECTED_CHARACTER@15); no diagnostic error[E_FEATURE_INACTIVE] on line 15 (saw: E_UNEXPECTED_CHARACTER@15)

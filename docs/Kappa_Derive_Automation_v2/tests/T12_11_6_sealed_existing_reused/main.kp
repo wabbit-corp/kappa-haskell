@@ -1,0 +1,23 @@
+@PrivateByDefault module main
+
+trait Choice =
+    value : Bool
+
+instance Choice =
+    let value = True
+
+evidence : Choice
+let evidence = derive
+
+sameEvidence :
+    (left : Choice) -> (right : Choice) -> left = right
+let sameEvidence left right =
+    IsSubsingleton.allEqual left right
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode Choice sealed
+--! assertEvidenceConstructionMode evidence existing

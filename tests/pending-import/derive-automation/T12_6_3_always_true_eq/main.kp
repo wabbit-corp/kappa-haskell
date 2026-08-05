@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Eq Bit =
+    let (==) _ _ = True
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive
+--! assertDiagnosticMatch eqSound

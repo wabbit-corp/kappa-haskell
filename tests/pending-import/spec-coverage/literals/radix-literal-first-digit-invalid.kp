@@ -11,4 +11,4 @@ let badBin = 0b2
 
 badOct : Integer
 let badOct = 0o8
--- STATUS(a0497523): FAIL — only 0b2 reports E_NUMERIC_LITERAL_MALFORMED; 0o8 produces NO diagnostic at all (expected 2 errors)
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 1; first error: E_NUMERIC_LITERAL_MALFORMED "expected binary digits" at line 10

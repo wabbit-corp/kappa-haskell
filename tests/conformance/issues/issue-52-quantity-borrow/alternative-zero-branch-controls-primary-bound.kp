@@ -1,0 +1,18 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+maybeReadMany : (& box : Box) -> Unit
+let maybeReadMany (& box : Box) : Unit = ()
+
+bad : (1 & box : Box) -> Bool -> Unit
+let bad (1 & box : Box) choose : Unit =
+    if choose then maybeReadMany box else ()
+
+-- The then branch has an abstract [0, omega] borrowed demand and the else
+-- branch has no demand at all. The explicit zero-demand control-flow path is
+-- the primary positive-lower-bound failure.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

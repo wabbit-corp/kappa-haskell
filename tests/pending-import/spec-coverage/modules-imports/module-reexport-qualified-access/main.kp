@@ -14,4 +14,4 @@ let viaItem = util.answer
 
 viaNested : Int
 let viaNested = b.util.answer
--- STATUS(a0497523): FAIL — module re-export is not implemented: `import b.(util)` gives E_IMPORT_ITEM_NOT_FOUND "module 'b' does not export 'util'" and b.util.answer gives E_NAME_UNRESOLVED "module 'b' has no exported member 'util'"; same for the unaliased `export a` form
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_IMPORT_ITEM_NOT_FOUND "module 'b' does not export 'util' (Spec §8.3)" at line 10; assertEval: 'viaItem' evaluates to _, expected 42; assertEval: 'viaNested' evaluates to _, expected 42

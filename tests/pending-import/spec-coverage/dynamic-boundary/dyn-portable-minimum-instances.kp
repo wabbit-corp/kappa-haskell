@@ -48,4 +48,4 @@ let nested = Some xs
 dNested : Dyn
 let dNested = toDyn nested
 
--- STATUS(a0497523): FAIL — std.gradual provides no DynamicType instances at all; every toDyn site reports E_UNSOLVED_IMPLICIT (8 errors).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 8; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type DynamicType Unit" at line 13

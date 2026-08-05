@@ -2802,6 +2802,73 @@ is a compile-time error).' — or — 'A top-level pattern binding whose binder 
 not a single simple name MUST be marked `private` (or appear under
 `@PrivateByDefault` without `public`); otherwise compilation fails.'
 
+## 93. §§36.2–36.4: `ModuleSelector` and `modulesUnder` have a schema name but no selection semantics
+
+**omission / ambiguity** · severity **medium** · verification: **direct** ·
+Spec.md lines 50470-50482, 50542-50632
+
+The canonical build schema requires `ModuleSelector`, `module`, `modules`, and
+`modulesUnder`, and the manifest example uses `modulesUnder "acme"`, but the
+spec never defines how a selector matches a module name. In particular it does
+not say whether matching is by whole dotted segments, whether the prefix itself
+is included, how empty or trailing-dot prefixes are treated, or whether
+`modulesUnder ""` selects every module. The reference build planner currently
+splits the empty string into one empty segment, so `modulesUnder ""` silently
+selects nothing. That makes the natural spelling for “all modules under the
+source roots” unusable and leaves implementations free to produce different
+target graphs from the same portable manifest.
+
+**Possible fix:** Define `module n` as exact canonical module-name equality and
+`modulesUnder p` as dotted-segment prefix matching that includes `p` itself.
+Specify normalization and rejection for empty segments. Either define the empty
+prefix to match every module (the useful root selector) or reject it with a
+target-local diagnostic and provide an explicit `allModules` selector.
+
+## 94. §10.4.2: Strict positivity cannot be abstracted over a higher-kinded parameter, excluding `Fix f`
+
+**expressiveness gap** · severity **medium** · verification: **direct** ·
+Spec.md lines 10793-10837
+
+The admissible-former list contains accepted data families, selected built-ins,
+certified imported constructors, current-group heads, and function types. It
+contains no way for a higher-kinded parameter to carry verified positivity.
+Consequently the canonical recursion-schemes fixed point
+`data Fix f = Fix (f (Fix f))` must be rejected for every `f`, even when callers
+intend to instantiate `f` only with a known-positive base functor. `Functor f`
+is correctly insufficient—functoriality alone does not certify strict
+positivity—but the language exposes no stronger bound that could make this safe
+and modular.
+
+**Possible fix:** Add a positivity-qualified higher kind or an erased verified
+parameter-positivity capability that may be required on a type-constructor
+binder. Define its interface identity, separate-compilation certificate, and
+application rule so `Fix f` is admitted exactly when the recursive argument of
+`f` is certified positive.
+
+## 95. §15 introduction / §15.1: Acceptance of opaque, runtime-only pure recursion is contradictory or incomplete
+
+**contradiction / omission** · severity **high** · verification: **direct** ·
+Spec.md lines 22074-22137
+
+§15 opens with “Kappa is total by default”, but immediately clarifies that the
+rule applies to transparent definitions and elaboration-time computations, “not
+to all runtime computations.” It never states the acceptance rule for an
+ordinary opaque pure definition whose body is runtime-only and cannot
+participate in definitional equality. The reference compiler nevertheless
+rejects `loop : Int -> Int; opaque let loop x = loop x` with
+`E_TERMINATION_UNVERIFIED`. The two plausible readings therefore disagree on
+ordinary program acceptance. This also blocks generic recursion-schemes
+combinators such as `ana` and `hylo`: their recursive seed is produced by an
+arbitrary coalgebra, so it has no structural-decrease proof even when the
+function is deliberately opaque.
+
+**Possible fix:** Choose one rule explicitly. Either admit opaque runtime-only
+pure recursion as partial computation and prevent it from being used as
+conversion, proof, or type-level evidence, or require termination of all pure
+definitions and replace the current clarification with a specified safe
+partial/runtime effect through which such APIs can be expressed. State how the
+choice appears in interfaces and backend lowering.
+
 
 # Part III — spec-coverage campaign findings (2026-07, merged)
 
@@ -3220,6 +3287,7 @@ identify the reporting campaign lane; many entries cite a pinning test under
 
 - **§32.2.12** (docs/Spec.md L40200-L40214 (current revision)) `[writer2:runtime-hashing]`
   The associativity of the sequential Then chain is unspecified when a body cause composes with MULTIPLE finalizer causes: 'exit actions contribute sequentially in masked LIFO execution order' does not choose between Then c_body (Then c1 c2) and Then (Then c_body c1) c2. multiple-failing-finalizers-still-run.kp must accept both nestings.
+  LIFO execution, running every finalizer, and losslessly retaining every cause are the intended semantics; the open issue is only the observable tree shape. Because `sandbox` exposes `Cause.Then` for source pattern matching, allowing both associations makes equivalent executions produce observably different causes. The Spec should either mandate one canonical association—naturally `Then c_body (Then c1 c2)`, following its body-then-cleanup decomposition with a right-associated cleanup chain—or require associative normalization before source observation and bridge transport. Once resolved, the fixture should assert that single portable outcome rather than accepting both trees.
 
 - **§32.2.13** (L35651-L35656) `[analysis:runtime-hashing]`
   Section states captured continuation 'does not include frames outside the matching handler boundary' and 'compile-time-only entities erased under §31.2', but the precise definition of 'frames outside' vs interior nested handlers within the boundary could be clearer with an example.
@@ -3699,3 +3767,53 @@ DECISION are awaiting an explicit direction call; the rest are recorded gaps.
   boundary and diagnostic (and make the corresponding decision for `Double`);
   at minimum, precisely representable literals such as `1 : Float` should be
   accepted.
+
+- **§32.2.3: attaching children to every syntactic `do` block makes
+  supervision scopes too fine-grained.**
+  The current rule makes every IO `do` block a nested supervision scope and
+  drains its attached children when that block exits. Although
+  `spec-coverage/runtime-hashing/do-scope-shutdown-attached-children.kp`
+  accurately exercises that wording, it also demonstrates the undesirable
+  consequence: a helper that forks a child and returns its `Fiber` handle cannot
+  return a live child, because leaving the helper's `do` block has already shut
+  it down. This differs from GHC, where structured lifetime is introduced
+  explicitly by `withAsync`; Cats Effect, where it is introduced through a
+  scoped `Resource`; and ZIO, where ordinary children follow parent-fiber
+  supervision while `forkScoped`/`forkIn` select a shorter explicit scope.
+  Consider attaching ordinary `fork` children to the parent fiber's root or
+  current explicit scope instead of every syntactic `do` block, retaining
+  `withScope`/`forkIn` for deliberately short lexical lifetimes and
+  `forkDaemon` for detached fibers. Lexical `defer` behavior can remain tied to
+  the `do` block without making that block own every child it creates. Hold the
+  fixture outside mandatory conformance until this scope boundary is decided.
+
+## III.10 Macros/reflection review (2026-08-04)
+
+Findings from the spec-correctness review of the 20 staged
+`tests/pending-import/spec-coverage/macros-reflection/` fixtures.
+
+- **§28.2 omits the ch. 21 reflection terms from the normative prelude
+  inventory.** The prelude type list names `Elab`, `ElabGoal`, `CoreCtx`,
+  `Core`, `CoreEq`, `Symbol`, `RawComprehension`, `ComprehensionPlan` and the
+  staging terms, but no §21.6/§21.9 term (`asCore`, `reifyCore`, `whnf`,
+  `normalize`, `transCoreEq`, `tryProveDefEq`, `defEqSyntax`, `renderSyntax`,
+  `lowerComprehension`, `currentGoal`, `asCoreGoal`, `emitElabDiagnostic`,
+  `failElabWith`, ...) nor the §21.9 diagnostic types appear there. Tests and
+  users currently rely on reading ch. 21's canonical `expect term`
+  declarations as ambient prelude scope; the inventory should either list
+  them or state that rule.
+
+- **No portable diagnostic exists for scoped-nominal escape.** §21.4 applies
+  the §9.3.1.1 scoped-nominal escape rule to `Syntax` values, but no
+  `E_*` alias or `kappa.*` family anywhere in §3.2/§3.3 covers a scoped
+  local nominal token escaping its block (only borrow/generalization escape
+  codes exist). Fixtures can only pin unstable prose. Add a portable
+  code/family.
+
+- **§21.5's inspection MUST is not portably testable.** The requirement is
+  disjunctive - quotation-pattern matching on `Syntax t` OR an
+  observationally equivalent stable public inspection API - but the spec
+  defines no quotation-pattern grammar and no named API surface, so no
+  fixture can pin either disjunct portably. The staged
+  `syntax-quotation-pattern-inspection.kp` is held as SPEC-ISSUE until a
+  surface is normative.

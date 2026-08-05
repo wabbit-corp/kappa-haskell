@@ -31,3 +31,5 @@ let mkBoth = MkPair 1 2
 
 --! assertNoErrors
 --! assertType idAt forall (u : TypeLevel) (a : Type u). a -> a
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: the unbounded TypeLevel telescope violates §11.1.2.8 and needs an outer ceiling witness.

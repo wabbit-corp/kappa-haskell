@@ -20,4 +20,4 @@ let uniq (@0 r : RecRow) (@0 a : Type) (@0 b : Type) (@_ : ContainsRec r x a) (@
 useGet : Int
 let useGet = getAt (y = True, x = 7)
 
--- STATUS(a0497523): FAIL — ContainsRec intrinsic trait not in scope (E_NAME_UNRESOLVED); premise-licensed tail projection and erased uniqueness evidence unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 12; first error: E_NAME_UNRESOLVED "unresolved name 'ContainsRec' (not in scope)" at line 12

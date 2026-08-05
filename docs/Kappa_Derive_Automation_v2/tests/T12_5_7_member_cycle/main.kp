@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait Cyclic =
+    derive left  : right = right
+    derive right : left = left
+
+instance Cyclic = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertDiagnostic error E_DERIVE_CYCLE
+--! assertDeriveCycleContains main.Cyclic left

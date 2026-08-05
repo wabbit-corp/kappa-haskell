@@ -13,7 +13,7 @@
  * and returns on its own; uv_loop_close then closes cleanly.
  *
  * THE TEST: fork an uninterruptible daemon parked on a one-hour sleepFor — its
- * timer is armed and cannot be interrupt-cancelled (mask_depth>0).  run_main returns
+ * timer is armed and cannot be interrupt-cancelled (effective state Uninterruptible).  run_main returns
  * (the bounded daemon drain leaves it parked).  THEN krt2_shutdown -> reactor_stop
  * -> the walk closes the armed timer.  The live-SleepTimer counter must be 0.
  *   PASS (fixed):   krt2_live_sleep_timers() == 0  (the armed timer was closed)

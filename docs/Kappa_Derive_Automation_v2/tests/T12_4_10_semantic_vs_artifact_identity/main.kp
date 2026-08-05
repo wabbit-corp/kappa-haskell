@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+first : IsSet Bool
+let first = derive
+
+second : IsSet Bool
+let second =
+    block
+        instance IsSet Bool =
+            let pathIsProp x y = derive
+        summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceSemanticIdentityEquals first second
+--! assertEvidenceArtifactFingerprintDiffers first second

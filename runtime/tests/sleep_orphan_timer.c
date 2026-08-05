@@ -1,7 +1,7 @@
 /* sleep_orphan_timer.c — fix S2 (orphan sleep-timer after a masked re-park).
  *
  * THE BUG: a fiber parked on `sleepFor` is woken by an interrupt while MASKED
- * (uninterruptible).  The interrupt cannot be delivered (mask_depth>0), so the
+ * (uninterruptible).  The interrupt cannot be delivered in that effective state, so the
  * fiber re-runs OP_SLEEP and re-arms a FRESH uv_timer — but the ORIGINAL timer
  * was never cancelled.  That orphan timer fires later and calls
  * krt2i_wake(f, pure(Unit)); if the fiber has since parked on an UNRELATED
@@ -30,7 +30,7 @@
  *             ; awaitPromiseExit(done)
  *
  * The WHOLE of A is `uninterruptible`, so the interrupt that wakes the masked
- * sleep is never DELIVERED (mask_depth>0 throughout) — it only triggers the
+ * sleep is never DELIVERED (effective state Uninterruptible throughout) — it only triggers the
  * masked re-park.  A therefore survives to reach the LATER await, which is the
  * independent park the orphan timer can clobber.  (A simple `catch` cannot absorb
  * an Interrupt — interrupts skip KK_CATCH and terminate the fiber — so masking the

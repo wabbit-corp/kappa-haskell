@@ -34,6 +34,7 @@ let describeDirElse (d : Dir) : String =
     case _     -> "unreachable"    --!! kappa.pattern.unreachable
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.
 
 -- POSITIVE: catch-all is still needed when one constructor is missing.
 let describeDirPartial (d : Dir) : String =

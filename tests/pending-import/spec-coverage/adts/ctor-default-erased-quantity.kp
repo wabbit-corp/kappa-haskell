@@ -22,9 +22,4 @@ data BadWit (@0 n : Int) : Type =
 
 --! assertErrorCount 1
 
--- STATUS(a0497523): FAIL — the erased-use violation in MkBadWit's default is
--- not reported at the declaration (0 errors); the compiler only flags it when
--- a call site instantiates the default (e.g. MkBadWit { }), whereas §10.1
--- checks defaults in the declaration context (cf. the accepted
--- constructor-defaults-negative-default-expression-checked.kp, which pins
--- declaration-site TYPE errors).
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.quantity.unsatisfied] on line 21 (saw: E_APPLICATION_NONCALLABLE@15)

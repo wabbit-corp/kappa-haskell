@@ -35,4 +35,4 @@ let useLambda = (MkPt 4).viaLambda
 --! assertEval useDecl 3
 --! assertEval useThis 9
 --! assertEval useLambda 4
--- STATUS(a0497523): FAIL — getPx and norm pass, but the lambda-defined viaLambda is rejected ("has no receiver-marked binder", E_UNRESOLVED_MEMBER at the call): method-call eligibility is read off the declaration binder list only, ignoring the receiver marker carried by the signature and the lambda binder, contrary to §16.2 ("sugar consults the receiver marker").
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNRESOLVED_MEMBER "'viaLambda' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)" at line 31; assertEval: 'useLambda' evaluates to _, expected 4

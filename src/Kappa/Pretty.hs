@@ -22,7 +22,7 @@ renderTerm = go 0
         "@" <> tshow i <> ".{" <> T.intercalate ", " (map renderLevel universes) <> "}"
       CGlobal g _ -> gnameText g
       CLamM mode _ _ n b -> paren (p > 0) ("\\" <> modeText mode <> n <> " -> " <> go 0 b)
-      CPiEvidenceM mode _ ic q _ n _ _ a b ->
+      CPiRuntimeM mode _ ic q _ n _ _ _ a b ->
         paren (p > 0) $
           binder <> " -> " <> go 0 b
         where
@@ -80,10 +80,10 @@ renderTerm = go 0
         | otherwise -> go 2 e <> "." <> f
       CVariantT ms -> "(| " <> T.intercalate " | " (map (go 0) ms) <> " |)"
       CInject t e -> paren (p > 0) ("(| " <> go 0 e <> " : " <> t <> " |)")
-      CLetM _ _ n _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
-      CLetRecM _ _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
-      CLetPolyM _ _ n _ _ rhs body -> paren (p > 0) ("let " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
-      CLetRecPolyM _ _ n _ _ rhs body -> paren (p > 0) ("let rec " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRuntimeM _ _ n _ _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRecRuntimeM _ _ n _ _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetPolyRuntimeM _ _ n _ _ _ rhs body -> paren (p > 0) ("let " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRecPolyRuntimeM _ _ n _ _ _ rhs body -> paren (p > 0) ("let rec " <> n <> ".{...} = " <> go 0 rhs <> " in " <> go 0 body)
       CLetRecGroupM _ definitions body ->
         paren (p > 0)
           ( "let rec { "

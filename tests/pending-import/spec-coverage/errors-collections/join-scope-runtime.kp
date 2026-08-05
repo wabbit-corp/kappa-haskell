@@ -35,4 +35,4 @@ let leftJoined =
         left join y in [(1, 10), (2, 20), (2, 30)] on y._1 == x into ys
         yield lenQ ys
     ]
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_PARAMETRIC_TYPE_PROMOTION "finalized typed Core passes a parametric witness to ordinary application argument 0 to sumList (__pipeMap @1 Int (__pipeConcatMap Unit @1 ((\\parametric x0 -> \\ordinary x1 -> \\ordinary x2 -> :: @1 @0) Unit Unit ((\\parametric x0 -> Nil) Unit)) (\\ordinary __row1 -> match @0 ...)) (\\ordinary __row2 -> match @0 ...))" at line 0

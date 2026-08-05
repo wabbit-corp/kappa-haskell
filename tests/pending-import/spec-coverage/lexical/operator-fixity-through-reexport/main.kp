@@ -13,4 +13,4 @@ let chain = 2 +++ 3 +++ 4
 
 sec : Int
 let sec = (+++ 4) 3
--- STATUS(a0497523): FAIL — the operator itself re-exports (the term resolves) but its fixity metadata is dropped: E_OPERATOR_NO_FIXITY on both uses, and recovery silently parses the chain right-associatively (evaluates to 54)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_OPERATOR_NO_FIXITY "operator '+++' is used in infix position but no fixity is in scope (Spec §5.5.3)" at line 12; assertEval: 'chain' evaluates to 54, expected 234

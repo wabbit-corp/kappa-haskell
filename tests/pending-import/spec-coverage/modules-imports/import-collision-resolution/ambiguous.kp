@@ -8,4 +8,4 @@ import b.(value)
 
 bad : Int
 let bad = value --!! E_NAME_AMBIGUOUS
--- STATUS(a0497523): FAIL — colliding explicit imports silently last-win; no use-site E_NAME_AMBIGUOUS is emitted
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_NAME_AMBIGUOUS] on line 10 (no diagnostics)

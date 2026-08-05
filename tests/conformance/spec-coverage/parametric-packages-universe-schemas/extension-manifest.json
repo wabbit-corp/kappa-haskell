@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteCount": 17,
+  "suiteCount": 18,
   "purpose": "Active strengthening regressions added while implementing U-E1, U-E3, and U-E5; the imported 71-suite contract remains unchanged in manifest.json.",
   "suites": [
     {
@@ -117,6 +117,18 @@
         "stageDumps"
       ],
       "ownerStage": "U-E3"
+    },
+    {
+      "path": "positive/parametric_classifier_relative_discharge",
+      "category": "positive",
+      "description": "Classifier-relative discharge permits an ordinary result after a dependent parametric application is saturated.",
+      "files": [
+        "main.kp"
+      ],
+      "sourceExpectation": "accept",
+      "harnessOutcome": "pass",
+      "capabilities": [],
+      "ownerStage": "U-E5"
     },
     {
       "path": "positive/local_mutual_explicit_universe_schema",

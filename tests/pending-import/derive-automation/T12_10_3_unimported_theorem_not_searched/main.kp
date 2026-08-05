@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+import middle.(Token, left, right, marker)
+
+proof : left = right
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_UNSOLVED

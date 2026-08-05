@@ -17,4 +17,4 @@ callAnon : (& x : Int) -> Int
 let callAnon (& x : Int) : Int =
     apply (\() -> x)
 
--- STATUS(a0497523): FAIL — compiler emits E_QTT_BORROW_ESCAPE ("flows into an unrestricted parameter", citing stale §12.3.2): it refuses to instantiate the explicit region s with the caller-local anonymous rigid, which §12.4.2 explicitly permits.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_CAPTURE_SET_MISMATCH "the value's hidden region environment is not contained in the demanded capture annotation (§12.3.1)" at line 18

@@ -1,0 +1,24 @@
+@PrivateByDefault module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+derive Eq Color
+
+same : Bool
+let same = Red == Red
+
+different : Bool
+let different = Red == Blue
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEval same True
+--! assertEval different False
+--! assertDerivedInstance Eq Color
+--! assertDerivedSupertrait IsSet Color from Eq Color
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedInstance' is not defined by Appendix T (§T.3); line 22: unknown directive 'ass

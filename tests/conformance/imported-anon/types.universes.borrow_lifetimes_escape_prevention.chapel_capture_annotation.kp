@@ -25,12 +25,15 @@ makeGetter :
 let makeGetter x = \ _ -> x
 
 -- POSITIVE: use makeGetter within a scope where the root is still live.
-safeUseGetter : Int
+safeUseGetter : (Int, Int)
 let safeUseGetter =
     let 1 root = 100
-    let & borrowed = root
-    let getter = makeGetter borrowed
-    getter ()
+    let value =
+        block
+            let & borrowed = root
+            let getter = makeGetter borrowed
+            getter ()
+    (value, root)
 
 
 ---

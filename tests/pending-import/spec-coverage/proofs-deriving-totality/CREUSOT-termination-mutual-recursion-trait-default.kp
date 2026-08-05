@@ -25,4 +25,4 @@ instance LoopTr Bool =
     let fA b = fB b
 
 --! assertDiagnosticFamily warning kappa.termination.failure
--- STATUS(a0497523): FAIL — no diagnostic at all: the fA/fB cycle routed through the trait DEFAULT member is silently certified (every other unverified SCC gets W_TERMINATION_UNVERIFIED, so silence = certified), violating §15.2 soundness; the premise-routed variant in CREUSOT-termination-mutual-recursion-trait.kp IS caught
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.termination.failure was produced

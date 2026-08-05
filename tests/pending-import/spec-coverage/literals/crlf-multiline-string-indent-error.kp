@@ -14,4 +14,4 @@ let sample = """
     ab
     cd
     """
--- STATUS(a0497523): FAIL — spurious E_MULTILINE_STRING_BAD_INDENT from invisible CR bytes; Spec 6.3.3 normalization removes them before the indent check
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_MULTILINE_STRING_BAD_INDENT "multiline string line does not begin with the closing delimiter's indentation (Spec §6.3.3)" at line 13

@@ -16,4 +16,4 @@ let f u =
         group by 1 { c = 1 using NoSuchWrapper } into g
         yield 0
     ]
--- STATUS(a0497523): FAIL — third error still leaks hygienic gensyms with a gensym-to-gensym fix; Spec 3.1.11 hygiene now forbids it
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved name 'NoSuchWrapper' (not in scope)" at line 16

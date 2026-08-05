@@ -16,10 +16,8 @@ trait Default (0 a : Type) =
 
 instance Default (decode NatCode) =
     let default =
-        Zero
+        Nat.Zero
 
 useDefault : decode NatCode
 let useDefault =
     default
-
--- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED

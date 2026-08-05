@@ -1,0 +1,12 @@
+-- §30.2.0: after each application, dependencies already carried by the
+-- checked result classifier are removed before the next spine argument.
+module main
+
+consume : Int -> Int
+let consume x = x
+
+ok : (A : Type) -> (f : forall B. B -> Int) -> A -> Int
+let ok A f x = consume (f @A x)
+
+--! mode check
+--! assertNoErrors

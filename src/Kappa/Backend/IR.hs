@@ -46,7 +46,8 @@ import Control.Applicative ((<|>))
 import Control.Monad (forM, forM_, guard, unless, when)
 import Control.Monad.Reader
 import Control.Monad.State.Strict
-import Data.List (elemIndex, foldl', nub, sort, zip4)
+import Data.Foldable (toList)
+import Data.List (elemIndex, find, foldl', nub, sort, zip4)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe, maybeToList)
@@ -74,6 +75,7 @@ import Kappa.Builtins
   , prelPathInd
   , prelRefl
   , prelRefined
+  , prelRuntimeErased
   , prelSTM
   , prelSubst
   , prelTypeLevel
@@ -94,6 +96,7 @@ import Kappa.Check
   , LevelOperatorIdentity (..)
   , TraitInfo (..)
   , exactNaturalRepresentationForState
+  , linkedCoreBodies
   , metaObservationMode
   , nominalHiddenProjectionInfo
   , ordinalRepresentationForState
@@ -105,12 +108,14 @@ import Kappa.CoreOps
   , coreToNeutralLevelTerm
   , declarationUniverseConstraints
   , levelMetasOfTerm
+  , metaIdsOf
   , levelParamsOfTerm
   , patBindersC
   , shiftTerm
   , specializeTraitMemberProjectionType
   , specializeTraitMemberStorageType
   , spineOfTerm
+  , spineOfTermWithErasure
   , substTopTermAt
   , termAsLevel
   , termScopedAt
@@ -253,11 +258,13 @@ data ErasureProvenance
   | ErasedParametricTypeWitness !Level
   | ErasedParametricTypeFormer
   | ErasedProofOrTraitEvidence
+  | ErasedBySelectedEvidence !Term !Term !Term
   | ErasedByQuantity
   deriving stock (Eq, Show)
 
 data BackendErasure = BackendErasure
   { beNode :: !BackendNodeId
+  , beDepth :: !Int
   , beSite :: !ErasureSite
   , beIcit :: !Icit
   , beName :: !Text
@@ -481,7 +488,8 @@ lowerKBackendIR = lowerKBackendIRForCapabilities Set.empty
 -- get the conservative profile through 'lowerKBackendIR'.
 lowerKBackendIRForCapabilities :: Set Text -> CheckState -> KBackendIR
 lowerKBackendIRForCapabilities capabilities st =
-  let builtinIntegerLiteralDicts =
+  let bodies = linkedCoreBodies st
+      builtinIntegerLiteralDicts =
         Set.fromList
           [ ieDict entry
           | entry <- csInstances st
@@ -495,7 +503,7 @@ lowerKBackendIRForCapabilities capabilities st =
       lowered =
         Map.mapWithKey
           (lowerBody ctx globals (csCtors st) (csTraits st) (csInstances st) builtinIntegerLiteralDicts)
-          (csCoreBodies st)
+          bodies
       exactNaturalCertificate =
         exactNaturalRepresentationForState
           st
@@ -519,7 +527,7 @@ lowerKBackendIRForCapabilities capabilities st =
               , selectBackendRepresentation
                   st capabilities emptyRepresentationContext 0 ty sourceFields
               ))
-          (Map.toAscList (csCoreBodies st))
+          (Map.toAscList bodies)
       fieldRepresentations =
         mapMaybe
           (\(identity, storage, mFieldType) -> do
@@ -779,11 +787,12 @@ validateCoreCapabilities st =
 -- agree with their typed classifiers.
 validateObservationModeFlows :: CheckState -> [BackendIRViolation]
 validateObservationModeFlows st =
-  concatMap checkOwner
-    [ (owner, body)
-    | (owner@(GName moduleName _), body) <- Map.toList (csCoreBodies st)
-    , moduleName == csModule st
-    ]
+  concatMap checkInterface (Map.toList globals)
+    ++ concatMap checkOwner
+      [ (owner, body)
+      | (owner@(GName moduleName _), body) <- Map.toList (csCoreBodies st)
+      , moduleName == csModule st
+      ]
   where
     globals = csGlobals st
     instanceDictionaries = Set.fromList (map ieDict (csInstances st))
@@ -854,6 +863,9 @@ validateObservationModeFlows st =
       VIOAction {} -> True
       _ -> False
 
+    checkInterface (owner, definition) =
+      checkTerm owner 0 [] [] Nothing (finalizedGlobalType ctx definition)
+
     checkOwner (owner, body) = case Map.lookup owner globals of
       Just def ->
         let bodyType = observationCallableType ctx 0 (gdType def)
@@ -906,8 +918,10 @@ validateObservationModeFlows st =
                     ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just dom) Nothing : scopes)
                       (actualMode : modes) (Just cod) body
             _ -> checkTerm owner (depth + 1) (ScopeSlot Nothing Nothing Nothing : scopes) (actualMode : modes) Nothing body
-        CPiM mode _ _ _ _ dom cod ->
-          checkTerm owner depth scopes modes Nothing dom
+        CPiRuntimeM mode _ _ _ _ _ _ _ runtimeErasure dom cod ->
+          runtimeErasureChecks owner depth scopes dom runtimeErasure
+            ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList runtimeErasure)
+            ++ checkTerm owner depth scopes modes Nothing dom
             ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just (evalTypeAt ctx depth dom)) Nothing : scopes)
               (mode : modes) Nothing cod
         CApp {} -> checkApplication owner depth scopes modes expected term
@@ -917,8 +931,9 @@ validateObservationModeFlows st =
             ++ checkTerm owner depth scopes modes expected inner
         CArithmeticProof _ -> []
         CCtorI g universes annotation arguments ->
-          constructorChecks owner depth scopes modes g universes annotation True
-            (zip [0 :: Int ..] arguments)
+          maybe [] (checkTerm owner depth scopes modes Nothing) annotation
+            ++ constructorChecks owner depth scopes modes g universes annotation True
+              (zip [0 :: Int ..] arguments)
         CMatch scrut ann _resultAnn alts ->
           let scrutineeType =
                 (evalTypeAt ctx depth <$> ann)
@@ -927,10 +942,7 @@ validateObservationModeFlows st =
            in checkTerm owner depth scopes modes Nothing scrut
                 ++ maybe [] (checkTerm owner depth scopes modes Nothing) ann
                 ++ concatMap (checkAlt owner depth scopes modes (Just scrutineeMode) scrutineeType) alts
-        CRecordTQ fields ->
-          concatMap
-            (\field -> checkTerm owner depth scopes modes Nothing (rfType field))
-            fields
+        CRecordTQ fields -> checkRecordTypeFields owner depth scopes modes fields
         CRecordV fields ->
           recordFieldChecks owner depth scopes modes expected fields
             ++ recordValueChecks owner depth scopes modes expected fields
@@ -938,40 +950,48 @@ validateObservationModeFlows st =
         CProjAtM _ value _ _ -> checkTerm owner depth scopes modes Nothing value
         CVariantT members -> concatMap (checkTerm owner depth scopes modes Nothing) members
         CInject _ value -> checkTerm owner depth scopes modes Nothing value
-        CLetM mode _ _ ty rhs body ->
+        CLetRuntimeM mode _ _ runtimeErasure ty rhs body ->
           let tyV = evalTypeAt ctx depth ty
               binderChecks = ordinaryDependencySinkAt scopes modes depth owner "let binding" mode tyV
                 (termDependencies scopes modes (Just tyV) rhs)
            in binderChecks
+                ++ runtimeErasureChecks owner depth scopes ty runtimeErasure
+                ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList runtimeErasure)
                 ++ checkTerm owner depth scopes modes Nothing ty
                 ++ checkTerm owner depth scopes modes (Just tyV) rhs
                 ++ checkTerm owner (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes) (mode : modes) Nothing body
-        CLetRecM mode _ _ ty rhs body ->
+        CLetRecRuntimeM mode _ _ runtimeErasure ty rhs body ->
           let tyV = evalTypeAt ctx depth ty
               scopes' = ScopeSlot Nothing (Just tyV) Nothing : scopes
               modes' = mode : modes
               binderChecks = ordinaryDependencySinkAt scopes' modes' (depth + 1) owner "recursive let binding" mode tyV
                 (termDependencies scopes' modes' (Just tyV) rhs)
            in binderChecks
+                ++ runtimeErasureChecks owner depth scopes ty runtimeErasure
+                ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList runtimeErasure)
                 ++ checkTerm owner depth scopes modes Nothing ty
                 ++ checkTerm owner (depth + 1) scopes' modes' (Just tyV) rhs
                 ++ checkTerm owner (depth + 1) scopes' modes' Nothing body
-        CLetPolyM mode _ _ telescope ty rhs body ->
+        CLetPolyRuntimeM mode _ _ telescope runtimeErasure ty rhs body ->
           let tyV = evalTypeAt ctx depth ty
               binderChecks = ordinaryDependencySinkAt scopes modes depth owner "universe-polymorphic let binding" mode tyV
                 (termDependencies scopes modes (Just tyV) rhs)
               scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
            in binderChecks
+                ++ runtimeErasureChecks owner depth scopes ty runtimeErasure
+                ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList runtimeErasure)
                 ++ checkTerm owner depth scopes modes Nothing ty
                 ++ checkTerm owner depth scopes modes (Just tyV) rhs
                 ++ checkTerm owner (depth + 1) scopes' (mode : modes) Nothing body
-        CLetRecPolyM mode _ _ telescope ty rhs body ->
+        CLetRecPolyRuntimeM mode _ _ telescope runtimeErasure ty rhs body ->
           let tyV = evalTypeAt ctx depth ty
               scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
               modes' = mode : modes
               binderChecks = ordinaryDependencySinkAt scopes' modes' (depth + 1) owner "recursive universe-polymorphic let binding" mode tyV
                 (termDependencies scopes' modes' (Just tyV) rhs)
            in binderChecks
+                ++ runtimeErasureChecks owner depth scopes ty runtimeErasure
+                ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList runtimeErasure)
                 ++ checkTerm owner depth scopes modes Nothing ty
                 ++ checkTerm owner (depth + 1) scopes' modes' (Just tyV) rhs
                 ++ checkTerm owner (depth + 1) scopes' modes' Nothing body
@@ -984,6 +1004,8 @@ validateObservationModeFlows st =
               definitionChecks = concat
                 [ ordinaryDependencySinkAt recursiveScopes recursiveModes groupDepth owner "local recursive SCC binding" (clrdMode definition) ty
                     (termDependencies recursiveScopes recursiveModes (Just ty) (clrdRhs definition))
+                    ++ runtimeErasureChecks owner depth scopes (clrdType definition) (clrdRuntimeErasure definition)
+                    ++ concatMap (checkTerm owner depth scopes modes Nothing) (toList (clrdRuntimeErasure definition))
                     ++ checkTerm owner depth scopes modes Nothing (clrdType definition)
                     ++ checkTerm owner groupDepth recursiveScopes recursiveModes (Just ty) (clrdRhs definition)
                 | (definition, ty) <- zip definitions types
@@ -1022,6 +1044,105 @@ validateObservationModeFlows st =
           CProjM actualMode recv field -> projectionModeChecks owner depth scopes actualMode recv field
           CProjAtM actualMode recv field _ -> projectionModeChecks owner depth scopes actualMode recv field
           _ -> []
+
+    checkRecordTypeFields owner depth scopes modes =
+      go Map.empty Map.empty [] [] 0
+      where
+        go _ _ _ _ _ [] = []
+        go fieldLocals fieldLevels fieldScopes fieldModes fieldCount (field : rest) =
+          let fieldDepth = depth + fieldCount
+              scopedType =
+                scopeRecordFields depth fieldCount fieldLocals fieldLevels (rfType field)
+              scopedRuntimeErasure =
+                fmap
+                  (scopeRecordFields depth fieldCount fieldLocals fieldLevels)
+                  (rfRuntimeErasure field)
+              scopesHere = fieldScopes ++ scopes
+              modesHere = fieldModes ++ modes
+              fieldType = evalTypeAt ctx fieldDepth scopedType
+              nextLocals = Map.insert (rfName field) fieldDepth fieldLocals
+              nextLevels =
+                if coreTypeIsTypeLevel scopedType
+                  then Map.insert (rfName field) fieldDepth fieldLevels
+                  else fieldLevels
+           in runtimeErasureChecks owner fieldDepth scopesHere scopedType scopedRuntimeErasure
+                ++ concatMap
+                  (checkTerm owner fieldDepth scopesHere modesHere Nothing)
+                  (toList scopedRuntimeErasure)
+                ++ checkTerm owner fieldDepth scopesHere modesHere Nothing scopedType
+                ++ go nextLocals nextLevels
+                  (ScopeSlot Nothing (Just fieldType) Nothing : fieldScopes)
+                  (rfMode field : fieldModes)
+                  (fieldCount + 1)
+                  rest
+
+    runtimeErasureChecks owner depth scopes classifier = \case
+      RuntimeRelevant -> []
+      RuntimeErased (RuntimeErasedEvidence goal evidence evidenceType) ->
+        scopeChecks ++ metaChecks ++ goalChecks ++ carrierChecks ++ evidenceChecks
+        where
+          terms = [("goal", goal), ("evidence", evidence), ("evidence classifier", evidenceType)]
+          scopeChecks =
+            [ modeViolation owner "E_BACKENDIR_ERASURE_SCOPE"
+                ("selected RuntimeErased " <> what <> " escapes its lexical scope")
+            | (what, selected) <- terms
+            , not (termScopedAt depth selected)
+            ]
+          metaChecks =
+            [ modeViolation owner "E_BACKENDIR_ERASURE_META"
+                ("selected RuntimeErased " <> what <> " contains an unresolved term or universe metavariable")
+            | (what, selected) <- terms
+            , not (null (metaIdsOf selected) && null (levelMetasOfTerm selected))
+            ]
+          structurallyFinal = null scopeChecks && null metaChecks
+          goalCarrier = case spineOfTerm (stripEvidenceWrappers goal) of
+            (CGlobal trait _, [(Expl, carrier)])
+              | trait == prelRuntimeErased -> Just carrier
+            _ -> Nothing
+          goalChecks =
+            [ modeViolation owner "E_BACKENDIR_ERASURE_GOAL"
+                "selected erasure evidence does not carry an exact unary RuntimeErased goal"
+            | structurallyFinal
+            , not (isJust goalCarrier)
+            ]
+          carrierChecks = case goalCarrier of
+            Just carrier
+              | structurallyFinal
+              , not
+                  ( convertible ctx depth
+                      (evalTypeAt ctx depth carrier)
+                      (evalTypeAt ctx depth classifier)
+                  ) ->
+                  [ modeViolation owner "E_BACKENDIR_ERASURE_GOAL"
+                      "selected RuntimeErased goal proves a different carrier than the erased binder or field"
+                  ]
+            _ -> []
+          evidenceChecks = case goalCarrier of
+            Just _
+              | structurallyFinal
+              , not
+                  ( selectedEvidenceHasGoalType depth scopes goal evidence
+                      && convertible
+                        ctx
+                        depth
+                        (evalTypeAt ctx depth evidenceType)
+                        (evalTypeAt ctx depth goal)
+                  ) ->
+                  [ modeViolation owner "E_BACKENDIR_ERASURE_EVIDENCE"
+                      "selected RuntimeErased dictionary does not have the stored exact goal type"
+                  ]
+            _ -> []
+
+    selectedEvidenceHasGoalType depth scopes goal evidence =
+      case termTypeAt globals (csTraits st) ctx depth scopes evidence of
+        Just evidenceType ->
+          convertible ctx depth evidenceType (evalTypeAt ctx depth goal)
+        Nothing -> False
+
+    stripEvidenceWrappers = \case
+      CUniverseLift _ _ _ inner -> stripEvidenceWrappers inner
+      CSchemaLift _ _ _ _ _ _ _ _ inner -> stripEvidenceWrappers inner
+      term -> term
 
     piSite depth value = case force ctx value of
       VPiM mode ic _ _ _ dom (Closure env cod) ->
@@ -1646,10 +1767,13 @@ validateFinalizedLevelScopes st =
                  in assumptionErrors
                       ++ underBinderExpected authenticated (Just codomain) body
           _ -> underBinder Nothing body
-        CPiEvidenceM mode formation icit quantity _ _ relation _ dom cod ->
+        CPiRuntimeM mode formation icit quantity _ _ relation _ runtimeErasure dom cod ->
           let (assumptionErrors, authenticated) =
                 authenticateAssumption mode formation icit quantity dom relation
-           in recur dom ++ assumptionErrors ++ underBinder authenticated cod
+           in concatMap recur (toList runtimeErasure)
+                ++ recur dom
+                ++ assumptionErrors
+                ++ underBinder authenticated cod
         CApp _ fun arg -> recur fun ++ recur arg
         CUniverseLift _ _ _ inner -> recur inner
         CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
@@ -1669,29 +1793,33 @@ validateFinalizedLevelScopes st =
         CProjAt value _ _ -> recur value
         CVariantT members -> concatMap recur members
         CInject _ value -> recur value
-        CLet _ _ ty rhs body ->
-          recur ty
+        CLetRuntimeM _ _ _ runtimeErasure ty rhs body ->
+          concatMap recur (toList runtimeErasure)
+            ++ recur ty
             ++ checkTermExpected (Just ty) interfaceArtifact depth owner universeArity assumptions localSchemas rhs
             ++ underBinder Nothing body
-        CLetRec _ _ ty rhs body ->
-          recur ty
+        CLetRecRuntimeM _ _ _ runtimeErasure ty rhs body ->
+          concatMap recur (toList runtimeErasure)
+            ++ recur ty
             ++ underBinderExpected Nothing (Just (shiftTerm 1 0 ty)) rhs
             ++ underBinder Nothing body
-        CLetPolyM _ _ _ telescope ty rhs body ->
+        CLetPolyRuntimeM _ _ _ telescope runtimeErasure ty rhs body ->
           let innerArity = universeArity + dutParameterCount telescope
               shiftedAssumptions = shiftOuterAssumptions (dutParameterCount telescope) assumptions
               innerAssumptions = extendDeclarationAssumptions innerArity shiftedAssumptions ty
            in checkTelescope owner universeArity assumptions telescope
+                ++ concatMap (checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas) (toList runtimeErasure)
                 ++ checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas ty
                 ++ checkTermExpected (Just ty) interfaceArtifact depth owner innerArity innerAssumptions localSchemas rhs
                 ++ checkTerm interfaceArtifact (depth + 1) owner universeArity assumptions
                   (Just telescope : localSchemas) body
-        CLetRecPolyM _ _ _ telescope ty rhs body ->
+        CLetRecPolyRuntimeM _ _ _ telescope runtimeErasure ty rhs body ->
           let innerArity = universeArity + dutParameterCount telescope
               shiftedAssumptions = shiftOuterAssumptions (dutParameterCount telescope) assumptions
               innerAssumptions = extendDeclarationAssumptions innerArity shiftedAssumptions ty
               recursiveSchemas = Just telescope : localSchemas
            in checkTelescope owner universeArity assumptions telescope
+                ++ concatMap (checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas) (toList runtimeErasure)
                 ++ checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas ty
                 ++ checkTermExpected (Just (shiftTerm 1 0 ty)) interfaceArtifact (depth + 1) owner innerArity innerAssumptions recursiveSchemas rhs
                 ++ checkTerm interfaceArtifact (depth + 1) owner universeArity assumptions recursiveSchemas body
@@ -1703,7 +1831,10 @@ validateFinalizedLevelScopes st =
               checkDefinition definition =
                 let definitionAssumptions =
                       extendDeclarationAssumptions innerArity shiftedAssumptions (clrdType definition)
-                 in checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas (clrdType definition)
+                 in concatMap
+                      (checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas)
+                      (toList (clrdRuntimeErasure definition))
+                  ++ checkTerm interfaceArtifact depth owner innerArity shiftedAssumptions localSchemas (clrdType definition)
                   ++ checkTermExpected (Just (shiftTerm count 0 (clrdType definition)))
                     interfaceArtifact (depth + count) owner innerArity definitionAssumptions
                     recursiveSchemas (clrdRhs definition)
@@ -1764,6 +1895,10 @@ validateFinalizedLevelScopes st =
           let fieldDepth = depth + fieldCount
               scopedType =
                 scopeRecordFields depth fieldCount fieldLocals fieldLevels (rfType field)
+              scopedRuntimeErasure =
+                fmap
+                  (scopeRecordFields depth fieldCount fieldLocals fieldLevels)
+                  (rfRuntimeErasure field)
               scopedRelation =
                 scopeRecordLevelAssumption fieldLevels (rfLevelAssumption field)
               (assumptionErrors, authenticated) =
@@ -1775,6 +1910,10 @@ validateFinalizedLevelScopes st =
                   then Map.insert (rfName field) fieldDepth fieldLevels
                   else fieldLevels
            in assumptionErrors
+                ++ concatMap
+                  (checkTerm interfaceArtifact fieldDepth owner universeArity fieldAssumptions
+                    (replicate fieldCount Nothing ++ localSchemas))
+                  (toList scopedRuntimeErasure)
                 ++ checkTerm interfaceArtifact fieldDepth owner universeArity fieldAssumptions
                   (replicate fieldCount Nothing ++ localSchemas) scopedType
                 ++ go nextLocals nextFields (fieldCount + 1) nextAssumptions rest
@@ -2363,20 +2502,80 @@ validateRepresentationDecisions backendIr =
 
 validateBody :: GName -> BackendBody -> [BackendIRViolation]
 validateBody owner body =
-  duplicateNodeFindings owner metas
+  duplicateNodeFindings owner (metas ++ erasureMetas)
     ++ duplicateBinderFindings owner rootMeta (collectBodyBinders body)
     ++ duplicateUseFindings owner rootMeta (collectBodyUses body)
+    ++ concatMap (validateErasure owner) (bbErasures body)
     ++ concatMap (validateParam owner rootMeta) (bbParams body)
     ++ validateTerm owner (bbRoot body)
     ++ validateBranchDropsTerm owner rootEnv (bbRoot body)
   where
     metas = collectMetas (bbRoot body)
+    erasureMetas = [BackendMeta node [] | BackendErasure {beNode = node} <- bbErasures body]
     rootMeta = backendMeta (bbRoot body)
     rootEnv =
       Map.fromList
         [ (bbBinderId b, b)
         | BackendParam _ _ (Just b) <- bbParams body
         ]
+
+validateErasure :: GName -> BackendErasure -> [BackendIRViolation]
+validateErasure owner erasure =
+  depthFinding ++ provenanceFindings
+  where
+    meta = BackendMeta (beNode erasure) []
+    depth = beDepth erasure
+    depthFinding
+      | depth >= 0 = []
+      | otherwise =
+          [ violation owner meta "E_BACKENDIR_ERASURE_SCOPE"
+              "erasure evidence carries a negative lexical depth"
+          ]
+    provenanceFindings = case beProvenance erasure of
+      ErasedBySelectedEvidence goal evidence evidenceType ->
+        scoped "goal" goal
+          ++ scoped "evidence" evidence
+          ++ scoped "evidence classifier" evidenceType
+          ++ closed "goal" goal
+          ++ closed "evidence" evidence
+          ++ closed "evidence classifier" evidenceType
+          ++ authenticatedGoal goal
+          ++ authenticatedEvidence goal evidence evidenceType
+      _ -> []
+    scoped what term
+      | depth >= 0 && termScopedAt depth term = []
+      | otherwise =
+          [ violation owner meta "E_BACKENDIR_ERASURE_SCOPE" $
+              "selected RuntimeErased " <> what <> " escapes its recorded lexical scope"
+          ]
+    closed what term
+      | null (metaIdsOf term) && null (levelMetasOfTerm term) = []
+      | otherwise =
+          [ violation owner meta "E_BACKENDIR_ERASURE_META" $
+              "selected RuntimeErased " <> what <> " contains an unresolved metavariable"
+          ]
+    authenticatedGoal goal =
+      case spineOfTerm goal of
+        (CGlobal trait _, [(Expl, _)]) | trait == prelRuntimeErased -> []
+        _ ->
+          [ violation owner meta "E_BACKENDIR_ERASURE_GOAL"
+              "selected erasure evidence does not prove an exact unary RuntimeErased goal"
+          ]
+    authenticatedEvidence goal evidence evidenceType =
+      classifier
+        ++ case evidence of
+          CRecordV [] ->
+            [ violation owner meta "E_BACKENDIR_ERASURE_EVIDENCE"
+                "selected erasure evidence is anonymous structural data rather than a replayable typed identity"
+            ]
+          _ -> []
+      where
+        classifier
+          | evidenceType == goal = []
+          | otherwise =
+              [ violation owner meta "E_BACKENDIR_ERASURE_EVIDENCE"
+                  "selected erasure evidence classifier does not replay the stored exact RuntimeErased goal"
+              ]
 
 validateParam :: GName -> BackendMeta -> BackendParam -> [BackendIRViolation]
 validateParam owner rootMeta (BackendParam _ name mb) =
@@ -3664,7 +3863,7 @@ paramLowerSites ctx = go 0
   where
     go lvl ty =
       case force ctx ty of
-        VPiM mode ic q borrowed _ dom (Closure env cod) ->
+        VPiRuntimeM mode _ ic q borrowed _ _ _ runtimeErasure dom (Closure env cod) ->
           let x = VRigid lvl []
               domV = force ctx dom
               codV = eval ctx (x : env) cod
@@ -3674,7 +3873,7 @@ paramLowerSites ctx = go 0
                   , plsMode = mode
                   , plsQ = q
                   , plsBorrowed = borrowed
-                  , plsErasure = erasureProvenanceForDomain ctx lvl mode q domV
+                  , plsErasure = erasureProvenanceForPiDomain ctx lvl mode q runtimeErasure domV
                   , plsDomain = domV
                   }
            in site : go (lvl + 1) codV
@@ -3683,14 +3882,47 @@ paramLowerSites ctx = go 0
 
 erasureProvenanceForDomain :: EvalCtx -> Int -> ObservationMode -> Q -> Value -> Maybe ErasureProvenance
 erasureProvenanceForDomain ctx lvl mode q dom
+  | q == Q0 = Just ErasedByQuantity
   | Repr.valueDomainIsKind ctx lvl dom = case mode of
       Ordinary -> Just ErasedOrdinaryTypeCode
       Parametric -> case force ctx dom of
         VSort rho -> Just (ErasedParametricTypeWitness rho)
         _ -> Just ErasedParametricTypeFormer
   | Repr.resultIsProofValue ctx lvl dom = Just ErasedProofOrTraitEvidence
-  | q == Q0 = Just ErasedByQuantity
   | otherwise = Nothing
+
+erasureProvenanceForPiDomain
+  :: EvalCtx
+  -> Int
+  -> ObservationMode
+  -> Q
+  -> RuntimeErasure Value
+  -> Value
+  -> Maybe ErasureProvenance
+erasureProvenanceForPiDomain ctx lvl mode q runtimeErasure dom
+  | q == Q0 = Just ErasedByQuantity
+  | RuntimeErased (RuntimeErasedEvidence goal evidence evidenceType) <- runtimeErasure =
+      Just
+        ( ErasedBySelectedEvidence
+            (quote ctx lvl goal)
+            (quote ctx lvl evidence)
+            (quote ctx lvl evidenceType)
+        )
+  | otherwise = erasureProvenanceForDomain ctx lvl mode q dom
+
+erasureProvenanceForLocalDomain
+  :: EvalCtx
+  -> Int
+  -> ObservationMode
+  -> Q
+  -> RuntimeErasure Term
+  -> Value
+  -> Maybe ErasureProvenance
+erasureProvenanceForLocalDomain ctx depth mode quantity runtimeErasure domain
+  | quantity == Q0 = Just ErasedByQuantity
+  | RuntimeErased (RuntimeErasedEvidence goal evidence evidenceType) <- runtimeErasure =
+      Just (ErasedBySelectedEvidence goal evidence evidenceType)
+  | otherwise = erasureProvenanceForDomain ctx depth mode quantity domain
 
 qDroppable :: Q -> Bool
 qDroppable = \case
@@ -3714,7 +3946,7 @@ lowerLeadingParams sites params erasures scopes = \case
           <> " vs " <> T.pack (show declMode))
     whenJust provenance $ \reason -> do
       erasureMeta <- metaAt
-      recordErasureAt erasureMeta ErasedParameterSite ic nm reason
+      recordErasureAt (length scopes) erasureMeta ErasedParameterSite ic nm reason
     mb <- if erased then pure Nothing else binderAtWith declQ borrowed (T.pack ("parameter " <> T.unpack nm))
     let scopes' = ScopeSlot (mbId mb) mTy Nothing : scopes
         params' = params ++ [BackendParam ic nm mb | not erased]
@@ -3739,7 +3971,29 @@ lowerTerm :: Term -> Int -> ScopeStack -> Lower BackendTerm
 lowerTerm = lowerTermExpected Nothing
 
 lowerTermExpected :: Maybe Value -> Term -> Int -> ScopeStack -> Lower BackendTerm
-lowerTermExpected expected term depth scopes = case term of
+lowerTermExpected expected term depth scopes = do
+  ctx <- asks lsCtx
+  if expectedIsErasedProofResult ctx depth expected && not (isEvidenceWrapper term)
+    then BUnit <$> metaAt
+    else lowerRuntimeTermExpected expected term depth scopes
+  where
+    -- Universe/schema wrappers carry certificates that must still be replayed.
+    -- Their recursive call reaches this erasure boundary after validation.
+    isEvidenceWrapper = \case
+      CUniverseLift {} -> True
+      CSchemaLift {} -> True
+      _ -> False
+
+expectedIsErasedProofResult :: EvalCtx -> Int -> Maybe Value -> Bool
+expectedIsErasedProofResult ctx depth = \case
+  Nothing -> False
+  Just expected ->
+    case force ctx expected of
+      VPiRuntimeM {} -> False
+      _ -> Repr.resultIsProofBodyValue ctx depth expected
+
+lowerRuntimeTermExpected :: Maybe Value -> Term -> Int -> ScopeStack -> Lower BackendTerm
+lowerRuntimeTermExpected expected term depth scopes = case term of
   CUniverseLift _ _ _ inner -> do
     owner <- asks lsOwner
     globals <- asks lsGlobals
@@ -3855,9 +4109,9 @@ lowerTermExpected expected term depth scopes = case term of
     meta <- metaAt
     ctx <- asks lsCtx
     let mSite = lambdaExpectedSite ctx depth ic expected
-        (declMode, declQ, borrowed, erased, mDom, mCod) = case mSite of
+        (declMode, declQ, borrowed, erased, provenance, mDom, mCod) = case mSite of
           Just site -> site
-          Nothing -> (mode, q, False, q == Q0, Nothing, Nothing)
+          Nothing -> (mode, q, False, q == Q0, if q == Q0 then Just ErasedByQuantity else Nothing, Nothing, Nothing)
     when (declMode /= mode) $
       recordLoweringViolation meta "E_PARAMETRIC_TYPE_PROMOTION"
         ("lambda observation mode disagrees with its expected classifier: " <> T.pack (show mode)
@@ -3865,8 +4119,7 @@ lowerTermExpected expected term depth scopes = case term of
     if erased
       then do
         erasureMeta <- metaAt
-        let provenance = mDom >>= erasureProvenanceForDomain ctx depth declMode declQ
-        recordErasureAt erasureMeta ErasedLambdaSite ic nm (fromMaybe ErasedByQuantity provenance)
+        recordErasureAt depth erasureMeta ErasedLambdaSite ic nm (fromMaybe ErasedByQuantity provenance)
         lowerTermExpected mCod body (depth + 1) (ScopeSlot Nothing mDom Nothing : scopes)
       else do
         mb <- binderAtWith declQ borrowed (T.pack ("lambda " <> T.unpack nm))
@@ -3876,7 +4129,7 @@ lowerTermExpected expected term depth scopes = case term of
   CArithmeticProof _ -> BUnit <$> metaAt
   CSort {} -> metaAt >>= \meta -> erasedRuntimeAt meta "sort/type term reached a runtime BackendIR value position"
   CLevel {} -> metaAt >>= \meta -> erasedRuntimeAt meta "declaration universe identity reached a runtime BackendIR value position"
-  CPiEvidenceM {} ->
+  CPiRuntimeM {} ->
     metaAt >>= \meta ->
       erasedRuntimeAt meta
         ( "function type reached a runtime BackendIR value position: "
@@ -3911,17 +4164,23 @@ lowerTermExpected expected term depth scopes = case term of
           case expected of
             Just ty -> runtimeRecordFieldNamesOfType globals traits ctx depth ty
             Nothing -> runtimeRecordFieldNames globals traits ctx depth scopes term
+        expectedFieldType name =
+          expected >>= recordFieldExpectedType globals traits ctx depth term name
     fs' <-
       fmap catMaybes $
         forM fs $ \(name, v) ->
           if recordFieldErased mRuntimeFields globals traits ctx depth scopes name v
             then do
               erasureMeta <- metaAt
-              recordErasureAt erasureMeta ErasedRecordFieldSite Expl name
-                (fromMaybe ErasedOrdinaryTypeCode (erasureProvenanceForTerm globals ctx v))
+              recordErasureAt depth erasureMeta ErasedRecordFieldSite Expl name
+                ( fromMaybe ErasedOrdinaryTypeCode
+                    ( (expected >>= recordFieldErasureProvenanceOfType ctx depth name)
+                        <|> erasureProvenanceForTerm globals ctx v
+                    )
+                )
               pure Nothing
             else do
-              v' <- lowerTerm v depth scopes
+              v' <- lowerTermExpected (expectedFieldType name) v depth scopes
               pure (Just (name, v'))
     pure (BRecord meta fs')
   CProjM _ e f -> BProj <$> metaAt <*> lowerTerm e depth scopes <*> pure f <*> pure Nothing
@@ -3933,15 +4192,16 @@ lowerTermExpected expected term depth scopes = case term of
     e' <- lowerTerm e depth scopes
     pure (BProj meta e' f (runtimeRecordFieldIndex globals traits ctx depth scopes e f))
   CInject tag e -> BInject <$> metaAt <*> pure tag <*> lowerTerm e depth scopes
-  CLetM mode q nm _ty rhs body -> do
+  CLetRuntimeM mode q nm runtimeErasure ty rhs body -> do
     ctx <- asks lsCtx
-    let tyV = evalTypeAt ctx depth _ty
-        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        erasedByType = Repr.runtimeErasedPiParam ctx depth runtimeErasureV q tyV
     if erasedByType
       then do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedLetSite Expl nm
-          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        recordErasureAt depth erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForLocalDomain ctx depth mode q runtimeErasure tyV))
         lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes)
       else do
         meta <- metaAt
@@ -3949,15 +4209,16 @@ lowerTermExpected expected term depth scopes = case term of
         rhs' <- lowerTermExpected (Just tyV) rhs depth scopes
         body' <- lowerTerm body (depth + 1) (ScopeSlot (fmap bbBinderId mb) (Just tyV) Nothing : scopes)
         pure (BLet meta mb q nm rhs' body')
-  CLetRecM mode q nm _ty rhs body -> do
+  CLetRecRuntimeM mode q nm runtimeErasure ty rhs body -> do
     ctx <- asks lsCtx
-    let tyV = evalTypeAt ctx depth _ty
-        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        erasedByType = Repr.runtimeErasedPiParam ctx depth runtimeErasureV q tyV
     if erasedByType
       then do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedLetSite Expl nm
-          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        recordErasureAt depth erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForLocalDomain ctx depth mode q runtimeErasure tyV))
         lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) Nothing : scopes)
       else do
         meta <- metaAt
@@ -3966,15 +4227,16 @@ lowerTermExpected expected term depth scopes = case term of
         rhs' <- lowerTermExpected (Just tyV) rhs (depth + 1) scopes'
         body' <- lowerTerm body (depth + 1) scopes'
         pure (BLetRec meta mb q nm rhs' body')
-  CLetPolyM mode q nm telescope _ty rhs body -> do
+  CLetPolyRuntimeM mode q nm telescope runtimeErasure ty rhs body -> do
     ctx <- asks lsCtx
-    let tyV = evalTypeAt ctx depth _ty
-        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        erasedByType = Repr.runtimeErasedPiParam ctx depth runtimeErasureV q tyV
     if erasedByType
       then do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedLetSite Expl nm
-          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        recordErasureAt depth erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForLocalDomain ctx depth mode q runtimeErasure tyV))
         lowerTerm body (depth + 1) (ScopeSlot Nothing (Just tyV) (Just telescope) : scopes)
       else do
         meta <- metaAt
@@ -3983,15 +4245,16 @@ lowerTermExpected expected term depth scopes = case term of
         body' <- lowerTerm body (depth + 1)
           (ScopeSlot (fmap bbBinderId mb) (Just tyV) (Just telescope) : scopes)
         pure (BLet meta mb q nm rhs' body')
-  CLetRecPolyM mode q nm telescope _ty rhs body -> do
+  CLetRecPolyRuntimeM mode q nm telescope runtimeErasure ty rhs body -> do
     ctx <- asks lsCtx
-    let tyV = evalTypeAt ctx depth _ty
-        erasedByType = Repr.runtimeErasedParam ctx depth q tyV
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        erasedByType = Repr.runtimeErasedPiParam ctx depth runtimeErasureV q tyV
     if erasedByType
       then do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedLetSite Expl nm
-          (fromMaybe ErasedByQuantity (erasureProvenanceForDomain ctx depth mode q tyV))
+        recordErasureAt depth erasureMeta ErasedLetSite Expl nm
+          (fromMaybe ErasedByQuantity (erasureProvenanceForLocalDomain ctx depth mode q runtimeErasure tyV))
         let scopes' = ScopeSlot Nothing (Just tyV) (Just telescope) : scopes
         lowerTerm body (depth + 1) scopes'
       else do
@@ -4042,22 +4305,36 @@ lowerLocalRecursiveGroup
 lowerLocalRecursiveGroup telescope definitions body depth scopes = do
   ctx <- asks lsCtx
   let typedDefinitions =
-        [ (definition, evalTypeAt ctx depth (clrdType definition))
+        [ let ty = evalTypeAt ctx depth (clrdType definition)
+              runtimeErasureV = fmap (evalTypeAt ctx depth) (clrdRuntimeErasure definition)
+           in ( definition
+              , ty
+              , Repr.runtimeErasedPiParam ctx depth runtimeErasureV (clrdQuantity definition) ty
+              )
         | definition <- definitions
         ]
       runtimeDefinitions =
         [ (definition, ty)
-        | (definition, ty) <- typedDefinitions
-        , not (Repr.runtimeErasedParam ctx depth (clrdQuantity definition) ty)
+        | (definition, ty, erased) <- typedDefinitions
+        , not erased
         ]
       runtimeNames = Set.fromList [clrdName definition | (definition, _) <- runtimeDefinitions]
       groupDepth = depth + length definitions
+  forM_ typedDefinitions $ \(definition, ty, erased) ->
+    when erased $ do
+      erasureMeta <- metaAt
+      recordErasureAt depth erasureMeta ErasedLetSite Expl (clrdName definition)
+        ( fromMaybe ErasedByQuantity
+            ( erasureProvenanceForLocalDomain ctx depth (clrdMode definition) (clrdQuantity definition)
+                (clrdRuntimeErasure definition) ty
+            )
+        )
   case runtimeDefinitions of
     [] -> do
       let groupScopes =
             reverse
               [ ScopeSlotData Nothing (Just ty) (Just telescope) Nothing
-              | (_, ty) <- typedDefinitions
+              | (_, ty, _) <- typedDefinitions
               ]
               ++ scopes
       lowerTerm body groupDepth groupScopes
@@ -4069,7 +4346,7 @@ lowerLocalRecursiveGroup telescope definitions body depth scopes = do
           recordLoweringViolation meta "E_BACKENDIR_BINDER_METADATA"
             "a runtime local recursive SCC did not receive a backend binder identity"
           lowerTerm body groupDepth
-            (reverse [ScopeSlot Nothing (Just ty) (Just telescope) | (_, ty) <- typedDefinitions] ++ scopes)
+            (reverse [ScopeSlot Nothing (Just ty) (Just telescope) | (_, ty, _) <- typedDefinitions] ++ scopes)
         Just binder -> do
           let binderId = bbBinderId binder
               sourceSlots =
@@ -4081,7 +4358,7 @@ lowerLocalRecursiveGroup telescope definitions body depth scopes = do
                         then Just (RuntimeLocalAlias binderId (clrdName definition))
                         else Nothing
                     )
-                | (index, (definition, ty)) <- zip [0 :: Int ..] (reverse typedDefinitions)
+                | (index, (definition, ty, _)) <- zip [0 :: Int ..] (reverse typedDefinitions)
                 ]
               groupScopes = sourceSlots ++ scopes
           fields <- forM runtimeDefinitions $ \(definition, ty) -> do
@@ -4109,7 +4386,10 @@ lowerApp expected term depth scopes = do
           depth
           scopes
       Nothing -> do
-        let (hd, args) = spineOfTerm term
+        let (hd, annotatedArgs) = spineOfTermWithErasure term
+            args = [(icit, argument) | (icit, _, argument) <- annotatedArgs]
+            selectedRuntimeErasures =
+              [runtimeErasure | (_, runtimeErasure, _) <- annotatedArgs]
             k = length args
             actualIcs = map fst args
             expectedSites = appExpectedArgSites globals traits ctx depth scopes term
@@ -4118,9 +4398,14 @@ lowerApp expected term depth scopes = do
               _ ->
                 termTypeAt globals traits ctx depth scopes hd >>= \ty ->
                   Repr.argPlanSelectForArgsAt ctx depth ty actualIcs
-            flags =
+            inferredFlags =
               applicationErasureFlags
                 globals traits ctx depth scopes hd args localPlan
+            flags =
+              zipWith
+                (\selected inferred -> runtimeErasureSelected selected || inferred)
+                (selectedRuntimeErasures ++ repeat RuntimeRelevant)
+                (inferredFlags ++ repeat False)
             convs = case hd of
               CGlob g -> fromMaybe (replicate k Nothing) (Repr.argConvSelectGlobalForArgs ctx g actualIcs)
               _ -> maybe (replicate k Nothing) (map snd) localPlan
@@ -4139,10 +4424,16 @@ lowerApp expected term depth scopes = do
               forM_ aligned $ \(index, ic, erased, _, expectedSite, arg) ->
                 when erased $ do
                   erasureMeta <- metaAt
-                  let provenance =
-                        (expectedSite >>= \(mode, expectedArg) -> erasureProvenanceForDomain ctx depth mode Q0 expectedArg)
+                  let selectedProvenance =
+                        case drop index selectedRuntimeErasures of
+                          RuntimeErased justification : _ ->
+                            Just (selectedErasureProvenance justification)
+                          _ -> Nothing
+                      provenance =
+                        selectedProvenance
+                          <|> (expectedSite >>= \(mode, expectedArg) -> erasureProvenanceForDomain ctx depth mode Q0 expectedArg)
                           <|> erasureProvenanceForTerm globals ctx arg
-                  recordErasureAt erasureMeta ErasedApplicationArgumentSite ic
+                  recordErasureAt depth erasureMeta ErasedApplicationArgumentSite ic
                     ("argument" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
               hd' <- lowerTerm hd depth scopes
               args' <-
@@ -4191,6 +4482,13 @@ lowerApp expected term depth scopes = do
                       -- executable.
                       lowerTermExpected expected (rtaReduced transport) depth scopes
   where
+    runtimeErasureSelected = \case
+      RuntimeRelevant -> False
+      RuntimeErased _ -> True
+
+    selectedErasureProvenance (RuntimeErasedEvidence goal evidence classifier) =
+      ErasedBySelectedEvidence goal evidence classifier
+
     implicitErasedUnitArg (Impl, _, BUnit {}) = True
     implicitErasedUnitArg _ = False
 
@@ -4455,7 +4753,7 @@ lowerCtorTerm meta g ann args depth scopes = do
       let provenance =
             erasureProvenanceForTerm globals ctx arg
               <|> recordedProvenance
-      recordErasureAt erasureMeta ErasedConstructorFieldSite Expl
+      recordErasureAt depth erasureMeta ErasedConstructorFieldSite Expl
         ("field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
   args' <- forM kept $ \(expectedField, arg) ->
     lowerTermExpected expectedField arg depth scopes
@@ -4540,22 +4838,43 @@ sourceTermErased globals traits ctx depth scopes = \case
   CLam _ q _ body ->
     let mb = if q == Q0 then Nothing else Just (BackendBinderId (-1))
      in sourceTermErased globals traits ctx (depth + 1) (ScopeSlot mb Nothing Nothing : scopes) body
-  CLet _ _ _ rhs body ->
-    sourceTermErased globals traits ctx depth scopes rhs
-      && sourceTermErased globals traits ctx (depth + 1) (ScopeSlot Nothing Nothing Nothing : scopes) body
-  CLetPolyM _ _ _ telescope _ rhs body ->
-    sourceTermErased globals traits ctx depth scopes rhs
-      && sourceTermErased globals traits ctx (depth + 1)
-        (ScopeSlot Nothing Nothing (Just telescope) : scopes) body
-  CLetRecPolyM _ _ _ telescope _ rhs body ->
-    let scopes' = ScopeSlot Nothing Nothing (Just telescope) : scopes
+  CLetRuntimeM _ quantity _ runtimeErasure ty rhs body ->
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        binder = if Repr.runtimeErasedPiParam ctx depth runtimeErasureV quantity tyV then Nothing else Just (BackendBinderId (-1))
+     in sourceTermErased globals traits ctx depth scopes rhs
+          && sourceTermErased globals traits ctx (depth + 1) (ScopeSlot binder (Just tyV) Nothing : scopes) body
+  CLetRecRuntimeM _ quantity _ runtimeErasure ty rhs body ->
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        binder = if Repr.runtimeErasedPiParam ctx depth runtimeErasureV quantity tyV then Nothing else Just (BackendBinderId (-1))
+        scopes' = ScopeSlot binder (Just tyV) Nothing : scopes
+     in sourceTermErased globals traits ctx (depth + 1) scopes' rhs
+          && sourceTermErased globals traits ctx (depth + 1) scopes' body
+  CLetPolyRuntimeM _ quantity _ telescope runtimeErasure ty rhs body ->
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        binder = if Repr.runtimeErasedPiParam ctx depth runtimeErasureV quantity tyV then Nothing else Just (BackendBinderId (-1))
+     in sourceTermErased globals traits ctx depth scopes rhs
+          && sourceTermErased globals traits ctx (depth + 1)
+            (ScopeSlot binder (Just tyV) (Just telescope) : scopes) body
+  CLetRecPolyRuntimeM _ quantity _ telescope runtimeErasure ty rhs body ->
+    let tyV = evalTypeAt ctx depth ty
+        runtimeErasureV = fmap (evalTypeAt ctx depth) runtimeErasure
+        binder = if Repr.runtimeErasedPiParam ctx depth runtimeErasureV quantity tyV then Nothing else Just (BackendBinderId (-1))
+        scopes' = ScopeSlot binder (Just tyV) (Just telescope) : scopes
      in sourceTermErased globals traits ctx (depth + 1) scopes' rhs
           && sourceTermErased globals traits ctx (depth + 1) scopes' body
   CLetRecGroupM telescope definitions body ->
     let count = length definitions
         slots =
           reverse
-            [ScopeSlot Nothing (Just (evalTypeAt ctx depth (clrdType definition))) (Just telescope) | definition <- definitions]
+            [ let ty = evalTypeAt ctx depth (clrdType definition)
+                  runtimeErasureV = fmap (evalTypeAt ctx depth) (clrdRuntimeErasure definition)
+                  binder = if Repr.runtimeErasedPiParam ctx depth runtimeErasureV (clrdQuantity definition) ty then Nothing else Just (BackendBinderId (-1))
+               in ScopeSlot binder (Just ty) (Just telescope)
+            | definition <- definitions
+            ]
               ++ scopes
         groupDepth = depth + count
      in all (\definition -> sourceTermErased globals traits ctx groupDepth slots (clrdRhs definition)) definitions
@@ -4614,11 +4933,11 @@ globalRuntimeErased globals ctx g =
   Repr.resultIsProofGlobal globals ctx g
     || maybe False (globalResultIsKind ctx . gdType) (Map.lookup g globals)
 
-lambdaExpectedSite :: EvalCtx -> Int -> Icit -> Maybe Value -> Maybe (ObservationMode, Q, Bool, Bool, Maybe Value, Maybe Value)
+lambdaExpectedSite :: EvalCtx -> Int -> Icit -> Maybe Value -> Maybe (ObservationMode, Q, Bool, Bool, Maybe ErasureProvenance, Maybe Value, Maybe Value)
 lambdaExpectedSite ctx depth actualIc expected = do
   ty <- expected
   case force ctx ty of
-    VPiM mode ic q borrowed _ dom (Closure env cod)
+    VPiRuntimeM mode _ ic q borrowed _ _ _ runtimeErasure dom (Closure env cod)
       | ic == actualIc ->
           let domV = force ctx dom
               codV = eval ctx (VRigid depth [] : env) cod
@@ -4626,7 +4945,8 @@ lambdaExpectedSite ctx depth actualIc expected = do
                 ( mode
                 , q
                 , borrowed
-                , Repr.runtimeErasedParam ctx depth q domV
+                , Repr.runtimeErasedPiParam ctx depth runtimeErasure q domV
+                , erasureProvenanceForPiDomain ctx depth mode q runtimeErasure domV
                 , Just domV
                 , Just codV
                 )
@@ -4843,6 +5163,33 @@ runtimeRecordFieldNamesOfType :: Map GName GlobalDef -> Map GName TraitInfo -> E
 runtimeRecordFieldNamesOfType globals traits ctx depth ty =
   Set.fromList <$> runtimeRecordFieldOrderOfType globals traits ctx depth ty
 
+recordFieldExpectedType
+  :: Map GName GlobalDef
+  -> Map GName TraitInfo
+  -> EvalCtx
+  -> Int
+  -> Term
+  -> Text
+  -> Value
+  -> Maybe Value
+recordFieldExpectedType globals traits ctx depth dictionaryTerm fieldName expected =
+  case force ctx expected of
+    VRecordTQ fields -> rfType <$> find ((== fieldName) . rfName) fields
+    VGlobI traitG universes spine -> do
+      trait <- Map.lookup traitG traits
+      guard (fieldName `elem` tiMembers trait || isJust (lookup fieldName (tiSupers trait)))
+      traitMemberStorageType globals ctx depth
+        (tiParamCount trait) traitG universes fieldName (map snd spine) dictionaryTerm
+    _ -> Nothing
+
+recordFieldErasureProvenanceOfType :: EvalCtx -> Int -> Text -> Value -> Maybe ErasureProvenance
+recordFieldErasureProvenanceOfType ctx depth fieldName ty = do
+  fields <- forceRecordType ctx ty
+  field <- find ((== fieldName) . rfName) fields
+  guard (Repr.runtimeErasedRecordField ctx depth field)
+  erasureProvenanceForPiDomain
+    ctx depth (rfMode field) (rfQ field) (rfRuntimeErasure field) (rfType field)
+
 runtimeRecordFieldOrderOfType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> Value -> Maybe [Text]
 runtimeRecordFieldOrderOfType globals traits ctx depth ty =
   case force ctx ty of
@@ -4850,7 +5197,7 @@ runtimeRecordFieldOrderOfType globals traits ctx depth ty =
       Just
         [ rfName field
         | field <- fs
-        , not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
+        , not (Repr.runtimeErasedRecordField ctx depth field)
         ]
     VGlobN traitG _
       | Just ti <- Map.lookup traitG traits ->
@@ -5145,7 +5492,7 @@ lowerPatShape depth expected = \case
     forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
       unless runtime $ do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedPatternSlotSite Expl
+        recordErasureAt depth erasureMeta ErasedPatternSlotSite Expl
           ("constructor-field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
     lowered <- forM (zip ps (map (\(_, _, ty, _) -> ty) fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
       lowerPatShape depth fieldTy p
@@ -5187,7 +5534,7 @@ lowerPatShape depth expected = \case
     forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
       unless runtime $ do
         erasureMeta <- metaAt
-        recordErasureAt erasureMeta ErasedPatternSlotSite Expl
+        recordErasureAt depth erasureMeta ErasedPatternSlotSite Expl
           ("tuple-field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
     lowered <- forM (zip ps (map (\(_, _, ty, _) -> ty) fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
       lowerPatShape depth fieldTy p
@@ -5209,7 +5556,7 @@ lowerPatShape depth expected = \case
       forM_ fieldFacts $ \(name, runtime, _, provenance) ->
         unless runtime $ do
           erasureMeta <- metaAt
-          recordErasureAt erasureMeta ErasedPatternSlotSite Expl name
+          recordErasureAt depth erasureMeta ErasedPatternSlotSite Expl name
             (fromMaybe ErasedByQuantity provenance)
       lowered <- forM fs $ \(name, p) -> do
         let fieldTy = fromMaybe Nothing (lookup name [(n, ty) | (n, _, ty, _) <- fieldFacts])
@@ -5319,9 +5666,9 @@ allCtorBinderRuntimePlacements ctx = collect 0 0
   where
     collect lvl runtimeIndex v =
       case force ctx v of
-        VPiM mode ic q _ _ dom (Closure env cod) ->
+        VPiRuntimeM mode _ ic q _ _ _ _ runtimeErasure dom (Closure env cod) ->
           let x = VRigid lvl []
-              runtime = Repr.runtimeConstructorField ctx lvl ic q dom
+              runtime = Repr.runtimeConstructorPiField ctx lvl runtimeErasure ic q dom
               physicalIndex = if runtime then Just runtimeIndex else Nothing
               nextRuntimeIndex = if runtime then runtimeIndex + 1 else runtimeIndex
               rest = collect (lvl + 1) nextRuntimeIndex (eval ctx (x : env) cod)
@@ -5331,7 +5678,7 @@ allCtorBinderRuntimePlacements ctx = collect 0 0
                 , Just dom
                 , if runtime
                     then Nothing
-                    else erasureProvenanceForDomain ctx lvl mode q dom
+                    else erasureProvenanceForPiDomain ctx lvl mode q runtimeErasure dom
                 )
               )
                 : rest
@@ -5345,14 +5692,14 @@ coreCtorPayloadRuntimeFactsAt baseLevel ctx = collect 0
   where
     collect lvl v =
       case force ctx v of
-        VPiM mode ic q _ _ dom (Closure env cod) ->
+        VPiRuntimeM mode _ ic q _ _ _ _ runtimeErasure dom (Closure env cod) ->
           let absoluteLevel = baseLevel + lvl
               x = VRigid absoluteLevel []
-              runtime = Repr.runtimeConstructorField ctx absoluteLevel ic q dom
+              runtime = Repr.runtimeConstructorPiField ctx absoluteLevel runtimeErasure ic q dom
               keepInCore = ic == Expl || runtime
               rest = collect (lvl + 1) (eval ctx (x : env) cod)
            in if keepInCore
-                then (runtime, Just dom, if runtime then Nothing else erasureProvenanceForDomain ctx absoluteLevel mode q dom) : rest
+                then (runtime, Just dom, if runtime then Nothing else erasureProvenanceForPiDomain ctx absoluteLevel mode q runtimeErasure dom) : rest
                 else rest
         _ -> []
 
@@ -5370,14 +5717,14 @@ positionalRecordPatternFacts ctx depth expected patCount =
             let (_, runtimeArity, facts) =
                   foldl'
                     (\(sourceIndex, runtimeIndex, accumulated) field ->
-                      let runtime = not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
+                      let runtime = not (Repr.runtimeErasedRecordField ctx depth field)
                           physicalIndex = if runtime then Just runtimeIndex else Nothing
                           nextRuntimeIndex = if runtime then runtimeIndex + 1 else runtimeIndex
                           fact =
                             ( runtime
                             , physicalIndex
                             , Just (rfType field)
-                            , if runtime then Nothing else erasureProvenanceForDomain ctx depth (rfMode field) (rfQ field) (rfType field)
+                            , if runtime then Nothing else erasureProvenanceForPiDomain ctx depth (rfMode field) (rfQ field) (rfRuntimeErasure field) (rfType field)
                             )
                        in (sourceIndex + 1, nextRuntimeIndex, accumulated ++ [fact]))
                     (0 :: Int, 0 :: Int, [])
@@ -5393,8 +5740,8 @@ namedRecordPatternFacts :: EvalCtx -> Int -> Maybe Value -> [(Text, Bool, Maybe 
 namedRecordPatternFacts ctx depth expected =
   case expected >>= forceRecordType ctx of
     Just fs ->
-      [ let runtime = not (Repr.runtimeErasedParam ctx depth (rfQ field) (rfType field))
-         in (rfName field, runtime, Just (rfType field), if runtime then Nothing else erasureProvenanceForDomain ctx depth (rfMode field) (rfQ field) (rfType field))
+      [ let runtime = not (Repr.runtimeErasedRecordField ctx depth field)
+         in (rfName field, runtime, Just (rfType field), if runtime then Nothing else erasureProvenanceForPiDomain ctx depth (rfMode field) (rfQ field) (rfRuntimeErasure field) (rfType field))
       | field <- fs
       ]
     Nothing -> []
@@ -5432,12 +5779,12 @@ metaAt = do
   nid <- freshNode
   pure (BackendMeta nid [])
 
-recordErasureAt :: BackendMeta -> ErasureSite -> Icit -> Text -> ErasureProvenance -> Lower ()
-recordErasureAt meta site ic name provenance =
+recordErasureAt :: Int -> BackendMeta -> ErasureSite -> Icit -> Text -> ErasureProvenance -> Lower ()
+recordErasureAt depth meta site ic name provenance =
   modify' $ \st ->
     st
       { lstErasures =
-          BackendErasure (bmNodeId meta) site ic name provenance : lstErasures st
+          BackendErasure (bmNodeId meta) depth site ic name provenance : lstErasures st
       }
 
 erasedRuntimeAt :: BackendMeta -> Text -> Lower BackendTerm

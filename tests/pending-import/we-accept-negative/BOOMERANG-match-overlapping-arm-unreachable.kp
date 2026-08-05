@@ -36,3 +36,5 @@ let duplicate s =
     case _        -> 0
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; §3.2.10 standardizes the family only when such a diagnostic is emitted.

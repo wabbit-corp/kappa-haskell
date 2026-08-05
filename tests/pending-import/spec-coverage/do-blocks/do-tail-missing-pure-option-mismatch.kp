@@ -22,4 +22,4 @@ f : Option Int
 let f = do
     let x <- Some 1
     x
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.type.mismatch was produced; no error diagnostic matching kappa.type.mismatch has payload /payload/actual = Integer (saw: )

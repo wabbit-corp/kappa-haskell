@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+trait Reflected (parametric 0 a : Type) =
+    operation : a -> a
+    derive law : forall (x : a). operation x = x
+
+instance Reflected Bool =
+    let law = refl
+    let operation x = x
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors

@@ -45,4 +45,4 @@ modFromDivProof :
     a
 let modFromDivProof x y @pd =
     modulo x y @(trans (sym divAndModSameDomain) pd)
--- STATUS(a0497523): FAIL — expected 0 errors, got 11; first error: E_APPLICATION_ARGUMENT_MISMATCH "an explicit implicit argument was supplied, but the callee has no implicit parameter he… [was PASS in an earlier STATUS line]
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Add _" at line 36

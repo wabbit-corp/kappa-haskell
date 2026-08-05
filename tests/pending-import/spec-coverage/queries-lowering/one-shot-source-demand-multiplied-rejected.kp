@@ -19,4 +19,4 @@ let badNested os =
         yield x + y
     ]
 
--- STATUS(a0497523): FAIL — no diagnostics: demands on outer lexical variables are not multiplied by pipeline cardinality, so the one-shot os used as a nested source under a two-row pipeline is accepted (sequential double-use is caught, per appendix-t-15, but multiplicity-driven reuse is not).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /[Oo]ne[- ]?[Ss]hot|[Ll]inear|more than once|[Cc]onsum|[Cc]ardinality/ (no diagnostics)

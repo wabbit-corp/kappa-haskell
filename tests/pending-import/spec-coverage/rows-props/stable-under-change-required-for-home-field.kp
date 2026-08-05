@@ -27,4 +27,4 @@ let mk : Sized = (len = 0, buf = VNil)
 stale : Sized
 let stale = bump mk
 
--- STATUS(a0497523): FAIL — no diagnostic at all: the home-prefix-field update is accepted without StableUnderRecChange evidence and 'stale' carries buf : Vec 0 Byte at type Vec 2 Byte (soundness hole)
+-- STATUS(74742dfd): FAIL — no diagnostic message matches /StableUnderRecChange/ (no diagnostics)

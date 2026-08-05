@@ -4,4 +4,4 @@
 let name = "demo"
 
 let version = semver "1.0.0"
--- STATUS(a0497523): UNSUPPORTED — requires capability buildManifest: not provided
+-- STATUS(74742dfd): UNSUPPORTED — requires capability buildManifest: not provided

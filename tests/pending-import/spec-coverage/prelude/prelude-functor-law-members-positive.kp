@@ -25,3 +25,4 @@ let compositionLaw @functor g h value =
 
 --! mode check
 --! assertNoErrors
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNRESOLVED_MEMBER "no member 'mapId' on this receiver (§7.3)" at line 14

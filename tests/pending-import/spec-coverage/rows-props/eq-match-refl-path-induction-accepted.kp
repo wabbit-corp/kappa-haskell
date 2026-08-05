@@ -13,4 +13,4 @@ let transportByMatch p px =
     match p
     case refl -> px
 
--- STATUS(a0497523): FAIL — match on refl does not elaborate to path induction (no endpoint refinement); the spec's own transportByMatch example is rejected with E_TYPE_EQUALITY_MISMATCH
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 14

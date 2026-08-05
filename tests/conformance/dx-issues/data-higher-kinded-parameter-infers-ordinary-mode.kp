@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- Applying f in a constructor field infers the canonical unary parametric
+-- kind, so the resulting partial application Star f satisfies Functor-based
+-- instance premises without an explicit kind annotation on f.
+
+module main
+
+trait ProfunctorLike p =
+    mapOutput : forall a b c. (b -> c) -> p a b -> p a c
+
+data Star f a b =
+    MkStar (runStar : a -> f b)
+
+instance Functor f => ProfunctorLike (Star f) =
+    let mapOutput after value =
+        match value
+        case MkStar function -> MkStar (\input -> map after (function input))

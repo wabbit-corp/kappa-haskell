@@ -26,4 +26,4 @@ let handled =
 
 delegated : Int
 let delegated = runPure handled
--- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED: an EffLabel-typed binder is not admitted in effect-row syntax or l.op selection; §18.1.15/§18.1.18 label-value delegation unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved effect label 'l' (not a scoped (§9.3.1.1) or top-level (§18.1) effect)" at line 15; assertEval: 'delegated' evaluates to runPure (__handleEff True "main.Counter.label" (\ordinary x -> __EffPure @0) (tick = \ordinary __w -> \ordinary k -> @0 7, __tailResumptive = (tick = Unit)) (__effBind (_ Unit) (\ordinary x -> __EffPure @0))), expected 7

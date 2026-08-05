@@ -1,0 +1,28 @@
+module main
+
+data Token : Type =
+    MkToken Int
+
+type AffineCell = (count : Int, <=1 tok : Token)
+type LinearCell = (count : Int, 1 tok : Token)
+type Outer = (tag : Int, inner : LinearCell)
+
+badAffine : AffineCell -> AffineCell
+let badAffine (cell : AffineCell) : AffineCell =
+    let & view = cell
+    in view.{ count = 1 }
+
+badLinear : LinearCell -> LinearCell
+let badLinear (cell : LinearCell) : LinearCell =
+    let & view = cell
+    in view.{ count = 1 }
+
+badProjected : Outer -> LinearCell
+let badProjected (outer : Outer) : LinearCell =
+    let & view = outer.inner
+    in view.{ count = 1 }
+
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

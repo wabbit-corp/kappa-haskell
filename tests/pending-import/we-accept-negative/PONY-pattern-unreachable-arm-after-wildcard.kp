@@ -44,3 +44,4 @@ let goodWild d =
     case North -> 0
     case _     -> 99
 
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.

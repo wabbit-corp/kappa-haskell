@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1/§13.2.6: extending an open Type0 prefix with a field that stores a
+-- Type value raises the explicit prefix ceiling. The generated __openRec
+-- application must retain the checked cumulative lift and return the
+-- constructed open-record type, not its classifier.
+addPayload :
+    forall (r : RecRow).
+    LacksRec r payload =>
+    (name : String | r) -> (name : String, payload : Type | r)
+let addPayload (@0 r : RecRow) (@_ : LacksRec r payload) (rec : (name : String | r)) : (name : String, payload : Type | r) =
+    rec.{ payload := Int }

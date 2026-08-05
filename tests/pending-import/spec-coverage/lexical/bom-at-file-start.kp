@@ -9,4 +9,4 @@ module main
 
 x : Int
 let x = 42
--- STATUS(a0497523): FAIL — leading BOM rejected as E_UNEXPECTED_CHARACTER quoting invisible U+FEFF; Spec 5 now requires accept-and-discard
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNEXPECTED_CHARACTER "unexpected character '\65279'" at line 1

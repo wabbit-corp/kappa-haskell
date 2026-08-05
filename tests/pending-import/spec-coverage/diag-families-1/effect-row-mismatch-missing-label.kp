@@ -30,4 +30,4 @@ let badComp = do
     let x <- Counter.tick ()
     pure x
 
--- STATUS(a0497523): FAIL — kappa.effect.row-mismatch is registered but not emitted for the demanded-row check: the compiler reports generic kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH) on the Eff row types, with no missing-label or ContainsEff/LacksEff/SplitEff payload. Positive half checks clean.
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.effect.row-mismatch was produced; no diagnostic message matches /Logger/ (saw: "type mismatch"); no diagnostic error[kappa.effect.row-mismatch] on line 29 (saw: E_TYPE_EQUALITY_MISMATCH@29)

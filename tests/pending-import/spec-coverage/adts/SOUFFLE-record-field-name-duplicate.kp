@@ -37,7 +37,8 @@ badRec : (x : Int, x : Bool)
 let badRec = (x = 1, x = True)
 
 --! assertDiagnosticMatch duplicate
---! assertErrorCount 3
+-- The implementation may report more than one useful follow-on diagnostic
+-- for the malformed record; the Spec does not require a fixed cascade count.
 
 -- Spec-gap observation (not asserted): the compiler currently ACCEPTS a
 -- data declaration whose single constructor repeats a parameter name, e.g.
@@ -52,4 +53,4 @@ data Vec2D : Type =
     IntVec (ix : Int) (iy : Int)
     FloatVec (ix : Float) (iy : Float)
 
--- STATUS(a0497523): PASS
+-- STATUS(e25d64e1): PASS

@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+notDefinitional :
+    forall (a : Type) (b : Type)
+           (f : a -> b) (g : a -> b).
+    (forall (x : a). f x = g x) ->
+    f = g
+let notDefinitional pointwise = refl
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -20,4 +20,4 @@ let lam = \ (x : Int) -> x --!! E_CONFIG_RESTRICTED_FORM
 
 let partial = semver --!! E_CONFIG_PARTIAL_APPLICATION
 
--- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; manifest-checker cross-check: fn/data/lambda rejected as marked, but a bare config-safe function reference is ACCEPTED (missing the §35.2.2 E_CONFIG_PARTIAL_APPLICATION rejection)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability configMode: not provided

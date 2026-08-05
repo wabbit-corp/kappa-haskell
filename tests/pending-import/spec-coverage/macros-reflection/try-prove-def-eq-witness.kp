@@ -25,4 +25,4 @@ let viaTry x y = do
     match r
     case Some _ -> pure True
     case None -> pure False
--- STATUS(a0497523): FAIL — tryProveDefEq/proveDefEq/defEq are E_NAME_UNRESOLVED (witness-bearing def-eq tier unimplemented)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_NAME_UNRESOLVED "unresolved name 'tryProveDefEq' (not in scope)" at line 13

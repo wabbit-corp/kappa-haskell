@@ -37,3 +37,4 @@ let annotationMismatch xs =
 -- POSITIVE: explicitly linear parameter used linearly — accepted.
 linearUsedOnce : (1 xs : SizedArray 3 Int) -> Int
 let linearUsedOnce (1 xs) = sizedArrayLength xs
+-- STATUS(2a161551): FAIL — TEST-ISSUE: the §12.2 QuantitySatisfies table explicitly allows an ω binder to satisfy demand 1, so both alleged negative cases are valid.

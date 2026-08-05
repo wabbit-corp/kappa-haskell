@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+proof : True = True
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProofMutationsReject proof

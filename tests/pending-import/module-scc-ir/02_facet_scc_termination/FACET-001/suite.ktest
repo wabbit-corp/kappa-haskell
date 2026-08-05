@@ -3,5 +3,5 @@
 --! assertNoErrors
 --! assertDeclarationGroupClass Box inductive
 --! assertDeclarationGroupFacets Box Box/formation
---! assertDeclarationGroupClass consumeBox acyclic
+--! assertDeclarationGroupClass defaultValue acyclic
 --! assertInductiveGroupCertificateValid Box

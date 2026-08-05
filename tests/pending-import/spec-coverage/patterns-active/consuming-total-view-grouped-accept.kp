@@ -46,12 +46,4 @@ let orSub (1 w : Wrap) : Int =
     match w
     case See (VSmall r | VBig r) -> resVal r
 
--- STATUS(a0497523): FAIL — the DECLARATION of `See` is rejected outright
--- with E_ACTIVE_PATTERN_LINEARITY_VIOLATION (kappa-hs.pattern.active,
--- "cannot thread a residue back on a miss; return 'Match item residue'
--- instead"): the compiler bans every consuming non-Match active pattern,
--- so §17.3.5's grouped/irrefutable allowances are unreachable. NOTE this
--- also means conformance/spec-coverage/patterns-active/
--- total-active-view-linear-fallthrough.kp passes coincidentally: its one
--- asserted error anchors at the declaration, not at the `bad` use it
--- means to pin, and its `ok` (grouped) function is not actually accepted.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_ACTIVE_PATTERN_LINEARITY_VIOLATION "this active pattern consumes a linear scrutinee but cannot thread a residue back on a miss; return 'Match item residue' instead (§17.3)" at line 29

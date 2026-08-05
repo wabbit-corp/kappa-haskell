@@ -1,0 +1,41 @@
+-- Retargeted from tests/conformance/universes/typelevel-source-instances-rejected.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- Diagnostic changed: duplicate TypeLevel operation instances are rejected by
+-- ordinary instance coherence (§33.2.1, §28.2), not E_UNIVERSE_LEVEL_EXPRESSION.
+--
+-- §28.2: the standard TypeLevel operation instances (defined by §11.1.2.2)
+-- "remain actual source-visible instances rather than intrinsic-only
+-- evidence", and additional source instances for Eq/Preorder/PartialOrder/Ord
+-- TypeLevel and for FromInteger/Zero/One/Successor/Add/Max TypeLevel "are
+-- rejected by ordinary instance coherence". §11.1.1 reserves
+-- E_UNIVERSE_LEVEL_EXPRESSION for ill-typed, unstable, non-total, ill-scoped,
+-- meta-bearing, or otherwise unrepresentable level terms; every level term
+-- below is well-formed. The six operation candidates are not semantically
+-- identical to their standard artifacts (§33.2.1 compares instantiated evidence artifacts:
+-- the literal bodies of Zero/One elaborate through typeLevelFromInteger,
+-- distinct from the standard typeLevelZero/typeLevelOne, and the other four
+-- have observably different bodies), so each duplicate head is one
+-- incoherent-overlap error, independently of duplicate-instance ordering.
+-- Eq and Ord are deliberately omitted: an incomplete or unlawful candidate
+-- could fail instance completion before coherence, obscuring the rule under test.
+--! mode check
+--! assertErrorCount 6
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+--! assertDiagnosticFamily error kappa-hs.trait.incoherent
+
+instance Zero TypeLevel =
+    let zero = 0
+
+instance One TypeLevel =
+    let one = 1
+
+instance FromInteger TypeLevel =
+    let fromInteger n = 0
+
+instance Successor TypeLevel =
+    let succ u = u
+
+instance Add TypeLevel =
+    let add u v = u
+
+instance Max TypeLevel =
+    let max u v = u

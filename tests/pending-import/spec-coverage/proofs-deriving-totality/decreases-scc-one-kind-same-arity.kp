@@ -30,6 +30,4 @@ let gB xs decreases structural xs =
     case Nil -> fB 0
     case _ :: rest -> gB rest
 
--- STATUS(a0497523): FAIL — the one-kind/same-arity SCC rule is not
--- enforced: both ill-formed SCCs are accepted with W_TERMINATION_UNVERIFIED
--- warnings (0 errors) instead of being rejected.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0; no diagnostic with family kappa.termination.failure was produced; no diagnostic error[kappa.termination.failure] on line 15 (saw: W_TERMINATION_UNVERIFIED@25, W_TERMINATION_UNVERIFIED@28, W_TERMINATION_UNVERIFIED@15, W_TERMINATION_UNVERIFIED@18); no diagnostic error[kappa.termination.failure] on line 25 (saw: W_TERMINATION_UNVERIFIED@25, W_TERMINATION_UNVERIFIED@28, W_TERMINATION_UNVERIFIED@15, W_TERMINATION_UNVERIFIED@18)

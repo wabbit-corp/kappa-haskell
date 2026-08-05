@@ -1,0 +1,21 @@
+module main
+
+import lib.shadow.(type List(..))
+
+data Token : Type =
+    Token
+
+data Linear : Type =
+    Linear (1 token : Token)
+
+-- The selected List is lib.shadow.List, whose element parameter is erased and
+-- whose sole constructor stores no Linear. Prelude List storage facts must not
+-- be inherited merely because the imported type has the same source spelling.
+duplicate : List Linear -> (List Linear, List Linear)
+let duplicate xs = (xs, xs)
+
+discard : List Linear -> Unit
+let discard xs = ()
+
+--! mode check
+--! assertNoErrors

@@ -32,4 +32,4 @@ let main = do
     printlnString (describeInt (checkedCast packed))
     printlnString (describeStr (checkedCast packed))
 
--- STATUS(a0497523): FAIL — no portable-minimum DynamicType instances exist (E_UNSOLVED_IMPLICIT at Int/String), and checkedCastWith unconditionally returns Err ("dynamic payloads are not carried"), so the Ok arm is unreachable.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type DynamicType Integer" at line 31; stdout mismatch: expected "ok 42\nblamed\n", got ""

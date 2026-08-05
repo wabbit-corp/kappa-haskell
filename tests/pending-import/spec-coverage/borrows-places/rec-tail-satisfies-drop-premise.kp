@@ -16,4 +16,4 @@ forgetExtras :
 let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : String =
     rec.name
 
--- STATUS(a0497523): FAIL — the §11.3.1B intrinsic trait RecTailSatisfies is not exposed (E_NAME_UNRESOLVED); the droppable-tail premise of §13.2.7 cannot be written, so consuming receivers can never legally forget a tail.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'RecTailSatisfies' (not in scope)" at line 13

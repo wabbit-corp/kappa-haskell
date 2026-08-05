@@ -18,4 +18,4 @@ let (⊕) x y = addInt x y
 combined : Int
 let combined = 1 ⊕ 2
 
--- STATUS(a0497523): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability unicode-names: not provided

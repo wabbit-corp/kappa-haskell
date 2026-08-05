@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+explicitEq : Eq Flag
+let explicitEq = derive
+
+needsEq : Eq Flag => Bool
+let needsEq = Off == On
+
+result : Bool
+let result = needsEq
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnosticFamily error kappa.implicit.unsolved

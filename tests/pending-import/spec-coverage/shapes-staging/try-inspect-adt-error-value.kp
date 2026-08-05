@@ -17,10 +17,10 @@ let probe = do
     match r
     case Err e ->
         (match e.kind
-         case ShapeNotData -> stringSyntax "not-data"
+         case ShapeErrorKind.ShapeNotData -> stringSyntax "not-data"
          case _ -> failElab "wrong ShapeError kind")
     case Ok shape -> failElab "a function type must not inspect as a data shape"
 
 ok : String
 let ok = $(probe)
--- STATUS(a0497523): FAIL — std.deriving.shape exports no tryInspectAdt/ShapeError/ShapeErrorKind (unresolved names); only the failing inspectAdt path exists
+-- STATUS(e25d64e1): FAIL — expected 0 errors, got 4; tryInspectAdt is unresolved and ok cannot evaluate

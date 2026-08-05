@@ -32,8 +32,4 @@ let remainderImpossible p =
         case impossible
     else 0
 
--- STATUS(a0497523): FAIL — 2 errors: E_IMPOSSIBLE_REACHABLE and
--- E_INDEXED_IMPOSSIBLE_REACHABLE. The impossible/case-impossible checkers
--- ignore flow-typing HasCtor evidence, while the exhaustiveness checker
--- consults it (omitting the Empty arm outright is accepted) — inconsistent
--- and contrary to the §30.2.2.11 MUST.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_IMPOSSIBLE_REACHABLE "'impossible' is not provably unreachable here (§17.1.4)" at line 22

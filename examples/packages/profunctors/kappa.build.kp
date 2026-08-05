@@ -1,0 +1,29 @@
+let buildConfig : BuildConfig = package
+    { name = "profunctors"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = []
+    , dependencies =
+        [ pathDependency { name = "either", path = "../either" }
+        , pathDependency { name = "bifunctors", path = "../bifunctors" }
+        ]
+    , hostBindings = []
+    , targets =
+        [ library
+            { name = "profunctors"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , modules = modulesUnder "data.profunctor"
+            , dependencies = ["either", "bifunctors"]
+            }
+        , executable
+            { name = "profunctors-tests"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , main = module "profunctors.run_tests"
+            , modules = modulesUnder "data.profunctor"
+            , dependencies = ["either", "bifunctors"]
+            , hostBindings = []
+            }
+        ]
+    }

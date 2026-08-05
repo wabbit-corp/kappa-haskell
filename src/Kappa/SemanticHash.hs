@@ -2,6 +2,7 @@
 
 module Kappa.SemanticHash
   ( sha256Hex
+  , sha256BytesHex
   , canonicalIdentityHex
   ) where
 
@@ -30,6 +31,11 @@ import Numeric (showHex)
 sha256Hex :: Text -> Text
 sha256Hex =
   renderHash . sha256State . TE.encodeUtf8
+
+-- | SHA-256 over exact bytes. Artifact integrity must not reinterpret an
+-- arbitrary binary payload as source text before hashing it.
+sha256BytesHex :: BS.ByteString -> Text
+sha256BytesHex = renderHash . sha256State
 
 -- | Lossless hexadecimal serialization of a domain-separated UTF-8 identity.
 -- Unlike a digest this is injective and is therefore suitable as authority

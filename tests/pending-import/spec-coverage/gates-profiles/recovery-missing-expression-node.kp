@@ -16,4 +16,4 @@ let foo =
 bar : Int
 let bar = 2
 
--- STATUS(a0497523): FAIL — recovery skips the whole declaration (recoverySite=declaration) instead of constructing the §3.1.14A missing-expression node
+-- STATUS(74742dfd): FAIL — no error diagnostic matching E_RECOVERY_DECLARATION_SKIPPED has payload /payload/recoverySite = expression (saw: /payload/recoverySite=declaration)

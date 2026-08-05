@@ -22,4 +22,4 @@ let message blame =
     match blame
     case MkCastBlame m -> m --!! kappa.name.unresolved
 
--- STATUS(a0497523): FAIL — CastBlame is not opaque: std.gradual exposes MkCastBlame, so both forging and matching type-check (0 diagnostics instead of 2).
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0; no diagnostic error[kappa.name.unresolved] on line 17 (no diagnostics); no diagnostic error[kappa.name.unresolved] on line 23 (no diagnostics)

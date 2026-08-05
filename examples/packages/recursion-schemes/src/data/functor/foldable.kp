@@ -1,0 +1,58 @@
+module data.functor.foldable
+
+-- The useful heart of Edward Kmett's `recursion-schemes`, expressed with a
+-- separate base functor parameter because Kappa does not yet have Haskell type
+-- families. `project` peels one layer; `embed` builds one layer. The fold
+-- members put structural recursion in each concrete instance, where Kappa can
+-- verify it, while the public helpers keep the familiar API.
+trait Functor f => Recursive t f =
+    project : t -> f t
+    cataRecursive : forall a. (f a -> a) -> t -> a
+    paraRecursive : forall a. (f (LayerResult t a) -> a) -> t -> a
+
+trait Functor f => Corecursive t f =
+    embed : f t -> t
+
+data LayerResult t a =
+    LayerResult (original : t) (result : a)
+
+cata :
+    forall t f a.
+    (@_ : Recursive t f) -> (f a -> a) -> t -> a
+let cata algebra value = cataRecursive algebra value
+
+para :
+    forall t f a.
+    (@_ : Recursive t f) -> (f (LayerResult t a) -> a) -> t -> a
+let para algebra value = paraRecursive algebra value
+
+data ListF a r =
+    NilF
+    ConsF (head : a) (tail : r)
+
+instance Functor (ListF a) =
+    let map function layer =
+        match layer
+        case NilF -> NilF
+        case ConsF head tail -> ConsF head (function tail)
+
+instance Recursive (List a) (ListF a) =
+    let project values =
+        match values
+        case Nil -> NilF
+        case head :: tail -> ConsF head tail
+    let cataRecursive algebra values =
+        match values
+        case Nil -> algebra NilF
+        case head :: tail -> algebra (ConsF head (cataRecursive algebra tail))
+    let paraRecursive algebra values =
+        match values
+        case Nil -> algebra NilF
+        case head :: tail ->
+            algebra (ConsF head (LayerResult tail (paraRecursive algebra tail)))
+
+instance Corecursive (List a) (ListF a) =
+    let embed layer =
+        match layer
+        case NilF -> Nil
+        case ConsF head tail -> (::) head tail

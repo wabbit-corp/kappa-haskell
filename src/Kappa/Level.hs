@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+
 -- | Canonical universe levels and the pure ordering judgment of Spec
 -- §11.1.1-§11.1.2.2. Source expressions never enter this module: the
 -- elaborator first resolves operations and selected evidence, then translates
@@ -50,6 +52,7 @@ module Kappa.Level
   , weakenLevelLocalsAt
   , solveLevelConstraints
   , solveLevelConstraintsFor
+  , uniquelyDeterminedLevelAssignmentsFor
   , inferPrincipalLevelsFor
   , mergeLevelAssignments
   , emptyLevelAssignmentGraphBudget
@@ -64,6 +67,7 @@ module Kappa.Level
 
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
+import Data.Data (Data)
 import Data.Integer.SAT qualified as SAT
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (nub, sort, sortOn)
@@ -73,6 +77,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
+import qualified Kappa.DirectedGraph as DirectedGraph
 import Kappa.SemanticHash (sha256Hex)
 
 type LevelMeta = Int
@@ -96,7 +101,7 @@ data NeutralLevelTerm
   | NLTRecord ![(Text, NeutralLevelTerm)]
   | NLTIf !NeutralLevelTerm !NeutralLevelTerm !NeutralLevelTerm
   | NLTUnsupported !Text
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data NeutralLevelLiteral
   = NLLInt !Integer
@@ -106,7 +111,7 @@ data NeutralLevelLiteral
   | NLLByte !Word8
   | NLLBytes ![Word8]
   | NLLGrapheme !Text
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Source neutral terms carry their canonical structural artifact and its
 -- deterministic digest. The symbolic form is reserved for direct solver
@@ -114,7 +119,7 @@ data NeutralLevelLiteral
 data NeutralLevelAtom
   = NeutralLevelTermAtom !Text !NeutralLevelTerm
   | NeutralLevelSymbol !Text ![Level]
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 neutralLevelTermAtom :: NeutralLevelTerm -> NeutralLevelAtom
 neutralLevelTermAtom term = NeutralLevelTermAtom (neutralLevelTermDigest term) term
@@ -213,7 +218,7 @@ data Level
   -- free-variable identities required by §11.1.1. A meta below this node is
   -- not assignable without selected monotonicity/order-embedding evidence.
   | LMeta !LevelMeta
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | §11.1.2.4A's portable ordering of constructor normal forms.  This
 -- instance is used while building the sorted additive and maximum lists, so
@@ -344,7 +349,7 @@ data UniverseConstraint = UniverseConstraint
   { ucLower :: !Level
   , ucUpper :: !Level
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data DeclarationUniverseTelescope = DeclarationUniverseTelescope
   { dutParameterCount :: !Int
@@ -352,13 +357,13 @@ data DeclarationUniverseTelescope = DeclarationUniverseTelescope
   -- ^ True when the source wrote the complete schema. Such a telescope may
   -- never be extended by implicit declaration-level generalization.
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 emptyDeclarationUniverseTelescope :: DeclarationUniverseTelescope
 emptyDeclarationUniverseTelescope = DeclarationUniverseTelescope 0 False
 
 newtype Assumptions = Assumptions [(Level, Level)]
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data SolveResult
   = Proved
@@ -366,13 +371,13 @@ data SolveResult
   | Blocked ![LevelMeta]
   | ContradictoryAssumptions
   | IndeterminateResourceLimit
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ConstraintOrigin = ConstraintOrigin
   { coDescription :: !Text
   , coConstruct :: !Text
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data LevelConstraint = LevelConstraint
   { lcIdentity :: !Int
@@ -381,19 +386,19 @@ data LevelConstraint = LevelConstraint
   , lcOrigin :: !ConstraintOrigin
   , lcAssumptions :: !Assumptions
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data LevelSolveError
   = LevelConstraintDisproved !LevelConstraint
   | LevelContradictoryAssumptions !LevelConstraint
   | LevelMetaOccurs !LevelMeta !Level !LevelConstraint
   | LevelResourceLimit !LevelConstraint !Int
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data LevelAssignmentGraphError
   = LevelAssignmentGraphConflict !LevelMeta !Level !Level
   | LevelAssignmentGraphResourceLimit !Int
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Incremental certificate that the installed assignment graph remains
 -- inside the portable materialization budget. The constructor is private so
@@ -402,7 +407,7 @@ data LevelAssignmentGraphBudget = LevelAssignmentGraphBudget
   { lagbRootCosts :: !(Map LevelMeta Int)
   , lagbTotalCost :: !Int
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 emptyLevelAssignmentGraphBudget :: LevelAssignmentGraphBudget
 emptyLevelAssignmentGraphBudget = LevelAssignmentGraphBudget Map.empty 0
@@ -1403,6 +1408,66 @@ solveLevelConstraintsFor targets constraints0 = do
                 then leastTrue lower middle predicate
                 else leastTrue (middle + 1) upper predicate
 
+-- | Find selected metavariables whose value is forced exactly by an
+-- unconditional constraint system. The caller must first quotient selected
+-- identities that are equal in the constraint preorder. A successful common
+-- solve computes all least candidates in one pass; the original closure must
+-- then prove each candidate equal to its metavariable in both directions.
+--
+-- If a malformed selected component makes the common solve fail, retrying
+-- candidates separately preserves the fail-closed behavior of the earlier
+-- declaration-boundary implementation without imposing that quadratic path on
+-- valid programs. A candidate mentioning a protected metavariable is not a
+-- closed value at this boundary.
+uniquelyDeterminedLevelAssignmentsFor
+  :: Set.Set LevelMeta
+  -> Set.Set LevelMeta
+  -> [LevelConstraint]
+  -> Map LevelMeta Level
+uniquelyDeterminedLevelAssignmentsFor protected targets constraints0 =
+  case solveLevelConstraintsFor targets unconditional of
+    Right solution -> acceptedFromSolution targets solution
+    Left _ ->
+      Map.unions
+        [ acceptedFromSolution (Set.singleton meta) solution
+        | meta <- Set.toAscList targets
+        , Right solution <- [solveLevelConstraintsFor (Set.singleton meta) unconditional]
+        ]
+  where
+    unconditional =
+      [ constraint
+      | constraint <- constraints0
+      , null (assumptionsList (lcAssumptions constraint))
+      ]
+    edges =
+      [ (normalizeLevel lower, normalizeLevel (lcRhs constraint))
+      | constraint <- unconditional
+      , lower <- flattenLowerMax (lcLhs constraint)
+      ]
+    graph = DirectedGraph.fromEdges edges
+
+    acceptedFromSolution selected solution =
+      Map.fromList
+        [ (meta, candidate)
+        | meta <- Set.toAscList selected
+        , let candidate =
+                normalizeLevel
+                  (Map.findWithDefault LZero meta (lsAssignments solution))
+        , meta `notElem` levelMetas candidate
+        , Set.null
+            (Set.intersection protected (Set.fromList (levelMetas candidate)))
+        , constrainedLeq (LMeta meta) candidate
+        , constrainedLeq candidate (LMeta meta)
+        ]
+
+    constrainedLeq lower upper =
+      proveLevelLeq emptyAssumptions lower upper == Proved
+        || DirectedGraph.reachable graph (normalizeLevel lower) (normalizeLevel upper)
+
+    flattenLowerMax = \case
+      LMax left right -> flattenLowerMax left ++ flattenLowerMax right
+      level -> [level]
+
 -- | Classify selected-meta inference using the five outcomes required by
 -- §11.1.3. This API deliberately sits on top of the detailed solver so every
 -- successful assignment has already been substituted through and every
@@ -1473,10 +1538,7 @@ inferPrincipalLevelsFor targets constraints =
     forcedAliasAssignments =
       Map.fromList
         [ (meta, LMeta representative)
-        | component <- stronglyConnComp equalityGraph
-        , let members = case component of
-                AcyclicSCC member -> [member]
-                CyclicSCC cyclicMembers -> sort cyclicMembers
+        | members <- DirectedGraph.stronglyConnectedComponents equalityGraph
         , let unselected = filter (`Set.notMember` targets) members
         , representative <- take 1 unselected
         , meta <- members
@@ -1498,12 +1560,7 @@ inferPrincipalLevelsFor targets constraints =
       , LMeta lower <- [normalizeLevel (lcLhs constraint)]
       , LMeta upper <- [normalizeLevel (lcRhs constraint)]
       ]
-    equalityVertices =
-      Set.toAscList (Set.fromList (concat [[lower, upper] | (lower, upper) <- equalityEdges]))
-    equalityGraph =
-      [ (meta, meta, [upper | (lower, upper) <- equalityEdges, lower == meta])
-      | meta <- equalityVertices
-      ]
+    equalityGraph = DirectedGraph.fromEdges equalityEdges
 
     zonkConstraint = substituteLevelConstraintMetas
 
@@ -1685,7 +1742,7 @@ restrictAssumptionsTo lhs rhs original@(Assumptions assumptions)
 -- fragment and avoids translating common ceiling chains to Presburger.
 assumptionReachable :: Assumptions -> Level -> Level -> Bool
 assumptionReachable (Assumptions assumptions) source target =
-  go Set.empty [source]
+  DirectedGraph.reachable graph source target
   where
     edges =
       nub
@@ -1694,13 +1751,7 @@ assumptionReachable (Assumptions assumptions) source target =
         , (lower, upper) <- expandLeftMaxAssumption assumption
         ]
 
-    go _ [] = False
-    go seen (current : rest)
-      | current == target = True
-      | current `Set.member` seen = go seen rest
-      | otherwise =
-          let next = [upper | (lower, upper) <- edges, lower == current]
-           in go (Set.insert current seen) (next ++ rest)
+    graph = DirectedGraph.fromEdges edges
 
 -- | Atomic rigid inequalities form a directed preorder. Reachability is the
 -- complete implication judgment for that fragment; when no path exists, a
@@ -1712,7 +1763,8 @@ atomicRigidOrdering (Assumptions assumptions) lhs rhs = do
   lhsId <- atomicRigidLevel lhs
   rhsIds <- atomicRigidUpper rhs
   edges <- traverse rigidEdge relevantAssumptions
-  pure $ if any (reachable edges lhsId) rhsIds then Proved else Disproved
+  let graph = DirectedGraph.fromEdges edges
+  pure $ if any (DirectedGraph.reachable graph lhsId) rhsIds then Proved else Disproved
   where
     relevantAssumptions =
       [ edge
@@ -1725,16 +1777,6 @@ atomicRigidOrdering (Assumptions assumptions) lhs rhs = do
     atomicRigidUpper (LMax left right) =
       (++) <$> atomicRigidUpper left <*> atomicRigidUpper right
     atomicRigidUpper level = pure <$> atomicRigidLevel level
-
-    reachable edges source target = go Set.empty [source]
-      where
-        go _ [] = False
-        go seen (current : rest)
-          | current == target = True
-          | current `Set.member` seen = go seen rest
-          | otherwise =
-              let next = [upper | (lower, upper) <- edges, lower == current]
-               in go (Set.insert current seen) (next ++ rest)
 
 -- | @max(a,b) <= c@ is definitionally equivalent to the conjunction of its
 -- two arm bounds. Expanding this shape in scoped assumptions exposes the
@@ -1996,10 +2038,7 @@ rigidEqualityRepresentatives :: [(Level, Level)] -> Map RigidLevelId RigidLevelI
 rigidEqualityRepresentatives edges =
   Map.fromList
     [ (member, minimum members)
-    | component <- stronglyConnComp graph
-    , let members = case component of
-            AcyclicSCC ident -> [ident]
-            CyclicSCC idents -> idents
+    | members <- DirectedGraph.stronglyConnectedComponents graph
     , member <- members
     ]
   where
@@ -2011,11 +2050,7 @@ rigidEqualityRepresentatives edges =
       , Just lhsId <- [atomicRigidLevel lhs]
       , Just rhsId <- [atomicRigidLevel rhs]
       ]
-    identities = sort . nub $ concat [[lhs, rhs] | (lhs, rhs) <- equalities]
-    graph =
-      [ (ident, ident, [rhs | (lhs, rhs) <- equalities, lhs == ident])
-      | ident <- identities
-      ]
+    graph = DirectedGraph.fromEdges equalities
 
 canonicalizeRigidLevels :: Map RigidLevelId RigidLevelId -> Level -> Level
 canonicalizeRigidLevels representatives = normalizeLevel . go

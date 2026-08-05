@@ -16,4 +16,4 @@ injectFailure :
     H.Error
 let injectFailure f = bridgeFailure f
 
--- STATUS(a0497523): FAIL — the BridgeHandle trait has no associated Error : Type (stub declares bridgeFailure : BridgeFailure -> String), and H.Error projection is rejected as receiver-method sugar (E_UNRESOLVED_MEMBER).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNRESOLVED_MEMBER "'Error' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)" at line 16

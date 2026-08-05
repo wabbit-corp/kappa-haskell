@@ -37,4 +37,4 @@ let bad (1 box : Box) : UIO Int =
             useToken ~v
         finish box
 
--- STATUS(a0497523): FAIL — 0 errors: `~v` on the borrowed binding is accepted, treated as a fresh root (write-back rebinds only `v`, never box.tok), so the quantity-1 token is consumed by the callee AND again by `finish box`; run-mode sibling probe shows the alias diverging from its root (alias sees successor, root keeps old value).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /(borrow)/ (no diagnostics)

@@ -31,4 +31,4 @@ let bad (1 cell : LinCell) : (Token, Int) =
         let moved = takeToken cell.value
         (moved, observeToken (linValue cell)) --!! E_QTT_PATH_CONSUMED
 
--- STATUS(a0497523): FAIL — 0 errors: the borrow-position projection call `linValue cell` is accepted after cell.value was moved, while the direct form `observeToken cell.value` is correctly rejected with E_QTT_PATH_CONSUMED; projector elimination does not consult per-path consumed state.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_QTT_PATH_CONSUMED] was produced (no diagnostics); no diagnostic error[E_QTT_PATH_CONSUMED] on line 32 (no diagnostics)

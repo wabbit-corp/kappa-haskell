@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+derive Eq Bit
+
+result : Bool
+let result = O ~= I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertNoErrors
+--! assertEval result False
+--! assertFallbackSelected Equiv Bit std.prelude.eqToEquivFallback
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertFallbackSelected' is not defined by Appendix T (§T.3))

@@ -1,0 +1,19 @@
+-- Retargeted from tests/conformance/spec-coverage/nat-fin-refinement/negative/derive-isset-function-field/main.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- Flipped reject -> accept: funExt is now a primitive portable-foundation principle
+-- (Spec.md §11.4.1), and the baseline provider's h-level closure includes function and
+-- dependent-function closure using funExt (§14.5.5 item 5; the prelude `piIsSet` shape),
+-- so IsSet Int gives IsSet (Int -> Int) and structural h-level closure (§14.5.1
+-- provider 2) lifts it through the single constructor. The type's "Unsupported..."
+-- name and the fixture's original residence under negative/ are both stale; a residual
+-- negative test in this family would need a field whose codomain genuinely lacks
+-- IsSet (e.g. Int -> Type).
+
+data UnsupportedFunctionField : Type =
+    UnsupportedFunctionField
+        (run : Int -> Int)
+
+derive IsSet UnsupportedFunctionField
+
+--! assertNoErrors
+
+-- STATUS(3014a0d9): FAIL — E_DERIVE_UNSUPPORTED

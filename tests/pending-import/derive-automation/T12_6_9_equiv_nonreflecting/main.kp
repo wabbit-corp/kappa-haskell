@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Equiv Bit =
+    let (~=) _ _ = True
+    let equivRefl _ = refl
+    let equivSym _ _ _ = refl
+    let equivTrans _ _ _ _ _ = refl
+
+impossibleEquality : O = I
+let impossibleEquality = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive

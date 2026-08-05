@@ -45,3 +45,4 @@ let chained = quad 3
 --! assertType lateOk  Int
 --! assertType chained Int
 
+-- STATUS(2a161551): FAIL — TEST-ISSUE: Kappa top-level definitions are not Julia world-age ordered; forward references within a compilation unit are permitted.

@@ -33,4 +33,4 @@ let pairControl = (1, 2)
 
 someControl : Option Rational
 let someControl = Some 1
--- STATUS(a0497523): FAIL — List/Set literal elements are inferred standalone and defaulted to Integer/Double, then unified: "actual: List Integer, expected: List Rational" (3 errors); the cons/tuple/Some controls pass, so only the built-in collection-literal forms drop the demanded element type
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 21

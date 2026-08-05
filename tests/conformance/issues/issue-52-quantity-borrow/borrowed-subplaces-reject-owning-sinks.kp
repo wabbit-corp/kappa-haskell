@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- A borrowed place alias never provides ownership, including through a
+-- selected field, a computed projector leaf, or a computed inout place.
+module main
+
+data Token : Type =
+    Token
+
+type Cell = (1 tok : Token, tag : Int)
+
+takeToken : (1 tok : Token) -> Token
+let takeToken (1 tok : Token) : Token = tok
+
+replaceToken : (inout tok : Token) -> UIO (1 tok : Token,)
+let replaceToken (inout tok : Token) : UIO (1 tok : Token,) =
+    pure (tok = tok,)
+
+projection cellToken (place this : Cell) : Token =
+    yield this.tok
+
+badField : (1 cell : Cell) -> Token
+let badField (1 cell : Cell) : Token =
+    let & view = cell
+    in takeToken view.tok
+
+badProjector : (1 cell : Cell) -> Token
+let badProjector (1 cell : Cell) : Token =
+    let & view = cell
+    in takeToken (cellToken view)
+
+badComputedInout : (1 cell : Cell) -> UIO Unit
+let badComputedInout (1 cell : Cell) : UIO Unit =
+    do
+        let & view = cell
+        replaceToken ~(cellToken view)
+        pure ()

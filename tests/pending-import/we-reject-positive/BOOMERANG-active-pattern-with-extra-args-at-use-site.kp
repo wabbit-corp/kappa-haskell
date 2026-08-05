@@ -46,3 +46,5 @@ let extractYear s =
 --! assertNoErrors
 --! assertType extractComposer (String -> Option String)
 --! assertType extractYear (String -> Option String)
+
+-- STATUS(f1b025a3): UNSUPPORTED — §17.3 requires explicit active-pattern arguments, but the implementation emits E_UNSUPPORTED.

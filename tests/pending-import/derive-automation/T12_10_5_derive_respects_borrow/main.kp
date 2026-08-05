@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+borrowedToOwned :
+    forall (a : Type).
+    (& x : a) -> a
+let borrowedToOwned x = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive
+--! assertDiagnosticMatch borrowedToOwned|borrow

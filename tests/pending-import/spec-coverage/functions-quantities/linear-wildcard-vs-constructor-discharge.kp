@@ -34,4 +34,4 @@ let badLet t = --!! E_QTT_LINEAR_DROP
 --! mode check
 --! assertErrorCount 2
 --! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
--- STATUS(a0497523): FAIL — badWild is accepted: `match t case _ -> ()` on a polymorphic linear scrutinee is treated as consuming the scrutinee, but §12.2.6 says a wildcard is a discard pattern that discharges nothing (only badLet is rejected, 1 of 2 expected errors).
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_QTT_LINEAR_DROP] on line 23 (saw: E_QTT_LINEAR_DROP@30); expected 2 errors, got 1; first error: E_QTT_LINEAR_DROP "'t' (linear) may be dropped without being consumed (§12.2.5)" at line 30

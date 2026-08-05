@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+trait TruthWitness =
+    proof : True = True
+    evidence uniqueness = derive
+
+makeTruth : TruthWitness
+let makeTruth = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode TruthWitness independent
+--! assertEvidenceUniquenessCertificateValid TruthWitness
+--! assertEvidenceConstructionMode makeTruth fresh-independent

@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+let unknown = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertErrorCount 1
+--! assertDiagnostic error E_DERIVE_EXPECTED_TYPE_REQUIRED
+--! assertDiagnosticFamily error kappa.derive
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

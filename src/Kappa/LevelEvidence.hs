@@ -8,6 +8,7 @@ module Kappa.LevelEvidence
   , scopeRecordFields
   , scopeRecordLevelAssumption
   , scopeRecordLevelFields
+  , validateUniverseEvidenceRelationUnder
   ) where
 
 import Data.Bifunctor (bimap)
@@ -21,6 +22,28 @@ import Kappa.Builtins
   )
 import Kappa.Core
 import Kappa.CoreOps (mapTermWithDepth, shiftTerm, zonkTermWith)
+import Kappa.Level
+  ( Assumptions
+  )
+
+-- | Replay a relation against independently authenticated declaration and
+-- lexical assumptions. Dependencies recorded in 'UniverseEvidence' are not
+-- proof authority; they must already be present in this trusted context.
+validateUniverseEvidenceRelationUnder
+  :: Assumptions
+  -> Int
+  -> Int
+  -> (Level, Level)
+  -> UniverseEvidence
+  -> Bool
+validateUniverseEvidenceRelationUnder trusted depth universeArity (lower, upper) evidence =
+  null
+    ( validateUniverseLiftEvidenceUnder
+        trusted
+        depth
+        universeArity
+        (CUniverseLift lower upper evidence (CSort LZero))
+    )
 
 -- | Exact typed-Core recognition of the canonical TypeLevel carrier.  Record
 -- scope construction uses this before granting a field projection authority

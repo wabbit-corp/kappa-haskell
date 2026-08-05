@@ -43,4 +43,4 @@ let viaPrefix =
     block
         let hidden = 999
         pfxI"ignored"
--- STATUS(a0497523): FAIL — both probes evaluate to 999: quoted references to globals are re-resolved by name at the splice site, so the splice-site local `hidden` captures them (§21.4 hygiene violation, wrong result)
+-- STATUS(74742dfd): FAIL — assertEval: 'viaMacro' evaluates to 999, expected 5; assertEval: 'viaPrefix' evaluates to 999, expected 5

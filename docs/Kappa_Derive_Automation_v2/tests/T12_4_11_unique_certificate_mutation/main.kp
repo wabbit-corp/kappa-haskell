@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+trait OnlyProof =
+    proof : True = True
+    evidence uniqueness = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessCertificateMutationsReject OnlyProof

@@ -27,4 +27,4 @@ let useIt = f (x = 1)
 main : UIO Unit
 let main = do
     printlnString (showInt useIt)
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'x' (not in scope)" at line 25; stdout mismatch: expected "200\n", got ""

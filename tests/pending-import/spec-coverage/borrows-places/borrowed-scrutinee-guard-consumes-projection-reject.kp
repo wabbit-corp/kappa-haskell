@@ -29,7 +29,4 @@ let bad (& t : Two) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch borrow|linear|consum|quantit
 
--- STATUS(a0497523): FAIL — accepted with 0 errors: guard usage of
--- pattern binders is not quantity-checked at all, and projections under
--- a borrowed scrutinee are not marked borrowed, so the consuming guard
--- passes both checks it should fail.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /borrow|linear|consum|quantit/ (no diagnostics)

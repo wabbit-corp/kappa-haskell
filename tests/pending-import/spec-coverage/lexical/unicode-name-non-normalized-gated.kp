@@ -13,4 +13,4 @@ module main
 let café = 1 --!! E_UNICODE_NAME_NON_NORMALIZED
 let ﬁle = 2 --!! E_UNICODE_NAME_NON_NORMALIZED
 
--- STATUS(a0497523): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability unicode-names: not provided

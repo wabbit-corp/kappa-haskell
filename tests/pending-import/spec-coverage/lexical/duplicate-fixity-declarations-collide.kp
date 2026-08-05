@@ -24,4 +24,4 @@ let (<+>) a b = a * b
 
 v : Integer
 let v = 2 <+> 3 + 4
--- STATUS(a0497523): FAIL — no diagnostic; the later fixity declaration is silently ignored (v parses under the first, evaluating to 10; with the declarations swapped it becomes 14)
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_DUPLICATE_DECLARATION] was produced (no diagnostics); no diagnostic error[E_DUPLICATE_DECLARATION] on line 20 (no diagnostics)

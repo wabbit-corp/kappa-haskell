@@ -60,3 +60,4 @@ let firstOrOther (s : Season) : Int =
     case Spring -> 1
     case _      -> 0
 
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.

@@ -28,4 +28,4 @@ useBridge : IO BridgeFailure Unit
 let useBridge = do
     let m <- bindModule @MathSurface MkDummyHandle "math"
     pure ()
--- STATUS(a0497523): HARNESS-ERROR — line 6: directive 'assertDiagnosticFamily': 'kappa.bridge.contract' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1) [was FAIL in an earlier STATUS line]
+-- STATUS: SPEC-ISSUE — portable source cannot construct BridgeOrigin or implement the complete BridgeHandle operations

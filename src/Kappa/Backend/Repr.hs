@@ -51,8 +51,12 @@ module Kappa.Backend.Repr
   , renderVerifiedRepresentationClass
   , scalarRep
   , runtimeErasedParam
+  , runtimeErasedPiParam
+  , runtimeErasedRecordField
+  , runtimeErasureNeedsErasedDemand
   , runtimeRelevantParam
   , runtimeConstructorField
+  , runtimeConstructorPiField
   , valueDomainIsKind
   , erasedParamMask
   , erasedSpinePositions
@@ -96,6 +100,7 @@ module Kappa.Backend.Repr
   , userCtorTagOf
   ) where
 
+import Data.Foldable (toList)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -126,6 +131,7 @@ import Kappa.Core
   , Icit (..)
   , Q (..)
   , RecordField (..)
+  , RuntimeErasure (..)
   , Term (..)
   , constructorBridgeBinderCount
   , foldMapArithmeticCertificate
@@ -260,14 +266,14 @@ repSelect ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi ic q _ _ dom clo@(Closure env body) ->
+        VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom clo@(Closure env body) ->
           if not (closureHasBoundEnv env body)
             then Nothing
             else
               let x = VRigid lvl []
                   cod = closApplyV x clo
                   acc' =
-                    if runtimeRelevantParam ctx lvl ic q dom
+                    if runtimeRelevantPiParam ctx lvl runtimeErasure ic q dom
                       then scalarRep dom : acc
                       else acc
                in walk (lvl + 1) acc' cod
@@ -287,13 +293,13 @@ runtimeParamMask ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi ic q _ _ dom (Closure env body) ->
+        VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom (Closure env body) ->
           if not (closureHasBoundEnv env body)
             then Nothing
             else
               let x = VRigid lvl []
                   cod = eval ctx (x : env) body
-               in walk (lvl + 1) (runtimeRelevantParam ctx lvl ic q dom : acc) cod
+               in walk (lvl + 1) (runtimeRelevantPiParam ctx lvl runtimeErasure ic q dom : acc) cod
         _ -> Just (reverse acc)
     closureHasBoundEnv env body = maxVar body < length env + 1
 
@@ -355,14 +361,14 @@ argConvSelectAt ctx startLvl = walk startLvl []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi ic q borrowed _ dom (Closure env body) ->
+        VPiRuntimeM _ _ ic q borrowed _ _ _ runtimeErasure dom (Closure env body) ->
           if not (closureHasBoundEnv env body)
             then Nothing
             else
               let x = VRigid lvl []
                   cod = eval ctx (x : env) body
                   acc' =
-                    if runtimeRelevantParam ctx lvl ic q dom
+                    if runtimeRelevantPiParam ctx lvl runtimeErasure ic q dom
                       then argConv q borrowed : acc
                       else acc
                in walk (lvl + 1) acc' cod
@@ -569,7 +575,39 @@ argConv q borrowed
 -- index data such as @TypeLevel@ is not a kind and is retained when demanded.
 runtimeErasedParam :: EvalCtx -> Int -> Q -> Value -> Bool
 runtimeErasedParam ctx lvl q dom =
-  q == Q0 || valueDomainIsKind ctx lvl dom || resultIsProofValue ctx lvl dom
+  q == Q0
+    || valueDomainIsKind ctx lvl dom
+    || (not (runtimeErasureNeedsErasedDemand ctx dom) && resultIsProofValue ctx lvl dom)
+
+-- | Whether classifier evidence alone is insufficient to erase a value at an
+-- ordinary runtime occurrence. Section 31.2 makes function erasure
+-- demand-sensitive: a proof-producing function can be erased only where that
+-- function value is itself consumed under erased ambient demand. In contrast,
+-- non-function values known to satisfy @RuntimeErased@ have an
+-- occurrence-independent representation decision.
+runtimeErasureNeedsErasedDemand :: EvalCtx -> Value -> Bool
+runtimeErasureNeedsErasedDemand ctx classifier =
+  case force ctx classifier of
+    VPiRuntimeM {} -> True
+    _ -> False
+
+runtimeErasedPiParam :: EvalCtx -> Int -> RuntimeErasure evidence -> Q -> Value -> Bool
+runtimeErasedPiParam ctx lvl runtimeErasure q dom =
+  case runtimeErasure of
+    RuntimeErased _ -> True
+    RuntimeRelevant -> runtimeErasedParam ctx lvl q dom
+
+-- | Runtime-erasure decision for a checked record field. This is deliberately
+-- evidence-aware: re-running only the quantity/classifier test would discard
+-- selected @RuntimeErased@ evidence retained by KCore.
+runtimeErasedRecordField :: EvalCtx -> Int -> RecordField Value -> Bool
+runtimeErasedRecordField ctx lvl field =
+  runtimeErasedPiParam
+    ctx
+    lvl
+    (rfRuntimeErasure field)
+    (rfQ field)
+    (rfType field)
 
 -- | The shared runtime-argument filter for representation and ownership
 -- convention selection. A non-'Q0' explicit parameter whose domain is a kind is
@@ -579,6 +617,10 @@ runtimeErasedParam ctx lvl q dom =
 runtimeRelevantParam :: EvalCtx -> Int -> Icit -> Q -> Value -> Bool
 runtimeRelevantParam ctx lvl ic q dom =
   ic == Expl && not (runtimeErasedParam ctx lvl q dom)
+
+runtimeRelevantPiParam :: EvalCtx -> Int -> RuntimeErasure evidence -> Icit -> Q -> Value -> Bool
+runtimeRelevantPiParam ctx lvl runtimeErasure ic q dom =
+  ic == Expl && not (runtimeErasedPiParam ctx lvl runtimeErasure q dom)
 
 -- | Constructor payload fields use the same erasure classifier as ordinary
 -- runtime parameters, with one extra allowance: implicit non-erased evidence
@@ -590,6 +632,10 @@ runtimeConstructorField :: EvalCtx -> Int -> Icit -> Q -> Value -> Bool
 runtimeConstructorField ctx lvl ic q dom =
   (ic == Expl || q /= Q0) && not (runtimeErasedParam ctx lvl q dom)
 
+runtimeConstructorPiField :: EvalCtx -> Int -> RuntimeErasure evidence -> Icit -> Q -> Value -> Bool
+runtimeConstructorPiField ctx lvl runtimeErasure ic q dom =
+  (ic == Expl || q /= Q0) && not (runtimeErasedPiParam ctx lvl runtimeErasure q dom)
+
 -- | One erasure bit per Pi binder in source telescope order. This is the S5.A
 -- erasure fact lowered once and shared by C, LLVM, Verify, and the materialized
 -- KBackendIR artifact: @True@ means the argument is absent from runtime
@@ -599,10 +645,10 @@ erasedParamMask ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi _ q _ _ dom clo ->
+        VPiRuntimeM _ _ _ q _ _ _ _ runtimeErasure dom clo ->
           let x = VRigid lvl []
               cod = closApplyV x clo
-           in walk (lvl + 1) (runtimeErasedParam ctx lvl q dom : acc) cod
+           in walk (lvl + 1) (runtimeErasedPiParam ctx lvl runtimeErasure q dom : acc) cod
         _ -> reverse acc
     closApplyV v (Closure env body) = eval ctx (v : env) body
 
@@ -689,8 +735,8 @@ alignErasedArgsAt ctx startLvl = walk startLvl []
     walk _ acc _ [] = Just (reverse acc)
     walk lvl acc ty actuals@(actualIc : restActuals) =
       case force ctx ty of
-        VPi ic q _ _ dom clo ->
-          let erased = runtimeErasedParam ctx lvl q dom
+        VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom clo ->
+          let erased = runtimeErasedPiParam ctx lvl runtimeErasure q dom
               cod = closApply lvl clo
            in if ic == actualIc
                 then walk (lvl + 1) (erased : acc) cod restActuals
@@ -721,7 +767,12 @@ maxVar = \case
   CLocal i _ -> i
   CGlobal _ _ -> -1
   CLamM _ _ _ _ b -> maxVar b - 1
-  CPiEvidenceM _ _ _ _ _ _ _ _ a b -> max (maxVar a) (maxVar b - 1)
+  CPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure a b ->
+    maximum
+      ( maxVar a
+          : maxVar b - 1
+          : map maxVar (toList runtimeErasure)
+      )
   CApp _ f a -> max (maxVar f) (maxVar a)
   CSort _ -> -1
   CLevel _ -> -1
@@ -734,21 +785,37 @@ maxVar = \case
   CCtorI _ _ _ arguments -> maximum (-1 : map (maxVar . caTerm) arguments)
   CMatch s _ _ alts ->
     maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
-  CRecordTQ fs -> maximum (-1 : map (maxVar . rfType) fs)
+  CRecordTQ fs ->
+    maximum
+      ( -1
+          : [ maximum (maxVar (rfType field) : map maxVar (toList (rfRuntimeErasure field)))
+            | field <- fs
+            ]
+      )
   CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
   CProjM _ e _ -> maxVar e
   CProjAtM _ e _ _ -> maxVar e
   CVariantT ms -> maximum (-1 : map maxVar ms)
   CInject _ e -> maxVar e
-  CLetM _ _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
-  CLetRecM _ _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
-  CLetPolyM _ _ _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
-  CLetRecPolyM _ _ _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
+  CLetRuntimeM _ _ _ runtimeErasure a b c ->
+    maximum (maxVar a : maxVar b : maxVar c - 1 : map maxVar (toList runtimeErasure))
+  CLetRecRuntimeM _ _ _ runtimeErasure a b c ->
+    maximum (maxVar a : maxVar b - 1 : maxVar c - 1 : map maxVar (toList runtimeErasure))
+  CLetPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+    maximum (maxVar a : maxVar b : maxVar c - 1 : map maxVar (toList runtimeErasure))
+  CLetRecPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+    maximum (maxVar a : maxVar b - 1 : maxVar c - 1 : map maxVar (toList runtimeErasure))
   CLetRecGroupM _ definitions body ->
     let count = length definitions
      in maximum
           ( maxVar body - count
-              : [max (maxVar (clrdType definition)) (maxVar (clrdRhs definition) - count) | definition <- definitions]
+              : [ maximum
+                    ( maxVar (clrdType definition)
+                        : maxVar (clrdRhs definition) - count
+                        : map maxVar (toList (clrdRuntimeErasure definition))
+                    )
+                | definition <- definitions
+                ]
           )
   CMeta _ -> -1
   CDo _ _ -> -1
@@ -978,14 +1045,14 @@ ctorFieldRepsAt baseLevel ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi ic q _ _ dom clo@(Closure env body) ->
+        VPiRuntimeM _ _ ic q _ _ _ _ runtimeErasure dom clo@(Closure env body) ->
           if not (closureHasBoundEnv env body)
             then Nothing
             else
               let absoluteLevel = baseLevel + lvl
                   x = VRigid absoluteLevel []
                   cod = closApplyV x clo
-                  acc' = if runtimeConstructorField ctx absoluteLevel ic q dom then scalarRep dom : acc else acc
+                  acc' = if runtimeConstructorPiField ctx absoluteLevel runtimeErasure ic q dom then scalarRep dom : acc else acc
                in walk (lvl + 1) acc' cod
         _ -> Just (reverse acc)
     closApplyV v (Closure env body) = eval ctx (v : env) body

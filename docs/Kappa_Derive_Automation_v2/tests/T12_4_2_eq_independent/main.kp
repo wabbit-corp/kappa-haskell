@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+derive Eq Flag
+
+let evidence : Eq Flag = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceUniquenessMode Eq independent
+--! assertEvidenceUniquenessCertificateValid Eq
+--! assertEvidenceConstructionMode evidence existing

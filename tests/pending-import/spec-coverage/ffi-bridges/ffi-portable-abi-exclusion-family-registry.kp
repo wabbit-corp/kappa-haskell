@@ -18,4 +18,4 @@ module main
 
 let placeholder = ()
 
--- STATUS(a0497523): FAIL — the compiler registers no kappa.ffi.portable-abi-exclusion family and none of the E_FFI_PORTABLE_ABI_* codes (no portable-ABI adapter surface is implemented); every explain-exists assertion fails
+-- STATUS(74742dfd): FAIL — no registered explanation for diagnostic code or family 'kappa.ffi.portable-abi-exclusion' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_NON_FIRST_ORDER_FUNCTION' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_HIGHER_ORDER_VALUE' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_UNMONITORED_CALLBACK' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_DICTIONARY_OR_EVIDENCE' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_DIRECT_BORROW' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_BARE_OWNING_OPAQUE_HANDLE' (§3.1.2A); no registered explanation for diagnostic code or family 'E_FFI_PORTABLE_ABI_ERASED_RUNTIME_PARAMETER' (§3.1.2A)

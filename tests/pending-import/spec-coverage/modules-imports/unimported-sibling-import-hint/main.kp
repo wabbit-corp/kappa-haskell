@@ -12,4 +12,4 @@ module main
 -- message is only "unresolved name 'helperValue' (not in scope)" with
 -- no mention of lib.
 let x = helperValue --!! kappa.name.unresolved
--- STATUS(a0497523): FAIL — no diagnostic message matches /lib/ (saw: "unresolved name 'helperValue' (not in scope)")
+-- STATUS(74742dfd): FAIL — no diagnostic message matches /lib/ (saw: "unresolved name 'helperValue' (not in scope)")

@@ -27,6 +27,11 @@ module Kappa.Pipeline
   , reservedHostRootDiag
   , moduleNameOf
   , preludeState
+  , sourcePreludeState
+  , sourcePreludeArtifactStages
+  , sourcePreludePrefixDiagnostics
+  , preludeSourceFingerprint
+  , resolvedVisibleHeads
   ) where
 
 import Control.Applicative ((<|>))
@@ -53,6 +58,12 @@ import Kappa.Backend.NativeFfi
   )
 import Kappa.Builtins
 import Kappa.Check
+import Kappa.Check.Artifact (checkedPreludeArtifactVersion, restoreCheckedPrelude)
+import Kappa.Check.GeneratedPrelude
+  ( checkedPreludePayload
+  , checkedPreludePayloadHash
+  , checkedPreludeSourceHash
+  )
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (DeclarationUniverseTelescope (..), GName (..), Icit (..), Q (..), Term (..), gnameText)
 import Kappa.CoreLint (lintCoreBodies)
@@ -88,6 +99,10 @@ import Kappa.Prelude
   , stdBuildSource
   )
 import Kappa.Resolve (defaultFixities, fixitiesOf, multiFixityOps, resolveModule)
+import Kappa.SemanticHash (sha256BytesHex, sha256Hex)
+import Kappa.StructuralBinary (decodeStructuralBinary)
+import Kappa.KFrontIR.Build (buildRawKFrontIR)
+import Kappa.KFrontIR.Types (KFrontIR)
 import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
@@ -121,59 +136,113 @@ data CompiledUnit = CompiledUnit
   { cuState :: !CheckState
   , cuDiags :: !Diagnostics
   , cuModule :: !ModuleName
+  , cuFrontIRs :: !(Map.Map ModuleName KFrontIR)
   , cuTrace :: ![TraceEvent]
   }
 
--- | Compile the prelude into the base state, followed by the embedded
--- standard-library modules (currently @std.hash@).
+-- | Fingerprint the complete source bootstrap and its ordering. Separators and
+-- fragment labels are part of the digest so concatenation cannot alias a
+-- different source partition.
+preludeSourceFingerprint :: Text
+preludeSourceFingerprint =
+  sha256Hex
+    ( T.intercalate
+        "\0"
+        [ "std.typelevel.bootstrap"
+        , stdTypeLevelBootstrapSource
+        , "std.prelude"
+        , preludeSource
+        , "std.typelevel"
+        , stdTypeLevelSource
+        , "std.typelevel.packages"
+        , stdTypeLevelPackagesSource
+        , "checked-prelude.schema"
+        , T.pack (show checkedPreludeArtifactVersion)
+        , "compiler-interface"
+        , "1"
+        , "type-level-algebra"
+        , "1"
+        , "level-constructor-normalizer"
+        , "1"
+        , "level-rigid-entailment"
+        , "1"
+        , "level-principal-inference"
+        , "1"
+        , "level-certificate"
+        , "1"
+        ]
+    )
+
+-- | Load the checked, source-free prelude image bundled with the compiler.
+-- A stale, malformed, or schema-incompatible image is an internal compiler
+-- error; normal compilation never falls back to silently rechecking source.
 preludeState :: (CheckState, Diagnostics)
-preludeState =
-  let (typeLevelBootstrapState, typeLevelBootstrapDiags) =
-        stdModule modTypeLevel "<std.typelevel.bootstrap>" stdTypeLevelBootstrapSource builtinState
-      preludeInput =
-        typeLevelBootstrapState
-          { csModule = preludeModule
-          , csScope = Map.singleton "TypeLevel" prelTypeLevel
-          , csScopeAmbig = Map.empty
-          , csModuleAliases = Map.empty
-          , csDiags = []
-          , csScopeNameCache = Nothing
-          }
-   in case parseModule "<std.prelude>" preludeSource of
-    Left ds -> (typeLevelBootstrapState, typeLevelBootstrapDiags ++ ds)
-    Right (m, recovered) ->
-      let (m', rdiags) = resolveModule defaultFixities m
-          (st, diags) = checkModule preludeInput m'
-          stdSources =
-            [ (modTypeLevel, "<std.typelevel>", stdTypeLevelSource)
-            , (modTypeLevel, "<std.typelevel.packages>", stdTypeLevelPackagesSource)
-            , (modDerivingShape, "<std.deriving.shape>", stdDerivingShapeSource)
-            , (modHash, "<std.hash>", stdHashSource)
-            , (modDebug, "<std.debug>", stdDebugSource)
-            , (modBytes, "<std.bytes>", stdBytesSource)
-            , (modUnicode, "<std.unicode>", stdUnicodeSource)
-            , (modFfi, "<std.ffi>", stdFfiSource)
-            , (modFfiC, "<std.ffi.c>", stdFfiCSource)
-            , (modAtomic, "<std.atomic>", stdAtomicSource)
-            , (modArrayMutable, "<std.array.mutable>", stdArrayMutableSource)
-            , (modGradual, "<std.gradual>", stdGradualSource)
-            , (modBridge, "<std.bridge>", stdBridgeSource) -- after std.gradual
-            , (modSupervisor, "<std.supervisor>", stdSupervisorSource)
-            , -- §35.3/§29.8: config-mode schema modules. They are checked
-              -- here so their config-safe vocabulary is registered in
-              -- csGlobals/csCtors/csModuleExports; a build-manifest loader
-              -- (Kappa.Config) installs their names into the manifest's
-              -- schema scope without an ordinary import.
-              (modConfig, "<std.config>", stdConfigSource)
-            , (modBuild, "<std.build>", stdBuildSource)
-            ]
-          (stStd, sdiags) =
+preludeState
+  | checkedPreludeSourceHash /= preludeSourceFingerprint =
+      artifactFailure "the checked prelude source fingerprint is stale"
+  | checkedPreludePayloadHash /= sha256BytesHex checkedPreludePayload =
+      artifactFailure "the checked prelude payload digest does not match"
+  | otherwise =
+      case decodeStructuralBinary checkedPreludePayload of
+        Left message ->
+          artifactFailure ("the checked prelude image is malformed: " <> message)
+        Right artifact ->
+          case restoreCheckedPrelude preludeSourceFingerprint artifact of
+            Left message -> artifactFailure message
+            Right state ->
+              let ready = state {csAllowUnsafeIntrinsics = False, csEmbeddedLoad = False}
+               in (ready, builtinContractDiags ready)
+  where
+    artifactFailure message =
+      ( builtinState
+      , [ diag
+            SevError
+            StageElaborate
+            "E_INTERNAL_PRELUDE_ARTIFACT"
+            (Just "kappa.internal.compiler")
+            noSpan
+            message
+        ]
+      )
+
+-- | Generator-only source bootstrap for the bundled checked prelude image.
+-- Ordinary compiler startup must use 'preludeState' above.
+--
+-- Ordinary @std.*@ modules are
+-- deliberately absent: §8.3/§28.1 make them explicit imports, so eagerly
+-- elaborating every embedded standard module here both changes the semantic
+-- dependency boundary and makes every fresh compiler process pay for modules
+-- it never observes.
+sourcePreludeState :: (CheckState, Diagnostics)
+sourcePreludeState =
+  let (state, stages) = sourcePreludeArtifactStages
+   in (state, concatMap snd stages)
+
+-- | Generator observability for the expensive source bootstrap.  This is the
+-- same shared computation as 'sourcePreludeState', partitioned only at real
+-- semantic module boundaries so the artifact generator can fail or profile a
+-- specific stage without maintaining a second bootstrap pipeline.
+sourcePreludeArtifactStages :: (CheckState, [(Text, Diagnostics)])
+sourcePreludeArtifactStages =
+  case resolvedSourcePrelude of
+    Left ds ->
+      ( typeLevelBootstrapState
+      , [ ("std.typelevel.bootstrap", typeLevelBootstrapDiags)
+        , ("prelude.parse", ds)
+        ]
+       )
+    Right (m', recovered, rdiags) ->
+      let (st, diags) = checkModule preludeInput m'
+          (stTypeLevel, typeLevelDiags) =
             foldl
-              (\(stAcc, dsAcc) (mn, path, src) ->
-                 let (stNext, ds) = stdModule mn path src stAcc
-                  in (stNext, dsAcc ++ ds))
+              (\(stAcc, dsAcc) (path, source) ->
+                 let (stNext, fragmentDiags) =
+                       stdModule modTypeLevel path source stAcc
+                  in (stNext, dsAcc ++ fragmentDiags))
               (st, [])
-              stdSources
+              [ ("<std.typelevel>", stdTypeLevelSource)
+              , ("<std.typelevel.packages>", stdTypeLevelPackagesSource)
+              ]
           -- §4.5/§4.7 fail-safe: the embedded prelude/std-lib elaborated with
           -- the unsafe-intrinsic exemption ON (so they could admit the proof
           -- helpers and wrap the debug prims). Clear it in the base state handed
@@ -181,16 +250,161 @@ preludeState =
           -- assertType probe), so the SAFE default is "gated": a consumer that
           -- forgets to reset the flag inherits 'False', not the exemption. Only
           -- a user module with @AllowUnsafeIntrinsics re-enables it.
-          st' = stStd {csAllowUnsafeIntrinsics = False, csEmbeddedLoad = False}
+          st' = stTypeLevel {csAllowUnsafeIntrinsics = False, csEmbeddedLoad = False}
        in
         ( st'
-        , typeLevelBootstrapDiags
-            ++ recovered
-            ++ rdiags
-            ++ diags
-            ++ sdiags
-            ++ builtinContractDiags st'
+        , [ ("std.typelevel.bootstrap", typeLevelBootstrapDiags)
+          , ("prelude.parse-recovery", recovered)
+          , ("prelude.resolve", rdiags)
+          , ("prelude.check", diags)
+          , ("std.typelevel.fragments", typeLevelDiags)
+          , ("prelude.contract", builtinContractDiags st')
+          ]
         )
+
+-- | Run the exact source-prelude checker on a declaration prefix. This is a
+-- diagnostic/performance probe only: production startup loads the complete
+-- checked artifact, and artifact generation always calls
+-- 'sourcePreludeArtifactStages'. Prefixing the already parsed and resolved
+-- module lets performance regressions be bisected without creating smaller
+-- source fixtures that could mask cross-declaration behaviour.
+sourcePreludePrefixDiagnostics :: Int -> Diagnostics
+sourcePreludePrefixDiagnostics declarationCount =
+  typeLevelBootstrapDiags ++ case resolvedSourcePrelude of
+    Left diagnostics -> diagnostics
+    Right (resolved, recovered, resolutionDiagnostics) ->
+      let prefix = resolved {modDecls = take declarationCount (modDecls resolved)}
+          (_, diagnostics) = checkModule preludeInput prefix
+       in recovered ++ resolutionDiagnostics ++ diagnostics
+
+typeLevelBootstrapState :: CheckState
+typeLevelBootstrapDiags :: Diagnostics
+(typeLevelBootstrapState, typeLevelBootstrapDiags) =
+  stdModule
+    modTypeLevel
+    "<std.typelevel.bootstrap>"
+    stdTypeLevelBootstrapSource
+    builtinState
+
+preludeInput :: CheckState
+preludeInput =
+  typeLevelBootstrapState
+    { csModule = preludeModule
+    , csScope = Map.singleton "TypeLevel" prelTypeLevel
+    , csScopeAmbig = Map.empty
+    , csModuleAliases = Map.empty
+    , csDiags = []
+    , csScopeNameCache = Nothing
+    }
+
+resolvedSourcePrelude :: Either Diagnostics (Module, Diagnostics, Diagnostics)
+resolvedSourcePrelude = case parseModule "<std.prelude>" preludeSource of
+  Left diagnostics -> Left diagnostics
+  Right (parsed, recovered) ->
+    let (resolved, resolutionDiagnostics) = resolveModule defaultFixities parsed
+     in Right (resolved, recovered, resolutionDiagnostics)
+
+-- | Source fragments for ordinary embedded standard modules. The module key
+-- is a resolved module identity; source spellings never select semantics.
+-- Multiple fragments intentionally share @std.typelevel@.
+embeddedStandardModules :: Map.Map ModuleName [(FilePath, Text)]
+embeddedStandardModules =
+  Map.fromList
+    [ (modDerivingShape, [("<std.deriving.shape>", stdDerivingShapeSource)])
+    , (modHash, [("<std.hash>", stdHashSource)])
+    , (modDebug, [("<std.debug>", stdDebugSource)])
+    , (modBytes, [("<std.bytes>", stdBytesSource)])
+    , (modUnicode, [("<std.unicode>", stdUnicodeSource)])
+    , (modFfi, [("<std.ffi>", stdFfiSource)])
+    , (modFfiC, [("<std.ffi.c>", stdFfiCSource)])
+    , (modAtomic, [("<std.atomic>", stdAtomicSource)])
+    , (modArrayMutable, [("<std.array.mutable>", stdArrayMutableSource)])
+    , (modGradual, [("<std.gradual>", stdGradualSource)])
+    , (modBridge, [("<std.bridge>", stdBridgeSource)])
+    , (modSupervisor, [("<std.supervisor>", stdSupervisorSource)])
+    , (modConfig, [("<std.config>", stdConfigSource)])
+    , (modBuild, [("<std.build>", stdBuildSource)])
+    ]
+
+-- | Extend the shared implicit-prelude state with exactly the ordinary
+-- embedded modules named by the checked import graph. Dependencies are read
+-- from parsed module declarations and loaded first. A malformed embedded
+-- source still reaches 'stdModule' and reports its ordinary diagnostics;
+-- dependency discovery itself grants no semantic facts.
+preludeStateWithStandardModules :: Set.Set ModuleName -> (CheckState, Diagnostics)
+preludeStateWithStandardModules requested =
+  let (base, baseDiags) = preludeState
+      embeddedBase =
+        base
+          { csAllowUnsafeIntrinsics = True
+          , csEmbeddedLoad = True
+          }
+      (_, finalState, moduleDiags) =
+        foldl loadOne (Set.empty, embeddedBase, []) (Set.toAscList requested)
+      consumerState =
+        finalState
+          { csAllowUnsafeIntrinsics = False
+          , csEmbeddedLoad = False
+          }
+   in (consumerState, baseDiags ++ moduleDiags)
+  where
+    loadOne acc@(loaded, st, ds) mn
+      | mn `Set.member` loaded = acc
+      | otherwise =
+          case Map.lookup mn embeddedStandardModules of
+            Nothing -> (Set.insert mn loaded, st, ds)
+            Just fragments ->
+              let deps = embeddedDependencies fragments
+                  (loadedDeps, stDeps, depDiags) =
+                    foldl loadOne (loaded, st, ds) (Set.toAscList deps)
+                  (stLoaded, ownDiags) =
+                    foldl
+                      (\(stAcc, dsAcc) (path, source) ->
+                         let (stNext, fragmentDiags) = stdModule mn path source stAcc
+                          in (stNext, dsAcc ++ fragmentDiags))
+                      (stDeps, [])
+                      fragments
+               in (Set.insert mn loadedDeps, stLoaded, depDiags ++ ownDiags)
+
+    embeddedDependencies fragments =
+      Set.fromList
+        [ dependency
+        | (_, source) <- fragments
+        , Right (parsedModule, _) <- [parseModule "<embedded-std-dependency>" source]
+        , dependency <- embeddedModulesReferencedBy parsedModule
+        , dependency /= moduleNameOfEmbedded parsedModule
+        ]
+
+    moduleNameOfEmbedded parsedModule =
+      maybe (ModuleName []) (ModuleName . modPathName) (modHeader parsedModule)
+
+-- | Resolve the embedded-module candidates of explicit import/re-export
+-- syntax. Singleton syntax is intentionally ambiguous (§8.3), so both the
+-- module path and its one-segment extension are considered; membership in the
+-- compiler-owned module registry decides which candidates are loadable.
+embeddedModulesReferencedBy :: Module -> [ModuleName]
+embeddedModulesReferencedBy m =
+  nub
+    [ candidate
+    | declaration <- modDecls m
+    , specs <- case declaration of
+        DImport imported _ -> [imported]
+        DExport exported _ -> [exported]
+        _ -> []
+    , spec <- specs
+    , candidate <- candidates spec
+    , Map.member candidate embeddedStandardModules
+    ]
+  where
+    candidates = \case
+      ImportModule (RefPath path) _ -> [ModuleName (modPathName path)]
+      ImportItems (RefPath path) _ -> [ModuleName (modPathName path)]
+      ImportAll (RefPath path) _ -> [ModuleName (modPathName path)]
+      ImportSingleton (RefPath path) name ->
+        [ ModuleName (modPathName path)
+        , ModuleName (modPathName path ++ [nameText name])
+        ]
+      _ -> []
 
 -- | §28: the prelude must define every name the compiler wires in (see
 -- "Kappa.Builtins"). Any name the compiler spells but the prelude does not
@@ -367,7 +581,8 @@ manifestModuleName = ModuleName ["__manifest"]
 -- compute value provenance (§35.7) over the surface AST.
 compileManifest :: FilePath -> Text -> (CheckState, ModuleName, Maybe Module, Diagnostics)
 compileManifest path src =
-  let (pst, pdiags) = preludeState
+  let (pst, pdiags) =
+        preludeStateWithStandardModules (Set.fromList [modConfig, modBuild])
    in case parseModule path src of
         Left ds -> (pst, manifestModuleName, Nothing, pdiags ++ ds)
         Right (m, recovered) ->
@@ -514,7 +729,19 @@ compileFilesWithCfg = compileFilesWithCfgInj id
 -- functions is tracked in docs/READABILITY_BACKLOG.md.)
 compileFilesWithCfgInj :: (CheckState -> CheckState) -> Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
 compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
-  let (pst0, pdiags) = preludeState
+  let requestedStandardModules =
+        Set.fromList
+          [ standardModule
+          | (_, Right (parsedModule, _)) <- parsed
+          , standardModule <- embeddedModulesReferencedBy parsedModule
+          ]
+      -- Prelude interface availability and implicit scope insertion are
+      -- independent (§28.1).  Every unit starts from the checked interface so
+      -- explicit @std.prelude@ and ordinary @std.*@ imports remain valid under
+      -- @--no-implicit-prelude@; 'csPreludeDisabled' below controls only which
+      -- names enter a module's unqualified scope.
+      (pst0, pdiags) =
+        preludeStateWithStandardModules requestedStandardModules
       -- §4.2: seed the build configuration into the state the user
       -- modules are checked against; the prelude itself is always checked
       -- with the default (disabled) configuration. @inject@ registers any
@@ -590,6 +817,11 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
         , let frs = [fr | (mn', fr) <- goodFrags, mn' == mn]
         , not (null frs)
         ]
+      rawFrontIRs =
+        Map.fromList
+          [ (mn, buildRawKFrontIR syntax)
+          | (mn, syntax, _) <- merged
+          ]
       mergedOf [] = Module [] Nothing []
       mergedOf frs@(fr0 : _) =
         Module
@@ -778,10 +1010,13 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                      in
                     usageDiagnostics
                       (csExpansions st1)
+                      (csUsageExpressionTypes st1)
                       (csMutableBindingFields st1)
                       (csDiscardedResultTypes st1)
                       (csStaticKindBinders st1)
                       (csErasedArgumentSpans st1)
+                      (csBorrowedArgumentDemands st1)
+                      (csErasedExpressionSpans st1)
                       (csImplicitExpressionDemands st1)
                       (usageImportedParams byName st1 ie)
                       (usageImportedInoutResults byName st1 ie)
@@ -798,6 +1033,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (csPatternBinderBorrows st1)
                       (csConstructorPatternLetSpans st1)
                       (usageImportedBorrowViewHeads st1 ie)
+                      (usageImportedNames st1 ie)
                       (usageVisibleMonadicResultHeads st1 ie usageModule)
                       (usageImportedProjections byName st1 ie)
                       (usageImportedDuplicableStorageHeads byName st1 ie)
@@ -1037,7 +1273,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- @kapp(unit, …)@ crash class) as a diagnostic rather than a crash.
       lintDiags =
         lintCoreBodies (csGlobals finalSt') (csMetas finalSt') (csCoreBodies finalSt')
-   in CompiledUnit finalSt' (allDiags ++ coreCapabilityDiags ++ lintDiags) lastName allTrace
+   in CompiledUnit finalSt' (allDiags ++ coreCapabilityDiags ++ lintDiags) lastName rawFrontIRs allTrace
 
 renderModuleName :: ModuleName -> Text
 renderModuleName (ModuleName segs) = T.intercalate "." segs
@@ -1613,9 +1849,9 @@ coreCtorParamInfos :: Term -> [CtorParamInfo]
 coreCtorParamInfos = go [] []
   where
     go env dataParams = \case
-      CPiEvidenceM _ _ Impl _ _ nm _ _ _ body ->
+      CPiRuntimeM _ _ Impl _ _ nm _ _ _ _ body ->
         go (nm : env) (nm : dataParams) body
-      CPiEvidenceM _ _ Expl q _ nm _ _ dom body ->
+      CPiRuntimeM _ _ Expl q _ nm _ _ _ dom body ->
         CtorParamInfo
           (if nm == "_" then Nothing else Just nm)
           (coreQuantityExpr q)
@@ -1626,7 +1862,7 @@ coreCtorParamInfos = go [] []
 
 coreDropBinders :: [Text] -> Term -> ([Text], Term)
 coreDropBinders env = \case
-  CPiEvidenceM _ _ _ _ _ nm _ _ _ body -> coreDropBinders (nm : env) body
+  CPiRuntimeM _ _ _ _ _ nm _ _ _ _ body -> coreDropBinders (nm : env) body
   ty -> (env, ty)
 
 coreUnwrapActionType :: Set.Set GName -> Term -> Term
@@ -2200,26 +2436,19 @@ usageImportedBinaryStorageHeads st ie =
 
 visibleStorageHeads :: CheckState -> ImportEnv -> Set.Set GName -> Set.Set Text
 visibleStorageHeads st ie globals =
+  resolvedVisibleHeads (usageImportedNames st ie) globals
+
+-- | Select source spellings by the resolved declaration identity that is
+-- actually visible at each spelling. This deliberately does not infer facts
+-- from a spelling: a custom imported @List@ or @IO@ must not inherit prelude
+-- storage semantics merely because another prelude name remains in scope.
+resolvedVisibleHeads :: (Ord alias, Ord identity) => Map.Map alias identity -> Set.Set identity -> Set.Set alias
+resolvedVisibleHeads importedNames globals =
   Set.fromList
     [ alias
-    | (alias, g) <- Map.toList (usageImportedNames st ie)
+    | (alias, g) <- Map.toList importedNames
     , g `Set.member` globals
     ]
-    `Set.union` implicitPreludeHeads
-  where
-    preludeActive =
-      or
-        [ Map.lookup "Int" (ieScope ie) == Just prelInt
-        , Map.lookup "String" (ieScope ie) == Just prelString
-        , Map.lookup "IO" (ieScope ie) == Just prelIO
-        ]
-    implicitPreludeHeads =
-      Set.fromList
-        [ nm
-        | preludeActive
-        , GName mn nm <- Set.toList globals
-        , mn == preludeModule
-        ]
 
 storageAliasGlobals :: Map.Map ModuleName (Module, [Fragment]) -> CheckState -> Set.Set GName -> Set.Set GName
 storageAliasGlobals byName st seed =

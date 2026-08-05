@@ -1,0 +1,49 @@
+module main
+
+import std.prelude.(type Exit(..))
+
+makeStaleRestore : UIO (UIO Unit -> UIO Unit)
+let makeStaleRestore =
+    mask (\restore ->
+        pure (\action -> restore action)
+    )
+
+main : UIO Unit
+let main =
+    do
+        let ready <- newPromise @Void @Unit
+        let gate <- newPromise @Void @Unit
+        let report <- newPromise @Void @Bool
+
+        let child <- fork (
+            ensuring
+                (
+                    do
+                        let stale <- makeStaleRestore
+                        mask (\_ ->
+                            do
+                                completePromise ready (Success ())
+                                stale (awaitPromise gate)
+                                completePromise report (Success True)
+                                pure ()
+                        )
+                )
+                (
+                    do
+                        completePromise report (Success False)
+                        pure ()
+                )
+        )
+
+        awaitPromise ready
+        interruptFork child
+        completePromise gate (Success ())
+        let reached <- awaitPromise report
+        let _ <- await child
+        println reached
+
+--! mode run
+--! requires capability runTask
+--! entry main
+--! assertStdout "True\n"
+--! assertExitCode 0

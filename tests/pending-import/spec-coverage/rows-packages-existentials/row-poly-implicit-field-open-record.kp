@@ -23,4 +23,4 @@ let readPos (@0 r : RecRow) (& rec : (val : Int, @p : this.val > 0 | r)) : Int =
 caller : Int
 let caller = readPos (val = 5, @p = refl, extra = "more")
 
--- STATUS(a0497523): FAIL — record binder types containing implicit fields fail to check (kappa.type.mismatch at the binder) and parameter-side implicit unpacking is missing (E_UNSOLVED_IMPLICIT)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 24

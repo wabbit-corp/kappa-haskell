@@ -14,4 +14,4 @@ let main = do
     let a = 5 ?
     let b = 6
     pure ()
--- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'postfix' at start of declaration" at line 9

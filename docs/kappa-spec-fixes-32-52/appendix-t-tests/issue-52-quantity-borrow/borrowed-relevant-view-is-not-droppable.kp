@@ -1,0 +1,19 @@
+module main
+
+data Token : Type =
+    Token
+
+data LinearBox : Type =
+    LinearBox (value : Int) (1 token : Token)
+
+readValue : (1 & box : LinearBox) -> Int
+let readValue box =
+    box.value
+
+ignoreRelevantBorrow : (>=1 & box : LinearBox) -> Unit
+let ignoreRelevantBorrow box =
+    ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

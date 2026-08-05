@@ -34,4 +34,4 @@ let bad (1 n : Nest) : UIO Int =
             useToken ~c.tok
         finishNest n
 
--- STATUS(a0497523): FAIL — 0 errors: `~c.tok` through the borrowed alias is accepted as if `c` were a fresh root; write-back rebinds only `c`, n.inner.tok is never consumed nor restored, and the token is consumed twice (callee + finishNest). Run-mode probe on an Int variant prints alias=successor, root=old value.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /(borrow)/ (no diagnostics)

@@ -45,4 +45,4 @@ let g9 n decreases n = if n <= 0 then 9 else g0 (n - 1)
 main : UIO Unit
 let main = printInt (g0 3)
 
--- STATUS(a0497523): FAIL — all 10 members warned W_TERMINATION_UNVERIFIED (kappa.termination.failure): declared §15.4 Int `decreases n` measures are never combined with the §15.10 hidden phase component (2-member minimal fails identically; the same SCC with both edges decreasing n passes, and the structural no-decreases analogue of this exact 10-member shape passes)
+-- STATUS(74742dfd): FAIL — expected 0 warnings, got 10

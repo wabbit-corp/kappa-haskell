@@ -1,0 +1,1853 @@
+diff --git a/docs/KNOWN_SPEC_ISSUES.md b/docs/KNOWN_SPEC_ISSUES.md
+index 22b03f1..5ed67f6 100644
+--- a/docs/KNOWN_SPEC_ISSUES.md
++++ b/docs/KNOWN_SPEC_ISSUES.md
+@@ -43,6 +43,10 @@ Numbered entries removed from Parts I-II:
+ * **15.** §4: unhide/clarify recognized/gated/audited but carry no deeper semantic effect — §4.3 now explicitly defines the semantics the possible fix requested: "`unhide` imports a name that is marked `private` in the imported module, as if it were exported"; "`clarify` …
+ * **16.** §10.1.3,§10.2 vs §11.1: No universe size check for data ctor args — §10.4.1 'Constructor universe-size rule' (L9579) now requires every constructor-local binder `A : Type α` to satisfy solver-proved `α ≤ ρ` under the declared result universe `F Δ :…
+ * **17.** RESOLVED: §11.1/§11.1.2/§11.3 lacked Pi formation & level discipline — Redesigned §11 supplies the missing rules: `TypeLevel` is an ordinary opaque prelude type whose values include `ω` (L10390-10419); universe formation `Γ ⊢ Type u : Type (succ u)` (…
++* **32.** §18.1.12 / §32.2.5 left nested `mask` restoration ambiguous — resolved 2026-08-03: masking is now
++  frame-identified and compositional; each restore capability removes only its own topmost frame on its originating
++  fiber, wrong-order/repeated/cross-fiber restoration is inert, `uninterruptibleMask` restores the exact prior state,
++  and the restoration handoff has no post-action interruption gap. `poll` no longer pierces `uninterruptible`.
+ * **33.** §18.1.19 worked example described deep-handler behavior while using shallow `handle` — resolved 2026-07-27:
+   the examples now use valid declared effect labels, `deep handle`, and `runPure`; the prose separately pins exact-label
+   selection, reinstallation, nearest-handler selection, and identity-preserving rebinding.
+@@ -56,6 +60,14 @@ Numbered entries removed from Parts I-II:
+   matrix are pinned.
+ * **47.** Exported fixity was per operator, not per fixity kind — resolved 2026-07-24: operator identity, fixity,
+   export, and import selectors are now per role (infix/prefix/postfix) (§5.5.2, §7.1.1, §8.3.1).
++* **52.** §12.2.6 and §20.10.4 treated `&` as a quantity in duplication/drop tables — resolved 2026-08-03:
++  every binder and query-row entry is now checked as the orthogonal pair `(interval quantity, access mode)`; all tables
++  contain interval quantities only, borrowed-view duplication is separated from referent duplication, and the same rule
++  governs ordinary bindings, lambda captures, implicit binders, and query rows.
++* **76.** §27.6 said a `blocking-cancellable` call's cancellation mechanism was attempted “at most once” —
++  resolved 2026-08-03 while aligning foreign calls with the mask-state model: when interruption is deliverable the
++  runtime must attempt the documented safe mechanism unless the call already completed, must not attempt it more than
++  once, and must leave the request pending without invoking host cancellation while `Masked` or `Uninterruptible`.
+ * **88.** Conflicting imported fixities of the same operator and kind — resolved 2026-07-24: same-role fixity
+   disagreements are §8.3.1A imported-binding collisions; use requires local declaration or selective import (§5.5.2).
+ * **89.** Prefix minus hard-wired to `negate` — resolved 2026-07-24: minus has per-role identities resolved by
+@@ -922,35 +934,6 @@ or-pattern branch whose alternatives are all constructor patterns contributes
+ LacksCtor evidence for each alternative's head constructor to subsequent
+ residual branches.'
+ 
+-## 32. §18.1.12 (and §32.2.5): `mask` restore semantics under nesting unspecified: unconditional unmask vs restore-to-entry-state
+-
+-**ambiguity** · severity **medium** · verification: **confirmed** · Spec.md
+-lines 19213-19215, 19241-19242, 35376-35395
+-
+-The only normative statement about `restore` is that it "re-enables
+-interruption for a selected subcomputation"; §32.2.5 adds nothing about
+-nesting. Two conforming readings exist with observably different behavior: (A)
+-`restore` unconditionally re-enables interruption delivery; (B) `restore`
+-restores the interruptibility state that was in effect when the corresponding
+-`mask` was entered (the GHC/ZIO discipline). Failure scenario:
+-`uninterruptible (helper ...)` where `helper` internally uses `mask (\restore
+--> ... restore waitOp ...)` — under reading (A), a pending interruption is
+-delivered inside `waitOp`, breaking the caller's uninterruptible cleanup
+-guarantee (any library using mask/restore silently punches a hole in every
+-caller's mask); under reading (B) it is not delivered. Since finalizers run
+-masked (19246-19247) and §32.2.14 permits finalizers that "explicitly restore
+-interruption" (line 35614), this ambiguity directly affects resource-safety
+-code.
+-
+-> line 19241-19242: "`mask f` suppresses interruption while `f` executes. The
+-`restore` function re-enables interruption for a selected subcomputation."
+-
+-**Possible fix:** Add to §18.1.12: "The `restore` function passed to `mask f`
+-restores the interruptibility status that was in effect immediately before
+-that `mask` was entered; it does not unconditionally enable interruption. In
+-particular, applying `restore` inside an outer `mask` or `uninterruptible`
+-region whose masking was already in effect at that `mask`'s entry does not
+-make the subcomputation interruptible." Mirror the sentence in §32.2.5.
+ 
+ ## 34. §20.2, §20.10.2 (cf. §6.4, §30.7): Element semantics of ranges (endpoint inclusion, direction, emptiness, meaning of `exclusive`) are never defined
+ 
+@@ -1445,31 +1428,6 @@ are evaluated after all supplied field expressions have been evaluated, in
+ constructor-parameter order.' (Or specify full constructor-parameter-order
+ interleaving; either choice, stated normatively, removes the divergence.)
+ 
+-## 52. §12.2.6 vs §12.2, §12.2.1: Duplicability table lists `&` among "ordinary v1 surface quantities", contradicting "`&` is not a quantity"
+-
+-**contradiction** · severity **low** · verification: **confirmed** · Spec.md
+-lines 11484-11489 vs 10619, 11037
+-
+-§12.2 states flatly "`&` is not a quantity" and §12.2.1 states "Borrowed
+-access is not an inhabitant of `Quantity`", yet the §12.2.6 duplication-
+-position table, explicitly scoped to "ordinary v1 surface quantities",
+-enumerates `&` as a duplicable quantity: "duplicable quantities: 0, &, >=1,
+-ω". An implementer deriving the duplicability predicate over `Quantity` from
+-this table must invent a sixth quantity value that other sections forbid; it
+-also leaves unstated whether a `(1 & x : A)` binding (borrowed access,
+-interval quantity 1) is duplicable — the `&` row says yes, the `1` row says
+-no.
+-
+-> line 10619: "`&` is not a quantity."; lines 11486-11489: "For ordinary v1
+-surface quantities, ignoring internal path state: duplicable quantities: 0, &,
+->=1, ω not duplicable quantities: 1, <=1"
+-
+-**Possible fix:** Remove `&` from the quantity table and add a separate
+-sentence: 'A borrowed binding's view is duplicable as a shared borrow
+-regardless of access mode; the binding's interval quantity is checked
+-separately, so a borrowed binding at interval quantity 1 or <=1 remains non-
+-duplicable for interval accounting.' (Mirror the analogous fix already made
+-for droppability at lines 11473-11474.)
+ 
+ ## 53. §14.1 vs §14.1.1: Eq's eqSound/eqComplete declared with borrowed binders in §14.1 but owned binders in §14.1.1
+ 
+@@ -2271,44 +2229,6 @@ been supplied for it." (Or, if strictness is intended: "Every implicit
+ constructor field MUST appear exactly once in the argument list, either
+ supplied or omitted.")
+ 
+-## 76. §27.6 (Foreign-call interruption classification): blocking-cancellable cancellation 'MUST attempt ... at most once' permits zero attempts, silently downgrading to plain blocking
+-
+-**ambiguity** · severity **low** · verification: **weakened** · Spec.md lines
+-29063-29064, 29070-29071
+-
+-'MUST attempt the documented safe cancellation mechanism at most once' is
+-literally satisfied by never attempting cancellation. A conforming runtime may
+-therefore treat every `blocking-cancellable` call exactly like `blocking`
+-(interruption pending until natural return), while another attempts prompt
+-cancellation — an observable divergence (prompt fiber interruption vs.
+-indefinite hang until the foreign call completes). This zero-attempt reading
+-also contradicts the same section's rule that a backend that 'cannot realize
+-the documented safe cancellation mechanism MUST reject that foreign
+-declaration or deployment rather than silently downgrading it': a backend that
+-CAN cancel but chooses not to has achieved precisely the silent downgrade that
+-rule forbids.
+-
+-> 29063-29064: "If a fiber is interrupted while executing a `blocking-
+-cancellable` call, the runtime MUST attempt the documented safe cancellation
+-mechanism at most once."; 29070-29071: "A backend that cannot realize the
+-documented safe cancellation mechanism MUST reject that foreign declaration or
+-deployment rather than silently downgrading it."
+-
+-*Verifier caveat (why this is weakened):* Quotes accurate (29063-29064,
+-29070-29071) and the literal 'at most once' does state only an upper bound.
+-But the immediately following rules close the loophole under any charitable
+-reading: 29065 'The cancellation attempt is best-effort...' uses the definite
+-article, presupposing an attempt; 29066-29067 enumerate only failure modes of
+-an attempt made ('unavailable, refused, races with normal completion'); and
+-29082-29083 make the documented cancellation mechanism 'part of the required
+-runtime c …
+-
+-**Possible fix:** Replace with: "the runtime MUST attempt the documented safe
+-cancellation mechanism, and MUST NOT attempt it more than once." (If
+-deliberate latitude is intended for races with normal completion, say instead:
+-"MUST attempt ... unless the call has already completed, and MUST NOT attempt
+-it more than once.")
+-
+ ## 77. §28.1 vs §28.2.3 (and §16.1.3): `and`/`or` must parse out of the box per §28.1, but the normative minimum fixity table omits them, so precedence is implementation-chosen and the same source parses differently
+ 
+ **ambiguity** · severity **low** · verification: **weakened** · Spec.md lines
+diff --git a/docs/Spec.md b/docs/Spec.md
+index c207003..a8e308c 100644
+--- a/docs/Spec.md
++++ b/docs/Spec.md
+@@ -15455,11 +15455,13 @@ Ambient demand `δ` is either `0` or `1`.
+ 
+   for every interval quantity `q`.
+ * For an application `f a1 ... an`, if the whole application is checked at ambient demand `δ`, and the selected binder
+-  for argument `ai` has declared quantity or borrow obligation `qi`, then the runtime demand imposed on `ai` is
+-  `δ · qi`.
++  for argument `ai` has interval quantity `qi`, then the runtime demand imposed on `ai` is `δ · qi`.
++  The binder's owned-versus-borrowed access mode is checked separately and is not an operand of demand scaling.
+ * Consequently, when `δ = 0`, all subexpressions of the application contribute zero runtime demand, even when the
+-  function's parameters are declared at quantity `ω`, `1`, `&`, or another runtime-relevant quantity.
+-* For a borrowed binder `(q & x : A)` or `(q &[ρ] x : A)`, ambient demand scales the interval quantity `q`.
++  function's parameters have a runtime-relevant interval quantity, whether their access mode is owned or borrowed.
++* For a borrowed binder `(q & x : A)` or `(q &[ρ] x : A)`, ambient demand scales the interval quantity `q` exactly as it
++  would for an owned binder. The marker `&` never participates in quantity multiplication, addition, comparison, or
++  `QuantitySatisfies`.
+ * When `δ · q = 0`, no runtime borrow obligation is created, because the corresponding use is erased before runtime.
+ * When `δ · q` has nonzero upper bound, the ordinary borrow-checking rules apply for the duration specified by the
+   borrowed binder's scope.
+@@ -15861,20 +15863,31 @@ Accepted, assuming `useToken` demands its argument at an interval whose lower bo
+ 
+ Droppability:
+ 
+-A value is **droppable for positive-lower-bound checking** iff every runtime-relevant component being discarded has
+-lower bound zero, or is borrowed.
++Droppability is checked over the orthogonal pair `(interval quantity, access mode)` and, for owned values, over the
++runtime-relevant structure of the value being abandoned.
+ 
+-For the v1 surface quantities:
++The quantity component permits zero demand exactly as follows for the closed v1 surface quantities:
+ 
+ ```text
+-droppable quantities:      0, <=1, ω
+-not droppable quantities:  1, >=1
++droppable interval quantities:      0, <=1, ω
++not droppable interval quantities:  1, >=1
+ ```
+ 
+-Borrowed access does not by itself make a positive-lower-bound binder droppable.
++The access/structure component is checked separately:
+ 
+-For example, `(1 & x : A)` is not droppable, because its interval quantity is `1`.
+-By contrast, `(& x : A)` is droppable because it is sugar for `(ω & x : A)`.
++* abandoning an **owned** value also requires every owned runtime-relevant component that would be lost to be
++  structurally droppable under the same rule;
++* abandoning a **borrowed** binding abandons only the shared borrowed view, not the referent or its ownership, and does
++  not require the referent type to be droppable; and
++* dropping a borrowed view does not extend its region or create an escape, although any independently escaping value
++  that captures the borrow remains subject to §§12.3-12.4.
++
++A discard is well-typed only when the interval quantity permits zero demand and the applicable access/structure check
++succeeds. The marker `&` appears in neither quantity class because it is not a quantity.
++
++For example, `(1 & x : A)` is not droppable because its interval quantity is `1`, even though only a borrowed view would
++be abandoned. By contrast, `(& x : A)` is sugar for `(ω & x : A)` and is droppable even when `A` itself contains
++non-droppable owned components, because discarding that binding does not discard the referent.
+ 
+ This droppability classification is used by refutable bindings, discarded branch residues, loop exits, and other
+ constructs that may abandon values without binding them.
+@@ -15966,35 +15979,66 @@ A discard position is well-typed only when every runtime-relevant value discarde
+ For v1, values carrying quantity `1` or `>=1` are not droppable by default. Values available at quantities `0`, `<=1`,
+ or `ω` are droppable for this purpose, subject to the ordinary borrow-escape and capture rules.
+ 
+-Borrowed bindings are droppable when their interval quantity is droppable. For example, `(& x : A)` is droppable because
+-it is sugar for `(ω & x : A)`, while `(1 & x : A)` is not droppable.
++Borrowed bindings are droppable exactly when their interval quantity permits zero demand. Discarding such a binding
++abandons only the shared borrowed view and does not discard or require `Shareable` / structural droppability of the
++referent. For example, `(& x : A)` is droppable because it is sugar for `(ω & x : A)`, while `(1 & x : A)` is not
++droppable. The access marker `&` is never itself consulted as a quantity.
+ 
+ Duplication positions:
+ 
+ A **duplication position** is a use that creates an additional live runtime-relevant value while preserving the original
+ owner, place, cell, or container that already holds that value.
+ 
+-A duplication position is well-typed only when every runtime-relevant component being duplicated is duplicable under the
+-quantity and path-state rules.
++Every binder and field has two independent components relevant to duplication:
++
++```text
++interval quantity q
++access mode       owned | borrowed ρ
++```
++
++The quantity component permits duplication exactly as follows for the closed v1 surface quantities, ignoring internal
++path state:
++
++```text
++duplicable interval quantities:      0, >=1, ω
++not duplicable interval quantities:  1, <=1
++```
++
++Equivalently, a runtime-relevant binding is quantity-duplicable when its normalized interval has unbounded upper bound.
++Quantity `0` is included because it has no runtime-relevant value to copy. For a symbolic quantity, the checker must
++establish the corresponding normalized upper-bound fact from the intrinsic quantity rules and available quantity
++evidence; it must not guess from the access mode.
++
++Access-mode and value checks are then applied separately:
+ 
+-For ordinary v1 surface quantities, ignoring internal path state:
++* duplicating an **owned** binding duplicates the runtime value or a visible component of it, and therefore requires the
++  value, selected component, and current path state to be duplicable;
++* duplicating a **borrowed** binding duplicates only the shared borrowed view, not the referent or its ownership. This
++  does not require the referent type itself to be `Shareable`, but the borrow region must remain live and the selected
++  path must remain valid and unconsumed; and
++* a duplication position is well-typed only when both the interval-quantity check and the applicable access/value/path
++  check succeed.
++
++Consequently:
+ 
+ ```text
+-duplicable quantities:      0, &, >=1, ω
+-not duplicable quantities:  1, <=1
++(& x : A)       = (ω & x : A)    -- quantity-duplicable borrowed view
++(>=1 & x : A)                    -- quantity-duplicable borrowed view
++(1 & x : A)                      -- not quantity-duplicable
++(<=1 & x : A)                    -- not quantity-duplicable
+ ```
+ 
+ Compile-time-only components are duplicable for runtime-quantity purposes, but they still participate in dependency
+ analysis, definitional equality, interface identity, and region-escape checking.
+ 
+-Path-sensitive state may make a component non-duplicable even when its outer quantity would otherwise permit
+-duplication. In particular, a partially consumed record path may not be duplicated.
++Path-sensitive state may make a component non-duplicable even when its interval quantity and access mode would otherwise
++permit duplication. In particular, a partially consumed record path may not be duplicated.
+ 
+ For records, tuple-like records, constructor payloads with visible field quantities, and other structurally visible
+-values, the checker applies this duplicability test componentwise. For opaque, abstract, foreign, or representation-
+-hidden values, the checker MUST be conservative: such a value is duplicable only when the visible interface, trusted
+-summary, selected primitive, or an explicit library contract such as `Shareable A` justifies duplicability for the
+-operation being checked.
++values, the checker applies these checks componentwise. For opaque, abstract, foreign, or representation-hidden owned
++values, the checker MUST be conservative: such a value is duplicable only when the visible interface, trusted summary,
++selected primitive, or an explicit library contract such as `Shareable A` justifies duplicability for the operation
++being checked. This conservatism does not forbid copying a valid shared borrowed view of such a value.
+ 
+ A mutable-variable current-value read under §18.6.1, and an explicit recognized `readRef (ref x)` of the same surface
+ cell, are duplication positions: the cell retains its stored value and the read produces an additional value. Therefore
+@@ -16380,9 +16424,11 @@ Borrow tracking for records is path-sensitive. A borrow of a record field does n
+ Definitions:
+ 
+ * A **borrow root** is a stable variable, parameter, or hidden temporary from which the borrowed view is projected. In
+-  v1, borrow introduction is defined for roots currently held at `1`, `<=1`, `>=1`, `ω`, or `&`. Hidden temporaries
+-  introduced by elaboration of borrowed local bindings (`let & pat = expr`) are borrow roots for the scope of that
+-  binding's body or remaining do-items.
++  v1, borrow introduction is defined for roots whose interval quantity has nonzero upper bound (`1`, `<=1`, `>=1`, or
++  `ω`), under either owned or borrowed access. A borrowed root is reborrowed rather than treated as newly owned. Hidden
++  temporaries introduced by elaboration of borrowed local bindings (`let & pat = expr`) are borrow roots for the scope
++  of that binding's body or remaining do-items. Quantity `0` cannot supply a runtime borrow root, and `&` is not a
++  quantity alternative.
+ * A **record path** is a borrow root followed by zero or more field labels: `r`, `r.x`, `r.pos.x`, and so on.
+ * The **footprint** of a borrowed path is the portion of the root record that is considered locked by that borrow for
+   ownership-checking purposes.
+@@ -22085,8 +22131,9 @@ Special cases:
+ * A closure whose inferred environment would require any anonymous local borrow region to escape is rejected by the
+   skolem-escape rule of §12.3.
+ * Erased safety: if the lambda captures variables bound with quantity `0`, those variables MUST NOT appear in
+-  computationally relevant (`1`, `&`, `<=1`, `>=1`, or `ω`) positions inside `body`. Capturing quantity-`0` variables
+-  imposes no restriction on the multiplicity of the closure itself.
++  runtime-relevant positions inside `body`, including either owned or borrowed binders whose interval quantity is `1`,
++  `<=1`, `>=1`, or `ω`. The borrow marker `&` is an access mode and is not itself a quantity. Capturing quantity-`0`
++  variables imposes no restriction on the multiplicity of the closure itself.
+ * Unrestricted closures: a closure may be used unrestrictedly (`ω`) only if every computationally relevant captured
+   variable is itself unrestricted. Capturing only unrestricted (`ω`) and/or erased (`0`) variables is sufficient for
+   this case.
+@@ -22254,8 +22301,9 @@ this rule. Its implicit-binder default is therefore `ω`, unless the user writes
+ runtime representation is empty may still be erased by the trait-evidence erasure rules; erasure is not expressed by
+ pretending the binder has quantity `0`.
+ 
+-Users may override the default by writing the quantity explicitly, e.g. `(@0 x : T)`, `(@& x : T)`, `(@&[s] x : T)`, or
+-`(@ω x : T)`.
++Users may override the default quantity and/or select borrowed access explicitly, e.g. `(@0 x : T)`,
++`(@& x : T)`, `(@&[s] x : T)`, or `(@ω x : T)`. Here `@&` and `@&[s]` use the omitted interval quantity for an implicit
++binder and add borrowed access; they do not use `&` as a quantity.
+ 
+ Implicit arguments in Kappa are lexical, not dynamic. After elaboration, omitting an implicit argument is equivalent to
+ passing an ordinary in-scope term chosen by §16.3.3. Rebinding an implicit value in an inner lexical scope shadows outer
+@@ -24100,6 +24148,13 @@ Semantics:
+   completes only after the target fiber has terminated and all of its finalizers have run.
+ * `interruptForkAs cause fiber` requests interruption of the target fiber with explicit structured interrupt metadata
+   but does not wait for termination.
++* A non-waiting interruption operation returns only after the request has been recorded as the target's pending request,
++  or after observing that the target has already terminated. It does not wait for delivery, unwinding, finalization, or
++  terminal `Exit` production. Operations sequenced after that return therefore occur after request registration in the
++  requesting fiber's source-program order.
++* A newly created fiber inherits the effective interruption state of its parent at the fork point. It does not inherit
++  the semantic identities of the parent's restorable mask frames; restoration capabilities from the parent are inert in
++  the child, as specified by §18.1.12 and §32.2.5.
+ * `interrupt fiber` behaves as `interruptAs (InterruptCause Requested (Some id)) fiber`, where `id` is the current
+   caller fiber id.
+ * `interruptFork fiber` behaves as `interruptForkAs (InterruptCause Requested (Some id)) fiber`, where `id` is the
+@@ -24148,12 +24203,13 @@ Semantics:
+   postponed forever.
+ * A conforming implementation MUST therefore behave as if long-running pure execution contains implementation-defined
+   safe points at which:
+-  * pending interruption may become observable, and
+-  * scheduler fairness may be restored.
++  * pending interruption may be delivered when the fiber's effective interruption state permits delivery under
++    §18.1.12; and
++  * scheduler fairness may be restored regardless of masking state.
+ * Such safe points MAY be realized by asynchronous preemption, loop-backedge checks, reduction budgets, signal checks,
+   or another observationally equivalent mechanism.
+-* Outside masked regions, an implementation-defined safe point MAY also serve as an interruption point.
+-* `cede` itself is always both a scheduler-yield point and an interruption point.
++* `cede` is always a scheduler-yield point. It is an ordinary interruption point only when the fiber's effective state is
++  `Interruptible`; in `Masked` or `Uninterruptible` it yields without delivering the pending request.
+ 
+ Blocking foreign work:
+ 
+@@ -24195,9 +24251,10 @@ Semantics:
+ * `durationCompare` defines the canonical ordering on `Duration`.
+ * `instantDiff later earlier` returns the signed duration `later - earlier`.
+ * `instantAdd instant duration` offsets an instant by the given signed duration.
+-* `sleepFor d` suspends the current fiber for duration `d`, unless interrupted first.
+-* `sleepUntil t` suspends the current fiber until instant `t`, unless interrupted first.
+-* `sleepFor` and `sleepUntil` are interruptible and do not block an entire runtime agent merely by parking one fiber.
++* `sleepFor d` suspends the current fiber for duration `d`, unless interruption is delivered first.
++* `sleepUntil t` suspends the current fiber until instant `t`, unless interruption is delivered first.
++* `sleepFor` and `sleepUntil` are ordinary suspension points. They admit interruption in state `Interruptible`, retain a
++  pending request in `Masked` or `Uninterruptible`, and do not block an entire runtime agent merely by parking one fiber.
+ * `sleepFor d` with a nonpositive duration returns immediately.
+ * `sleepUntil t` returns immediately when `t` is not later than the current monotonic instant.
+ 
+@@ -24373,7 +24430,8 @@ Semantics:
+   * returns the value on `Success a`,
+   * fails with `e` on `Failure (Fail e)`,
+   * otherwise terminates the waiter with the same non-typed runtime cause.
+-* `awaitPromiseExit` and `awaitPromise` are interruptible waits.
++* `awaitPromiseExit` and `awaitPromise` are ordinary suspension points. They admit interruption in state
++  `Interruptible` and retain a pending request in `Masked` or `Uninterruptible`.
+ * Completing a promise wakes all waiters observing that promise.
+ 
+ <!-- effects.monadic_core.fiber_identity_labels -->
+@@ -24456,14 +24514,18 @@ The standard masking operations are:
+ expect term poll :
+     UIO Unit
+ 
+-expect term uninterruptible :
++expect term mask :
+     forall (e : Type) (a : Type).
+-    IO e a -> IO e a
++    ((restore : forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a
+ 
+-expect term mask :
++expect term uninterruptibleMask :
+     forall (e : Type) (a : Type).
+     ((restore : forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a
+ 
++expect term uninterruptible :
++    forall (e : Type) (a : Type).
++    IO e a -> IO e a
++
+ expect term ensuring :
+     forall (e : Type) (a : Type).
+     IO e a -> IO e Unit -> IO e a
+@@ -24476,28 +24538,103 @@ expect term acquireRelease :
+     IO e a
+ ```
+ 
+-Semantics:
++Each fiber maintains:
++
++* a non-restorable base interruption state; and
++* an ordered stack of restorable interruption-mask frames.
++
++The initial program fiber has base state `Interruptible`. A child fiber receives the parent's effective state as its own
++non-restorable base state, as specified below. Frame identity is semantic even when several active frames induce the
++same effective state.
++
++The state order is:
++
++```text
++Interruptible < Masked < Uninterruptible
++```
++
++The effective interruption state is the maximum of the fiber's base state and all active mask frames. An ordinary
++`mask` frame contributes `Masked`; an `uninterruptibleMask` / `uninterruptible` frame contributes `Uninterruptible`.
++These names describe portable runtime states; they need not be exposed as source-level data constructors.
++
++Mask introduction:
++
++* `mask f` pushes one fresh ordinary mask frame for the current fiber and evaluates `f restore` with that frame active.
++* `uninterruptibleMask f` pushes one fresh uninterruptible frame for the current fiber and evaluates `f restore` with
++  that frame active.
++* `uninterruptible body` is observationally equivalent to
++  `uninterruptibleMask (\_ -> body)`.
++* An outer uninterruptible frame dominates any ordinary mask frame nested inside it.
++* Leaving either construct removes exactly the frame that construct introduced, on normal completion, typed failure,
++  interruption, or defect.
++
++Restoration capabilities:
++
++* The `restore` value supplied by `mask` or `uninterruptibleMask` is a restoration capability tied to exactly one mask
++  frame and to the fiber on which that frame was introduced. Its ordinary function type does not erase that semantic
++  identity.
++* Executing `restore action` temporarily suspends exactly that frame while `action` executes, but only when the frame is
++  the topmost active mask frame on the originating fiber.
++* Older outer frames are never removed by that restoration. Newer inner frames must be restored first.
++* If the frame is inactive, already suspended by the same restoration, not the topmost active frame, or belongs to a
++  different fiber, `restore action` is observationally equivalent to `action` under the current state.
++* Reapplying the same restoration is idempotent:
++
++  ```text
++  restore (restore action) ≡ restore action
++  ```
++
++* Nested restoration composes in frame order. For example, absent an older uninterruptible frame:
++
++  ```kappa
++  mask (\outer ->
++      mask (\inner ->
++          inner (outer action)))
++  ```
++
++  suspends both ordinary mask frames while `action` runs. By contrast, `outer (inner action)` attempts to restore the
++  outer frame while the inner frame is still active; that outer restoration is a no-op, so the outer frame remains.
++* The suspended frame is reinstated before control continues after `action`, including when `action` fails, is
++  interrupted, or defects.
++* Suspending and reinstating a frame are atomic with respect to interruption delivery. If restoration exposes the
++  `Interruptible` state, a pending interruption may be delivered immediately before the first step of `action`. There is
++  no interruption point after the last successful step of `action` and before the frame is reinstated.
++
++Interruption points:
+ 
+ * Each fiber carries at most one pending interruption request for portable source semantics.
+-* If multiple interruption requests arrive before delivery, the first request determines the portable `InterruptCause`;
+-  later requests MAY be recorded diagnostically but do not change the delivered portable cause.
+-* An interruption request becomes observable only at an interruption point or at explicit `poll`.
+-* Outside masked regions, every runtime suspension point is an interruption point.
+-* `poll` is an explicit interruption checkpoint. If the current fiber has a pending interruption request, `poll`
+-  delivers it immediately, including from within `mask` or `uninterruptible`. Otherwise `poll` returns `Unit`.
+-* `uninterruptible body` suppresses interruption delivery while `body` executes, except that explicit `poll` may still
+-  deliver an already pending interruption. A pending interruption request otherwise remains pending when `body` leaves
+-  the uninterruptible region and becomes observable at the next interruption point according to §32.2.5.
+-* `mask f` suppresses interruption while `f` executes. The `restore` function re-enables interruption for a selected
+-  subcomputation.
+-* Once a pending interruption has been delivered to the current fiber, that pending request is consumed.
+-  Code that recovers from `Cause.Interrupt` through `sandbox` or another explicit `Exit`-level observation continues
+-  with no pending interruption unless a later request arrives.
+-* Finalizers installed by `ensuring`, `acquireRelease`, `defer`, `using`, scope unwinding, and runtime cleanup run in
+-  masked state.
++* If multiple requests arrive before delivery, the first request determines the portable `InterruptCause`; later
++  requests MAY be recorded diagnostically but do not change the delivered portable cause.
++* In the `Interruptible` state, runtime suspension points and the implementation-defined safe points of §32.2.6 are
++  interruption points.
++* In the `Masked` state, ordinary suspension and safe points do not deliver interruption. `poll` is an explicit single
++  interruption point and may deliver a pending request.
++* In the `Uninterruptible` state, neither ordinary interruption points nor `poll` deliver interruption. `poll` returns
++  `Unit` and leaves the request pending.
++* `poll` permits delivery only at that checkpoint. It does not make a surrounding subcomputation interruptible and does
++  not remove any mask frame. Because an ordinary `Masked` state deliberately admits this explicit checkpoint, code that
++  requires a region which even called code cannot puncture with `poll` must use `uninterruptible` or
++  `uninterruptibleMask`.
++* Once a pending interruption has been delivered to the current fiber, that pending request is consumed. Code that
++  recovers from `Cause.Interrupt` through `sandbox` or another explicit `Exit`-level observation continues with no
++  pending interruption unless a later request arrives.
++
++Fiber and finalizer interaction:
++
++* A newly created fiber inherits the parent's effective interruption state at the fork point, but not the identities of
++  the parent's restorable frames. The inherited state acts as a non-restorable root state in the child.
++* A restoration capability created in one fiber therefore cannot weaken masking in another fiber.
++* Finalizers installed by `ensuring`, `acquireRelease`, `defer`, `using`, scope unwinding, and runtime cleanup execute
++  under a fresh ordinary mask frame, while preserving any stronger enclosing uninterruptible state.
++* A finalizer may deliberately admit interruption at an explicit `poll` when no uninterruptible frame is active. If one
++  finalizer is interrupted, the remaining finalizers still run under §32.2.12.
+ * `acquireRelease acquire release use` provides a protected resource scope: the resource remains owned by the scope
+   itself, while `use` receives only a borrowed view.
+ 
++`uninterruptible` and `uninterruptibleMask` can make a fiber permanently unresponsive when they contain an unbounded
++wait. Portable libraries SHOULD keep uninterruptible regions bounded and use `mask` plus its scoped restoration
++capability for ordinary acquire/use/release protocols.
++
+ A backend MAY use host async exceptions or equivalent host mechanisms internally to realize interruption, but no such
+ mechanism is part of portable source semantics.
+ 
+@@ -29480,7 +29617,8 @@ Each entry of `Ξ` records at least:
+ 
+ * the source name;
+ * the type of the binding;
+-* the binding quantity;
++* the binding's interval quantity;
++* the binding's access mode, either owned or borrowed under a specific region;
+ * whether the binding is object-phase or compile-time-only;
+ * path-consumption state for stable places and record fields;
+ * the hidden region environment and any explicit `captures (...)` annotation;
+@@ -29489,8 +29627,8 @@ Each entry of `Ξ` records at least:
+ * source-origin metadata for diagnostics.
+ 
+ The corresponding row type `Row(Ξ)` is the canonical record type whose fields are the names in `Ξ`, preserving field
+-quantities, field types, compile-time/runtime classification, and capture annotations. Field order is the canonical
+-dependency-respecting record order of §31.4.
++interval quantities, access modes, field types, compile-time/runtime classification, borrow regions, and capture
++annotations. Field order is the canonical dependency-respecting record order of §31.4.
+ 
+ Implicit assumptions introduced by filters, constructor tests, branch refinements, and implicit-resolution context are
+ not fields of `Row(Ξ)` unless explicitly bound by a preceding clause.
+@@ -29519,23 +29657,36 @@ Terminology:
+ A row entry is **row-droppable** iff abandoning that entry would not violate any runtime-relevant positive lower-bound
+ obligation, linear ownership obligation, borrow-escape rule, or path-consumption obligation.
+ 
+-For ordinary v1 surface quantities, ignoring internal path state:
++For ordinary v1 surface interval quantities, ignoring internal path state:
+ 
+ ```text
+-row-droppable:      0, &, <=1, ω
+-not row-droppable:  1, >=1
++row-droppable interval quantities:      0, <=1, ω
++not row-droppable interval quantities:  1, >=1
+ ```
+ 
+-A row entry is **row-duplicable** iff carrying that entry into more than one output row would not violate its quantity,
+-path state, or capture rules.
++A borrowed row entry is row-droppable exactly when its interval quantity is row-droppable. Abandoning it discards only
++the shared borrowed view, not the referent or its ownership, and therefore does not require the referent to be
++structurally droppable. Independently escaping values that capture the borrow remain subject to the ordinary region and
++capture rules.
++
++A row entry is **row-duplicable** iff carrying that entry into more than one output row would not violate its interval
++quantity, access mode, value duplicability, path state, or capture rules.
+ 
+-For ordinary v1 surface quantities, ignoring internal path state:
++For ordinary v1 surface interval quantities, ignoring internal path state:
+ 
+ ```text
+-row-duplicable:      0, &, >=1, ω
+-not row-duplicable:  1, <=1
++row-duplicable interval quantities:      0, >=1, ω
++not row-duplicable interval quantities:  1, <=1
+ ```
+ 
++For an owned row entry, duplication must additionally be justified by the entry's visible structure, trusted summary,
++selected primitive, or an explicit contract such as `Shareable A`. For a borrowed row entry, duplication copies only
++the shared borrowed view and does not require the referent itself to be `Shareable`, but the borrow region and selected
++path must remain valid for every output row.
++
++The marker `&` appears in neither table because it is an access mode, not an interval quantity. A row entry is accepted
++for dropping or duplication only when the quantity rule and the separate access/path/capture rule both succeed.
++
+ Compile-time-only row entries are row-droppable and row-duplicable for runtime-quantity purposes, but they still
+ participate in dependency analysis, definitional equality, interface identity, and region-escape checking.
+ 
+@@ -34514,15 +34665,21 @@ Default classification rule:
+ 
+ Rules:
+ 
+-* If a fiber is interrupted while executing a `nonblocking` call, ordinary interruption rules apply at the next
+-  interruption point.
+-* If a fiber is interrupted while executing a `blocking` call, interruption becomes pending and is taken when the call
+-  returns.
+-* If a fiber is interrupted while executing a `blocking-cancellable` call, the runtime MUST attempt the documented safe
+-  cancellation mechanism at most once.
++* If an interruption request arrives while a fiber is executing a `nonblocking` call, ordinary interruption rules apply
++  at the next interruption point permitted by the fiber's effective state.
++* A `blocking` or `blocking-cancellable` call does not itself weaken an active mask. The call-return boundary is an
++  ordinary interruption point: a pending request is delivered there only when the effective state is `Interruptible`;
++  otherwise it remains pending.
++* If an interruption request arrives while a fiber is executing a `blocking-cancellable` call in effective state
++  `Interruptible`, the runtime MUST attempt the documented safe cancellation mechanism unless the call has already
++  completed, and MUST NOT attempt that mechanism more than once for the same call.
++* If the effective state is `Masked` or `Uninterruptible`, the request alone MUST NOT invoke the foreign cancellation
++  mechanism. It remains pending until ordinary mask restoration, `poll` where permitted, or call return followed by a
++  state that permits delivery.
+ * The cancellation attempt is best-effort unless the trusted binding summary explicitly states that it is definitive.
+ * If the cancellation attempt is unavailable, refused, races with normal completion, or otherwise does not promptly end
+-  the call, interruption remains pending and is taken when the call returns.
++  the call, interruption remains pending and is delivered at the first later interruption point permitted by the
++  effective state.
+ * A cancellation attempt MUST NOT use host thread termination, unsafe async signal injection, or equivalent forced
+   preemption unless the trusted binding summary proves that the specific binding is safe under that mechanism.
+ * A backend that cannot realize the documented safe cancellation mechanism MUST reject that foreign declaration or
+@@ -34913,7 +35070,7 @@ runPure,
+ 
+ -- runtime error / finalization / resources
+ sandbox, unsandbox,
+-poll, uninterruptible, mask, ensuring, acquireRelease,
++poll, mask, uninterruptibleMask, uninterruptible, ensuring, acquireRelease,
+ finally, throwError, catchError, raise,
+ bracket, release,
+ 
+@@ -37180,8 +37337,9 @@ Rules:
+ * Portable `Int` is exact mathematical integer arithmetic and is not required to have `AtomicValue` or `AtomicInteger`.
+ * A backend MAY provide additional `AtomicValue` or `AtomicInteger` instances.
+ * Atomic equality for `atomicCompareExchange` is representation equality for the selected `AtomicValue` instance.
+-* Atomic operations are interruption points only if the implementation documents them as potentially suspending.
+-  Ordinary lock-free atomic operations SHOULD NOT suspend.
++* Atomic operations are ordinary interruption points only if the implementation documents them as potentially
++  suspending, and delivery at such a point remains governed by the effective interruption state of §18.1.12. Ordinary
++  lock-free atomic operations SHOULD NOT suspend.
+ 
+ Memory-order meaning:
+ 
+@@ -42745,24 +42903,57 @@ has failed. Higher-level fail-fast task-group behavior is a library construction
+ <!-- core_semantics.runtime_model.interruption_delivery_masks -->
+ #### 32.2.5 Interruption delivery and masks
+ 
+-Interruption is modeled as an asynchronous request.
++Interruption is an asynchronous request whose delivery is governed by the mask-frame semantics of §18.1.12.
+ 
+-An implementation MUST deliver interruption only at interruption points.
++A fiber carries:
+ 
+-At minimum, the following are interruption points outside masked regions:
++* at most one portable pending interruption request;
++* a non-restorable base state in `{Interruptible, Masked, Uninterruptible}`;
++* an ordered stack of ordinary and uninterruptible restorable mask frames; and
++* the semantic identity of each restorable frame introduced on that fiber.
+ 
+-* runtime suspension points;
+-* waiting operations such as `await` and `join`;
+-* parking during `STM.retry`;
+-* any explicit `poll`.
++The initial program fiber has base state `Interruptible`. The effective state is the maximum of the base state and all
++active frames under `Interruptible < Masked < Uninterruptible`. Suspending or removing every restorable frame may still
++leave the fiber masked because its base state was inherited from a masked parent.
+ 
+-Masked execution suppresses interruption delivery but records the pending request. When masked execution leaves the
+-masked region, the pending request becomes observable at the next interruption point.
++Delivery rules:
+ 
+-Finalizers and release actions run in masked state.
+-
+-Portable source semantics expose only interruption. Arbitrary cross-fiber asynchronous exception injection is not part
+-of the portable subset.
++* In `Interruptible`, runtime suspension points, waiting operations such as `await` and `join`, parking during
++  `STM.retry`, and implementation-defined safe points under §32.2.6 are interruption points.
++* In `Masked`, those ordinary points suppress delivery and retain the pending request. An explicit `poll` is an
++  interruption point.
++* In `Uninterruptible`, every ordinary point and `poll` suppress delivery and retain the pending request.
++* Leaving a masked region does not itself discard a pending request. The request becomes observable at the first point
++  permitted by the newly effective state.
++* Delivering a pending request consumes it exactly once.
++
++Restoration rules:
++
++* A restoration capability may suspend only the single frame that created it, only on its originating fiber, and only
++  while that frame is the topmost active mask frame.
++* A restoration attempted in the wrong nesting order, after its frame has become inactive, while the same frame is
++  already suspended, or on another fiber is an observational no-op.
++* Suspending a frame may reveal an older ordinary frame, an older uninterruptible frame, or the fiber's non-restorable
++  base state; it never removes or weakens any of those older states.
++* The frame is reinstated on every exit from the restored action before control continues outside that action.
++* If suspension reveals `Interruptible`, the transition immediately before the restored action is an interruption
++  point. Reinstatement immediately after a successful restored action is not preceded by an additional interruption
++  point. This prevents cancellation from consuming a completed result in the handoff back to masked code.
++* Repeated use of one restoration around the same action is idempotent. To remove several nested frames, their
++  restorations must be composed so that the innermost active frame is removed first at runtime, as specified in
++  §18.1.12.
++
++Fiber creation snapshots only the effective state. The child uses that snapshot as its non-restorable base state,
++starts with an empty restorable-frame stack, and does not receive the parent's frame identities. A restore value captured
++from another fiber cannot weaken the child's state.
++
++Finalizers and release actions run under a fresh ordinary mask frame, preserving any stronger enclosing
++uninterruptible state. They may admit interruption at an explicit `poll` only when no uninterruptible frame is active.
++If such interruption occurs, the remaining cleanup actions continue according to §32.2.12.
++
++Portable source semantics expose interruption, not arbitrary cross-fiber asynchronous exception injection. A backend
++may realize these rules with host exceptions, cancellation tokens, run-loop flags, or another mechanism, but must
++preserve frame identity, nesting order, pending-request behavior, and the restoration handoff boundary.
+ 
+ <!-- core_semantics.runtime_model.scheduler_fairness_safe_points_timers -->
+ #### 32.2.6 Scheduler fairness, yielding, safe points, and timers
+@@ -42775,8 +42966,8 @@ At minimum:
+ * `cede` returns the current fiber to runnable state and permits another runnable fiber to be chosen before that fiber
+   is resumed;
+ * the implementation MUST behave as if long-running pure execution contains implementation-defined safe points at which:
+-  * pending interruption may be observed, and
+-  * scheduler fairness may be restored;
++  * pending interruption may be delivered when the effective interruption state permits delivery; and
++  * scheduler fairness may be restored regardless of masking state;
+ * these safe points MAY be realized by asynchronous preemption, loop-backedge checks, reduction budgets, signal
+   checks, or another observationally equivalent mechanism;
+ * `sleepFor` and `sleepUntil` park only the current fiber, not an entire runtime agent;
+@@ -42981,8 +43172,9 @@ Cleanup-cause construction:
+ * Exit actions and release actions contribute sequentially in the masked LIFO execution order in which they run.
+ * If several attached children fail during the same mandatory shutdown phase, their causes are combined with `Both` in
+   child-creation order before finalizer causes are appended.
+-* A finalizer or release action that explicitly restores interruption and is itself interrupted contributes
+-  `Interrupt ...` as its own cleanup cause. Remaining later finalizers still run.
++* A finalizer or release action that explicitly admits interruption at `poll`, or inside a subcomputation whose
++  matching mask frame has been restored, and is itself interrupted contributes `Interrupt ...` as its own cleanup cause.
++  Remaining later finalizers still run.
+ 
+ Mandatory cleanup waits:
+ 
+@@ -54839,6 +55031,36 @@ Build-plan fragment validation:
+ * when an implementation exposes explicit extension tag admission, an admitted suffix is accepted and the admission and
+   its provenance appear in the `ResolvedBuildPlan` and relevant query-key projection.
+ 
++Quantity and borrowed-access orthogonality:
++
++* `&` is rejected in a `Quantity` expression position with family `kappa.quantity.borrow-not-quantity`;
++* unrestricted (`ω`) and relevant (`>=1`) borrowed bindings may be demanded more than once without copying ownership of
++  the referent, including when the referent contains non-duplicable owned components;
++* linear (`1`) and affine (`<=1`) borrowed bindings are rejected when demanded more than once;
++* unrestricted (`ω`) and affine (`<=1`) borrowed bindings may be discarded without requiring the referent itself to be
++  structurally droppable;
++* linear (`1`) and relevant (`>=1`) borrowed bindings are rejected on a checked path that discards them; and
++* query-row duplication applies interval-quantity and access/path checks independently.
++
++Interruption-mask restoration:
++
++* restoration from an interruptible base state makes the selected subcomputation interruptible;
++* restoring an inner ordinary frame does not remove an older ordinary or uninterruptible state;
++* nested restoration removes several frames only in runtime frame order; wrong-order, repeated nested, inactive, and
++  cross-fiber restoration uses are observational no-ops;
++* `uninterruptibleMask` restores exactly the state that preceded its own frame;
++* children inherit the parent's effective interruption state but not restorable frame identities, while restoring around
++  the `fork` operation lets a child inherit the restored effective state;
++* non-waiting interruption operations register the request before returning;
++* `poll` may deliver a pending interruption in `Masked`, including under nested ordinary frames, but is inert in
++  `Uninterruptible`;
++* ordinary waits and scheduler safe points retain pending interruption while `Masked` or `Uninterruptible`;
++* a deliverable interruption of a `blocking-cancellable` foreign call invokes its documented safe cancellation mechanism
++  unless the call already completed and never invokes that mechanism more than once, while masked requests do not invoke
++  host cancellation; and
++* the handoff from a successfully completed restored action back to masked continuation has no intervening interruption
++  point.
++
+ Diagnostic structure:
+ 
+ * expected/actual mismatch payloads expose structured expected and actual facts;
+diff --git a/tests/conformance/issues/issue-32-mask-restore/child-inherits-effective-mask-state.kp b/tests/conformance/issues/issue-32-mask-restore/child-inherits-effective-mask-state.kp
+new file mode 100644
+index 0000000..f7b1eb6
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/child-inherits-effective-mask-state.kp
+@@ -0,0 +1,39 @@
++module main
++
++main : UIO Unit
++let main =
++    mask (\_ ->
++        do
++            let ready <- newPromise @Void @Unit
++            let gate <- newPromise @Void @Unit
++            let report <- newPromise @Void @Bool
++
++            let child <- fork (
++                ensuring
++                    (
++                        do
++                            completePromise ready (Success ())
++                            awaitPromise gate
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                    (
++                        do
++                            completePromise report (Success False)
++                            pure ()
++                    )
++            )
++
++            awaitPromise ready
++            interruptFork child
++            completePromise gate (Success ())
++            let reached <- awaitPromise report
++            let _ <- await child
++            println reached
++    )
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/inactive-restore-is-inert.kp b/tests/conformance/issues/issue-32-mask-restore/inactive-restore-is-inert.kp
+new file mode 100644
+index 0000000..3357ba5
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/inactive-restore-is-inert.kp
+@@ -0,0 +1,47 @@
++module main
++
++makeStaleRestore : UIO (UIO Unit -> UIO Unit)
++let makeStaleRestore =
++    mask (\restore ->
++        pure (\action -> restore action)
++    )
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    do
++                        let stale <- makeStaleRestore
++                        mask (\_ ->
++                            do
++                                completePromise ready (Success ())
++                                stale (awaitPromise gate)
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/nested-inner-restore-preserves-outer-mask.kp b/tests/conformance/issues/issue-32-mask-restore/nested-inner-restore-preserves-outer-mask.kp
+new file mode 100644
+index 0000000..d328183
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/nested-inner-restore-preserves-outer-mask.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\outer ->
++                        mask (\inner ->
++                            do
++                                completePromise ready (Success ())
++                                inner (awaitPromise gate)
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/nested-restores-compose-in-frame-order.kp b/tests/conformance/issues/issue-32-mask-restore/nested-restores-compose-in-frame-order.kp
+new file mode 100644
+index 0000000..63a2df4
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/nested-restores-compose-in-frame-order.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\outer ->
++                        mask (\inner ->
++                            do
++                                completePromise ready (Success ())
++                                inner (outer (awaitPromise gate))
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/pending-interruption-survives-uninterruptible.kp b/tests/conformance/issues/issue-32-mask-restore/pending-interruption-survives-uninterruptible.kp
+new file mode 100644
+index 0000000..726594f
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/pending-interruption-survives-uninterruptible.kp
+@@ -0,0 +1,48 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let inside <- newPromise @Void @Bool
++        let after <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    do
++                        uninterruptible (
++                            do
++                                completePromise ready (Success ())
++                                awaitPromise gate
++                                poll
++                                completePromise inside (Success True)
++                                pure ()
++                        )
++                        poll
++                        completePromise after (Success True)
++                        pure ()
++                )
++                (
++                    do
++                        completePromise inside (Success False)
++                        completePromise after (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let survivedInside <- awaitPromise inside
++        let survivedAfter <- awaitPromise after
++        let _ <- await child
++        println survivedInside
++        println survivedAfter
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\nFalse\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/poll-delivers-inside-ordinary-mask.kp b/tests/conformance/issues/issue-32-mask-restore/poll-delivers-inside-ordinary-mask.kp
+new file mode 100644
+index 0000000..d19b7c3
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/poll-delivers-inside-ordinary-mask.kp
+@@ -0,0 +1,40 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\_ ->
++                        do
++                            completePromise ready (Success ())
++                            awaitPromise gate
++                            poll
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/poll-delivers-through-nested-ordinary-masks.kp b/tests/conformance/issues/issue-32-mask-restore/poll-delivers-through-nested-ordinary-masks.kp
+new file mode 100644
+index 0000000..8fb7129
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/poll-delivers-through-nested-ordinary-masks.kp
+@@ -0,0 +1,42 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\_ ->
++                        mask (\_ ->
++                            do
++                                completePromise ready (Success ())
++                                awaitPromise gate
++                                poll
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/poll-is-inert-inside-uninterruptible.kp b/tests/conformance/issues/issue-32-mask-restore/poll-is-inert-inside-uninterruptible.kp
+new file mode 100644
+index 0000000..e6b0496
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/poll-is-inert-inside-uninterruptible.kp
+@@ -0,0 +1,40 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    uninterruptible (
++                        do
++                            completePromise ready (Success ())
++                            awaitPromise gate
++                            poll
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/repeated-restore-is-idempotent.kp b/tests/conformance/issues/issue-32-mask-restore/repeated-restore-is-idempotent.kp
+new file mode 100644
+index 0000000..9f9246d
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/repeated-restore-is-idempotent.kp
+@@ -0,0 +1,39 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\restore ->
++                        do
++                            completePromise ready (Success ())
++                            restore (restore (awaitPromise gate))
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/restore-around-fork-gives-interruptible-child.kp b/tests/conformance/issues/issue-32-mask-restore/restore-around-fork-gives-interruptible-child.kp
+new file mode 100644
+index 0000000..364dcbf
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/restore-around-fork-gives-interruptible-child.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    mask (\restore ->
++        do
++            let ready <- newPromise @Void @Unit
++            let gate <- newPromise @Void @Unit
++            let report <- newPromise @Void @Bool
++
++            let child <- restore (
++                fork (
++                    ensuring
++                        (
++                            do
++                                completePromise ready (Success ())
++                                awaitPromise gate
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                        (
++                            do
++                                completePromise report (Success False)
++                                pure ()
++                        )
++                )
++            )
++
++            awaitPromise ready
++            interruptFork child
++            completePromise gate (Success ())
++            let reached <- awaitPromise report
++            let _ <- await child
++            println reached
++    )
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/restore-capability-is-fiber-local.kp b/tests/conformance/issues/issue-32-mask-restore/restore-capability-is-fiber-local.kp
+new file mode 100644
+index 0000000..93243f3
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/restore-capability-is-fiber-local.kp
+@@ -0,0 +1,43 @@
++module main
++
++main : UIO Unit
++let main =
++    mask (\foreignRestore ->
++        do
++            let ready <- newPromise @Void @Unit
++            let gate <- newPromise @Void @Unit
++            let report <- newPromise @Void @Bool
++
++            let child <- foreignRestore (
++                fork (
++                    ensuring
++                        (
++                            mask (\_ ->
++                                do
++                                    completePromise ready (Success ())
++                                    foreignRestore (awaitPromise gate)
++                                    completePromise report (Success True)
++                                    pure ()
++                            )
++                        )
++                        (
++                            do
++                                completePromise report (Success False)
++                                pure ()
++                        )
++                )
++            )
++
++            awaitPromise ready
++            interruptFork child
++            completePromise gate (Success ())
++            let reached <- awaitPromise report
++            let _ <- await child
++            println reached
++    )
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/restore-from-interruptible.kp b/tests/conformance/issues/issue-32-mask-restore/restore-from-interruptible.kp
+new file mode 100644
+index 0000000..201ac24
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/restore-from-interruptible.kp
+@@ -0,0 +1,39 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\restore ->
++                        do
++                            completePromise ready (Success ())
++                            restore (awaitPromise gate)
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/restore-under-outer-uninterruptible-is-inert.kp b/tests/conformance/issues/issue-32-mask-restore/restore-under-outer-uninterruptible-is-inert.kp
+new file mode 100644
+index 0000000..1a615f4
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/restore-under-outer-uninterruptible-is-inert.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    uninterruptible (
++                        mask (\restore ->
++                            do
++                                completePromise ready (Success ())
++                                restore (awaitPromise gate)
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-outer-mask.kp b/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-outer-mask.kp
+new file mode 100644
+index 0000000..8449544
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-outer-mask.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\_ ->
++                        uninterruptibleMask (\restore ->
++                            do
++                                completePromise ready (Success ())
++                                restore (awaitPromise gate)
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-prior-state.kp b/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-prior-state.kp
+new file mode 100644
+index 0000000..dc6e3fb
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/uninterruptible-mask-restores-prior-state.kp
+@@ -0,0 +1,39 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    uninterruptibleMask (\restore ->
++                        do
++                            completePromise ready (Success ())
++                            restore (awaitPromise gate)
++                            completePromise report (Success True)
++                            pure ()
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "False\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-32-mask-restore/wrong-order-outer-restore-is-inert.kp b/tests/conformance/issues/issue-32-mask-restore/wrong-order-outer-restore-is-inert.kp
+new file mode 100644
+index 0000000..c82457b
+--- /dev/null
++++ b/tests/conformance/issues/issue-32-mask-restore/wrong-order-outer-restore-is-inert.kp
+@@ -0,0 +1,41 @@
++module main
++
++main : UIO Unit
++let main =
++    do
++        let ready <- newPromise @Void @Unit
++        let gate <- newPromise @Void @Unit
++        let report <- newPromise @Void @Bool
++
++        let child <- fork (
++            ensuring
++                (
++                    mask (\outer ->
++                        mask (\inner ->
++                            do
++                                completePromise ready (Success ())
++                                outer (awaitPromise gate)
++                                completePromise report (Success True)
++                                pure ()
++                        )
++                    )
++                )
++                (
++                    do
++                        completePromise report (Success False)
++                        pure ()
++                )
++        )
++
++        awaitPromise ready
++        interruptFork child
++        completePromise gate (Success ())
++        let reached <- awaitPromise report
++        let _ <- await child
++        println reached
++
++--! mode run
++--! requires capability runTask
++--! entry main
++--! assertStdout "True\n"
++--! assertExitCode 0
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrow-marker-is-not-quantity.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrow-marker-is-not-quantity.kp
+new file mode 100644
+index 0000000..c11009e
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrow-marker-is-not-quantity.kp
+@@ -0,0 +1,9 @@
++module main
++
++trait BadQuantity =
++    SourceDemand : Quantity
++    SourceDemand = &
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.borrow-not-quantity
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-cannot-duplicate.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-cannot-duplicate.kp
+new file mode 100644
+index 0000000..ebf74cb
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-cannot-duplicate.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++duplicateAffineBorrow : (<=1 & box : LinearBox) -> Int
++let duplicateAffineBorrow box =
++    readValue box + readValue box
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-is-droppable.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-is-droppable.kp
+new file mode 100644
+index 0000000..9a5e553
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-is-droppable.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++ignoreAffineBorrow : (<=1 & box : LinearBox) -> Unit
++let ignoreAffineBorrow box =
++    ()
++
++--! mode check
++--! assertNoErrors
++--! assertTotal ignoreAffineBorrow
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-used-once.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-used-once.kp
+new file mode 100644
+index 0000000..79f6aad
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-affine-view-used-once.kp
+@@ -0,0 +1,20 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++useAffineBorrowOnce : (<=1 & box : LinearBox) -> Int
++let useAffineBorrowOnce box =
++    readValue box
++
++--! mode check
++--! assertNoErrors
++--! assertTotal readValue
++--! assertTotal useAffineBorrowOnce
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-cannot-duplicate.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-cannot-duplicate.kp
+new file mode 100644
+index 0000000..85b1e08
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-cannot-duplicate.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++duplicateLinearBorrow : (1 & box : LinearBox) -> Int
++let duplicateLinearBorrow box =
++    readValue box + readValue box
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-is-not-droppable.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-is-not-droppable.kp
+new file mode 100644
+index 0000000..573b34e
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-is-not-droppable.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++ignoreLinearBorrow : (1 & box : LinearBox) -> Unit
++let ignoreLinearBorrow box =
++    ()
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-used-once.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-used-once.kp
+new file mode 100644
+index 0000000..8db540e
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-linear-view-used-once.kp
+@@ -0,0 +1,20 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++useLinearBorrowOnce : (1 & box : LinearBox) -> Int
++let useLinearBorrowOnce box =
++    readValue box
++
++--! mode check
++--! assertNoErrors
++--! assertTotal readValue
++--! assertTotal useLinearBorrowOnce
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-duplicates.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-duplicates.kp
+new file mode 100644
+index 0000000..9a7d9ab
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-duplicates.kp
+@@ -0,0 +1,20 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++duplicateRelevantBorrow : (>=1 & box : LinearBox) -> Int
++let duplicateRelevantBorrow box =
++    readValue box + readValue box
++
++--! mode check
++--! assertNoErrors
++--! assertTotal readValue
++--! assertTotal duplicateRelevantBorrow
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-is-not-droppable.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-is-not-droppable.kp
+new file mode 100644
+index 0000000..b3bc230
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-relevant-view-is-not-droppable.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++ignoreRelevantBorrow : (>=1 & box : LinearBox) -> Unit
++let ignoreRelevantBorrow box =
++    ()
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-duplicates.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-duplicates.kp
+new file mode 100644
+index 0000000..a828121
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-duplicates.kp
+@@ -0,0 +1,20 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++duplicateBorrow : (& box : LinearBox) -> Int
++let duplicateBorrow box =
++    readValue box + readValue box
++
++--! mode check
++--! assertNoErrors
++--! assertTotal readValue
++--! assertTotal duplicateBorrow
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-is-droppable.kp b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-is-droppable.kp
+new file mode 100644
+index 0000000..5387156
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/borrowed-unrestricted-view-is-droppable.kp
+@@ -0,0 +1,19 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++ignoreBorrow : (& box : LinearBox) -> Unit
++let ignoreBorrow box =
++    ()
++
++--! mode check
++--! assertNoErrors
++--! assertTotal ignoreBorrow
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/query-cannot-repeat-linear-borrow.kp b/tests/conformance/issues/issue-52-quantity-borrow/query-cannot-repeat-linear-borrow.kp
+new file mode 100644
+index 0000000..277930b
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/query-cannot-repeat-linear-borrow.kp
+@@ -0,0 +1,22 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++repeatLinearBorrowInQuery : (1 & box : LinearBox) -> List Int
++let repeatLinearBorrowInQuery box =
++    [
++        for n in [1, 2]
++        yield readValue box + n
++    ]
++
++--! mode check
++--! assertErrorCount 1
++--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+diff --git a/tests/conformance/issues/issue-52-quantity-borrow/query-repeats-unrestricted-borrow.kp b/tests/conformance/issues/issue-52-quantity-borrow/query-repeats-unrestricted-borrow.kp
+new file mode 100644
+index 0000000..507ce83
+--- /dev/null
++++ b/tests/conformance/issues/issue-52-quantity-borrow/query-repeats-unrestricted-borrow.kp
+@@ -0,0 +1,22 @@
++module main
++
++data Token : Type =
++    Token
++
++data LinearBox : Type =
++    LinearBox (value : Int) (1 token : Token)
++
++readValue : (1 & box : LinearBox) -> Int
++let readValue box =
++    box.value
++
++repeatBorrowInQuery : (& box : LinearBox) -> List Int
++let repeatBorrowInQuery box =
++    [
++        for n in [1, 2]
++        yield readValue box + n
++    ]
++
++--! mode check
++--! assertNoErrors
++--! assertTotal repeatBorrowInQuery

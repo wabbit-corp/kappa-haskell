@@ -67,3 +67,4 @@ bogus : forall (a : Type) (x : a) (y : a). EqT a x y
 let bogus = ReflT --!! kappa.type.mismatch
 
 --! assertErrorCount 1
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 5; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 29

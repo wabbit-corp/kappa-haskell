@@ -1,4 +1,4 @@
 --! mode check
 --! packageMode
 --! assertErrorCount 1
--- STATUS(a51e1bf): FAIL — 'import lib.(ctor Box)' also brings the type facet: type-position 'Box Int' resolves (0 errors)
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_NAME_UNRESOLVED] on line 14 (no diagnostics)

@@ -42,3 +42,5 @@ let runOnBool = runXD True
 
 --! assertNoErrors
 --! assertType runOnBool (Bool, Bool)
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_NAME_UNRESOLVED at line 18; current source or fixture is not portable v1 and must be rewritten before promotion.

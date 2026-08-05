@@ -23,9 +23,9 @@ let main = do
     interrupt f
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
-      case Failure c -> printlnString "other"
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "interrupted:Requested"
+      case Exit.Failure c -> printlnString "other"
     let v <- atomically (readTVar a)
     printlnString ("value:" ++ showInt v)
--- STATUS(a0497523): FAIL — compiler gap: the interrupt-abandoned attempt's TVar write is visible afterwards (runs 'value:5'); aborted attempts leak partial writes, violating §18.1.13.
+-- STATUS(e25d64e1): FAIL — stdout mismatch: expected "interrupted:Requested\nvalue:0\n", got "interrupted:Requested\nvalue:5\n"

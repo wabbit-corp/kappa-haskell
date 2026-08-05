@@ -34,8 +34,4 @@ let bad (& t : Two) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch borrow|linear|consum|quantit
 
--- STATUS(a0497523): FAIL — accepted with 0 errors: field binders under a
--- borrowed scrutinee are not marked as borrowed projections, so they can
--- be consumed at quantity 1 (the direct borrowed-binder-to-linear case IS
--- rejected). The or-pattern form `case TA r | TB r -> resVal r` is
--- accepted identically.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /borrow|linear|consum|quantit/ (no diagnostics)

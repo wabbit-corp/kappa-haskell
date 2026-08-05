@@ -33,7 +33,4 @@ let bad (<=1 b : Buf) : Int =
 --! assertErrorCount 1
 --! assertDiagnosticMatch affine|quantit|consum|linear
 
--- STATUS(a0497523): FAIL — accepted with 0 errors: the affine
--- active-pattern call is not accumulated into the fallthrough path
--- (only the exactly-1 case is rejected, via the blanket
--- E_ACTIVE_PATTERN_LINEARITY_VIOLATION declaration check).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic message matches /affine|quantit|consum|linear/ (no diagnostics)

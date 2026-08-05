@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+trait ProofOnly =
+    token : Unit
+    proof : True = True
+
+instance ProofOnly =
+    let token = ()
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember proof for ProofOnly
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedMember' is not defined by Appendix T (§T.3))

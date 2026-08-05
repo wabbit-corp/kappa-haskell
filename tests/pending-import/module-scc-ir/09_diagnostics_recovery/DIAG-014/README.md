@@ -1,6 +1,7 @@
-# DIAG-014: Missing recursive signature diagnostic offers inferred shape
+# DIAG-014: Missing recursive signature diagnostic
 
-When available, the missing-signature record carries an insertable inferred signature.
+The unsigned recursive declaration is rejected with the portable missing-signature code and family. An inferred shape
+is conditional and cyclic-member inference is not required, so the suite does not pin it.
 
 ## Normative targets
 

@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "quick:7\nlong:interrupted\n"
+--! assertExitCode 0
+
+-- §32.2.6: `sleepFor` parks only the current fiber, not the runtime agent —
+-- a fiber parked for 100s must not prevent an unrelated runnable fiber from
+-- completing promptly. The parked sleep is also an interruption point
+-- (§32.2.5 runtime suspension point), so `interrupt` terminates the long
+-- sleeper immediately instead of waiting out its timer.
+module main
+
+longSleeper : UIO Int
+let longSleeper = do
+    sleepFor (seconds 100)
+    pure 1
+
+quick : UIO Int
+let quick = do
+    sleepFor (millis 5)
+    pure 7
+
+main : UIO Unit
+let main = do
+    let a <- fork longSleeper
+    let b <- fork quick
+    let ex <- await b
+    match ex
+      case Exit.Success v -> printlnString ("quick:" ++ showInt v)
+      case Exit.Failure c -> printlnString "quick:failed"
+    interrupt a
+    let ea <- await a
+    match ea
+      case Exit.Success v -> printlnString "long:completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested by)) -> printlnString "long:interrupted"
+      case Exit.Failure c -> printlnString "long:other"
+-- STATUS(8c3c7747): PASS — promoted after revalidation.

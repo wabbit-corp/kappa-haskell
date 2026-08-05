@@ -27,4 +27,4 @@ let needsLacks (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r))
 clash : Int
 let clash = needsLacks (name = "x", age = 1)             --!! kappa.implicit.unsolved
 
--- STATUS(a0497523): FAIL — ContainsRec/StableUnderRecChange/RecTailSatisfies are not implemented (E_NAME_UNRESOLVED + cascade, 17 errors); only LacksRec exists
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 7; first error: E_NAME_UNRESOLVED "unresolved name 'ContainsRec' (not in scope)" at line 12

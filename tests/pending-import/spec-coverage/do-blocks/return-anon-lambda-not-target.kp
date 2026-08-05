@@ -17,7 +17,4 @@ let pick b =
 --! assertErrorCount 1
 -- (No dedicated diagnostic code is registered for the intervening-lambda
 -- rejection; §18.5 nonetheless requires a compile-time error here.)
--- STATUS(a0497523): FAIL — compiler accepts (0 errors): bare return inside the
--- anonymous match-arm lambda is resolved to the LAMBDA itself (return () types
--- against the lambda result UIO Unit, not pick's), contradicting §18.5 which
--- forbids bare return from targeting anonymous lambdas.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0

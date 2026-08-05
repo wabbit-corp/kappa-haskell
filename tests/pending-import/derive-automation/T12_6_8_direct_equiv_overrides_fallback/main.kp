@@ -1,0 +1,29 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+derive Eq Bit
+
+instance Equiv Bit =
+    let (~=) _ _ = True
+    let equivRefl _ = refl
+    let equivSym _ _ _ = refl
+    let equivTrans _ _ _ _ _ = refl
+
+equivalent : Bool
+let equivalent = O ~= I
+
+equal : Bool
+let equal = O == I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertNoErrors
+--! assertEval equivalent True
+--! assertEval equal False
+--! assertFallbackNotSelected Equiv Bit
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertFallbackNotSelected' is not defined by Appendix T (§T.3))

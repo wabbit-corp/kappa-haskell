@@ -42,4 +42,4 @@ let escapeUndemanded (>=1 x : Int) : Unit -> Int = --!! E_QTT_LINEAR_DROP
 --! mode check
 --! assertErrorCount 3
 --! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
--- STATUS(a0497523): FAIL — hofBad and thunkBad are correctly rejected, but the compiler accepts escapeUndemanded (2 errors, not 3): returning a closure is treated as a demand that discharges the captured >=1 obligation, contrary to §16.2.1 "returning ... does not discharge".
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_QTT_LINEAR_DROP] on line 39 (saw: E_QTT_LINEAR_DROP@27, E_QTT_LINEAR_DROP@33); expected 3 errors, got 2; first error: E_QTT_LINEAR_DROP "'x' (relevant) may be dropped without being consumed (§12.2.5)" at line 27

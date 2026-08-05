@@ -17,4 +17,4 @@ let Age = Integer
 bad : Age
 let bad = True --!! E_TYPE_MISMATCH
 
--- STATUS(a0497523): FAIL — the alias is eagerly unfolded into 'expected' (Integer); no source-like rendering ('Age') and no normalizedExpected
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.type.mismatch has payload /payload/expected = Age (saw: /payload/expected=Integer); no error diagnostic matching kappa.type.mismatch has payload /payload/normalizedExpected = Integer (saw: /payload/normalizedExpected=<absent>)

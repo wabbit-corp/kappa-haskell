@@ -55,4 +55,4 @@ rationalInverse :
     (x : Rational) -> (y : Rational) -> (@p : divDefined x y = True) ->
     multiply (divide x y @p) y = x
 let rationalInverse x y @p = fieldInverse x y
--- STATUS(a0497523): FAIL — 10 errors: the §28.2.2 law members are not implemented (algebraic traits are empty marker traits: subDefinedAlways/subtractAsAddInverse/divisionRightInverse/addAssoc/leftDistribute all E_NAME_UNRESOLVED), and the surface subtract/divide take no proof argument, so `subtract x y @p` / `divide x y @p` hit E_APPLICATION_ARGUMENT_MISMATCH.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Mul _" at line 33

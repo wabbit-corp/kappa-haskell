@@ -1,0 +1,26 @@
+-- Source issues: FSTAR-682, FSTAR-522
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- Dependent match over tuple scrutinee with indexed-type arms.
+
+--! mode check
+--! assertNoWarnings
+
+-- A length-indexed vector type.
+data Vec (n : Nat) : Type =
+    Nil  : Vec 0
+    Cons : forall (n : Nat). Nat -> Vec n -> Vec (n + 1)
+
+-- Matching on a pair (Vec n, Vec n) using a flat tuple pattern should work.
+-- The same semantics as nested match: first match l1 then match l2.
+map2 : forall (n : Nat). Vec n -> Vec n -> Vec n
+let map2 l1 l2 =
+    match (l1, l2)
+      case (Nil, Nil)             -> Nil
+      case (Cons x xs, Cons y ys) -> Cons (x + y) (map2 xs ys)
+
+-- Flat tuple match over indexed types must be accepted, equivalent to nested match.
+-- FSTAR-682: dependent pair match rejected when nested match works.
+
+--! assertNoErrors
+
+-- STATUS(8c3c7747): FAIL — promoted conformance regression: E_PATTERN_NON_EXHAUSTIVE; the checker does not use the shared Vec index to refute mixed Nil/Cons tuple cases.

@@ -94,6 +94,7 @@ module Kappa.Ownership
   , renderOwnInfo
   ) where
 
+import Data.Foldable (toList)
 import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -102,7 +103,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal, runtimeErasedParam)
+import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal, runtimeErasedPiParam)
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
@@ -118,8 +119,10 @@ import Kappa.Core
   , Level (..)
   , Q (..)
   , RecordField (..)
+  , RuntimeErasure (..)
   , Term (..)
   , Value (..)
+  , pattern VPiEvidenceM
   , constructorBridgeBinderCount
   , interleaveConstructorSourceBinders
   , mapArithmeticCertificate
@@ -314,6 +317,7 @@ data ParamSite = ParamSite
   , psQ :: !Q
   , psBorrowed :: !Bool
   , psLevel :: !Int
+  , psRuntimeErasure :: !(RuntimeErasure Value)
   , psDomainValue :: !Value
   }
   deriving stock (Show)
@@ -588,12 +592,12 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
          in termReadDeps d scs UseConsumes s
               `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
               `Set.union` Set.unions (map armDeps alts)
-      CLetM _ _ _ ty rhs b ->
+      CLetRuntimeM _ _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             rhsReads = termReadDeps d scs UseConsumes rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in rhsReads `Set.union` borrowedResultDeps (d + 1) (sc : scs) b
-      CLetRecM _ _ _ ty rhs b ->
+      CLetRecRuntimeM _ _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             rhsReads = termReadDeps (d + 1) (sc0 : scs) UseConsumes rhs
@@ -602,7 +606,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in termFreeDeps (d + 1) (sc : scs) b
-      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
+      CPiRuntimeM _ _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
       CThunkE e _ -> termFreeDeps d scs e
@@ -618,14 +622,14 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in freeDeps (d + 1) (sc : scs) b
-      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
+      CPiRuntimeM _ _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in freeDeps d scs dom `Set.union` freeDeps (d + 1) (sc : scs) cod
-      CLetM _ _ _ ty rhs b ->
+      CLetRuntimeM _ _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in freeDeps d scs rhs `Set.union` freeDeps (d + 1) (sc : scs) b
-      CLetRecM _ _ _ ty rhs b ->
+      CLetRecRuntimeM _ _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
@@ -708,11 +712,11 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
          in termReadDeps d scs UseConsumes s
               `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
               `Set.union` Set.unions (map readAlt alts)
-      CLetM _ _ _ ty rhs b ->
+      CLetRuntimeM _ _ _ _ ty rhs b ->
         let rhsDeps = borrowedResultDeps d scs rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
          in termReadDeps d scs UseConsumes rhs `Set.union` termReadDeps (d + 1) (sc : scs) uc b
-      CLetRecM _ _ _ ty rhs b ->
+      CLetRecRuntimeM _ _ _ _ ty rhs b ->
         let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
             rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
             sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
@@ -720,7 +724,7 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
       CLamM _ _ _ _ b ->
         let sc = localScope d Set.empty Nothing
          in termReadDeps (d + 1) (sc : scs) uc b
-      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
+      CPiRuntimeM _ _ _ _ _ _ _ _ _ dom cod ->
         let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
          in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
       CQuote _ slots -> Set.unions (map (termReadDeps d scs UseErased) slots)
@@ -881,7 +885,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
           _ : rest -> rest
           [] -> []
         erased = case site of
-          Just p -> runtimeErasedParam ctx (psLevel p) (psQ p) (psDomainValue p)
+          Just p -> runtimeErasedPiParam ctx (psLevel p) (psRuntimeErasure p) (psQ p) (psDomainValue p)
           Nothing -> q == Q0
      in if erased
           then
@@ -903,7 +907,7 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
                 (acc1, liveB) = walk ctx ctorTypes tele' owner (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
              in (acc1, dropLevel depth liveB)
 
-  CPiEvidenceM _ _ _ _q _borrowed _nm _ _ dom cod ->
+  CPiRuntimeM _ _ _ _q _borrowed _nm _ _ _ dom cod ->
     -- A Pi is a TYPE; its binder carries no runtime value. We descend (a
     -- dependent type can mention runtime binders in erased positions, and a
     -- type-valued top-level body is a bare 'CPi'), pushing an UNTRACKED scope so
@@ -914,72 +918,109 @@ walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case t
         (acc2, liveCod) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) UseErased cod liveDom acc1
      in (acc2, dropLevel depth liveCod)
 
-  CLetM _ q _nm _ty rhs b ->
+  CLetRuntimeM _ q _nm runtimeErasure ty rhs b ->
     -- Sequential: the rhs runs, binds the name, then the body. Liveness flows
     -- backward — the body's live-out (minus the new binder) is the rhs's
     -- live-out. The binder's last-use is decided inside the body.
-    let tyV = evalTypeAt ctx depth _ty
+    let tyV = evalTypeAt ctx depth ty
+        erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
         rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-        (bid, accBid) = freshBinderId owner acc
-        deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
-        acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
-        sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
-        liveBody' = dropLevel depth liveBody
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
-     in (acc2, liveRhs)
+     in if erased
+          then
+            let sc = Scope depth Nothing False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc
+                liveBody' = dropLevel depth liveBody
+             in walk ctx ctorTypes rhsTele owner depth scopes UseErased rhs liveBody' acc1
+          else
+            let (bid, accBid) = freshBinderId owner acc
+                deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
+                acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
+                sc = Scope depth (Just bid) False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+                liveBody' = dropLevel depth liveBody
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
+             in (acc2, liveRhs)
 
-  CLetRecM _ q _nm _ty rhs b ->
+  CLetRecRuntimeM _ q _nm runtimeErasure ty rhs b ->
     -- Recursive local let: the binder is in scope in BOTH its rhs and its body.
-    let tyV = evalTypeAt ctx depth _ty
+    let tyV = evalTypeAt ctx depth ty
+        erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
         rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-        (bid, accBid) = freshBinderId owner acc
-        acc0 = addBinder bid q False accBid
-        sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
-     in (acc2, dropLevel depth liveRhs)
+     in if erased
+          then
+            let sc = Scope depth Nothing False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseErased rhs liveBody acc1
+             in (acc2, dropLevel depth liveRhs)
+          else
+            let (bid, accBid) = freshBinderId owner acc
+                acc0 = addBinder bid q False accBid
+                sc = Scope depth (Just bid) False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
+             in (acc2, dropLevel depth liveRhs)
 
-  CLetPolyM _ q _nm _ _ty rhs b ->
-    let tyV = evalTypeAt ctx depth _ty
+  CLetPolyRuntimeM _ q _nm _ runtimeErasure ty rhs b ->
+    let tyV = evalTypeAt ctx depth ty
+        erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
         rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-        (bid, accBid) = freshBinderId owner acc
-        deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
-        acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
-        sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
-        liveBody' = dropLevel depth liveBody
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
-     in (acc2, liveRhs)
+     in if erased
+          then
+            let sc = Scope depth Nothing False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc
+                liveBody' = dropLevel depth liveBody
+             in walk ctx ctorTypes rhsTele owner depth scopes UseErased rhs liveBody' acc1
+          else
+            let (bid, accBid) = freshBinderId owner acc
+                deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
+                acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
+                sc = Scope depth (Just bid) False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+                liveBody' = dropLevel depth liveBody
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
+             in (acc2, liveRhs)
 
-  CLetRecPolyM _ q _nm _ _ty rhs b ->
-    let tyV = evalTypeAt ctx depth _ty
+  CLetRecPolyRuntimeM _ q _nm _ runtimeErasure ty rhs b ->
+    let tyV = evalTypeAt ctx depth ty
+        erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
         rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-        (bid, accBid) = freshBinderId owner acc
-        acc0 = addBinder bid q False accBid
-        sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
-     in (acc2, dropLevel depth liveRhs)
+     in if erased
+          then
+            let sc = Scope depth Nothing False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseErased rhs liveBody acc1
+             in (acc2, dropLevel depth liveRhs)
+          else
+            let (bid, accBid) = freshBinderId owner acc
+                acc0 = addBinder bid q False accBid
+                sc = Scope depth (Just bid) False (Just tyV)
+                (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+                (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
+             in (acc2, dropLevel depth liveRhs)
 
   CLetRecGroupM _ definitions b ->
     let groupDepth = depth + length definitions
         allocate [] current = ([], current)
         allocate (definition : rest) current =
           let tyV = evalTypeAt ctx depth (clrdType definition)
-              (bid, current1) = freshBinderId owner current
-              current2 = addBinder bid (clrdQuantity definition) False current1
-              (allocatedRest, current3) = allocate rest current2
-           in ((definition, bid, tyV) : allocatedRest, current3)
+              erased = runtimeErasedLocalAt ctx depth (clrdQuantity definition) (clrdRuntimeErasure definition) tyV
+              (maybeBid, current1) =
+                if erased
+                  then (Nothing, current)
+                  else
+                    let (bid, next) = freshBinderId owner current
+                     in (Just bid, addBinder bid (clrdQuantity definition) False next)
+              (allocatedRest, current2) = allocate rest current1
+           in ((definition, maybeBid, tyV, erased) : allocatedRest, current2)
         (allocated, acc0) = allocate definitions acc
         groupScopes =
           reverse
-            [Scope (depth + index) (Just bid) False (Just tyV) | (index, (_, bid, tyV)) <- zip [0 ..] allocated]
+            [Scope (depth + index) maybeBid False (Just tyV) | (index, (_, maybeBid, tyV, _)) <- zip [0 ..] allocated]
               ++ scopes
         (acc1, liveBody) = walk ctx ctorTypes [] owner groupDepth groupScopes useConsumes b liveOut acc0
-        walkDefinition (current, live) (definition, _, tyV) =
+        walkDefinition (current, live) (definition, _, tyV, erased) =
           let rhsTele = paramConvTelescopeFromValueAt ctx groupDepth tyV
-           in walk ctx ctorTypes rhsTele owner groupDepth groupScopes UseConsumes
+           in walk ctx ctorTypes rhsTele owner groupDepth groupScopes (if erased then UseErased else UseConsumes)
                 (clrdRhs definition) live current
         (acc2, liveGroup) = foldl walkDefinition (acc1, liveBody) allocated
         liveOuter = foldr dropLevel liveGroup [depth .. groupDepth - 1]
@@ -1499,8 +1540,19 @@ substValue ctx subst = go
         VFlex m sp -> VFlex m [(ic, go a) | (ic, a) <- sp]
         VGlobal g universes sp -> VGlobal g universes [(ic, go a) | (ic, a) <- sp]
         VLamM mode ic q n clo -> VLamM mode ic q n (substClosure clo)
-        VPiEvidenceM mode formation ic q borrowed n assumption origin dom clo ->
-          VPiEvidenceM mode formation ic q borrowed n assumption origin (go dom) (substClosure clo)
+        VPiRuntimeM mode formation ic q borrowed n assumption origin runtimeErasure dom clo ->
+          VPiRuntimeM
+            mode
+            formation
+            ic
+            q
+            borrowed
+            n
+            assumption
+            origin
+            (fmap go runtimeErasure)
+            (go dom)
+            (substClosure clo)
         VCtorI g universes arguments ->
           VCtorI g universes
             [argument {cvaValue = go (cvaValue argument)} | argument <- arguments]
@@ -1582,6 +1634,10 @@ deepForceValue ctx = go (32 :: Int)
 
 evalTypeAt :: EvalCtx -> Int -> Term -> Value
 evalTypeAt ctx depth = eval ctx (rigidEnv depth)
+
+runtimeErasedLocalAt :: EvalCtx -> Int -> Q -> RuntimeErasure Term -> Value -> Bool
+runtimeErasedLocalAt ctx depth quantity runtimeErasure ty =
+  runtimeErasedPiParam ctx depth (fmap (evalTypeAt ctx depth) runtimeErasure) quantity ty
 
 rigidEnv :: Int -> [Value]
 rigidEnv depth = [VRigid (depth - 1 - i) [] | i <- [0 .. depth - 1]]
@@ -1679,12 +1735,12 @@ paramConvTelescopeWithResultAt ctx = go
   where
     go lvl ty =
       case force ctx ty of
-        VPiEvidenceM _ _ ic q borrowed _ _ _ dom (Closure env cod) ->
+        VPiRuntimeM _ _ ic q borrowed _ _ _ runtimeErasure dom (Closure env cod) ->
           let x = VRigid lvl []
               domV = force ctx dom
               codV = eval ctx (x : env) cod
               (sites, resultTy) = go (lvl + 1) codV
-           in (ParamSite ic q borrowed lvl domV : sites, resultTy)
+           in (ParamSite ic q borrowed lvl runtimeErasure domV : sites, resultTy)
         resultTy -> ([], resultTy)
 
 classifyCallArgs :: EvalCtx -> CallMode -> Maybe [ArgConv] -> [ParamSite] -> [(Icit, Term)] -> [UseConsumes]
@@ -1720,7 +1776,8 @@ classifyCallArgs ctx mode mConvs tele0 = go mConvs tele0
           , convs
           )
 
-    erasedOrKind site = runtimeErasedParam ctx (psLevel site) (psQ site) (psDomainValue site)
+    erasedOrKind site =
+      runtimeErasedPiParam ctx (psLevel site) (psRuntimeErasure site) (psQ site) (psDomainValue site)
 
 argConvConsumes :: ArgConv -> UseConsumes
 argConvConsumes = \case
@@ -1913,7 +1970,7 @@ usageIntervals ctx ctorTypes owner body =
               _ : rest -> rest
               [] -> []
             erased = case site of
-              Just p -> runtimeErasedParam ctx (psLevel p) (psQ p) (psDomainValue p)
+              Just p -> runtimeErasedPiParam ctx (psLevel p) (psRuntimeErasure p) (psQ p) (psDomainValue p)
               Nothing -> q == Q0
          in if erased
               then
@@ -1928,70 +1985,87 @@ usageIntervals ctx ctorTypes owner body =
                     (uses, sub, next2) = count tele' (depth + 1) ((depth, Just bid, borrowed, mTy) : scopes) UseConsumes b next1
                  in (Map.delete bid uses, recordSelf bid uses sub, next2)
 
-      CPiEvidenceM _ _ _ _ _ _ _ _ dom cod ->
+      CPiRuntimeM _ _ _ _ _ _ _ _ _ dom cod ->
         let (uDom, sDom, next1) = count [] depth scopes UseErased dom next
             (uCod, sCod, next2) = count [] (depth + 1) ((depth, Nothing, False, Nothing) : scopes) UseErased cod next1
          in (addUses uDom uCod, Map.union sDom sCod, next2)
 
-      CLetM _ _ _ ty rhs b ->
+      CLetRuntimeM _ q _ runtimeErasure ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
+            erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
             rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-            (bid, next1) = fresh next
-            (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
-            body' = Map.delete bid uB
-            (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
-         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
+         in if erased
+              then count [] (depth + 1) ((depth, Nothing, False, Just tyV) : scopes) UseConsumes b next
+              else
+                let (bid, next1) = fresh next
+                    (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
+                    body' = Map.delete bid uB
+                    (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
+                 in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
 
-      CLetRecM _ _ _ ty rhs b ->
+      CLetRecRuntimeM _ q _ runtimeErasure ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
+            erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
             rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-            (bid, next1) = fresh next
-            scopes' = (depth, Just bid, False, Just tyV) : scopes
-            (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
-            (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
-            combined = addUses uRhs uB
-         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
+         in if erased
+              then count [] (depth + 1) ((depth, Nothing, False, Just tyV) : scopes) UseConsumes b next
+              else
+                let (bid, next1) = fresh next
+                    scopes' = (depth, Just bid, False, Just tyV) : scopes
+                    (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
+                    (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
+                    combined = addUses uRhs uB
+                 in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
 
-      CLetPolyM _ _ _ _ ty rhs b ->
+      CLetPolyRuntimeM _ q _ _ runtimeErasure ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
+            erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
             rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-            (bid, next1) = fresh next
-            (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
-            body' = Map.delete bid uB
-            (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
-         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
+         in if erased
+              then count [] (depth + 1) ((depth, Nothing, False, Just tyV) : scopes) UseConsumes b next
+              else
+                let (bid, next1) = fresh next
+                    (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
+                    body' = Map.delete bid uB
+                    (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
+                 in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
 
-      CLetRecPolyM _ _ _ _ ty rhs b ->
+      CLetRecPolyRuntimeM _ q _ _ runtimeErasure ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
+            erased = runtimeErasedLocalAt ctx depth q runtimeErasure tyV
             rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-            (bid, next1) = fresh next
-            scopes' = (depth, Just bid, False, Just tyV) : scopes
-            (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
-            (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
-            combined = addUses uRhs uB
-         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
+         in if erased
+              then count [] (depth + 1) ((depth, Nothing, False, Just tyV) : scopes) UseConsumes b next
+              else
+                let (bid, next1) = fresh next
+                    scopes' = (depth, Just bid, False, Just tyV) : scopes
+                    (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
+                    (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
+                    combined = addUses uRhs uB
+                 in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
 
       CLetRecGroupM _ definitions b ->
         let groupDepth = depth + length definitions
             allocate [] current = ([], current)
             allocate (definition : rest) current =
-              let (bid, current1) = fresh current
-                  tyV = evalTypeAt ctx depth (clrdType definition)
+              let tyV = evalTypeAt ctx depth (clrdType definition)
+                  erased = runtimeErasedLocalAt ctx depth (clrdQuantity definition) (clrdRuntimeErasure definition) tyV
+                  (maybeBid, current1) = if erased then (Nothing, current) else let (bid, next') = fresh current in (Just bid, next')
                   (allocatedRest, current2) = allocate rest current1
-               in ((definition, bid, tyV) : allocatedRest, current2)
+               in ((definition, maybeBid, tyV, erased) : allocatedRest, current2)
             (allocated, next1) = allocate definitions next
             groupScopes =
               reverse
-                [(depth + index, Just bid, False, Just tyV) | (index, (_, bid, tyV)) <- zip [0 ..] allocated]
+                [(depth + index, maybeBid, False, Just tyV) | (index, (_, maybeBid, tyV, _)) <- zip [0 ..] allocated]
                 ++ scopes
             (bodyUses, bodySub, next2) = count [] groupDepth groupScopes UseConsumes b next1
-            countDefinition (uses, sub, current) (definition, _, tyV) =
+            countDefinition (uses, sub, current) (definition, _, tyV, erased) =
               let rhsTele = paramConvTelescopeFromValueAt ctx groupDepth tyV
                   (rhsUses, rhsSub, current') =
-                    count rhsTele groupDepth groupScopes UseConsumes (clrdRhs definition) current
+                    count rhsTele groupDepth groupScopes (if erased then UseErased else UseConsumes) (clrdRhs definition) current
                in (addUses rhsUses uses, Map.union rhsSub sub, current')
             (combined, combinedSub, next3) = foldl countDefinition (bodyUses, bodySub, next2) allocated
-            binderIds = [bid | (_, bid, _) <- allocated]
+            binderIds = [bid | (_, Just bid, _, _) <- allocated]
             external = foldr Map.delete combined binderIds
             recorded = foldr (\bid sub -> recordSelf bid combined sub) combinedSub binderIds
          in (external, recorded, next3)
@@ -2502,23 +2576,27 @@ argConvFindings ctx owner = goTerm
               _ -> goTerm hd
          in here ++ concatMap (goTerm . snd) args
       CLamM _ _ _ _ b -> goTerm b
-      CPiEvidenceM _ _ _ _ _ _ _ _ a b -> goTerm a ++ goTerm b
+      CPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure a b ->
+        concatMap goTerm (a : b : toList runtimeErasure)
       CCtorI _ _ _ arguments ->
         concatMap (goTerm . caTerm) [argument | argument <- arguments, caPayload argument]
       CMatch s _ _ alts ->
         goTerm s ++ concatMap (\(CaseAlt _ gd b) -> maybe [] goTerm gd ++ goTerm b) alts
-      CRecordTQ fs -> concatMap (goTerm . rfType) fs
+      CRecordTQ fs -> concatMap (\field -> concatMap goTerm (rfType field : toList (rfRuntimeErasure field))) fs
       CRecordV fs -> concatMap (goTerm . snd) fs
       CProjM _ e _ -> goTerm e
       CProjAtM _ e _ _ -> goTerm e
       CVariantT ms -> concatMap goTerm ms
       CInject _ e -> goTerm e
-      CLetM _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
-      CLetRecM _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
-      CLetPolyM _ _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
-      CLetRecPolyM _ _ _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetRuntimeM _ _ _ runtimeErasure ty rhs b -> concatMap goTerm (ty : rhs : b : toList runtimeErasure)
+      CLetRecRuntimeM _ _ _ runtimeErasure ty rhs b -> concatMap goTerm (ty : rhs : b : toList runtimeErasure)
+      CLetPolyRuntimeM _ _ _ _ runtimeErasure ty rhs b -> concatMap goTerm (ty : rhs : b : toList runtimeErasure)
+      CLetRecPolyRuntimeM _ _ _ _ runtimeErasure ty rhs b -> concatMap goTerm (ty : rhs : b : toList runtimeErasure)
       CLetRecGroupM _ definitions b ->
-        concatMap (\definition -> goTerm (clrdType definition) ++ goTerm (clrdRhs definition)) definitions ++ goTerm b
+        concatMap
+          (\definition -> concatMap goTerm (clrdType definition : clrdRhs definition : toList (clrdRuntimeErasure definition)))
+          definitions
+          ++ goTerm b
       CSealE _ e -> goTerm e
       CSigT _ e -> goTerm e
       CThunkE e _ -> goTerm e

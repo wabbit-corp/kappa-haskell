@@ -170,14 +170,14 @@ CONTRACTS = [
     (
         ROOT / "tests/conformance/spec-coverage/ordinary-parametric-kcoretext",
         ["manifest.json"],
-        47,
+        48,
         None,
         None,
     ),
     (
         ROOT / "tests/conformance/spec-coverage/parametric-packages-universe-schemas",
         ["manifest.json", "extension-manifest.json"],
-        88,
+        89,
         None,
         None,
     ),
@@ -403,8 +403,8 @@ def main() -> int:
             print(f"  - {error}", file=sys.stderr)
         return 1
     print(
-        "universe contract validation passed: 47 ordinary-parametric, "
-        "88 parametric-package, 34 current variance + 8 gated future variance, "
+        "universe contract validation passed: 48 ordinary-parametric, "
+        "89 parametric-package, 34 current variance + 8 gated future variance, "
         "67 first-class-level base + 5 strengthening suites"
     )
     return 0

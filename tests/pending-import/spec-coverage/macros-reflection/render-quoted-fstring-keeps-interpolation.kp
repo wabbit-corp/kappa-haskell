@@ -28,4 +28,4 @@ let rendered = $(do
 main : UIO Unit
 let main = do
     printlnString rendered
--- STATUS(a0497523): FAIL — renderSyntax renders the quoted f-string as just "v="; the Interp fragment is dropped and stdout contains no "n"
+-- STATUS(74742dfd): FAIL — stdout does not contain "n"

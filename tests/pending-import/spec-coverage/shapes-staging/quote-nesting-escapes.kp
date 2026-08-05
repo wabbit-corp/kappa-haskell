@@ -37,4 +37,4 @@ main : UIO Unit
 let main = do
     runInt (twoEscapes .< 2 >. .< 3 >.)
     runInt composed
--- STATUS(a0497523): PASS
+-- STATUS(e25d64e1): FAIL — E_PARAMETRIC_TYPE_PROMOTION at the staged open/quote composition; expected stdout "5\n6\n"

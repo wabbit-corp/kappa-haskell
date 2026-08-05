@@ -1,0 +1,22 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq x y =
+        match (x, y)
+        case (I, O) -> False
+        case _      -> True
+
+laws : IsPreorder Bit leq
+let laws = preorderLaws
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertType laws IsPreorder Bit leq
+--! assertEvidenceConstructionMode laws fresh-independent

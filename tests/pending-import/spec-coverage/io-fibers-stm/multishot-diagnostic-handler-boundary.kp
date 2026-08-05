@@ -1,6 +1,6 @@
 --! mode check
 --! assertErrorCount 1
---! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+--! assertDiagnostic error E_QTT_CONTINUATION_CAPTURE
 --! assertDiagnosticRelated error E_QTT_CONTINUATION_CAPTURE handler-boundary
 
 -- §18.1.20.2 diagnostic requirement (Spec.md L23211-23219): when a
@@ -31,4 +31,4 @@ let bad (1 x : Int) : Int =
                         pure a
 
         runPure handled
--- STATUS(a0497523): FAIL — compiler gap: E_QTT_CONTINUATION_CAPTURE names the operation, offending value, and rejection kind in its message, but emits NO related origins ("saw roles:" empty), so the §18.1.20.2-required handler-boundary citation is missing.
+-- STATUS(3014a0d9): FAIL — E_QTT_CONTINUATION_CAPTURE emitted but the handler-boundary related-origin assertion is not satisfied by the implementation

@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+result : Dec (True = True)
+let result = reflectsDec (Reflects.IsTrue refl)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType result Dec (True = True)
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

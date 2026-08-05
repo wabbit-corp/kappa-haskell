@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+reflected : Reflects (True = True) (True == True)
+let reflected = eqReflect True True
+
+decided : Dec (True = True)
+let decided = reflectsDec reflected
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType reflected Reflects (True = True) (True == True)
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

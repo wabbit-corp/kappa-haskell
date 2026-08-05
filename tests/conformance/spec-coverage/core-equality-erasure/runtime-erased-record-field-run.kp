@@ -1,0 +1,15 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n"
+
+-- Spec §31.2: selected RuntimeErased evidence is part of the checked record
+-- layout. A proof field with ordinary quantity has no physical slot, so the
+-- following value projection must still address the retained Int field.
+module main
+
+type Witnessed = (proof : () = (), value : Int)
+
+main : UIO Unit
+let main = do
+    let witnessed : Witnessed = (proof = refl, value = 7)
+    printlnString (showInt witnessed.value)

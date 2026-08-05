@@ -10,30 +10,40 @@ module test
 
 -- Identity type for three arguments: `Id3 a b c` is inhabited only when a = b = c.
 data Id3 (@0 A : Type) (x : A) (y : A) (z : A) : Type =
-    refl3 : forall (u : A). Id3 u u u
+    Refl3 : forall (u : A). Id3 u u u
 
 -- Dependent pattern matching forces a = b = c from the constructor `refl3`.
 -- The right-hand side `refl3` must be accepted at the forced-equal type.
 identityId3 : forall (A : Type) (a b c : A). Id3 a b c -> Id3 a b c
-let identityId3 refl3 = refl3
+let identityId3 proof =
+    match proof
+      case Refl3 u -> Refl3 u
 
 --! mode check
 --! assertNoErrors
 
 -- Variant: matching on a reflexivity proof forces the two argument positions equal.
 data Eq (@0 A : Type) (x : A) (y : A) : Type =
-    refl : forall (u : A). Eq u u
+    Refl : forall (u : A). Eq u u
 
 -- symmetry: if a = b then b = a, witnessed by dependent match.
 sym : forall (A : Type) (a b : A). Eq a b -> Eq b a
-let sym refl = refl
+let sym proof =
+    match proof
+      case Refl u -> Refl u
 
 --! assertNoErrors
 
 -- Transitivity: chain two equalities; both pattern matches force index equalities.
 trans : forall (A : Type) (a b c : A). Eq a b -> Eq b c -> Eq a c
-let trans refl refl = refl
+let trans left right =
+    match left
+      case Refl u ->
+        match right
+          case Refl _ -> Refl u
 
 --! assertNoErrors
+--! assertType sym forall (A : Type) (a b : A). Eq a b -> Eq b a
+--! assertType trans forall (A : Type) (a b c : A). Eq a b -> Eq b c -> Eq a c
 
--- STATUS(f1b025a3): FAIL — E_TYPE_EQUALITY_MISMATCH: dependent matches on refl do not transport the remaining equality indices for sym/trans.
+-- STATUS(8c3c7747): HARNESS-ERROR — explicit dependent constructor matching crashes evaluation with an out-of-range de Bruijn index instead of checking the path-inductive sym/trans proofs.

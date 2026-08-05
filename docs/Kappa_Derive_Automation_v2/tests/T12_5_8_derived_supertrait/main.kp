@@ -1,0 +1,26 @@
+@PrivateByDefault module main
+
+trait Parent =
+    proof : True = True
+    evidence uniqueness = derive
+
+trait derive Parent => Child =
+    token : Unit
+
+instance Child =
+    let token = ()
+
+needsParent : Parent => True = True
+let needsParent = proof
+
+projectedUse : True = True
+let projectedUse =
+    block
+        let child : Child = summon
+        needsParent
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedSupertrait Parent from Child

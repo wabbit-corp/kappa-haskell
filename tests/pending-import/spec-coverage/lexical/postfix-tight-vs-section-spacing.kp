@@ -17,4 +17,4 @@ let n = 5
 
 r : Int
 let r = (n?)
--- STATUS(a0497523): FAIL — role-marked postfix definition not parsed (E_RECOVERY_DECLARATION_SKIPPED at the postfix signature)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'postfix' at start of declaration" at line 12; assertEval: 'r' evaluates to Option n, expected 6

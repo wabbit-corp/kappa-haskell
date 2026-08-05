@@ -73,4 +73,4 @@ let clashUse =
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 62 (saw: E_APPLICATION_ARGUMENT_MISMATCH@62, E_TYPE_EQUALITY_MISMATCH@72)

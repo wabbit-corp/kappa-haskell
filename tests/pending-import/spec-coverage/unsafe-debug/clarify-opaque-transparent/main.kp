@@ -16,4 +16,4 @@ let useSecret = secret
 --! assertNoErrors
 --! assertEval useSecret 7
 --! assertAuditLedger clarify
--- STATUS(a0497523): FAIL — `clarify` is gated and audited, but the requested transparency is not granted: the refl proof still fails with E_TYPE_EQUALITY_MISMATCH (opacity untouched).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 10

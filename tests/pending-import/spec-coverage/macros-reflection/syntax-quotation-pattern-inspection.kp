@@ -7,6 +7,11 @@
 -- application spines. This file pins the quotation-pattern option: a
 -- literal pattern, an application-spine pattern binding head and
 -- argument sub-syntax, and a wildcard fallback.
+-- HOLD: §21.5's inspection MUST is disjunctive (quotation-pattern
+-- matching OR an observationally equivalent stable public Syntax API),
+-- and the spec defines no normative quotation-pattern grammar; the
+-- `case '{ ... } ->` spellings below are conjectural. Not promotable
+-- until a surface is normatively fixed (KNOWN_SPEC_ISSUES Part III).
 module main
 
 classify : Syntax Integer -> Elab (Syntax String)
@@ -24,4 +29,5 @@ let appCase = $(classify '{ addInt 1 2 })
 
 otherCase : String
 let otherCase = $(classify '{ 7 })
--- STATUS(a0497523): FAIL — quotation patterns in match do not parse (E_RECOVERY_DECLARATION_SKIPPED) and no equivalent Syntax inspection API exists
+
+-- STATUS: SPEC-ISSUE — §21.5 mandates inspection capability without a normative surface for either disjunct; assertNoErrors is not portably entailed

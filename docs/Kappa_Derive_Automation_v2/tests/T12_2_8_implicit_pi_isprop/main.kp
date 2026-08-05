@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+implicitFunctionsAreProp :
+    forall (a : Type) (p : a -> Type).
+    (forall (x : a). IsProp (p x)) ->
+    IsProp (forall (x : a). p x)
+let implicitFunctionsAreProp pointwise = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProviderUsed implicitFunctionsAreProp function-extensionality

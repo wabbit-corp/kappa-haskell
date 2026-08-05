@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+proof : True = True
+let proof = reflectsSound (IsTrue refl) refl
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors

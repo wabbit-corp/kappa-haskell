@@ -26,3 +26,4 @@ let answer =
 --! mode check
 --! assertNoErrors
 --! assertEval answer 42
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNEXPECTED_INDENTATION "unexpected indentation: no block introducer or continuation context is active; consider a comma, operator, explicit parentheses, or dedent (Spec §5.4)" at line 11; assertEval: 'answer' evaluates to _, expected 42

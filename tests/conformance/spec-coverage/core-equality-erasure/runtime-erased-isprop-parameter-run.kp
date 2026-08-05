@@ -1,0 +1,11 @@
+--! mode run
+--! entry main
+--! assertStdout "7"
+
+module main
+
+ignoreProof : (proof : Unit) -> Int
+let ignoreProof proof = 7
+
+main : IO Void Unit
+let main = print (ignoreProof ())

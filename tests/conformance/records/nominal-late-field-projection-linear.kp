@@ -1,0 +1,42 @@
+--! mode check
+--! assertNoErrors
+--! assertEval result 20
+
+module main
+
+-- A named projection from a nominal constructor must hydrate preceding
+-- dependent binders without rebuilding the complete predecessor tree. The
+-- last field of this 20-field constructor is deliberately late: recursively
+-- re-instantiating every predecessor grows as 2^n and exhausts the checker,
+-- while one memoized projection per field is bounded and deterministic.
+data Wide : Type =
+    Wide
+        (field01 : Int)
+        (field02 : Int)
+        (field03 : Int)
+        (field04 : Int)
+        (field05 : Int)
+        (field06 : Int)
+        (field07 : Int)
+        (field08 : Int)
+        (field09 : Int)
+        (field10 : Int)
+        (field11 : Int)
+        (field12 : Int)
+        (field13 : Int)
+        (field14 : Int)
+        (field15 : Int)
+        (field16 : Int)
+        (field17 : Int)
+        (field18 : Int)
+        (field19 : Int)
+        (field20 : Int)
+
+result : Int
+let result =
+    ( Wide
+        1 2 3 4 5
+        6 7 8 9 10
+        11 12 13 14 15
+        16 17 18 19 20
+    ).field20

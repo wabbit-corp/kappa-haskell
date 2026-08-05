@@ -32,7 +32,4 @@ let bad u =
     match u                             --!! kappa.pattern.non-exhaustive
     case (| n : Integer |) -> n
 
--- STATUS(a0497523): FAIL — VarRow/LacksVar unresolved (open variant rows
--- are not implemented), so open-union exhaustiveness checking cannot be
--- reached; the file dies with E_NAME_UNRESOLVED instead of the single
--- expected non-exhaustiveness error.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 7; first error: E_NAME_UNRESOLVED "unresolved name 'VarRow' (not in scope)" at line 14

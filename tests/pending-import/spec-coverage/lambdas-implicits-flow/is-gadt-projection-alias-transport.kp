@@ -49,4 +49,4 @@ let toInt v =
 
 rDeep : Int
 let rDeep = toInt (predOfTwo (Succ (Succ Zero)))
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type PNat; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates" at line 51

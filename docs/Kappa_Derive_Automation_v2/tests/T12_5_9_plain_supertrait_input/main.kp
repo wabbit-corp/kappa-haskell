@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+trait Parent =
+    choose : Bool
+
+trait Parent => Child =
+    token : Unit
+
+instance Child =
+    let token = ()
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_SUPERTRAIT_UNSOLVED

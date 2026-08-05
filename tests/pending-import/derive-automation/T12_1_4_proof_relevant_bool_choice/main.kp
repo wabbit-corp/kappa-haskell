@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+let arbitraryBool : Bool = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertErrorCount 1
+--! assertDiagnostic error E_DERIVE_AMBIGUOUS
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

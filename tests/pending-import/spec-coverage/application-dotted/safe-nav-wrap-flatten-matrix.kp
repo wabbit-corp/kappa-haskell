@@ -37,4 +37,4 @@ let case4 a = a?.b?.c
 bad : Option PlainMid -> Option Int
 let bad a = a?.b?.c --!! kappa.type.mismatch
 
--- STATUS(a0497523): FAIL — compiler wraps at each ?. step instead of elaborating the whole residual under the payload binder: cases 1 and 3 (plain '.' after ?.) fail with E_UNRESOLVED_MEMBER on the Option result, and the spec-ill-typed a?.b?.c on the last line is wrongly accepted.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_UNRESOLVED_MEMBER "no member 'c' on this receiver (§7.3)" at line 21; no diagnostic error[kappa.type.mismatch] on line 38 (saw: E_UNRESOLVED_MEMBER@21, E_UNRESOLVED_MEMBER@29)

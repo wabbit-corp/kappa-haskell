@@ -19,4 +19,4 @@ let result = runPure handledEff
 
 --! assertNoErrors
 --! assertEval result 42
--- STATUS(a0497523): FAIL — effect labels are not importable by explicit item (E_IMPORT_ITEM_NOT_FOUND) and the effect interface constructor is not exported at all
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_IMPORT_ITEM_NOT_FOUND "'Counter' exists in module 'elib' but is not exported (Spec §8.5)" at line 7

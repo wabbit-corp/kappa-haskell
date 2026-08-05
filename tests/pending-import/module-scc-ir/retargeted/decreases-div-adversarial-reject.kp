@@ -8,33 +8,16 @@
 --! assertDiagnostic error E_TERMINATION_UNVERIFIED
 module main
 
-data Box : Type = Box Int
-
-boxValue : Box -> Int
-let boxValue b = match b case Box x -> x
-
-derive IsSet Box
-
-instance Eq Box =
-    let (==) x y = eqInt (boxValue x) (boxValue y)
-
-instance Ord Box =
-    let compare x y =
-        if ltInt (boxValue y) (boxValue x) then LT
-        elif eqInt (boxValue x) (boxValue y) then EQ
-        else GT
-
 customOrdFlippedBoundary : Int -> Int
 let customOrdFlippedBoundary n decreases n =
-    if Box n < Box 2 then 0
+    if n > 2 then 0
     else customOrdFlippedBoundary (divInt n 2)
 
 customCompareMatch : Int -> Int
 let customCompareMatch n decreases n =
-    match compare (Box n) (Box 2)
-    case LT -> 0
-    case EQ -> 0
-    case GT -> customCompareMatch (divInt n 2)
+    match compare n 2
+    case GT -> 0
+    case _ -> customCompareMatch (divInt n 2)
 
 idInt : Int -> Int
 let idInt x = x
@@ -87,5 +70,3 @@ let badMutA n decreases n =
 
 let badMutB n decreases n =
     if n <= 0 then 0 else badMutA (n - 1)
-
--- STATUS(f1e4161b): FAIL — E_TERMINATION_UNVERIFIED

@@ -40,8 +40,4 @@ let walkOpaque xs = --!! W_TERMINATION_UNVERIFIED
     case Nil -> 0
     case _ :: rest -> addInt 1 (walkOpaque (hide rest))
 
--- STATUS(a0497523): FAIL — the §15.3 normalization pipeline is not
--- implemented: walkAlias (transparent local alias) and walkProj
--- (projection reduction) are both W_TERMINATION_UNVERIFIED, giving 3
--- warnings where the spec requires acceptance of the first two (only the
--- opaque-helper warning is conforming).
+-- STATUS(74742dfd): FAIL — no diagnostic warning[W_TERMINATION_UNVERIFIED] on line 38 (saw: W_TERMINATION_UNVERIFIED@25)

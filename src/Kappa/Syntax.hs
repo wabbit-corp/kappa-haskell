@@ -284,6 +284,7 @@ data Expr
     EVar !Name
   | ERefFacet !Name !Span -- ^ @ref x@: mutable-binding reference facet (§18.6.1)
   | EVarRead !Name !Span -- ^ internal: generated current-value read action for @var@ (§18.3.1)
+  | EQuantityBorrowMarker !Span -- ^ invalid expression-position @&@, retained for §3.2.6 diagnostics
   | EHole !(Maybe Name) !Span -- ^ @_@ (expression position) or @?name@
   | EIntLit !Integer !(Maybe Name) !Span
   | EFloatLit !Double !(Maybe Name) !Span
@@ -856,6 +857,7 @@ exprSpan = \case
   EVar n -> nameSpan n
   ERefFacet _ sp -> sp
   EVarRead _ sp -> sp
+  EQuantityBorrowMarker sp -> sp
   EHole _ sp -> sp
   EIntLit _ _ sp -> sp
   EFloatLit _ _ sp -> sp

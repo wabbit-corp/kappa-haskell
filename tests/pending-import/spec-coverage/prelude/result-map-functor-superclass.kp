@@ -34,4 +34,4 @@ let errMapped = map (\x -> x + 1) (Err "boom")
 
 errKept : Bool
 let errKept = errMapped == Err "boom"
--- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT (Functor (Result String)) x2: prelude Applicative lacks the §14.1 Functor superclass and no Functor (Result e) instance exists, while liftA2 over the same Result type solves
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Functor (Result String)" at line 27; assertEval: 'mappedHit' evaluates to match _.map Integer Integer (\ordinary x -> + Integer #generated.instance-dictionary.std.prelude.Add@<std.prelude>:459:1 @0 1) (Ok 41) ..., expected True; assertEval: 'errKept' evaluates to match _.map Integer Integer (\ordinary x -> + Integer #generated.instance-dictionary.std.prelude.Add@<std.prelude>:459:1 @0 1) (Err "boom") ..., expected True

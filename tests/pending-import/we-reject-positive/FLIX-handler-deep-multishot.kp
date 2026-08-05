@@ -55,3 +55,5 @@ let count_steps : Int =
 
 -- expect: all deep handler functions accepted; multi-shot invocation type-checks
 --! assertType test_double_result Int
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: MIXED — it assumes bare top-level self-labels and invokes a default one-shot resumption twice; both conflict with current §18.1.

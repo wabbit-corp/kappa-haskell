@@ -1,0 +1,17 @@
+module main
+
+type Cell = (value : Int,)
+
+projection cellValue (place cell : Cell) : Int =
+    yield cell.value
+
+readProjected : (0 & cell : Cell) -> Int
+let readProjected (0 & cell : Cell) : Int =
+    cellValue cell
+
+-- A fully applied projection call is a borrowed demand on its yielded stable
+-- place. A quantity-zero borrowed root cannot be used at runtime through that
+-- path.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE

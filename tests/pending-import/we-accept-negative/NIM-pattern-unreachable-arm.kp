@@ -21,6 +21,7 @@ let coinValue c =
     case Dime    -> 10
     case Quarter -> 25
 
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.
 -- POSITIVE: wildcard at the end — covers remaining cases but nothing after it.
 coinName : Coin -> String
 let coinName c =
@@ -59,4 +60,3 @@ let guardedCoin c =
     case Nickel  -> 5
     case Dime    -> 10
     case Quarter -> 25
-

@@ -41,3 +41,5 @@ let result_abort = runAbort prog_abort
 --! assertType runAbort Eff <[abort : Abort]> Int -> Option Int
 --! assertType result_ok Option Int
 --! assertType result_abort Option Int
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

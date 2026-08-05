@@ -23,4 +23,4 @@ let probe =
     open pkg as exists (b). (ev = d, value = v) in
         d.myeq v v
 
--- STATUS(a0497523): FAIL — a multi-field existential record payload cannot reference the witness: 'a' is E_NAME_UNRESOLVED in (ev : MyEq a, value : a); single-field bodies work
+-- STATUS(e25d64e1): FAIL — trait member myeq reports E_TRAIT_MEMBER_TELESCOPE_MISMATCH

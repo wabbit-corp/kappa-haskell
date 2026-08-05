@@ -35,7 +35,4 @@ let main = do
     except msg ->
         printlnString (stringAppend "caught: " msg)
 
--- STATUS(a0497523): HARNESS-ERROR — internal exception: reraised cause [was FAIL in an earlier STATUS line]
--- whenever a deferred action raises while a primary error is already tracked
--- (body error + raising defer, or two raising defers); the §18.8.3 primary
--- error never reaches `except`. Single-error defer paths work.
+-- STATUS(74742dfd): HARNESS-ERROR — internal exception: reraised cause

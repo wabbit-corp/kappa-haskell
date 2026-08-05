@@ -22,4 +22,4 @@ let outer s = do
 
 bad : Int
 let bad = $(outer '{ 41 }) --!! E_MACRO_FAILURE
--- STATUS(a0497523): FAIL — E_MACRO_FAILURE (kappa.macro.failure) is emitted at the splice, but with related=[] and payload kind "none": the §3.1.5 macro-invocation-site related origin and the §3.2.12 expansion-stack payload are missing
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.macro.failure has a related origin with role macro-invocation-site (saw roles: )

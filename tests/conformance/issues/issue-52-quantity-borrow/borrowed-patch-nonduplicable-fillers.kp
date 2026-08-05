@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 4
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME, E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- Full-record reconstruction cannot fabricate an owned copy of an omitted
+-- nonduplicable field from a borrowed root. Updating below such a field does
+-- not replace the field itself, and projecting the patch root does not erase
+-- its storage facts.
+module main
+
+data Token : Type =
+    Token
+
+type AffineCell = (count : Int, <=1 tok : Token)
+type Inner = (left : Int, right : Int)
+type Nested = (<=1 inner : Inner, tag : Int)
+
+projection innerLeft (place this : Nested) : Int =
+    yield this.inner.left
+
+badAffine : (& cell : AffineCell) -> AffineCell
+let badAffine (& cell : AffineCell) : AffineCell =
+    cell.{ count = 1 }
+
+badNested : (& value : Nested) -> Nested
+let badNested (& value : Nested) : Nested =
+    value.{ inner.left = 1 }
+
+badProjectedRoot : (& value : Nested) -> Inner
+let badProjectedRoot (& value : Nested) : Inner =
+    value.inner.{ left = 1 }
+
+badSection : (& value : Nested) -> Nested
+let badSection (& value : Nested) : Nested =
+    value.{ (.innerLeft) = 1 }

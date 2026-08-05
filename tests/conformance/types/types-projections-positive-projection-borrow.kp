@@ -11,7 +11,10 @@ projection chooseBuf (place a : Pair) (place b : Pair) (which : Bool) : Buffer =
 use : (& buf : Buffer) -> Nat
 let use buf = 0
 
-demo : (1 a : Pair) -> (1 b : Pair) -> Bool -> Nat
-let demo a b which = use (chooseBuf a b which)
+demo : (1 a : Pair) -> (1 b : Pair) -> Bool -> (Pair, Pair)
+let demo a b which =
+    block
+        let _ = use (chooseBuf a b which)
+        (a, b)
 
 --! assertNoErrors

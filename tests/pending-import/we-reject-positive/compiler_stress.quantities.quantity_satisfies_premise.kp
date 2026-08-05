@@ -20,3 +20,5 @@ ignore :
 let ignore x = ()
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — SPEC-CORRECT — source-visible QuantitySatisfies premises are required but are not resolved (§12.2.3).

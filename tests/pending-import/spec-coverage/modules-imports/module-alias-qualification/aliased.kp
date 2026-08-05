@@ -10,4 +10,4 @@ let ok = Q.val
 
 bad : Int
 let bad = qlib.val --!! E_NAME_UNRESOLVED
--- STATUS(a0497523): FAIL — qualified access qlib.val resolves for any known module, regardless of alias-only or selective-only import forms
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0; no diagnostic error[E_NAME_UNRESOLVED] on line 12 (no diagnostics); no diagnostic error[E_NAME_UNRESOLVED] on line 12 (no diagnostics)

@@ -1,0 +1,9 @@
+@PrivateByDefault module custom_equiv
+
+import eqs.(Bit)
+
+instance Equiv Bit =
+    let (~=) _ _ = True
+    let equivRefl _ = refl
+    let equivSym _ _ _ = refl
+    let equivTrans _ _ _ _ _ = refl

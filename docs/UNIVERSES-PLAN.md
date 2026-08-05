@@ -20,7 +20,7 @@ working-tree conformance run passed 3,888 cases with zero failures and ten expli
 unsupported optional/future capabilities (3,898 total):
 eight future variance suites and two optional compact Nat/Fin layout suites.
 The focused owner gates are
-47/47 ordinary/parametric/KCoreText, 88/88 package/schema (71 imported plus 17 strengthening),
+48/48 ordinary/parametric/KCoreText, 89/89 package/schema (71 imported plus 18 strengthening),
 34/34 current variance with eight future HIIT/HIRT/QIT/QIIT cases capability-gated, and 72/72
 under the active first-class-level root (67 bundle contracts plus 5 implementation-strengthening
 contracts).
@@ -41,13 +41,13 @@ finished in 8m51s with continuous progress; no compiler nontermination was obser
 The preceding clean historical closeout recorded 2,715/2,715 active conformance cases, 43 universe
 cases, 25 parametric-witness cases, solver/KCore/interface unit contracts, and the complete
 native C/LLVM/RC/poison/TSan/package/performance gate. The first two design bundles contribute
-118 independent suites, now active under
+119 independent suites, now active under
 `tests/conformance/spec-coverage/ordinary-parametric-kcoretext/` and
 `tests/conformance/spec-coverage/parametric-packages-universe-schemas/`; the latter root also
 contains 17 active implementation-strengthening suites. The variance bundle adds 42 suites:
 24 accepted programs and 18 required rejections. Of those, 34 exercise current nominal data,
 interfaces, and KCoreText, while 8 are capability-gated future HIIT/HIRT/QIT/QIIT contracts.
-U-F0 owns the resulting active ledger of 160 bundle suites plus the 17 strengthening suites.
+U-F0 owns the resulting active ledger of 161 bundle suites plus the 17 strengthening suites.
 The new first-class-level bundle contributes 67 additional suites: 47 accepts and 20 rejects,
 split into 29 positive source, 17 negative source, 13 direct solver, and 8 KCoreText suites.
 Its manifest, catalog, validator, and READMEs agree on 67. Those 67 plus 5 explicitly catalogued
@@ -190,15 +190,15 @@ The current implementation state is:
 
 ## Phase E — reconciled working-tree implementation
 
-Phase E owns the implemented pre-variance design. The original 118 leaves plus
-17 local strengthening suites are active and green, and the clean full closeout required by E9
+Phase E owns the implemented pre-variance design. The 119 leaves plus
+18 local strengthening suites are active and green, and the clean full closeout required by E9
 has passed. Phase F must preserve these contracts and may not make an old failure disappear by
 treating nominal variance as general conversion.
 
-- **U-E0 — 118-suite contract ledger and baseline (implemented; ledger green).** The 47 first-bundle
+- **U-E0 — 119-suite contract ledger and baseline (implemented; ledger green).** The 48 first-bundle
   leaves and 71 follow-up leaves are active under separate conformance roots with their original
-  manifests; 17 strengthening leaves are recorded in `extension-manifest.json`.
-  `scripts/validate_universe_contract.py` validates the resulting 47 + 71 + 17 inventory.
+  manifests; 18 strengthening leaves are recorded in `extension-manifest.json`.
+  `scripts/validate_universe_contract.py` validates the resulting 48 + 71 + 18 inventory.
   The clean build/full-suite closeout is recorded, and no suite was promoted through an
   expectation weakening.
 
@@ -304,7 +304,7 @@ honestly capability-gated. The full repository closeout is green.
 - **U-F0 — 42-suite variance ledger and honest baseline (implemented; ledger green).** The
   bundle is active at `tests/conformance/spec-coverage/universe-variance/` with 24 accepts and
   18 rejects. Thirty-four suites exercise current behavior and eight future HIIT/HIRT/QIT/QIIT
-  suites remain capability-gated. `validate_universe_contract.py` checks the 47 + 71 + 42
+  suites remain capability-gated. `validate_universe_contract.py` checks the 48 + 71 + 42
   bundle leaves and 17 strengthening leaves. Exact manifest polarity is retained, every future
   skip is capability-based, and the ledger is included in the final full gate.
 
@@ -728,7 +728,7 @@ current normative delta.
 
 | sub | what | gate (abridged; full lists above) |
 |---|---|---|
-| **U-E0** | 118-suite ledger and implementation baseline | 47 + 71 + 17 active inventory validates; full re-gate green |
+| **U-E0** | 119-suite ledger and implementation baseline | 48 + 71 + 18 active inventory validates; full re-gate green |
 | **U-E1** | observation/formation separation | non-kind parametric, grouped binder, ordinary-`0` controls |
 | **U-E2** | commutative `TypeLevel` algebra | laws plus solver/interpreter/C/LLVM differential |
 | **U-E3** | explicit schemas + principal local/global SCC inference | schema/principal/local/interface gates |
@@ -915,7 +915,7 @@ already-stable nominal closure, and G8 performs artifact migration and combined 
   mode/role properties, all twelve new Appendix T assertions, certificate replay, malformed
   KCoreText, interface identity, and backend differential tests.
 - `tests/conformance/universes/`, `tests/conformance/spec-coverage/
-  parametric-type-witnesses/`, the active 47 + 71 + 17 contracts, and the 42-leaf variance
+  parametric-type-witnesses/`, the active 48 + 71 + 18 contracts, and the 42-leaf variance
   bundle — existing migration and re-gates. The 67-leaf
   `kappa_first_class_levels_solver_generalization_tests` bundle is active under
   `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`.

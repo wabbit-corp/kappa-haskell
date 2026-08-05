@@ -54,3 +54,5 @@ let readPayload t =
       case Tag (PKb _) -> 0
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): PASS

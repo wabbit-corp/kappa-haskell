@@ -23,4 +23,4 @@ let lastOne x =
 --! mode check
 --! assertNoErrors
 --! assertType lastOne (Tri -> Int)
--- STATUS(a0497523): FAIL — the compiler rejects x.cvalue in the final else (E_UNRESOLVED_MEMBER): it only implements the single-test two-constructor special case and does not accumulate LacksCtor A + LacksCtor B across an elif chain to derive HasCtor C as §16.4.1 requires ("all but one" over the active refinement context).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNRESOLVED_MEMBER "no member 'cvalue' on this receiver (§7.3)" at line 21

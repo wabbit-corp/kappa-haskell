@@ -1,0 +1,21 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq x y =
+        match (x, y)
+        case (I, O) -> False
+        case _      -> True
+
+proof : (O <= I) = True
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember leqRefl for Preorder Bit
+--! assertDerivedMember leqTrans for Preorder Bit

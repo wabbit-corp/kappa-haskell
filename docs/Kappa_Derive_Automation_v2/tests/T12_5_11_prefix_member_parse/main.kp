@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+trait Reflective (parametric 0 a : Type) =
+    relation : (& x : a) -> (& y : a) -> Bool
+
+    derive complete :
+        (& x : a) -> (& y : a) ->
+        (x = y -> relation x y = True)
+
+instance Reflective Bool =
+    let relation x y = x == y
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember complete for Reflective Bool

@@ -30,6 +30,11 @@ data Shade : Type =
     Light
     Dark
 
+-- IsSet is deliberately available independently of Eq. It makes the
+-- equality carriers proposition-valued without introducing decidable Eq
+-- evidence or enabling Eq's equality-reflection rule.
+derive IsSet Shade
+
 -- An Equiv instance with no underlying Eq: (~=) evidence must not
 -- reflect. Shade deliberately has no Eq so the prelude's blanket
 -- `instance Eq a => Equiv a` bridge (§14.3) cannot apply and this
@@ -38,6 +43,9 @@ data Shade : Type =
 -- the bridge overlap the constant-True instance incoherently.)
 instance Equiv Shade =
     let (~=) a b = True
+    let equivRefl x = refl
+    let equivSym x y p = refl
+    let equivTrans x y z pxy pyz = refl
 
 -- NEGATIVE: only Equiv evidence is available, so the propositional
 -- equality goal has no solution: steps 1-4 fail (the small-finite-domain
@@ -50,3 +58,4 @@ let noReflect a b = witness --!! E_UNSOLVED_IMPLICIT
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.implicit.unsolved
+-- STATUS(e25d64e1): FAIL — expected 1 errors, got 5; first error: E_ASSOCIATED_MEMBER_UNDECLARED "instance defines 'equivRefl', which trait 'Equiv' does not declare; an associated static member must first be declared in the trait body (§14.3.4)" at line 46

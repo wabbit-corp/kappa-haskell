@@ -1,0 +1,9 @@
+module main
+
+trait BadQuantity =
+    SourceDemand : Quantity
+    SourceDemand = &
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.borrow-not-quantity

@@ -26,4 +26,4 @@ let n = 7
 
 probe : String
 let probe = f"x${n}y"
--- STATUS(a0497523): FAIL — the `f` prefix is hardcoded in Check.hs elabString; the in-scope user handler is ignored and probe evaluates to "x7y"
+-- STATUS(74742dfd): FAIL — assertEval: 'probe' evaluates to "x7y", expected "CUSTOM"

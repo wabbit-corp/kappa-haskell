@@ -1,0 +1,999 @@
+[
+  {
+    "id": "T12.1.1",
+    "slug": "bare_expected_type",
+    "description": "Bare derive uses a rigid expected type.",
+    "root": "tests/T12_1_1_bare_expected_type",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.2",
+    "slug": "explicit_goal",
+    "description": "derive(T) uses an explicit type goal.",
+    "root": "tests/T12_1_2_explicit_goal",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.3",
+    "slug": "missing_expected_type",
+    "description": "Bare derive without an expected type is rejected.",
+    "root": "tests/T12_1_3_missing_expected_type",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.4",
+    "slug": "proof_relevant_bool_choice",
+    "description": "A proof-relevant finite choice is not selected arbitrarily.",
+    "root": "tests/T12_1_4_proof_relevant_bool_choice",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.5",
+    "slug": "exact_local_hypothesis",
+    "description": "Derivation may use an exact explicit hypothesis.",
+    "root": "tests/T12_1_5_exact_local_hypothesis",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.6",
+    "slug": "linear_candidate_not_duplicated",
+    "description": "Derivation obeys linear-use constraints.",
+    "root": "tests/T12_1_6_linear_candidate_not_duplicated",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.7",
+    "slug": "branch_refinement",
+    "description": "Branch-local equality and constructor facts participate in derive.",
+    "root": "tests/T12_1_7_branch_refinement",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.8",
+    "slug": "higher_paths_ambiguous",
+    "description": "Parallel paths remain ambiguous without IsSet.",
+    "root": "tests/T12_1_8_higher_paths_ambiguous",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.1.9",
+    "slug": "isset_merges_paths",
+    "description": "IsSet permits deterministic merging of path candidates.",
+    "root": "tests/T12_1_9_isset_merges_paths",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.1",
+    "slug": "hedberg_ordinary_decider",
+    "description": "Hedberg receives an ordinary borrowed decision procedure.",
+    "root": "tests/T12_2_1_hedberg_ordinary_decider",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.2",
+    "slug": "forall_decider_is_distinct",
+    "description": "An implicit quantity-0 forall decider is not an ordinary Hedberg argument.",
+    "root": "tests/T12_2_2_forall_decider_is_distinct",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.3",
+    "slug": "ordinary_pi_isprop",
+    "description": "Pointwise IsProp closes an ordinary dependent function type.",
+    "root": "tests/T12_2_3_ordinary_pi_isprop",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.4",
+    "slug": "ordinary_pi_isset",
+    "description": "Pointwise IsSet closes an ordinary dependent function type.",
+    "root": "tests/T12_2_4_ordinary_pi_isset",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.5",
+    "slug": "sigma_isset",
+    "description": "Set closure applies to transparent dependent records rather than sealed exists syntax.",
+    "root": "tests/T12_2_5_sigma_isset",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.6",
+    "slug": "funext_not_defeq",
+    "description": "Function extensionality constructs a path but does not extend conversion.",
+    "root": "tests/T12_2_6_funext_not_defeq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.7",
+    "slug": "happly_definition",
+    "description": "happly is an ordinary definition derived from congruence.",
+    "root": "tests/T12_2_7_happly_definition",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.8",
+    "slug": "implicit_pi_isprop",
+    "description": "Pointwise proposition evidence closes an implicit quantity-0 Pi with forallExt",
+    "root": "tests/T12_2_8_implicit_pi_isprop",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.9",
+    "slug": "forall_extensionality",
+    "description": "forallExt proves equality of implicit quantity-0 functions without changing conversion",
+    "root": "tests/T12_2_9_forall_extensionality",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.10",
+    "slug": "borrow_function_extensionality",
+    "description": "Borrowed operation fields use the borrowed-Pi extensionality projection required by Eq uniqueness.",
+    "root": "tests/T12_2_10_borrow_function_extensionality",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.2.11",
+    "slug": "first_class_pi_isprop",
+    "description": "piIsProp is an ordinary first-class evidence transformation rather than a special instance declaration.",
+    "root": "tests/T12_2_11_first_class_pi_isprop",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.3.1",
+    "slug": "reflects_dec_true",
+    "description": "reflectsDec preserves positive evidence.",
+    "root": "tests/T12_3_1_reflects_dec_true",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.3.2",
+    "slug": "reflects_dec_false",
+    "description": "reflectsDec preserves a refutation.",
+    "root": "tests/T12_3_2_reflects_dec_false",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.3.3",
+    "slug": "reflects_sound",
+    "description": "reflectsSound is ordinary elimination.",
+    "root": "tests/T12_3_3_reflects_sound",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.3.4",
+    "slug": "reflects_complete",
+    "description": "reflectsComplete is ordinary elimination.",
+    "root": "tests/T12_3_4_reflects_complete",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.3.5",
+    "slug": "eq_reflect",
+    "description": "eqReflect packages both Eq directions without becoming a trait member.",
+    "root": "tests/T12_3_5_eq_reflect",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.1",
+    "slug": "isset_independent",
+    "description": "IsSet is independently unique evidence.",
+    "root": "tests/T12_4_1_isset_independent",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.2",
+    "slug": "eq_independent",
+    "description": "Eq carries an independent uniqueness certificate.",
+    "root": "tests/T12_4_2_eq_independent",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.3",
+    "slug": "equiv_sealed",
+    "description": "Equiv remains a sealed selected structure.",
+    "root": "tests/T12_4_3_equiv_sealed",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.4",
+    "slug": "custom_property_unique",
+    "description": "A proof-only custom trait can declare independent uniqueness.",
+    "root": "tests/T12_4_4_custom_property_unique",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.5",
+    "slug": "invalid_unique_runtime_field",
+    "description": "A Bool operation prevents a bogus structural uniqueness proof.",
+    "root": "tests/T12_4_5_invalid_unique_runtime_field",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.6",
+    "slug": "circular_unique_certificate",
+    "description": "A uniqueness proof may not use IsTrait subsingletonhood for itself.",
+    "root": "tests/T12_4_6_circular_unique_certificate",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.7",
+    "slug": "first_class_hedberg",
+    "description": "An ordinary function returns fresh independently unique IsSet evidence.",
+    "root": "tests/T12_4_7_first_class_hedberg",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.8",
+    "slug": "local_independent_instance",
+    "description": "A local orphan instance is permitted for independently unique evidence.",
+    "root": "tests/T12_4_8_local_independent_instance",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.9",
+    "slug": "sealed_local_orphan_rejected",
+    "description": "The local-orphan relaxation does not apply to sealed evidence.",
+    "root": "tests/T12_4_9_sealed_local_orphan_rejected",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.10",
+    "slug": "semantic_vs_artifact_identity",
+    "description": "Independent evidence may be semantically equal with distinct proof artifacts.",
+    "root": "tests/T12_4_10_semantic_vs_artifact_identity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.11",
+    "slug": "unique_certificate_mutation",
+    "description": "Independent uniqueness certificates reject decisive mutations.",
+    "root": "tests/T12_4_11_unique_certificate_mutation",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.12",
+    "slug": "fresh_first_class_eq",
+    "description": "Expression-level derive may construct fresh first-class Eq evidence because Eq is independently unique.",
+    "root": "tests/T12_4_12_fresh_first_class_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.4.13",
+    "slug": "fresh_eq_not_registered",
+    "description": "Fresh expression-level Eq evidence is an ordinary value and does not register a global instance candidate.",
+    "root": "tests/T12_4_13_fresh_eq_not_registered",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.1",
+    "slug": "derived_member",
+    "description": "Prefix derive members are solved per concrete instance.",
+    "root": "tests/T12_5_1_derived_member",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.2",
+    "slug": "explicit_member_override",
+    "description": "An explicit law overrides a synthesized member.",
+    "root": "tests/T12_5_2_explicit_member_override",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.3",
+    "slug": "automatic_omitted_prop",
+    "description": "An omitted independently propositional member is attempted automatically.",
+    "root": "tests/T12_5_3_automatic_omitted_prop",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.4",
+    "slug": "missing_runtime_member",
+    "description": "A missing runtime member is not silently synthesized.",
+    "root": "tests/T12_5_4_missing_runtime_member",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.5",
+    "slug": "member_order_independent",
+    "description": "Members inside one instance complete by dependency rather than source order.",
+    "root": "tests/T12_5_5_member_order_independent",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.6",
+    "slug": "incomplete_self_rejected",
+    "description": "A synthesized member cannot summon its incomplete dictionary.",
+    "root": "tests/T12_5_6_incomplete_self_rejected",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.7",
+    "slug": "member_cycle",
+    "description": "Mutually dependent synthesized members without a base are rejected.",
+    "root": "tests/T12_5_7_member_cycle",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.8",
+    "slug": "derived_supertrait",
+    "description": "A synthesized supertrait remains a real public projection.",
+    "root": "tests/T12_5_8_derived_supertrait",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.9",
+    "slug": "plain_supertrait_input",
+    "description": "A plain supertrait is still an input rather than a derived default.",
+    "root": "tests/T12_5_9_plain_supertrait_input",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.10",
+    "slug": "direct_supertrait_wins",
+    "description": "Direct coherent evidence is used before a synthesized supertrait default.",
+    "root": "tests/T12_5_10_direct_supertrait_wins",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.5.11",
+    "slug": "prefix_member_parse",
+    "description": "Prefix derived-member syntax parses an arrow ending in equality without a trailing = derive ambiguity.",
+    "root": "tests/T12_5_11_prefix_member_parse",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.1",
+    "slug": "structural_eq",
+    "description": "Structural Eq derivation produces laws and IsSet.",
+    "root": "tests/T12_6_1_structural_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.2",
+    "slug": "always_false_eq",
+    "description": "An always-false comparator fails completeness.",
+    "root": "tests/T12_6_2_always_false_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.3",
+    "slug": "always_true_eq",
+    "description": "An always-true comparator fails soundness.",
+    "root": "tests/T12_6_3_always_true_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.4",
+    "slug": "isset_does_not_rescue_eq",
+    "description": "Existing IsSet evidence does not validate a bad comparator.",
+    "root": "tests/T12_6_4_isset_does_not_rescue_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.5",
+    "slug": "shared_isset_goal",
+    "description": "Explicit IsSet and Eq completion share one goal independent of source order.",
+    "root": "tests/T12_6_5_shared_isset_goal",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.6",
+    "slug": "eq_semantic_uniqueness",
+    "description": "Distinct lawful Eq constructions are semantically identical.",
+    "root": "tests/T12_6_6_eq_semantic_uniqueness",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.7",
+    "slug": "equiv_fallback_selected",
+    "description": "Eq supplies Equiv only through fallback when no direct Equiv exists.",
+    "root": "tests/T12_6_7_equiv_fallback_selected",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.8",
+    "slug": "direct_equiv_overrides_fallback",
+    "description": "A direct non-equality Equiv overrides the Eq fallback.",
+    "root": "tests/T12_6_8_direct_equiv_overrides_fallback",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.9",
+    "slug": "equiv_nonreflecting",
+    "description": "A non-equality Equiv proof never reflects to propositional equality.",
+    "root": "tests/T12_6_9_equiv_nonreflecting",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.10",
+    "slug": "fallback_ambiguity",
+    "description": "Two incompatible fallback instances are rejected deterministically.",
+    "root": "tests/T12_6_10_fallback_ambiguity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.11",
+    "slug": "fallback_instance_cycle",
+    "description": "A cross-trait fallback cycle without a decreasing argument is rejected by size-change instance termination.",
+    "root": "tests/T12_6_11_fallback_instance_cycle",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.6.12",
+    "slug": "unsolved_ordinary_premise_falls_back",
+    "description": "A well-formed ordinary candidate with unsolved premises is discarded before the Eq-to-Equiv fallback stage.",
+    "root": "tests/T12_6_12_unsolved_ordinary_premise_falls_back",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.1",
+    "slug": "multiple_relation_values",
+    "description": "Several explicit relations and law evidences can coexist.",
+    "root": "tests/T12_7_1_multiple_relation_values",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.2",
+    "slug": "law_evidence_unique",
+    "description": "Proof-only law evidence for the same relation is independently unique.",
+    "root": "tests/T12_7_2_law_evidence_unique",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.3",
+    "slug": "preorder_basic",
+    "description": "A selected Preorder carries reflexivity and transitivity laws.",
+    "root": "tests/T12_7_3_preorder_basic",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.4",
+    "slug": "partial_order_derives_eq",
+    "description": "PartialOrder derives Eq from mutual leq.",
+    "root": "tests/T12_7_4_partial_order_derives_eq",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.5",
+    "slug": "antisymmetry_failure",
+    "description": "A non-antisymmetric preorder cannot become PartialOrder.",
+    "root": "tests/T12_7_5_antisymmetry_failure",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.6",
+    "slug": "ord_totality",
+    "description": "Ord proves actual totality and derives compare agreement.",
+    "root": "tests/T12_7_6_ord_totality",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.7",
+    "slug": "partial_not_total",
+    "description": "A lawful partial order with incomparable values cannot derive Ord.",
+    "root": "tests/T12_7_7_partial_not_total",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.8",
+    "slug": "compare_agreement",
+    "description": "A custom compare implementation must agree with Eq and leq.",
+    "root": "tests/T12_7_8_compare_agreement",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.9",
+    "slug": "leq_only_needs_preorder",
+    "description": "<= is available with Preorder without Ord.",
+    "root": "tests/T12_7_9_leq_only_needs_preorder",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.10",
+    "slug": "explicit_total_order_laws",
+    "description": "IsTotalOrder classifies an explicit relation without selecting ambient Ord.",
+    "root": "tests/T12_7_10_explicit_total_order_laws",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.7.11",
+    "slug": "first_class_preorder_laws",
+    "description": "preorderLaws returns independently unique law evidence as an ordinary first-class value.",
+    "root": "tests/T12_7_11_first_class_preorder_laws",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.8.1",
+    "slug": "alternative_laws",
+    "description": "Alternative refines Applicative and carries identity/associativity laws.",
+    "root": "tests/T12_8_1_alternative_laws",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.8.2",
+    "slug": "alternative_requires_applicative",
+    "description": "Alternative cannot be constructed without Applicative evidence.",
+    "root": "tests/T12_8_2_alternative_requires_applicative",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.8.3",
+    "slug": "bad_alternative_identity",
+    "description": "An invalid Alternative operation is rejected by its laws.",
+    "root": "tests/T12_8_3_bad_alternative_identity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.8.4",
+    "slug": "alternative_not_commutative",
+    "description": "Left-biased Alternative is accepted; commutativity is not required.",
+    "root": "tests/T12_8_4_alternative_not_commutative",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.1",
+    "slug": "constructor_disjointness",
+    "description": "No-confusion proves constructor disjointness.",
+    "root": "tests/T12_9_1_constructor_disjointness",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.2",
+    "slug": "constructor_injectivity",
+    "description": "No-confusion proves same-constructor injectivity.",
+    "root": "tests/T12_9_2_constructor_injectivity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.3",
+    "slug": "presburger",
+    "description": "Presburger arithmetic participates in derive.",
+    "root": "tests/T12_9_3_presburger",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.4",
+    "slug": "append_right_identity",
+    "description": "Structural induction is selected automatically.",
+    "root": "tests/T12_9_4_append_right_identity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.5",
+    "slug": "append_associativity",
+    "description": "Induction and rewriting prove append associativity.",
+    "root": "tests/T12_9_5_append_associativity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.6",
+    "slug": "map_identity",
+    "description": "Automatic induction proves map identity.",
+    "root": "tests/T12_9_6_map_identity",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.7",
+    "slug": "indexed_vector",
+    "description": "Indexed induction preserves constructor-forced indices.",
+    "root": "tests/T12_9_7_indexed_vector",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.8",
+    "slug": "mutual_induction",
+    "description": "Mutual induction follows a verified inductive group.",
+    "root": "tests/T12_9_8_mutual_induction",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.9",
+    "slug": "functional_induction",
+    "description": "Functional induction follows checked recursive equations.",
+    "root": "tests/T12_9_9_functional_induction",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.10",
+    "slug": "helper_lemma",
+    "description": "Accumulator generalization may synthesize a private helper lemma.",
+    "root": "tests/T12_9_10_helper_lemma",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.9.11",
+    "slug": "false_conjecture_counterexample",
+    "description": "A false finite theorem produces a checked counterexample.",
+    "root": "tests/T12_9_11_false_conjecture_counterexample",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.1",
+    "slug": "opaque_representation",
+    "description": "Client derivation cannot inspect an opaque representation.",
+    "root": "tests/T12_10_1_opaque_representation",
+    "files": [
+      "main.kp",
+      "secret.kp"
+    ]
+  },
+  {
+    "id": "T12.10.2",
+    "slug": "visible_theorem_scope",
+    "description": "An explicitly imported theorem may discharge derive.",
+    "root": "tests/T12_10_2_visible_theorem_scope",
+    "files": [
+      "lemmas.kp",
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.3",
+    "slug": "unimported_theorem_not_searched",
+    "description": "A transitive but unimported theorem is not premise-search scope.",
+    "root": "tests/T12_10_3_unimported_theorem_not_searched",
+    "files": [
+      "hidden.kp",
+      "main.kp",
+      "middle.kp"
+    ]
+  },
+  {
+    "id": "T12.10.4",
+    "slug": "local_scope_sequential",
+    "description": "Local declaration scope remains sequential.",
+    "root": "tests/T12_10_4_local_scope_sequential",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.5",
+    "slug": "derive_respects_borrow",
+    "description": "Derivation cannot turn a borrowed value into an escaping owned value.",
+    "root": "tests/T12_10_5_derive_respects_borrow",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.6",
+    "slug": "derive_record_body_resolve",
+    "description": "BODY_RESOLVE exposes a structured DeriveRecord.",
+    "root": "tests/T12_10_6_derive_record_body_resolve",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.7",
+    "slug": "kcore_has_no_derive_node",
+    "description": "No source derive node survives KCore.",
+    "root": "tests/T12_10_7_kcore_has_no_derive_node",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.8",
+    "slug": "derive_proof_mutations",
+    "description": "Generated proof records reject decisive KCore and certificate mutations.",
+    "root": "tests/T12_10_8_derive_proof_mutations",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.9",
+    "slug": "incremental_evidence_identity",
+    "description": "Changing only the proof artifact preserves semantic evidence identity but changes the exact fingerprint.",
+    "root": "tests/T12_10_9_incremental_evidence_identity",
+    "files": [
+      "incremental.ktest",
+      "step0/main.kp",
+      "step1/main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.10",
+    "slug": "declaration_permutation",
+    "description": "Top-level declaration permutation preserves derivation and interface semantics.",
+    "root": "tests/T12_10_10_declaration_permutation",
+    "files": [
+      "incremental.ktest",
+      "step0/main.kp",
+      "step1/main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.11",
+    "slug": "fallback_import_order",
+    "description": "A direct Equiv instance wins over the Eq fallback independently of import processing order.",
+    "root": "tests/T12_10_11_fallback_import_order",
+    "files": [
+      "custom_equiv.kp",
+      "eqs.kp",
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.10.12",
+    "slug": "fallback_absence_invalidation",
+    "description": "Adding an ordinary Equiv invalidates the negative absence dependency of an earlier Eq fallback selection.",
+    "root": "tests/T12_10_12_fallback_absence_invalidation",
+    "files": [
+      "incremental.ktest",
+      "step0/main.kp",
+      "step0/types.kp",
+      "step1/custom_equiv.kp",
+      "step1/main.kp",
+      "step1/types.kp"
+    ]
+  },
+  {
+    "id": "T12.11.1",
+    "slug": "instance_whole_derive",
+    "description": "instance G = derive publishes sealed-coherent evidence through an instance artifact",
+    "root": "tests/T12_11_1_instance_whole_derive",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.2",
+    "slug": "declaration_derive_registers",
+    "description": "Declaration-level derive registers evidence for later implicit resolution",
+    "root": "tests/T12_11_2_declaration_derive_registers",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.3",
+    "slug": "expression_evidence_not_global",
+    "description": "An exported explicit evidence value does not register a global instance when it is not imported or bound locally",
+    "root": "tests/T12_11_3_expression_evidence_not_global",
+    "files": [
+      "evidence_source.kp",
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.4",
+    "slug": "implicit_does_not_escalate",
+    "description": "Ordinary omitted implicit arguments do not invoke full structural derive",
+    "root": "tests/T12_11_4_implicit_does_not_escalate",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.5",
+    "slug": "declaration_derive_pointed",
+    "description": "Declaration-level whole evidence derivation may synthesize a unique Unit operation and register it",
+    "root": "tests/T12_11_5_declaration_derive_pointed",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.6",
+    "slug": "sealed_existing_reused",
+    "description": "Expression-level derive may reuse existing sealed-coherent evidence",
+    "root": "tests/T12_11_6_sealed_existing_reused",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.7",
+    "slug": "whole_instance_ambiguous_member",
+    "description": "Whole-instance derive reports an ambiguous proof-relevant operation",
+    "root": "tests/T12_11_7_whole_instance_ambiguous_member",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.11.8",
+    "slug": "explicit_evidence_local_root",
+    "description": "A local explicit evidence binding becomes a local implicit candidate without global registration",
+    "root": "tests/T12_11_8_explicit_evidence_local_root",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.12.1",
+    "slug": "finite_decision",
+    "description": "Finite enumeration constructs a total decision procedure over Bool",
+    "root": "tests/T12_12_1_finite_decision",
+    "files": [
+      "main.kp"
+    ]
+  },
+  {
+    "id": "T12.12.2",
+    "slug": "ring_normalization",
+    "description": "Algebraic normalization proves a polynomial identity from selected Integer evidence",
+    "root": "tests/T12_12_2_ring_normalization",
+    "files": [
+      "main.kp"
+    ]
+  }
+]

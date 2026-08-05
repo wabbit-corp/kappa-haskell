@@ -10,4 +10,4 @@
 --! assertDiagnostic error E_CONFIG_IMPORT_NOT_SAFE
 --! assertDiagnostic error E_CONFIG_RESTRICTED_FORM
 
--- STATUS(a0497523): UNSUPPORTED — buildManifest capability not provided; kappa build --manifest --check emits exactly the three asserted diagnostics at the marked lines
+-- STATUS(74742dfd): UNSUPPORTED — requires capability buildManifest: not provided

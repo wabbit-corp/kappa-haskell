@@ -29,4 +29,4 @@ type Chain : Type =
 
 badChain : Chain -> Chain
 let badChain (c : Chain) : Chain = c.{ parts = 3 }
--- STATUS(a0497523): HARNESS-ERROR — line 6: directive 'assertDiagnosticFamily': 'kappa.record.dependent-update-repair' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill… [was FAIL in an earlier STATUS line]
+-- STATUS(74742dfd): HARNESS-ERROR — line 6: directive 'assertDiagnosticFamily': 'kappa.record.dependent-update-repair' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

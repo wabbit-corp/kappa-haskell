@@ -27,3 +27,5 @@ data Dup : Type =
     Dup { a : Int, b : Int, a : Int }    --!! kappa.row.lacks-failed
 
 --! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- STATUS: SPEC-ISSUE — duplicate constructor-field declarations should be addressed explicitly; §3.2 does not assign them kappa.row.lacks-failed.

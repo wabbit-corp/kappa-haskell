@@ -1,6 +1,8 @@
 --! mode run
 --! assertNoErrors
+--! assertNoWarnings
 --! assertStdout "child-cleanup\nparent-defer\nchild-exit:scope-shutdown\n"
+--! assertExitCode 0
 
 -- §32.2.3: an IO `do` block behaves as a nested supervision scope. `fork`
 -- attaches to the innermost such scope, so when `spawnAndLeave`'s do block
@@ -14,20 +16,20 @@ sleeper : UIO Int
 let sleeper = do
     defer (printlnString "child-cleanup")
     sleepFor (seconds 2)
-    ioPure 1
+    pure 1
 
 spawnAndLeave : UIO (Fiber Void Int)
 let spawnAndLeave = do
     defer (printlnString "parent-defer")
     let f <- fork sleeper
-    ioPure f
+    pure f
 
 main : UIO Unit
 let main = do
     let f <- spawnAndLeave
     let ex <- await f
     match ex
-      case Success v -> printlnString "child-exit:completed"
-      case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "child-exit:scope-shutdown"
-      case Failure c -> printlnString "child-exit:other"
--- STATUS(a0497523): FAIL — prints "parent-defer\nchild-cleanup\nchild-exit:completed": fork does not attach the child to the enclosing do-block's supervision scope, so block exit neither interrupts nor drains it (the child sleeps to completion after the parent's defers already ran).
+      case Exit.Success v -> printlnString "child-exit:completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.ScopeShutdown by)) -> printlnString "child-exit:scope-shutdown"
+      case Exit.Failure c -> printlnString "child-exit:other"
+-- STATUS(8c3c7747): FAIL — the parent defer runs before child cleanup and the child reports success instead of ScopeShutdown.

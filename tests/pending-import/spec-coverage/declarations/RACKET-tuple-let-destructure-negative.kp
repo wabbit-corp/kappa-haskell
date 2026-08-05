@@ -28,4 +28,4 @@ let badPairType =
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 --! assertErrorCount 2
--- STATUS(a0497523): FAIL — compiler emits NO diagnostic for either binding (§9.1.2 mandates rejecting non-irrefutable let patterns); the elaborated match simply gets stuck at runtime ("evaluates to match (_1 = 1, _2 = 2) ...")
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_TYPE_MISMATCH] on line 20 (saw: E_PARAMETRIC_TYPE_PROMOTION@0); no diagnostic error[E_TYPE_MISMATCH] on line 26 (saw: E_PARAMETRIC_TYPE_PROMOTION@0); no diagnostic with family kappa.type.mismatch was produced; expected 2 errors, got 1; first error: E_PARAMETRIC_TYPE_PROMOTION "finalized typed Core passes a parametric witness to ordinary application argument 2 to + (@2)" at line 0

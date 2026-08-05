@@ -30,3 +30,5 @@ let useLocal = piConst
 export missingFromImports                --!! kappa.name.unresolved
 
 --! assertDiagnosticFamily error kappa.name.unresolved
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: bare `export missingFromImports` is a module re-export form under §8.4, not a missing local-item reference.

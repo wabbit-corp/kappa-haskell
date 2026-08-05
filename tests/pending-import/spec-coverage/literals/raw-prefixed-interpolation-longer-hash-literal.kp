@@ -14,4 +14,4 @@ let n = 7
 main : UIO Unit
 let main = do
     printlnString f#"x ##{n} y"#
--- STATUS(a0497523): FAIL — the lexer scans for the opener char-by-char, so ##{n} inside a 1-hash raw literal is read as literal '#' + interpolation of n and prints "x #7 y"
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "x ##{n} y\n", got "x #7 y\n"

@@ -20,4 +20,4 @@ let bump (@0 r : RecRow) (@_ : StableUnderRecChange r len) (rec : (len : Nat | r
 use1 : (len : Nat, note : String)
 let use1 = bump (len = 0, note = "free")
 
--- STATUS(a0497523): FAIL — StableUnderRecChange intrinsic trait not in scope (E_NAME_UNRESOLVED)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_NAME_UNRESOLVED "unresolved name 'StableUnderRecChange' (not in scope)" at line 14

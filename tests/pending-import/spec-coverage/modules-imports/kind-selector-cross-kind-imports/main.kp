@@ -22,4 +22,4 @@ got : Int
 let got =
     match bx
       case Box n -> n
--- STATUS(a0497523): FAIL — kind selectors do not slice the import (ctor also drags the type, type also drags its facets) and the collision silently last-wins: term position `Box 5` resolves to b's reified alias facet giving E_APPLICATION_NONCALLABLE (3 errors total)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_APPLICATION_NONCALLABLE "this expression is not callable" at line 19; assertEval: 'got' evaluates to match bx ..., expected 5

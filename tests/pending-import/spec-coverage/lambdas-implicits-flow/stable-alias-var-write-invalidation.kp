@@ -26,4 +26,4 @@ let canonical p = do
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.name.unresolved
--- STATUS(a0497523): FAIL — the compiler accepts alias.value after the cell write (0 errors): the transported refinement survives on the snapshot alias even though §16.4.3 says the alias relation ceases at any var invalidation event. Semantically safe (the snapshot really is still a Box) but contrary to the normative invalidation list.
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_UNRESOLVED_MEMBER] on line 21 (no diagnostics); expected 1 errors, got 0; no diagnostic with family kappa.name.unresolved was produced

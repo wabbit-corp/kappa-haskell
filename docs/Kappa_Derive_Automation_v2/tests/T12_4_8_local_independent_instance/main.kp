@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+localSet : IsSet Bool
+let localSet =
+    block
+        instance IsSet Bool = derive
+        summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceConstructionMode localSet instance-artifact

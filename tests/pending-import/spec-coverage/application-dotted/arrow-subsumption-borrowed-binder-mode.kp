@@ -33,4 +33,4 @@ let borrowFn (& x : Token) : Int = 0
 badBorrowForOwned : Int
 let badBorrowForOwned = applyOmegaFn borrowFn --!! kappa.application.argument-mismatch
 
--- STATUS(a0497523): FAIL — the compiler accepts BOTH directions (0 errors): borrowed-binder and ω-binder arrows unify at application boundaries, i.e. binder access modes are dropped when arrow types are compared (soundness-relevant: an ω function can be passed where a borrowed-view consumer is demanded).
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0; no diagnostic error[kappa.application.argument-mismatch] on line 23 (no diagnostics); no diagnostic error[kappa.application.argument-mismatch] on line 34 (no diagnostics)

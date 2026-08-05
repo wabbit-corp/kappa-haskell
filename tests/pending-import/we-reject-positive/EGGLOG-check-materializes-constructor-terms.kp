@@ -48,3 +48,5 @@ let ok6 = 6 == ((2 + 2) + 2)
 --! assertType ok1 Bool
 --! assertType ok4 Bool
 --! assertType ok5 Bool
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_UNSOLVED_IMPLICIT at line 25; current source or fixture is not portable v1 and must be rewritten before promotion.

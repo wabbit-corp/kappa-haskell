@@ -1,0 +1,28 @@
+kcore 1;
+
+module @tests.kcore.outer-pi-reverse#1008 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "tests.kcore.outer-pi-reverse",
+  typeLevelAlgebraVersion = "1",
+  levelConstructorNormalizerVersion = "1",
+  levelRigidEntailmentVersion = "1",
+  levelPrincipalInferenceVersion = "1",
+  levelCertificateVersion = "1"
+] {
+  axiom ordinary @tests.kcore.outer-pi-reverse.R#2101 : Type 0;
+  axiom ordinary @tests.kcore.outer-pi-reverse.value#2102 :
+    @tests.kcore.outer-pi-reverse.R#2101;
+
+  def ordinary @tests.kcore.outer-pi-reverse.bad#2103 :
+    ((parametric ordinary 0 explicit value %x#0 :
+        @tests.kcore.outer-pi-reverse.R#2101) ->
+      @tests.kcore.outer-pi-reverse.R#2101)
+  {
+    body =
+      lambda (ordinary ordinary 0 explicit value %x#0 :
+          @tests.kcore.outer-pi-reverse.R#2101) {
+        @tests.kcore.outer-pi-reverse.value#2102
+      };
+  }
+}

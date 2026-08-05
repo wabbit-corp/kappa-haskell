@@ -33,4 +33,4 @@ let sizedHead s eq =
 
 --! assertNoErrors
 
--- STATUS(f1b025a3): FAIL — E_IMPOSSIBLE_REACHABLE: matching the length equality does not refine the dependent Vec field enough to refute VNil.
+-- STATUS(8c3c7747): FAIL — E_IMPOSSIBLE_REACHABLE: matching the length equality does not refine the dependent Vec field enough to refute VNil.

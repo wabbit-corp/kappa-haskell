@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+makeSet :
+    forall (a : Type).
+    ((& x : a) -> (& y : a) -> Dec (x = y)) ->
+    IsSet a
+let makeSet decision = hedberg decision
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType makeSet forall (a : Type). ((& x : a) -> (& y : a) -> Dec (x = y)) -> IsSet a
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

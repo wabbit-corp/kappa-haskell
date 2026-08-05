@@ -47,6 +47,7 @@ module Kappa.Builtins
   , prelZipper
   , prelProjector
   , prelRef
+  , prelQuantity
   , prelRegion
   , prelTypeLevel
   , prelTypeLevelLevel
@@ -55,6 +56,7 @@ module Kappa.Builtins
   , prelEffRow
   , prelEffLabel
   , prelIO
+  , prelUIO
   , prelSTM
   , prelElab
   , prelSyntax
@@ -63,6 +65,7 @@ module Kappa.Builtins
   , prelInterp
   , prelInterpFmt
   , prelRecRow
+  , prelVoid
   , prelLacksRec
   , prelQueryMode
   , prelQueryCore
@@ -147,6 +150,7 @@ module Kappa.Builtins
   , prelIsSet
   , prelIsNType
   , prelRuntimeErased
+  , prelRuntimeErasedFromIsProp
 
     -- * Prelude functions/helpers consulted by name
   , prelNot
@@ -290,23 +294,28 @@ prelOption = gPrel "Option"
 prelNumericRange = gPrel "NumericRange"
 prelMatch = gPrel "Match"
 
-prelThunk, prelNeed, prelZipper, prelProjector, prelRef, prelRegion, prelTypeLevel, prelTypeLevelLevel, prelBorrowView :: GName
+prelThunk, prelNeed, prelZipper, prelProjector, prelRef, prelQuantity, prelRegion, prelTypeLevel, prelTypeLevelLevel, prelBorrowView :: GName
 prelThunk = gPrel "Thunk"
 prelNeed = gPrel "Need"
 prelZipper = gPrel "Zipper"
 prelProjector = gPrel "Projector"
 prelRef = gPrel "Ref"
+prelQuantity = gPrel "Quantity"
 prelRegion = gPrel "Region"
 prelTypeLevel = GName modTypeLevel "TypeLevel"
 prelTypeLevelLevel = GName modTypeLevel "Level"
 prelBorrowView = gPrel "BorrowView"
 
-prelEff, prelEffRow, prelEffLabel, prelIO, prelSTM, prelElab :: GName
+prelEff, prelEffRow, prelEffLabel, prelIO, prelUIO, prelSTM, prelElab :: GName
 prelEff = gPrel "Eff"
 prelEffRow = gPrel "EffRow"
 prelEffLabel = gPrel "EffLabel"
 prelIO = gPrel "IO"
+prelUIO = gPrel "UIO"
 prelSTM = gPrel "STM"
+
+prelVoid :: GName
+prelVoid = gPrel "Void"
 prelElab = gPrel "Elab"
 
 prelSyntax, prelLit, prelCode, prelInterp, prelInterpFmt :: GName
@@ -333,7 +342,7 @@ prelRefined = gPrel "Refined"
 -- their eventual result and therefore reuse this base-carrier inventory.
 associatedStaticCarrierGlobals :: [GName]
 associatedStaticCarrierGlobals =
-  [ gPrel "Quantity"
+  [ prelQuantity
   , prelRegion
   , prelRecRow
   , gPrel "VarRow"
@@ -481,11 +490,12 @@ prelTraitSubsingletonWitness = gPrel "__traitSubsingletonWitness"
 -- dependent-Pi closure step 'isPropPi'; plus the h-prop marker traits 'IsProp'
 -- and 'IsSubsingleton' whose goals the solver is gated to, and 'IsSet' whose
 -- evidence the equality base case must resolve before it may fire.
-prelIsPropEq, prelIsPropPi, prelIsProp, prelIsSubsingleton, prelIsSet, prelIsNType, prelRuntimeErased :: GName
+prelIsPropEq, prelIsPropPi, prelIsProp, prelIsSubsingleton, prelIsSet, prelIsNType, prelRuntimeErased, prelRuntimeErasedFromIsProp :: GName
 prelIsPropEq = gPrel "isPropEq"
 prelIsPropPi = gPrel "isPropPi"
 prelIsNType = gPrel "IsNType"
 prelRuntimeErased = gPrel "RuntimeErased"
+prelRuntimeErasedFromIsProp = gPrel "__runtimeErasedFromIsProp"
 prelIsProp = gPrel "IsProp"
 prelIsSubsingleton = gPrel "IsSubsingleton"
 prelIsSet = gPrel "IsSet"
@@ -667,7 +677,7 @@ floatLitDomains = ["Float", "Double"]
 -- @import std.prelude.*@ (§28.1).
 implicitPreludeCtorNames :: [Text]
 implicitPreludeCtorNames =
-  ["True", "False", "None", "Some", "Ok", "Err", "Nil", "::", "LT", "EQ", "GT", "refl"]
+  ["True", "False", "None", "Some", "Ok", "Err", "Left", "Right", "Nil", "::", "LT", "EQ", "GT", "refl"]
 
 -- | Prelude type names admissible in a build-manifest config unit (§35.3).
 configSafeTypeNames :: [Text]

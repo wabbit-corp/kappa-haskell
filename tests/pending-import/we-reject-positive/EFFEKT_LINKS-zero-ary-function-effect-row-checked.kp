@@ -30,3 +30,5 @@ let collectFirst comp =
 --! assertType emitOne Unit -> Eff <[y : Yield Int]> Unit
 --! assertType emitTwo Unit -> Eff <[y : Yield Int]> Unit
 --! assertType collectFirst Eff <[y : Yield Int]> Unit -> Eff <[ ]> Int
+
+-- STATUS: SPEC-ISSUE — currently FAIL: assumes a bare top-level effect name is also its row label; §§7 and 18.1.15 do not introduce that self-label.

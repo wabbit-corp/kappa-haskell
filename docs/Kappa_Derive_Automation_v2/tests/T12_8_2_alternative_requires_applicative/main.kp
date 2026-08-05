@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Choice (0 a : Type) : Type =
+    Empty
+    Full (value : a)
+
+instance Alternative Choice =
+    let empty = Empty
+    let (<|>) left right = right
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_SUPERTRAIT_UNSOLVED

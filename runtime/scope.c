@@ -88,7 +88,7 @@ int krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wa
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
   w->f = f; w->want_exit = 0; w->next = target->waiters; target->waiters = w;
   krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, target, w);
-  int park_unmasked = (f->mask_depth == 0);
+  int park_unmasked = krt2i_mask_interruptible(f);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&target->lock);
   if (krt2i_claim_pending_after_park(f, park_unmasked)) {
@@ -198,7 +198,7 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
     w = (Waiter *)GC_MALLOC(sizeof(Waiter));
     w->f = f; w->want_exit = 0; w->next = sc->drain_waiters; sc->drain_waiters = w;
     krt2i_register_park_waiter(f, KPARK_SCOPE_DRAIN, sc, w);
-    park_unmasked = (f->mask_depth == 0);
+    park_unmasked = krt2i_mask_interruptible(f);
     atomic_store(&f->status, F_PARKED);
     parked = 1;
   }
@@ -229,7 +229,8 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
  * or it pins one fiber + Cont chain forever (review finding R2).  An earlier fix
  * wrapped main with `shutdownScope(daemonScope)`, but shutdownScope AWAITS live==0
  * — and a daemon parked inside `uninterruptible` never receives the ScopeShutdown
- * interrupt (mask_depth>0 suppresses delivery), so live never reaches 0 and the
+ * interrupt (a non-interruptible effective mask suppresses delivery), so live
+ * never reaches 0 and the
  * await HANGS run_main forever.  §32.2.3 only awaits *attached structured* children
  * at scope close; unattached daemons are NOT awaited.  So this teardown is purely
  * best-effort: interrupt every daemon (ordinary INTERRUPTIBLE ones then wake, deliver,
@@ -310,7 +311,7 @@ int krt2i_op_await_monitor(Rt *rt, Fiber *f, KValue *mon_h) {
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
   w->f = f; w->want_exit = 1; w->next = t->waiters; t->waiters = w;  /* observe Exit */
   krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, t, w);
-  int park_unmasked = (f->mask_depth == 0);
+  int park_unmasked = krt2i_mask_interruptible(f);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&t->lock);
   if (krt2i_claim_pending_after_park(f, park_unmasked)) {

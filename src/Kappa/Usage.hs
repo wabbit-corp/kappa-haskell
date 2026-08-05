@@ -73,10 +73,8 @@ module Kappa.Usage
   , moduleUsageResultTypesWith
   , moduleUsageValueResultTypes
   , moduleUsageSignatures
-  , isKnownDuplicableStorageHead
-  , isKnownUnaryStorageHead
-  , isKnownBinaryStorageHead
   , usageDiagnostics
+  , sameResolvedTypeHead
   , tailResumptiveClause
   ) where
 
@@ -90,7 +88,8 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMayb
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Kappa.Core (Term)
+import Kappa.Builtins (prelIO, prelUIO, prelVoid)
+import Kappa.Core (GName, Term)
 import qualified Kappa.Core as Core
 import Kappa.Diagnostic
 import Kappa.Source (ModuleName (..), Span, noSpan)
@@ -178,6 +177,10 @@ data VInfo = VInfo
   , vNonDupFields :: ![FieldPath]
   -- ^ Visible field paths that are non-duplicable but not necessarily
   -- quantity-1 droppable obligations (notably <=1 affine fields).
+  , vStorageDuplicable :: !Bool
+  -- ^ Checked authority that this stored value may be copied into a new owned
+  -- value. It comes from a visible concrete classifier or from a reusable
+  -- containing occurrence; abstract and opaque classifiers remain unknown.
   , vMutable :: !Bool
   -- ^ Surface @var@ binding: ordinary value occurrences are current-value
   -- reads, not stable-place moves.
@@ -213,7 +216,7 @@ data VInfo = VInfo
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False False Nothing Nothing [] [] [] Nothing sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False False False Nothing Nothing [] [] [] Nothing sp
 
 -- | Expand a borrow lock over a field path with the §12.4 dependency
 -- rule: borrowing a dependent field also locks the fields its type
@@ -260,6 +263,7 @@ linPaths vi =
       ++ [p | (p, q) <- vPathFields vi, positiveLowerQuantity q]
 
 sliceVInfo :: VInfo -> FieldPath -> VInfo
+sliceVInfo vi [] = vi
 sliceVInfo vi path =
   vi
     { vQ = pathPositiveQuantity vi path <|> if anyLinearBelow then Just QOne else Nothing
@@ -296,6 +300,25 @@ sliceVInfo vi path =
         )
         (linPaths vi)
 
+sliceStoredVInfo :: Env -> VInfo -> FieldPath -> VInfo
+sliceStoredVInfo env vi path =
+  let sliced = sliceVInfo vi path
+      selectedType = vStoredTypeExpr vi >>= valueTypeAtPath env path
+      selectedDuplicable = declaredPathStorageDuplicable env vi path
+   in sliced
+        { -- A borrowed alias owns a view, not the referent. Its interval is
+          -- established by the alias binder itself (bare @&@ defaults to
+          -- omega), while this summary retains only storage facts about the
+          -- selected referent. Materialize an opaque non-duplicability fact
+          -- before clearing the source binder/field quantity so an affine or
+          -- linear selected place cannot be laundered through the alias.
+          vQ = Nothing
+        , vNonDupValue = vNonDupValue sliced || placeStoresNonDuplicable vi path
+        , vStorageDuplicable = selectedDuplicable
+        , vStoredTypeText = renderExprSrc <$> selectedType
+        , vStoredTypeExpr = selectedType
+        }
+
 fieldPatternQuantity :: VInfo -> FieldPath -> Maybe Quantity
 fieldPatternQuantity vi path =
   pathPositiveQuantity vi path
@@ -312,6 +335,11 @@ nonDupQuantity = \case
 positiveLowerQuantity :: Maybe Quantity -> Bool
 positiveLowerQuantity = \case
   Just QOne -> True
+  Just QAtLeastOne -> True
+  _ -> False
+
+relevantQuantity :: Maybe Quantity -> Bool
+relevantQuantity = \case
   Just QAtLeastOne -> True
   _ -> False
 
@@ -348,37 +376,73 @@ nonDupFields vi =
 data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
   deriving (Eq)
 
+-- | Why a quantity-demand lower endpoint became zero. Diagnostics distinguish
+-- an explicit source control-flow path from an abstract callee that may choose
+-- not to demand its argument; acceptance still uses only the interval itself.
+data ZeroLowerReason
+  = ZeroFromAbstractDemand
+  | ZeroFromAlternative
+  | ZeroFromRepetition
+  deriving (Eq, Ord)
+
 -- | Usage interval of one binding plus the metadata its diagnostics need.
 data UseCount = UseCount
   { ucLo :: !Int
-  -- ^ move lower bound: fewest definite consumes on any completion path
+  -- ^ owned-transfer lower bound: fewest consumes on any completion path
   , ucHi :: !Int
-  -- ^ move upper bound: most consumes on any completion path
+  -- ^ owned-transfer upper bound: most consumes on any completion path
+  , ucBorrowLo :: !Int
+  -- ^ borrowed-view demand lower bound
+  , ucBorrowHi :: !Int
+  -- ^ borrowed-view demand upper bound
   , ucMoves :: ![Span]
-  -- ^ the consume occurrences (for "used more than once" reports)
+  -- ^ quantity-demand occurrences (for "used more than once" reports)
   , ucTouches :: !Int
-  -- ^ touch lower bound; borrow-uses count as touches, so a binding is
-  -- dropped iff some path never touches it
+  -- ^ access lower bound, used for overlap/capture and residual-tail reports;
+  -- temporary borrows do not satisfy an owned-transfer obligation
+  , ucTouchHi :: !Int
+  -- ^ access upper bound; unlike the lower bound, this detects captures and
+  -- escapes through computations whose demand may be zero
+  , ucPathTouches :: !Int
+  -- ^ lower bound for structural access through a proper record-field path
   , ucEvents :: ![PEv]
   -- ^ chronological place events on the root ('PMove'\/'PBorrow'), for
   -- path-sensitive §12.4 reasoning
   , ucViolations :: ![([Text], Span)]
   -- ^ detected §12.4 borrow-after-consume violations (borrowed path, borrow site)
+  , ucZeroLowerReasons :: !(Set.Set ZeroLowerReason)
   }
   deriving (Eq)
 
--- | Whether the binding is touched (used or borrowed) on some path.
-ucTouched :: UseCount -> Bool
-ucTouched uc = ucTouches uc > 0
+-- | Whether the binding is touched (used or borrowed) on any possible path.
+-- Escape and capture checks use this upper-bound query: a value captured by a
+-- computation that may execute is still captured even when its demand lower
+-- bound is zero.
+ucMayTouch :: UseCount -> Bool
+ucMayTouch uc = ucTouchHi uc > 0
 
 zeroUC :: UseCount
-zeroUC = UseCount 0 0 [] 0 [] []
+zeroUC = UseCount 0 0 0 0 [] 0 0 0 [] [] Set.empty
 
 oneUC :: Span -> UseCount
-oneUC sp = UseCount 1 1 [sp] 1 [] []
+oneUC sp = UseCount 1 1 0 0 [sp] 1 1 0 [] [] Set.empty
 
 touchUC :: UseCount
-touchUC = UseCount 0 0 [] 1 [] []
+touchUC = UseCount 0 0 0 0 [] 1 1 0 [] [] Set.empty
+
+touchAtUC :: Span -> UseCount
+touchAtUC sp = touchUC {ucMoves = [sp]}
+
+pathTouchUC :: UseCount
+pathTouchUC = touchUC {ucPathTouches = 1}
+
+pathTouchAtUC :: Span -> UseCount
+pathTouchAtUC sp = (touchAtUC sp) {ucPathTouches = 1}
+
+-- | One demand of a borrowed view. This contributes to the binder's interval
+-- quantity without recording an ownership move of the referent.
+borrowDemandUC :: Span -> UseCount
+borrowDemandUC sp = UseCount 0 0 1 1 [sp] 1 1 0 [] [] Set.empty
 
 refEscapeUC :: Span -> UseCount
 -- Escaping `ref x` marks the cell lifetime as no longer locally owned, but
@@ -397,10 +461,16 @@ seqUC x y =
   UseCount
     { ucLo = ucLo x + ucLo y
     , ucHi = ucHi x + ucHi y
+    , ucBorrowLo = ucBorrowLo x + ucBorrowLo y
+    , ucBorrowHi = ucBorrowHi x + ucBorrowHi y
     , ucMoves = ucMoves x ++ ucMoves y
     , ucTouches = ucTouches x + ucTouches y
+    , ucTouchHi = ucTouchHi x + ucTouchHi y
+    , ucPathTouches = ucPathTouches x + ucPathTouches y
     , ucEvents = ucEvents x ++ ucEvents y
     , ucViolations = ucViolations x ++ ucViolations y ++ new
+    , ucZeroLowerReasons =
+        Set.union (ucZeroLowerReasons x) (ucZeroLowerReasons y)
     }
   where
     new =
@@ -414,36 +484,111 @@ altUC x y =
   UseCount
     { ucLo = min (ucLo x) (ucLo y)
     , ucHi = max (ucHi x) (ucHi y)
-    , ucMoves = if ucHi y > ucHi x then ucMoves y else ucMoves x
+    , ucBorrowLo = min (ucBorrowLo x) (ucBorrowLo y)
+    , ucBorrowHi = max (ucBorrowHi x) (ucBorrowHi y)
+    , ucMoves = if quantityHi y > quantityHi x then ucMoves y else ucMoves x
     , ucTouches = min (ucTouches x) (ucTouches y)
+    , ucTouchHi = max (ucTouchHi x) (ucTouchHi y)
+    , ucPathTouches = min (ucPathTouches x) (ucPathTouches y)
     , ucEvents = ucEvents x ++ ucEvents y
     , ucViolations = ucViolations x ++ ucViolations y
+    , ucZeroLowerReasons =
+        Set.unions
+          [ ucZeroLowerReasons x
+          , ucZeroLowerReasons y
+          , if canDemand x /= canDemand y
+              then Set.singleton ZeroFromAlternative
+              else Set.empty
+          ]
     }
+  where
+    canDemand = (> 0) . quantityHi
 
 -- | Upper bound standing in for ω in scaled intervals.
 omegaBound :: Int
 omegaBound = 1000000
 
 -- | Multiply a usage interval by a demand interval (§12.2.2, §16.2.1).
-scaleUC :: (Int, Maybe Int) -> UseCount -> UseCount
-scaleUC (lo, hi) uc =
+scaleUC :: ZeroLowerReason -> (Int, Maybe Int) -> UseCount -> UseCount
+scaleUC zeroReason (lo, hi) uc =
   UseCount
     { ucLo = min omegaBound (lo * ucLo uc)
-    , ucHi = hi'
-    , ucMoves = if hi' > ucHi uc then ucMoves uc ++ ucMoves uc else ucMoves uc
+    , ucHi = scaleHi (ucHi uc)
+    , ucBorrowLo = min omegaBound (lo * ucBorrowLo uc)
+    , ucBorrowHi = scaleHi (ucBorrowHi uc)
+    , ucMoves =
+        if quantityHi' > quantityHi uc
+          then ucMoves uc ++ ucMoves uc
+          else ucMoves uc
     , ucTouches = if lo == 0 then 0 else ucTouches uc
+    , ucTouchHi = scaleHi (ucTouchHi uc)
+    , ucPathTouches = if lo == 0 then 0 else ucPathTouches uc
     , ucEvents = if lo == 0 then [] else ucEvents uc
-    , ucViolations = if hi' == 0 then [] else ucViolations uc
+    , ucViolations = if quantityHi' == 0 then [] else ucViolations uc
+    , ucZeroLowerReasons =
+        if quantityHi' == 0
+          then Set.empty
+          else
+            if lo == 0
+              then Set.insert zeroReason (ucZeroLowerReasons uc)
+              else ucZeroLowerReasons uc
     }
   where
-    hi' = case hi of
-      Nothing -> if ucHi uc > 0 then omegaBound else 0
-      Just h -> min omegaBound (h * ucHi uc)
+    scaleHi oldHi = case hi of
+      Nothing -> if oldHi > 0 then omegaBound else 0
+      Just h -> min omegaBound (h * oldHi)
+    quantityHi' = max (scaleHi (ucHi uc)) (scaleHi (ucBorrowHi uc))
+
+quantityHi :: UseCount -> Int
+quantityHi uc = max (ucHi uc) (ucBorrowHi uc)
+
+-- | Apply a selected borrowed parameter's interval demand to a temporary
+-- borrow. Argument evaluation and the lexical borrow itself happen once when
+-- the demand has a non-zero upper bound; only the borrowed binding's interval
+-- demand is scaled. In particular, this must not turn a borrow of an owned root
+-- into an ownership transfer.
+scaleBorrowDemandUC :: (Int, Maybe Int) -> UseCount -> UseCount
+scaleBorrowDemandUC (lo, hi) uc
+  | hi == Just 0 = zeroUC
+  | otherwise =
+      uc
+        { ucBorrowLo = min omegaBound (lo * ucBorrowLo uc)
+        , ucBorrowHi = borrowHi
+        , ucMoves =
+            if borrowHi > ucBorrowHi uc
+              then ucMoves uc ++ ucMoves uc
+              else ucMoves uc
+        , ucZeroLowerReasons =
+            if lo == 0 && borrowHi > 0
+              then Set.insert ZeroFromAbstractDemand (ucZeroLowerReasons uc)
+              else ucZeroLowerReasons uc
+        , ucTouches = if lo == 0 then 0 else ucTouches uc
+        , ucPathTouches = if lo == 0 then 0 else ucPathTouches uc
+        -- Events are also the conservative upper-bound path-state footprint:
+        -- a callee that may borrow zero times may still borrow once, so a
+        -- preceding move must remain visible to the overlap checker.
+        , ucEvents = ucEvents uc
+        }
+  where
+    borrowHi = case hi of
+      Nothing -> if ucBorrowHi uc > 0 then omegaBound else 0
+      Just h -> min omegaBound (h * ucBorrowHi uc)
 
 type Usage = Map Text UseCount
 
 scaleU :: (Int, Maybe Int) -> Usage -> Usage
-scaleU d = Map.map (scaleUC d)
+scaleU d = Map.map (scaleUC ZeroFromAbstractDemand d)
+
+scaleBorrowDemandU :: (Int, Maybe Int) -> Usage -> Usage
+scaleBorrowDemandU d = Map.map (scaleBorrowDemandUC d)
+
+-- | Scale a demand by source-level repetition that may execute zero times.
+-- This is deliberately distinct from 'scaleU': an unrestricted callee demand
+-- also has lower bound zero, but its exact-once failure is primarily an
+-- overuse, whereas a loop/query path proves a source completion that drops the
+-- obligation (§12.2.5, §20.10.5).
+repeatU :: (Int, Maybe Int) -> Usage -> Usage
+repeatU d = Map.map (scaleUC ZeroFromRepetition d)
 
 seqU :: Usage -> Usage -> Usage
 seqU = Map.unionWith seqUC
@@ -458,7 +603,19 @@ altUs us = foldr1 altU us
 
 -- mark every binding as possibly-unused (loops may run zero times)
 loopU :: Usage -> Usage
-loopU = Map.map (\uc -> uc {ucLo = 0, ucTouches = 0})
+loopU =
+  Map.map
+    (\uc ->
+       uc
+         { ucLo = 0
+         , ucBorrowLo = 0
+         , ucTouches = 0
+         , ucPathTouches = 0
+         , ucZeroLowerReasons =
+             if quantityHi uc > 0
+               then Set.insert ZeroFromRepetition (ucZeroLowerReasons uc)
+               else ucZeroLowerReasons uc
+         })
 
 -- ── Analysis monad ───────────────────────────────────────────────────
 
@@ -469,6 +626,10 @@ data AnalysisState = AnalysisState
   { sDiags :: ![Diagnostic]
   , sBail :: !Bool
   , sFresh :: !Int
+  , sPrimaryOwnershipFailures :: !(Set.Set Text)
+  -- ^ Root keys whose invalid consume already emitted the primary ownership
+  -- diagnostic. Scope closeout suppresses only the derivative drop cascade;
+  -- the failed operation never becomes a valid transfer.
   }
 
 -- | The analysis monad: just 'State' over 'AnalysisState'. (No reader env —
@@ -553,6 +714,9 @@ data Env = Env
   , eExpansions :: !(Map Span Expr)
   -- ^ §21.2 splice expansions recorded by the elaborator (keyed by the
   -- splice span): the object-level uses charged at each splice site
+  , eExpressionTypes :: !(Map Span Expr)
+  -- ^ Checker-finalized types for source expressions whose concrete storage
+  -- classifier Usage must inspect. Missing entries are deliberately unknown.
   , ePendingSig :: ![Binder]
   -- ^ §12.2.5: signature Pi binders not yet consumed by equation-head
   -- params, to be aligned with a leading lambda chain in the body so
@@ -566,9 +730,20 @@ data Env = Env
   , eStaticKindBinders :: !(Set.Set Span)
   , eErasedArgumentSpans :: !(Set.Set Span)
   -- ^ Checker-proven erased arguments, keyed by source identity.
+  , eBorrowedArgumentDemands :: !(Map Span Core.Q)
+  -- ^ Checker-selected borrowed explicit parameters, keyed by argument source
+  -- occurrence. This preserves typed trait/member access mode when no surface
+  -- callable signature exists for Usage to reconstruct.
+  , eErasedExpressionSpans :: !(Set.Set Span)
+  -- ^ Checker-proven erased field/member projections, keyed by source
+  -- occurrence identity. Source names and receiver quantities are not
+  -- representation authority.
   , eImplicitExpressionDemands :: !(Map Span Core.Q)
   -- ^ Quantities selected for checker-inserted calls whose applications do not
   -- occur in the source tree. This is typed authority, not syntax recognition.
+  , eTypeHeadIdentities :: !(Map Text GName)
+  -- ^ Resolved source type-head spellings. Head equivalence and built-in
+  -- alias expansion must consult this table rather than normalize text.
   , eMonadicResultHeads :: !(Set.Set Text)
   -- ^ Source type heads that import resolution / instance registration proved
   -- denote monadic action carriers. Usage may unwrap action result types only
@@ -643,9 +818,12 @@ flatR r = (wrUsage r `seqU` wrLatent r, wrTaint r)
 -- parameter is unrestricted or affine.
 usageDiagnostics ::
   Map Span Expr ->
+  Map Span Expr ->
   Map Span [(Text, Text)] ->
   Map Span Expr ->
   Set.Set Span ->
+  Set.Set Span ->
+  Map Span Core.Q ->
   Set.Set Span ->
   Map Span Core.Q ->
   Map Text [PInfo] ->
@@ -663,6 +841,7 @@ usageDiagnostics ::
   Set.Set Span ->
   Set.Set Span ->
   Set.Set Text ->
+  Map Text GName ->
   Set.Set Text ->
   Map Text ProjUse ->
   Set.Set Text ->
@@ -670,7 +849,7 @@ usageDiagnostics ::
   Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions expressionTypes mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans borrowedArgumentDemands erasedExpressionSpans implicitExpressionDemands importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans importedBorrowViewHeads importedTypeHeadIdentities visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -706,6 +885,7 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
     borrowViewHeads = importedBorrowViewHeads Set.\\ localTypeHeads
     resultStorage =
       moduleUsageResultStorage
+        expressionTypes
         fns
         inoutResults
         resultTypes
@@ -722,6 +902,7 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
         staticKindBinders
         erasedArgumentSpans
         borrowViewHeads
+        typeHeadIdentities
         monadicResultHeads
         duplicableStorageHeads
         unaryStorageHeads
@@ -732,10 +913,11 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
     binaryStorageHeads = importedBinaryStorageHeads Set.\\ localTypeHeads
     fns = localFns `Map.union` builtinFns `Map.union` importedFnParams
     monadicResultHeads = visibleMonadicResultHeads
+    typeHeadIdentities = Map.withoutKeys importedTypeHeadIdentities localTypeHeads
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions expressionTypes mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans borrowedArgumentDemands erasedExpressionSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads typeHeadIdentities monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0 Set.empty)
        in if sBail final then [] else reverse (sDiags final)
     localDuplicableAliasHeads =
       fixedAliasHeads Set.empty (length localAliasDecls + 1)
@@ -752,7 +934,6 @@ usageDiagnostics expansions mutableBindingFields discardedResultTypes staticKind
             | (nm, rhs) <- localAliasDecls
             , Just hd <- [typePathHead rhs]
             , hd `Set.member` ((importedDuplicableStorageHeads Set.\\ localTypeHeads) `Set.union` acc)
-                || isKnownDuplicableStorageHead hd
             ]
     localTypeHeads =
       Set.fromList $
@@ -878,6 +1059,7 @@ moduleUsageProjections m =
     ]
 
 moduleUsageResultStorage ::
+  Map Span Expr ->
   Map Text [PInfo] ->
   Map Text [FieldShape] ->
   Map Text Expr ->
@@ -894,13 +1076,14 @@ moduleUsageResultStorage ::
   Set.Set Span ->
   Set.Set Span ->
   Set.Set Text ->
+  Map Text GName ->
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
   Module ->
   Map Text VInfo
-moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields staticKindBinders erasedArgumentSpans borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads m =
+moduleUsageResultStorage expressionTypes fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields staticKindBinders erasedArgumentSpans borrowViewHeads typeHeadIdentities monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads m =
   fixedPoint (length lets + 1) Map.empty
   where
     decls = modDecls m
@@ -924,10 +1107,15 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
         ]
 
     summaryFor resultStorage n sigTy ld =
-      let binds = mapMaybe paramBindPure (alignParams (ldBinders ld) (maybe [] sigBinders sigTy))
-          env =
+      let sigPs = maybe [] sigBinders sigTy
+          insertedImplicits =
+            case ldBody ld of
+              ELambda {} -> []
+              _ -> [(b, Just b) | b <- omittedImplicitParams (ldBinders ld) sigPs]
+          rawBinds = mapMaybe paramBindPure (insertedImplicits ++ alignParams (ldBinders ld) sigPs)
+          env0 =
             Env
-              (Map.fromList binds)
+              (Map.fromList rawBinds)
               fns
               Map.empty
               inoutResults
@@ -951,18 +1139,24 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               aliasDeps
               effs
               Map.empty
+              expressionTypes
               []
               mutableBindingFields
               Map.empty
               staticKindBinders
               erasedArgumentSpans
               Map.empty
+              Set.empty
+              Map.empty
+              typeHeadIdentities
               monadicResultHeads
               duplicableStorageHeads
               unaryStorageHeads
               binaryStorageHeads
               Set.empty
               False
+          binds = [(name, attachTypeStorageDuplicability env0 vi) | (name, vi) <- rawBinds]
+          env = env0 {eVars = Map.fromList binds}
        in storedValueInfo env ("$result:" <> nameText n) (exprSpan (ldBody ld)) (ldBody ld)
 
     storageSummariesStable a b =
@@ -974,6 +1168,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
       , [(path, quantitySummaryKey quantity) | (path, quantity) <- vPathFields vi]
       , vNonDupValue vi
       , vNonDupFields vi
+      , vStorageDuplicable vi
       , vDeps vi
       , vPathDeps vi
       , vStoredTypeText vi
@@ -1486,6 +1681,7 @@ joinVInfo a b =
     , vPathFields = mergePathQuantities (vPathFields a) (vPathFields b)
     , vNonDupValue = vNonDupValue a || vNonDupValue b
     , vNonDupFields = dedupPaths (vNonDupFields a ++ vNonDupFields b)
+    , vStorageDuplicable = vStorageDuplicable a && vStorageDuplicable b
     , vMutable = vMutable a || vMutable b
     , vStoredTypeExpr = vStoredTypeExpr a `orElse` vStoredTypeExpr b
     , vMutableDiagFields = if null (vMutableDiagFields a) then vMutableDiagFields b else vMutableDiagFields a
@@ -1520,10 +1716,13 @@ litPathFields env = \case
     mergePathQuantities direct nested
     where
       direct =
-        [ ([nameText (riName it)], Just (fromMaybe QOne (positiveTransferQuantity env v)))
+        [ ( [nameText (riName it)]
+          , if transfersLinear env v
+              then Just (fromMaybe QOne (positiveTransferQuantity env v))
+              else riQuantity it
+          )
         | it <- items
         , Just v <- [riValue it]
-        , transfersLinear env v
         ]
       nested =
         concat
@@ -1720,6 +1919,9 @@ storedValueInfo env key sp rhs =
         , vPathDeps = pathDeps
         , vNonDupValue = nonDupHidden
         , vNonDupFields = nonDupFieldNames
+        , vStorageDuplicable =
+            maybe False (typeProvesStorageDuplicable env) storedTyExpr
+              || maybe False vStorageDuplicable typeInfo
         , vStoredTypeText = storedTyText
         , vStoredTypeExpr = storedTyExpr
         , vMutableDiagFields = diagFields
@@ -1755,6 +1957,7 @@ storedValueTypeExpr :: Env -> Expr -> Maybe Expr
 storedValueTypeExpr env = \case
   EAscription _ ty _ -> Just ty
   ECaptures e _ _ -> storedValueTypeExpr env e
+  ERecordLit items sp -> recordLiteralValueType (exprValueType env) items sp
   EIf branches melse _ ->
     listToMaybe (mapMaybe (storedValueTypeExpr env . snd) branches ++ maybeToList (melse >>= storedValueTypeExpr env))
   EListLit (x : _) _ -> do
@@ -1766,6 +1969,32 @@ storedValueTypeExpr env = \case
     let params = Map.findWithDefault [] n (eFns env)
     pure (instantiateResultTypeFromArgs env params args ty)
   _ -> Nothing
+
+-- | Reconstruct the transparent structural type of a record literal from
+-- checked field-expression summaries. This is positive storage evidence only
+-- when every field is known; a missing field type keeps the whole result
+-- unknown so borrowed-to-owned materialization still fails closed.
+recordLiteralValueType
+  :: (Expr -> Maybe Expr)
+  -> [RecItem]
+  -> Span
+  -> Maybe Expr
+recordLiteralValueType inferField items sp =
+  ERecordType <$> traverse fieldType items <*> pure Nothing <*> pure sp
+  where
+    fieldType item = do
+      let name = riName item
+          value = fromMaybe (EVar name) (riValue item)
+      ty <- inferField value
+      pure
+        RecTypeField
+          { rtfOpaque = False
+          , rtfImplicit = riImplicit item
+          , rtfPrefix = emptyPrefix {bpQuantity = riQuantity item}
+          , rtfSusp = Nothing
+          , rtfName = name
+          , rtfType = ty
+          }
 
 storedValueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
 storedValueInfoFromType env key sp ty =
@@ -1788,6 +2017,7 @@ storedValueInfoFromType env key sp ty =
         , vPathDeps = pathDeps
         , vNonDupValue = hiddenNonDup
         , vNonDupFields = nonDupFieldNames
+        , vStorageDuplicable = typeProvesStorageDuplicable env ty
         , vStoredTypeText = Just (renderExprSrc ty)
         , vStoredTypeExpr = Just ty
         , vMutableDiagFields = diagFields
@@ -1932,32 +2162,32 @@ instantiateResultTypeFromArgs env params args resultTy =
       let actionSubst =
             case actionTy env actual of
               Just actualResultTy ->
-                unifyTypePattern (unwrapActionType (eMonadicResultHeads env) paramTy) actualResultTy
+                unifyTypePattern env (unwrapActionType (eMonadicResultHeads env) paramTy) actualResultTy
               Nothing -> Map.empty
           valueSubst =
             case valueTy env actual of
               Just actualTy ->
-                unifyTypePattern (dropBinders paramTy) actualTy
+                unifyTypePattern env (dropBinders paramTy) actualTy
               Nothing -> Map.empty
        in actionSubst `Map.union` valueSubst
 
-unifyTypePattern :: Expr -> Expr -> Map Text Expr
-unifyTypePattern pat actual =
-  let pat' = expandUsageTypeAlias pat
-      actual' = expandUsageTypeAlias actual
+unifyTypePattern :: Env -> Expr -> Expr -> Map Text Expr
+unifyTypePattern env pat actual =
+  let pat' = expandUsageTypeAlias env pat
+      actual' = expandUsageTypeAlias env actual
    in if renderExprSrc pat' /= renderExprSrc pat || renderExprSrc actual' /= renderExprSrc actual
-        then unifyTypePattern pat' actual'
-        else unifyTypePatternExpanded pat actual
+        then unifyTypePattern env pat' actual'
+        else unifyTypePatternExpanded env pat actual
 
-unifyTypePatternExpanded :: Expr -> Expr -> Map Text Expr
-unifyTypePatternExpanded pat actual =
+unifyTypePatternExpanded :: Env -> Expr -> Expr -> Map Text Expr
+unifyTypePatternExpanded env pat actual =
   case (pat, actual) of
     (EVar n, _)
       | isLowerName (nameText n) -> Map.singleton (nameText n) actual
-    (EAscription p _ _, _) -> unifyTypePattern p actual
-    (ECaptures p _ _, _) -> unifyTypePattern p actual
-    (_, EAscription a _ _) -> unifyTypePattern pat a
-    (_, ECaptures a _ _) -> unifyTypePattern pat a
+    (EAscription p _ _, _) -> unifyTypePattern env p actual
+    (ECaptures p _ _, _) -> unifyTypePattern env p actual
+    (_, EAscription a _ _) -> unifyTypePattern env pat a
+    (_, ECaptures a _ _) -> unifyTypePattern env pat a
     _
       | Just (var, patArgs) <- typeConstructorPattern pat
       , let (actualHead, actualArgs) = typeAppSpine actual
@@ -1966,86 +2196,105 @@ unifyTypePatternExpanded pat actual =
               headSubst = Map.singleton var (rebuildTypeApp actualHead headArgs)
               argSubst =
                 Map.unionsWith const $
-                  zipWith unifyTypePattern patArgs tailArgs
+                  zipWith (unifyTypePattern env) patArgs tailArgs
            in headSubst `Map.union` argSubst
     (EApp pf pargs, EApp af aargs)
-      | sameTypeHead (typePathHead pf) (typePathHead af) ->
+      | sameResolvedTypeHead (eTypeHeadIdentities env) (typePathHead pf) (typePathHead af) ->
           Map.unionsWith const $
-            zipWith unifyTypePattern (explicitExprs pargs) (explicitExprs aargs)
+            zipWith (unifyTypePattern env) (explicitExprs pargs) (explicitExprs aargs)
     (EArrow pb pbody, EArrow ab abody) ->
-      maybe Map.empty id (liftA2 unifyTypePattern (bType pb) (bType ab))
-        `Map.union` unifyTypePattern pbody abody
+      maybe Map.empty id (liftA2 (unifyTypePattern env) (bType pb) (bType ab))
+        `Map.union` unifyTypePattern env pbody abody
     _ -> Map.empty
 
-expandUsageTypeAlias :: Expr -> Expr
-expandUsageTypeAlias = \case
+expandUsageTypeAlias :: Env -> Expr -> Expr
+expandUsageTypeAlias env = \case
   EApp f [ArgExplicit a]
     | Just hd <- typePathHead f
-    , canonicalPreludeHead hd == "UIO" ->
-        EApp (EVar (Name "IO" noSpan)) [ArgExplicit (EVar (Name "Void" noSpan)), ArgExplicit a]
-  EAscription e ty sp -> EAscription (expandUsageTypeAlias e) (expandUsageTypeAlias ty) sp
-  ECaptures e caps sp -> ECaptures (expandUsageTypeAlias e) caps sp
-  EApp f args -> EApp (expandUsageTypeAlias f) (map expandArg args)
+    , Map.lookup hd (eTypeHeadIdentities env) == Just prelUIO
+    , Just ioHead <- resolvedHeadExpr prelIO
+    , Just voidHead <- resolvedHeadExpr prelVoid ->
+        EApp ioHead [ArgExplicit voidHead, ArgExplicit (expandUsageTypeAlias env a)]
+  EAscription e ty sp -> EAscription (expandUsageTypeAlias env e) (expandUsageTypeAlias env ty) sp
+  ECaptures e caps sp -> ECaptures (expandUsageTypeAlias env e) caps sp
+  EApp f args -> EApp (expandUsageTypeAlias env f) (map expandArg args)
   e -> e
   where
+    resolvedHeadExpr identity =
+      pathExpr . fst
+        =<< find ((== identity) . snd) (Map.toAscList (eTypeHeadIdentities env))
+    pathExpr path =
+      case map (`Name` noSpan) (T.splitOn "." path) of
+        first : rest -> Just (foldl (\base name -> EDot base (DotName name)) (EVar first) rest)
+        [] -> Nothing
     expandArg = \case
-      ArgExplicit e -> ArgExplicit (expandUsageTypeAlias e)
-      ArgImplicit e -> ArgImplicit (expandUsageTypeAlias e)
-      ArgInout e sp -> ArgInout (expandUsageTypeAlias e) sp
-      ArgNamedBlock items sp -> ArgNamedBlock [(n, expandUsageTypeAlias <$> me) | (n, me) <- items] sp
+      ArgExplicit e -> ArgExplicit (expandUsageTypeAlias env e)
+      ArgImplicit e -> ArgImplicit (expandUsageTypeAlias env e)
+      ArgInout e sp -> ArgInout (expandUsageTypeAlias env e) sp
+      ArgNamedBlock items sp -> ArgNamedBlock [(n, expandUsageTypeAlias env <$> me) | (n, me) <- items] sp
 
 exprValueType :: Env -> Expr -> Maybe Expr
-exprValueType env = \case
-  EAscription _ ty _ -> Just ty
-  ECaptures e _ _ -> exprValueType env e
-  EIntLit {} -> Just (EVar (Name "Integer" noSpan))
-  EFloatLit {} -> Just (EVar (Name "Double" noSpan))
-  EStringLit {} -> Just (EVar (Name "String" noSpan))
-  EListLit (x : _) _ -> do
-    elemTy <- exprValueType env x
-    pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
-  ELambda _ bs body _ -> do
-    bodyTy <- exprValueType env body
-    pure (foldr EArrow bodyTy bs)
-  EIf branches melse _ ->
-    listToMaybe (mapMaybe (exprValueType env . snd) branches ++ maybeToList (melse >>= exprValueType env))
-  e
-    | Just (vi, path, _) <- placeOf env e ->
-        valueTypeAtPath env path =<< vStoredTypeExpr vi
-  EApp f args -> do
-    n <- calleeDemandName env f
-    ty <- Map.lookup n (eValueResultTypes env)
-    let params = Map.findWithDefault [] n (eFns env)
-    pure (instantiateResultTypeFromArgs env params args ty)
-  e -> calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
+exprValueType env expression =
+  Map.lookup (exprSpan expression) (eExpressionTypes env)
+    <|> inferFromSyntax expression
+  where
+    inferFromSyntax = \case
+      EAscription _ ty _ -> Just ty
+      ECaptures e _ _ -> exprValueType env e
+      EIntLit {} -> Just (EVar (Name "Integer" noSpan))
+      EFloatLit {} -> Just (EVar (Name "Double" noSpan))
+      EStringLit {} -> Just (EVar (Name "String" noSpan))
+      ERecordLit items sp -> recordLiteralValueType (exprValueType env) items sp
+      EListLit (x : _) _ -> do
+        elemTy <- exprValueType env x
+        pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
+      ELambda _ bs body _ -> do
+        bodyTy <- exprValueType env body
+        pure (foldr EArrow bodyTy bs)
+      EIf branches melse _ ->
+        listToMaybe (mapMaybe (exprValueType env . snd) branches ++ maybeToList (melse >>= exprValueType env))
+      e
+        | Just (vi, path, _) <- placeOf env e ->
+            valueTypeAtPath env path =<< vStoredTypeExpr vi
+      EApp f args -> do
+        n <- calleeDemandName env f
+        ty <- Map.lookup n (eValueResultTypes env)
+        let params = Map.findWithDefault [] n (eFns env)
+        pure (instantiateResultTypeFromArgs env params args ty)
+      e -> calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
 
 exprValueTypeShallow :: Env -> Expr -> Maybe Expr
-exprValueTypeShallow env = \case
-  EAscription _ ty _ -> Just ty
-  ECaptures e _ _ -> exprValueTypeShallow env e
-  EIntLit {} -> Just (EVar (Name "Integer" noSpan))
-  EFloatLit {} -> Just (EVar (Name "Double" noSpan))
-  EStringLit {} -> Just (EVar (Name "String" noSpan))
-  EListLit (x : _) _ -> do
-    elemTy <- exprValueTypeShallow env x
-    pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
-  ELambda _ bs body _ -> do
-    bodyTy <- exprValueTypeShallow env body
-    pure (foldr EArrow bodyTy bs)
-  e
-    | Just (vi, path, _) <- placeOf env e ->
-        valueTypeAtPath env path =<< vStoredTypeExpr vi
-  EApp f _ -> do
-    n <- calleeDemandName env f
-    ty <- Map.lookup n (eValueResultTypes env)
-    if Set.null (freeLowerTypeVars ty)
-      then Just ty
-      else Nothing
-  e -> do
-    ty <- calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
-    if Set.null (freeLowerTypeVars ty)
-      then Just ty
-      else Nothing
+exprValueTypeShallow env expression =
+  Map.lookup (exprSpan expression) (eExpressionTypes env)
+    <|> inferFromSyntax expression
+  where
+    inferFromSyntax = \case
+      EAscription _ ty _ -> Just ty
+      ECaptures e _ _ -> exprValueTypeShallow env e
+      EIntLit {} -> Just (EVar (Name "Integer" noSpan))
+      EFloatLit {} -> Just (EVar (Name "Double" noSpan))
+      EStringLit {} -> Just (EVar (Name "String" noSpan))
+      ERecordLit items sp -> recordLiteralValueType (exprValueTypeShallow env) items sp
+      EListLit (x : _) _ -> do
+        elemTy <- exprValueTypeShallow env x
+        pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
+      ELambda _ bs body _ -> do
+        bodyTy <- exprValueTypeShallow env body
+        pure (foldr EArrow bodyTy bs)
+      e
+        | Just (vi, path, _) <- placeOf env e ->
+            valueTypeAtPath env path =<< vStoredTypeExpr vi
+      EApp f _ -> do
+        n <- calleeDemandName env f
+        ty <- Map.lookup n (eValueResultTypes env)
+        if Set.null (freeLowerTypeVars ty)
+          then Just ty
+          else Nothing
+      e -> do
+        ty <- calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
+        if Set.null (freeLowerTypeVars ty)
+          then Just ty
+          else Nothing
 
 actionResultTypeShallow :: Env -> Expr -> Maybe Expr
 actionResultTypeShallow env = \case
@@ -2180,15 +2429,6 @@ isActionStorageType env ty =
 isActionStorageHead :: Env -> Text -> Bool
 isActionStorageHead env hd =
   hd `Set.member` eMonadicResultHeads env
-    || isKnownQualifiedActionHead hd
-    || (hd `Set.member` eDuplicableStorageHeads env && hd `elem` barePreludeActionHeads)
-
-isKnownQualifiedActionHead :: Text -> Bool
-isKnownQualifiedActionHead hd =
-  hd `elem` ["std.prelude.IO", "std.prelude.UIO", "std.prelude.STM", "std.prelude.Elab", "std.prelude.Eff"]
-
-barePreludeActionHeads :: [Text]
-barePreludeActionHeads = ["IO", "UIO", "STM", "Elab", "Eff"]
 
 summaryHasPositive :: VInfo -> Bool
 summaryHasPositive vi =
@@ -2200,6 +2440,27 @@ pathPositiveQuantity vi path =
 
 isNonDupPath :: VInfo -> [Text] -> Bool
 isNonDupPath vi path = any (pathsOverlap path) (nonDupFields vi)
+
+-- | Whether selecting this place must transfer ownership rather than perform a
+-- non-consuming read. Binder quantity and stored-value facts are independent:
+-- a whole affine/linear binding must move, while an ordinary field of such a
+-- record may still be copied when that field is itself duplicable.
+placeRequiresOwnership :: VInfo -> FieldPath -> Bool
+placeRequiresOwnership vi path
+  | null path =
+      nonDupQuantity (vQ vi)
+        || vNonDupValue vi
+        || not (null (nonDupFields vi))
+  | otherwise = isNonDupPath vi path
+
+-- | Whether the selected place stores a non-duplicable value, independently
+-- of the owning binder's usage capability. A linear owner can contain a
+-- duplicable value (for example @1 x : Int@); borrowing that value must not
+-- turn the owner's quantity into a property of the referent's storage.
+placeStoresNonDuplicable :: VInfo -> FieldPath -> Bool
+placeStoresNonDuplicable vi path
+  | null path = vNonDupValue vi || not (null (nonDupFields vi))
+  | otherwise = isNonDupPath vi path
 
 anyArg :: (Expr -> Bool) -> [Arg] -> Bool
 anyArg p = any $ \case
@@ -2382,14 +2643,28 @@ alignParams :: [Binder] -> [Binder] -> [(Binder, Maybe Binder)]
 alignParams [] _ = []
 alignParams (b : bs) sbs = case sbs of
   (s : ss)
-    | bImplicit s && not (bImplicit b) && not (sameName b s) ->
+    | bImplicit s && not (binderSameName b s) ->
         alignParams (b : bs) ss
     | otherwise -> (b, Just s) : alignParams bs ss
   [] -> (b, Nothing) : alignParams bs []
-  where
-    sameName x y = case (bName x, bName y) of
-      (Just nx, Just ny) -> nameText nx == nameText ny
-      _ -> False
+
+-- | Signature implicits skipped by equation-head binders are introduced by
+-- ordinary implicit-lambda insertion (§9.1, §11.3) and remain in scope in a
+-- non-lambda definition body. Usage must track those semantic binders even
+-- though no equation-head binder occurrence exists in the source.
+omittedImplicitParams :: [Binder] -> [Binder] -> [Binder]
+omittedImplicitParams [] = filter bImplicit
+omittedImplicitParams (b : bs) = \case
+  s : ss
+    | bImplicit s && not (binderSameName b s) ->
+        s : omittedImplicitParams (b : bs) ss
+    | otherwise -> omittedImplicitParams bs ss
+  [] -> []
+
+binderSameName :: Binder -> Binder -> Bool
+binderSameName x y = case (bName x, bName y) of
+  (Just nx, Just ny) -> nameText nx == nameText ny
+  _ -> False
 
 -- | The signature binders left after the definition binders consume
 -- their share, mirroring 'alignParams' consumption (§12.2.5). Used to
@@ -2398,14 +2673,10 @@ remainingSig :: [Binder] -> [Binder] -> [Binder]
 remainingSig [] sbs = sbs
 remainingSig (b : bs) sbs = case sbs of
   (s : ss)
-    | bImplicit s && not (bImplicit b) && not (sameName b s) ->
+    | bImplicit s && not (binderSameName b s) ->
         remainingSig (b : bs) ss
     | otherwise -> remainingSig bs ss
   [] -> []
-  where
-    sameName x y = case (bName x, bName y) of
-      (Just nx, Just ny) -> nameText nx == nameText ny
-      _ -> False
 
 binderIsStaticKind :: Set.Set Span -> Binder -> Maybe Binder -> Bool
 binderIsStaticKind staticKinds binder sigBinder =
@@ -2473,9 +2744,12 @@ fnParams msig ld =
 
 analyzeLet ::
   Map Span Expr ->
+  Map Span Expr ->
   Map Span [(Text, Text)] ->
   Map Span Expr ->
   Set.Set Span ->
+  Set.Set Span ->
+  Map Span Core.Q ->
   Set.Set Span ->
   Map Span Core.Q ->
   Map Text [PInfo] ->
@@ -2496,6 +2770,7 @@ analyzeLet ::
   Map Text ProjUse ->
   Map Text [(Text, Quantity)] ->
   Set.Set Text ->
+  Map Text GName ->
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
@@ -2503,9 +2778,13 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
+analyzeLet expansions expressionTypes mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans borrowedArgumentDemands erasedExpressionSpans implicitExpressionDemands fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows constructorPatternLetSpans aliases recordShapes aliasDeps ctors projs effs borrowViewHeads typeHeadIdentities monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
+      insertedImplicits =
+        case ldBody ld of
+          ELambda {} -> []
+          _ -> [(b, Just b) | b <- omittedImplicitParams (ldBinders ld) sigPs]
       -- §12.2.5: signature binders the equation-head params did not
       -- consume. When the body is a leading lambda chain, these carry
       -- the quantity obligations onto the lambda binders just as
@@ -2515,10 +2794,12 @@ analyzeLet expansions mutableBindingFields discardedResultTypes staticKindBinder
       pendingSig = case ldBody ld of
         ELambda {} -> remainingSig (ldBinders ld) sigPs
         _ -> []
-  binds <- catMaybes <$> mapM paramBind aligned
-  let env =
-          (Env (Map.fromList binds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans implicitExpressionDemands monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads constructorPatternLetSpans False)
+  rawBinds <- catMaybes <$> mapM paramBind (insertedImplicits ++ aligned)
+  let env0 =
+          (Env (Map.fromList rawBinds) fns Map.empty inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities patternBinderQuantities patternBinderBorrows [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions expressionTypes [] mutableBindingFields discardedResultTypes staticKindBinders erasedArgumentSpans borrowedArgumentDemands erasedExpressionSpans implicitExpressionDemands typeHeadIdentities monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads constructorPatternLetSpans False)
           {ePendingSig = pendingSig}
+      binds = [(name, attachTypeStorageDuplicability env0 vi) | (name, vi) <- rawBinds]
+      env = env0 {eVars = Map.fromList binds}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -2641,15 +2922,54 @@ closeVar = closeVarWith Nothing
 
 closeVarWith :: Maybe MutableCloseContext -> VInfo -> Usage -> Analysis ()
 closeVarWith mctx vi u = do
-  let UseCount {ucLo = rLo, ucHi = rHi, ucMoves = rOccs, ucTouches = rTlo, ucViolations = viols} =
+  primaryOwnershipFailure <-
+    gets (Set.member (vKey vi) . sPrimaryOwnershipFailures)
+  let UseCount
+        { ucLo = rLo
+        , ucHi = rHi
+        , ucBorrowLo = rBorrowLo
+        , ucBorrowHi = rBorrowHi
+        , ucMoves = rOccs
+        , ucTouches = rTlo
+        , ucTouchHi = rThi
+        , ucPathTouches = rPathLo
+        , ucEvents = rEvents
+        , ucViolations = viols
+        , ucZeroLowerReasons = rZeroLowerReasons
+        } =
         Map.findWithDefault zeroUC (vKey vi) u
-      res@(UseCount {ucMoves = resOccs, ucTouches = resTlo}) =
+      UseCount
+        { ucLo = resLo
+        , ucHi = resHi
+        , ucBorrowLo = resBorrowLo
+        , ucBorrowHi = resBorrowHi
+        , ucMoves = resOccs
+        , ucTouches = resTlo
+        , ucTouchHi = resThi
+        , ucPathTouches = resPathLo
+        , ucEvents = resEvents
+        , ucZeroLowerReasons = resZeroLowerReasons
+        } =
         Map.findWithDefault zeroUC (vKey vi <> ".~") u
       refEsc =
         Map.findWithDefault zeroUC (refEscapeKey vi) u
-      rootHi = rHi + ucHi res
-      rootLo = rLo + ucLo res + ucLo refEsc
-      rootTlo = rTlo + resTlo + ucTouches refEsc
+      rootMoveHi = rHi + resHi
+      rootMoveLo = rLo + resLo + ucLo refEsc
+      rootBorrowHi = rBorrowHi + resBorrowHi + ucBorrowHi refEsc
+      rootBorrowLo = rBorrowLo + resBorrowLo + ucBorrowLo refEsc
+      rootAccessLo = rTlo + resTlo + ucTouches refEsc
+      rootAccessHi = rThi + resThi + ucTouchHi refEsc
+      rootPathLo = rPathLo + resPathLo + ucPathTouches refEsc
+      rootZeroLowerReasons =
+        Set.unions
+          [ rZeroLowerReasons
+          , resZeroLowerReasons
+          , ucZeroLowerReasons refEsc
+          ]
+      rootControlMaySkip =
+        any
+          (`Set.member` rootZeroLowerReasons)
+          [ZeroFromAlternative, ZeroFromRepetition]
   -- §12.4: borrowing or re-projecting a path after an overlapping
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
@@ -2702,15 +3022,15 @@ closeVarWith mctx vi u = do
         -- whole-root transfer moves every field with it, but a record-patch
         -- residue only transfers omitted fields; explicitly replaced linear
         -- fields must have been consumed already.
-        | vBorrowed vi || wholeRootTransferred = []
+        | primaryOwnershipFailure || vBorrowed vi || wholeRootTransferred = []
         | otherwise =
             [ p
             | p <- linPaths vi
             , let fc = pathUsage vi p u
-              -- a linear field is dropped when neither consumed (moved)
-              -- nor borrowed (touched) on this completion path; a borrow
-              -- discharges the obligation for its scope under §12.2.5
-            , ucLo fc < 1 && not (ucTouched fc)
+              -- A temporary borrow suspends but then restores ownership; only
+              -- an actual transfer discharges the field's quantity-1
+              -- obligation (§12.2.3, §12.2.5).
+            , ucLo fc < 1
             ]
   forM_ droppedFields $ \p ->
     linearDrop (Just p) (vSpan vi)
@@ -2732,7 +3052,10 @@ closeVarWith mctx vi u = do
   -- obligation.
   let tailDropped = case vOpenTail vi of
         Just (rowVar, _)
-          | rootLo < 1 && rootTlo >= 1 && null droppedFields -> Just rowVar
+          | not primaryOwnershipFailure
+          , rootMoveLo < 1
+          , rootAccessLo >= 1
+          , null droppedFields -> Just rowVar
         _ -> Nothing
   forM_ tailDropped $ \rowVar ->
     emit "E_ROW_TAIL_QUANTITY_UNSATISFIED" "kappa.row.tail-quantity" (vSpan vi)
@@ -2742,17 +3065,55 @@ closeVarWith mctx vi u = do
          <> rowVar <> " 0' to forget a tail that may hold a linear resource "
          <> "(§13.2.7)")
   let tailWasDropped = isJust tailDropped
+      structuralOwnershipClosed =
+        rootPathLo >= 1
+          && not (null (vFields vi))
+          && null droppedFields
+          && not tailWasDropped
+      ownedRootLo
+        | rootMoveLo >= 1 = rootMoveLo
+        | structuralOwnershipClosed = 1
+        | otherwise = 0
+      selectedLo
+        | vBorrowed vi = rootBorrowLo
+        | relevantQuantity (vQ vi) = rootAccessLo
+        | otherwise = ownedRootLo
+      selectedHi
+        | vBorrowed vi = rootBorrowHi
+        | relevantQuantity (vQ vi) = rootAccessHi
+        | otherwise = rootMoveHi
   case vQ vi of
     Just QOne -> do
-      when (rootHi > 1) (overuse "linear" nm (rOccs ++ resOccs))
-      -- the whole-record drop is reported only when no linear field or
-      -- residual tail already carried the leak (otherwise those reports
-      -- are the precise diagnostics for the same untransferred resource)
-      when
-        (rootTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailWasDropped)
-        (dropErr "linear")
-    Just QAtLeastOne -> when (rootTlo < 1 && not tailWasDropped) (dropErr "relevant")
-    Just QAtMostOne -> when (rootHi > 1) (overuse "affine" nm (rOccs ++ resOccs))
+      -- A [0,ω] interval can arise either from source control flow that may
+      -- skip the demand, or from an abstract callee that may discard or
+      -- duplicate its argument. Preserve that provenance so diagnostics cite
+      -- the bound violated by the relevant construct rather than depending on
+      -- an arbitrary ordering of the two failed inequalities.
+      if selectedLo < 1
+          && rootControlMaySkip
+          && not pathOver
+          && null droppedFields
+          && not tailWasDropped
+        then unless primaryOwnershipFailure (dropErr "linear")
+        else do
+          when (selectedHi > 1) (overuse "linear" nm (rOccs ++ resOccs))
+          when
+            ( selectedLo < 1
+                && selectedHi <= 1
+                && not pathOver
+                && null droppedFields
+                && not tailWasDropped
+            )
+            (unless primaryOwnershipFailure (dropErr "linear"))
+    Just QAtLeastOne ->
+      when (selectedLo < 1 && not tailWasDropped && not primaryOwnershipFailure) (dropErr "relevant")
+    Just QAtMostOne -> when (selectedHi > 1) (overuse "affine" nm (rOccs ++ resOccs))
+    Just QZero
+      | rootAccessHi > 0
+      , rootMoveHi == 0 ->
+          emit "E_QTT_ERASED_RUNTIME_USE" "kappa.quantity.unsatisfied"
+            (firstRuntimeOccAt (rOccs ++ resOccs) (rEvents ++ resEvents))
+            ("erased (quantity 0) binding '" <> nm <> "' is used at runtime (§12.2.1)")
     _ -> pure ()
   where
     nm = T.takeWhile (/= '#') (vKey vi)
@@ -2765,6 +3126,11 @@ closeVarWith mctx vi u = do
     occAt occs = case drop 1 occs of
       (sp : _) -> sp
       [] -> vSpan vi
+    firstRuntimeOccAt occs events =
+      fromMaybe (vSpan vi) (listToMaybe (occs ++ map eventSpan events))
+    eventSpan = \case
+      PMove _ sp -> sp
+      PBorrow _ sp -> sp
     dropErr kind =
       linearDrop Nothing (vSpan vi)
         ("'" <> nm <> "' (" <> kind <> ") may be dropped without being consumed (§12.2.5)")
@@ -3002,15 +3368,21 @@ pathsOverlap a b = a `isPrefixOf` b || b `isPrefixOf` a
 
 -- | Report a consuming use of @path@ under @vi@ while an overlapping
 -- borrow is live (§12.4).
-checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> Analysis ()
+checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> Analysis Bool
 checkBorrowOverlap env vi path sp =
   case filter conflict (eBorrows env) of
-    [] -> pure ()
+    [] -> pure False
     -- §3.1.1A line 602: a borrow/path/ownership diagnostic MUST include
     -- the borrow-introduction site and the failing later use. The live
     -- borrow that this consume conflicts with carries its @let &@
     -- introduction span; the consuming occurrence is @sp@.
-    ((_, _, bsp) : _) ->
+    ((_, _, bsp) : _) -> do
+      modify' $ \state ->
+        state
+          { sPrimaryOwnershipFailures =
+              Set.insert (vKey vi) $
+                Set.insert rootKey (sPrimaryOwnershipFailures state)
+          }
       emitRel "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" sp
         [ related RoleBorrowStart bsp "overlapping borrow introduced here"
         , related RoleConsumedHere sp "consumed here while the borrow is live"
@@ -3018,56 +3390,109 @@ checkBorrowOverlap env vi path sp =
         ("'" <> T.takeWhile (/= '#') (vKey vi)
            <> T.concat (map ("." <>) path)
            <> "' is consumed while a live borrow of an overlapping path exists (§12.4)")
+      pure True
   where
-    conflict (root, bpath, _) = root == vKey vi && pathsOverlap bpath path
+    -- This predicate is for an owning operation on @vi@. Borrow aliases are
+    -- rebased when their lock/fact footprint is formed ('borrowLocks'); they
+    -- are not owners that can be moved by following the alias. Rebasing the
+    -- operation here makes an alias's ordinary reads conflict with the very
+    -- permission that introduced it.
+    rootKey = vKey vi
+    conflict (root, bpath, _) = root == rootKey && pathsOverlap bpath path
+
+-- | Reject an operation that requires ownership through a borrowed place.
+-- This is distinct from 'checkBorrowOverlap': the operation has no owner to
+-- move, regardless of which other shared borrows happen to be live.
+rejectBorrowedConsume :: Env -> VInfo -> [Text] -> Span -> Text -> Analysis Bool
+rejectBorrowedConsume env vi path sp operation
+  | not (vBorrowed vi) = pure False
+  | otherwise = do
+      let (rootKey, _, _) = resolveBorrowAlias env (vi, path, sp)
+      modify' $ \state ->
+        state
+          { sPrimaryOwnershipFailures =
+              Set.insert (vKey vi) $
+                Set.insert rootKey (sPrimaryOwnershipFailures state)
+          }
+      emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
+        [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
+        , related RoleConsumedHere sp (operation <> " requires ownership here")
+        ]
+        ( "borrowed place '"
+            <> T.takeWhile (/= '#') (vKey vi)
+            <> T.concat (map ("." <>) path)
+            <> "' cannot be used by "
+            <> operation
+            <> " because it requires ownership (§12.3, §12.4)"
+        )
+      pure True
+
+-- | Check the two independent prerequisites for an ownership-requiring place
+-- operation: the selected place must not be a borrowed alias, and no live
+-- shared borrow may overlap it. Keeping this check at the place boundary makes
+-- direct fields, projector leaves, and computed inout targets agree.
+checkOwnedPlace :: Env -> VInfo -> [Text] -> Span -> Text -> Analysis Bool
+checkOwnedPlace env vi path sp operation = do
+  borrowed <- rejectBorrowedConsume env vi path sp operation
+  overlapped <-
+    if borrowed
+      then pure False
+      else checkBorrowOverlap env vi path sp
+  pure (not borrowed && not overlapped)
 
 -- | Usage of a consuming occurrence of a place (whole binding or a
 -- quantity-1 field path), checked against live borrows.
 movePlace :: Env -> VInfo -> [Text] -> Span -> Analysis Usage
-movePlace env vi path sp = do
+movePlace env vi path sp = fst <$> movePlaceChecked env vi path sp
+
+movePlaceChecked :: Env -> VInfo -> [Text] -> Span -> Analysis (Usage, Bool)
+movePlaceChecked env vi path sp = do
   when (zeroQuantity (vQ vi)) $
     emit "E_QTT_ERASED_RUNTIME_USE" "kappa.quantity.unsatisfied" sp
       ("erased (quantity 0) binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' is used at runtime (§12.2.1)")
-  checkBorrowOverlap env vi path sp
-  pure $ case path of
-    [] -> Map.singleton (vKey vi) (evUC (PMove [] sp) (oneUC sp))
-    fs ->
-      Map.fromList
-        [ (vKey vi <> "." <> T.intercalate "." fs, oneUC sp)
-        , (vKey vi, evUC (PMove fs sp) touchUC)
-        ]
+  admissible <- checkOwnedPlace env vi path sp "a consuming place use"
+  pure
+    ( if not admissible
+        then Map.singleton (vKey vi) (if null path then touchUC else pathTouchUC)
+        else case path of
+          [] -> Map.singleton (vKey vi) (evUC (PMove [] sp) (oneUC sp))
+          fs ->
+            Map.fromList
+              [ (vKey vi <> "." <> T.intercalate "." fs, oneUC sp)
+              , (vKey vi, evUC (PMove fs sp) pathTouchUC)
+              ]
+    , admissible
+    )
 
 -- | Is the one-segment path a quantity-1 field of the binding?
 isLinearPath :: VInfo -> [Text] -> Bool
 isLinearPath vi path = any (pathsOverlap path) (linPaths vi)
 
--- | Non-consuming touch usage for a borrowed/read place: the root is
--- touched and, for a field path, that field path too. Touching a linear
--- field path discharges its §13.2.1 consumption obligation for the
--- borrow's scope (a borrow is non-consuming but does demand the field).
-placeTouch :: VInfo -> [Text] -> Usage
-placeTouch vi path =
-  Map.fromListWith seqUC $
-    (vKey vi, touchUC)
-      : [ (vKey vi <> "." <> T.intercalate "." path, touchUC)
-        | not (null path)
-        ]
-
--- | 'placeTouch' over a list of resolved places (e.g. a projection's
--- yield leaves).
-placesTouch :: [(VInfo, [Text], Span)] -> Usage
-placesTouch places =
-  Map.unionsWith seqUC [placeTouch vi path | (vi, path, _) <- places]
-
--- | Like 'placeTouch', but the root touch carries a §12.4 'PBorrow'
--- place event (for borrow-after-consume tracking) at the borrow span.
+-- | Non-consuming borrowed access. The root carries a §12.4 'PBorrow' event;
+-- only an already-borrowed binding receives quantity demand. Borrowing an
+-- owned root suspends and then restores its ownership obligation.
 placeBorrow :: VInfo -> [Text] -> Span -> Usage
 placeBorrow vi path sp =
   Map.fromListWith seqUC $
-    (vKey vi, evUC (PBorrow path sp) touchUC)
+    ( vKey vi
+    , evUC
+        (PBorrow path sp)
+        ( if vBorrowed vi
+            then (borrowDemandUC sp) {ucPathTouches = pathMark}
+            else if null path then touchUC else pathTouchUC
+        )
+    )
       : [ (vKey vi <> "." <> T.intercalate "." path, touchUC)
         | not (null path)
         ]
+  where
+    pathMark = if null path then 0 else 1
+
+-- | Borrow all statically resolved leaves of a projection. Each leaf keeps
+-- the source binding's own borrowed-vs-owned distinction.
+placesBorrow :: [(VInfo, [Text], Span)] -> Usage
+placesBorrow places =
+  Map.unionsWith seqUC [placeBorrow vi path sp | (vi, path, sp) <- places]
 
 mutableReadUsage :: VInfo -> [Text] -> Span -> Analysis Usage
 mutableReadUsage vi path sp = do
@@ -3125,26 +3550,36 @@ mutableReadPayload vi path =
 -- ── Expression walk ──────────────────────────────────────────────────
 
 walkE :: Env -> Expr -> Analysis WalkResult
-walkE env expression = do
-  result <- walkERaw env expression
-  pure $ case Map.lookup (exprSpan expression) (eImplicitExpressionDemands env) of
-    Nothing -> result
-    Just quantity ->
-      let demand = coreQuantityDemand quantity
-       in result
-            { wrUsage = scaleU demand (wrUsage result)
-            , wrLatent = scaleU demand (wrLatent result)
-            }
+walkE env expression
+  | exprSpan expression `Set.member` eErasedExpressionSpans env = pure rNone
+  | otherwise = do
+      result <- walkERaw env expression
+      pure $ case Map.lookup (exprSpan expression) (eImplicitExpressionDemands env) of
+        Nothing -> result
+        Just quantity ->
+          let demand = coreQuantityDemand quantity
+           in result
+                { wrUsage = scaleU demand (wrUsage result)
+                , wrLatent = scaleU demand (wrLatent result)
+                }
 
 walkERaw :: Env -> Expr -> Analysis WalkResult
 walkERaw env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
     Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
     Just vi | zeroQuantity (vQ vi) && vStaticKind vi -> pure rNone
+    Just vi | vBorrowed vi ->
+      pure
+        ( WalkResult
+            (placeBorrow vi [] (nameSpan n))
+            (vEscape vi (nameSpan n))
+            (vLatent vi)
+        )
     Just vi -> do
       u <- movePlace env vi [] (nameSpan n)
       pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
     Nothing -> pure rNone
+  EQuantityBorrowMarker {} -> pure rNone
   EHole {} -> pure rNone
   EIntLit {} -> pure rNone
   EFloatLit {} -> pure rNone
@@ -3335,7 +3770,7 @@ walkERaw env e0 = case e0 of
     -- shared by lambda/thunk/lazy/section formation
     taintLatent envS u t sp = do
       let anonKeys = [vKey vi | vi <- Map.elems (eVars envS), vAnonBorrow vi]
-          captured = or [ucTouched c | (k, c) <- Map.toList u, k `elem` anonKeys]
+          captured = or [ucMayTouch c | (k, c) <- Map.toList u, k `elem` anonKeys]
       pure (WalkResult Map.empty (if captured || isJust t then Just sp else Nothing) u)
     latentOf envS operand sp = do
       r <- walkE envS {eLatentCurrentReadEscape = True} operand
@@ -3414,52 +3849,53 @@ explicitExprs = mapMaybe $ \case
   ArgExplicit e -> Just e
   _ -> Nothing
 
--- | Comprehension usage (§20.10.5): each generator/join source is
--- evaluated exactly once for the pipeline, so a one-shot source place
--- is consumed once per comprehension. All other clause expressions run
--- once per row; demands on outer variables are scaled by the pipeline
--- cardinality, approximated as [0, ω]. Row binders introduced by
--- clause patterns are tracked separately by elaboration (§20.10.4) and
--- enter this analysis untracked.
+-- | Comprehension usage (§20.10.5). The initial empty row has cardinality
+-- @[1,1]@. Every clause expression is scaled by the current pipeline interval;
+-- a generator/join can then change that interval to @[0,omega]@. Row binders
+-- introduced by clause patterns are tracked separately by elaboration
+-- (§20.10.4) and enter this analysis untracked.
 walkComp :: Env -> [CompClause] -> CompYield -> Span -> Analysis WalkResult
-walkComp env0 cls0 y sp = go env0 cls0 []
+walkComp env0 cls0 y sp = go env0 cls0 [] (1, Just 1)
   where
-    go env [] acc = do
-      yu <- scaled env (case y of YieldExpr e -> [e]; YieldPair k v -> [k, v])
+    go env [] acc cardinality = do
+      yu <- scaled cardinality env (case y of YieldExpr e -> [e]; YieldPair k v -> [k, v])
       pure (rPlain (foldr seqU yu acc))
-    go env (c : rest) acc = case c of
+    go env (c : rest) acc cardinality = case c of
       CFor _ _ pat src _ -> do
-        su <- once env src
+        su <- scaled cardinality env [src]
         env' <- bindPat env pat
-        go env' rest (su : acc)
+        go env' rest (su : acc) (0, Nothing)
       CLet _ pat _ rhs _ -> do
-        u <- scaled env [rhs]
+        u <- scaled cardinality env [rhs]
         env' <- bindPat env pat
-        go env' rest (u : acc)
-      CIf e -> withScaled env rest acc [e]
-      COrderBy ks _ -> withScaled env rest acc (map snd ks)
-      CSkip e _ -> withScaled env rest acc [e]
-      CTake e _ -> withScaled env rest acc [e]
-      CDistinct me _ -> withScaled env rest acc (maybeToList me)
+        go env' rest (u : acc) cardinality
+      CIf e -> withScaled env rest acc cardinality (zeroLower cardinality) [e]
+      COrderBy ks _ -> withScaled env rest acc cardinality cardinality (map snd ks)
+      CSkip e _ -> withScaled env rest acc cardinality (zeroLower cardinality) [e]
+      CTake e _ -> withScaled env rest acc cardinality (zeroLower cardinality) [e]
+      CDistinct me _ -> withScaled env rest acc cardinality cardinality (maybeToList me)
       CGroupBy k aggs n _ -> do
-        u <- scaled env (k : concatMap (\(_, e, mu) -> e : maybeToList mu) aggs)
+        u <- scaled cardinality env (k : concatMap (\(_, e, mu) -> e : maybeToList mu) aggs)
         env' <- bindName env n
-        go env' rest (u : acc)
+        go env' rest (u : acc) cardinality
       CJoin _ pat src cond mInto _ -> do
-        su <- once env src
+        su <- scaled cardinality env [src]
         envP <- bindPat env pat
-        cu <- scaled envP [cond]
+        cu <- scaled (0, Nothing) envP [cond]
         env' <- case mInto of
           Just n -> bindName env n
           Nothing -> pure envP
-        go env' rest (su : cu : acc)
-    withScaled env rest acc es = do
-      u <- scaled env es
-      go env rest (u : acc)
-    once env src = fst . flatR <$> walkE env src
-    scaled env es = do
+        go env' rest (su : cu : acc) (0, Nothing)
+    withScaled env rest acc demand nextCardinality es = do
+      u <- scaled demand env es
+      go env rest (u : acc) nextCardinality
+    scaled demand env es = do
       rs <- mapM (walkE env) es
-      pure (scaleU (0, Nothing) (foldr (seqU . fst . flatR) Map.empty rs))
+      let u = foldr (seqU . fst . flatR) Map.empty rs
+      pure $ case demand of
+        (1, Just 1) -> u
+        _ -> repeatU demand u
+    zeroLower (_, hi) = (0, hi)
     bindPat env pat = do
       shadow <- forM (patVars pat) $ \nm -> do
         k <- freshKey nm
@@ -3510,6 +3946,7 @@ lamBind env (b, ms) = case bName b of
                   , vDeps = deps
                   , vPathDeps = pathDeps
                   , vOpenTail = openTail
+                  , vStorageDuplicable = maybe False (typeProvesStorageDuplicable env) ty
                   , vStoredTypeText = renderExprSrc <$> ty
                   , vStoredTypeExpr = ty
                   }
@@ -3550,6 +3987,9 @@ walkMatch env scrut cases = do
               { vQ = mq <|> vQ checked
               , vSpan = if inheritedBorrow then borrowOrigin else vSpan checked
               , vBorrowed = inheritedBorrow || vBorrowed checked
+              , vStorageDuplicable =
+                  vStorageDuplicable checked
+                    || maybe False (typeProvesStorageDuplicable env) mty
               , vStoredTypeText = renderExprSrc <$> mty
               , vStoredTypeExpr = mty
               }
@@ -3692,6 +4132,31 @@ patVars = \case
     [nameText n | Just n <- [mb]] ++ [nameText n | Just n <- [mrest]]
   _ -> []
 
+-- | Relative source-place paths inherited by binders of a borrowed pattern.
+-- Record patterns are path-sensitive (§12.4); pattern forms without a portable
+-- field identity conservatively retain the whole source path.
+borrowedPatternPaths :: Pattern -> [(Text, FieldPath)]
+borrowedPatternPaths = \case
+  PVar n -> [(nameText n, [])]
+  PAs n p -> (nameText n, []) : borrowedPatternPaths p
+  PRecord fs rest _ ->
+    concatMap fieldPaths fs
+      ++ [(nameText n, []) | Just (PatRestBind n) <- [rest]]
+    where
+      fieldPaths (_, f, Nothing) = [(nameText f, [nameText f])]
+      fieldPaths (_, f, Just p) =
+        [(nm, nameText f : path) | (nm, path) <- borrowedPatternPaths p]
+  PCtorNamed _ fs _ ->
+    concat
+      [ [(nm, nameText f : path) | (nm, path) <- borrowedPatternPaths p]
+      | (f, Just p) <- fs
+      ]
+  PTyped p _ _ -> borrowedPatternPaths p
+  POr (p : _) _ -> borrowedPatternPaths p
+  POpChain p chain _ ->
+    borrowedPatternPaths p ++ concatMap (borrowedPatternPaths . snd) chain
+  p -> [(nm, []) | nm <- patVars p]
+
 -- | The source identities of variables bound by one pattern. Unlike
 -- 'patVars', this retains spans so the usage pass can consume the checker's
 -- resolved slot quantities instead of reconstructing handler contracts from
@@ -3742,22 +4207,33 @@ checkRecordRest _ _ _ = pure ()
 walkPatch :: Env -> Expr -> [PatchItem] -> Span -> Analysis WalkResult
 walkPatch env base items sp = do
   vu <- walks (concatMap patchExprs items)
-  usage <- case base of
-    EVar n
-      | Just vi <- Map.lookup (nameText n) (eVars env) -> do
-          let patched = concatMap patchPaths items
-          -- Replacing patched paths conflicts with any live borrow of the
-          -- record; the residue (and every moved-but-unpatched quantity-1
-          -- path) is consumed by the patch.  If the receiver itself is
-          -- borrowed, those implicit omitted-field moves are illegal: the
-          -- rebuilt owned result cannot take a linear payload out of a borrow.
-          checkBorrowOverlap env vi [] sp
-          checkBorrowedPatchFillers vi patched sp
-          -- §13.2.5 evaluates every patch RHS before canonical full-record
-          -- reconstruction consumes the old root. This permits reads such as
-          -- @c.{ value = c.value + 1 }@ while making any later read of @c@
-          -- a use-after-consume.
-          pure (vu `seqU` patchRootUsage vi patched sp)
+  usage <- case placeOf env base of
+    Just (vi, basePath, _) -> do
+          let patched = map (basePath ++) (concatMap (patchPaths env) items)
+              view = sliceVInfo vi basePath
+              requiresOwnership =
+                ( if null basePath
+                    then nonDupQuantity (vQ view) || vNonDupValue view
+                    else isNonDupPath vi basePath
+                )
+                  || not (null (nonDupFields view))
+          -- §13.2.5 is a full-record reconstruction. A borrowed or otherwise
+          -- duplicable base is read to build a fresh record; an affine/linear
+          -- or non-duplicable base transfers its omitted components and is an
+          -- owning operation that must respect live-borrow locks.
+          checkBorrowedPatchFillers env vi basePath patched sp
+          baseUsage <-
+            if vBorrowed vi || not requiresOwnership
+              then pure (placeBorrow vi basePath sp)
+              else do
+                admissible <- checkOwnedPlace env vi basePath sp "record reconstruction"
+                pure $
+                  if admissible
+                    then patchRootUsageAt vi basePath patched sp
+                    else Map.singleton (vKey vi) (if null basePath then touchUC else pathTouchUC)
+          -- Every RHS is evaluated before the canonical reconstruction reads
+          -- or transfers the old root.
+          pure (vu `seqU` baseUsage)
     _ -> do
       bu <- fst . flatR <$> walkE env base
       pure (bu `seqU` vu)
@@ -3768,49 +4244,86 @@ walkPatch env base items sp = do
       PatchExtend _ v -> [v]
       PatchSection _ v -> [v]
       PatchPun _ -> []
-    patchPaths = \case
+    patchPaths env' = \case
       PatchUpdate path _ -> [[nameText n | (_, n) <- path] | not (null path)]
       PatchExtend n _ -> [[nameText n]]
-      PatchSection {} -> []
+      PatchSection recv _ -> sectionPatchPaths env' recv
       PatchPun n -> [[nameText n]]
     walks es = do
       rs <- mapM (walkE env) es
       pure (foldr (seqU . fst . flatR) Map.empty rs)
 
 patchRootUsage :: VInfo -> [FieldPath] -> Span -> Usage
-patchRootUsage vi patched sp =
+patchRootUsage vi patched sp = patchRootUsageAt vi [] patched sp
+
+-- | Ownership transfer for the omitted residue of a full reconstruction.
+-- Whole-root patches retain the historical @.~@ residue key. A projected
+-- patch records only the omitted linear descendants and the chronological
+-- move of the selected prefix; explicitly replaced descendants are not
+-- falsely counted as transferred.
+patchRootUsageAt :: VInfo -> FieldPath -> [FieldPath] -> Span -> Usage
+patchRootUsageAt vi basePath patched sp =
   Map.fromList
-    ( (vKey vi <> ".~", oneUC sp)
-        : (vKey vi, evUC (PMove [] sp) touchUC)
-        : reconsumed
+    ( residue
+        ++ [(vKey vi, evUC (PMove basePath sp) (if null basePath then touchUC else pathTouchUC))]
+        ++ reconsumed
     )
   where
+    residue =
+      [ (vKey vi <> ".~", oneUC sp)
+      | null basePath
+      ]
     reconsumed =
       [ (pathKey vi p, oneUC sp)
       | p <- linPaths vi
-      , not (any (pathsOverlap p) patched)
+      , basePath `isPrefixOf` p
+      , not (any (`isPrefixOf` p) patched)
       ]
 
-checkBorrowedPatchFillers :: VInfo -> [FieldPath] -> Span -> Analysis ()
-checkBorrowedPatchFillers vi patched sp =
-  when (vBorrowed vi) $
-    forM_ copiedLinearPaths $ \p ->
+checkBorrowedPatchFillers :: Env -> VInfo -> FieldPath -> [FieldPath] -> Span -> Analysis ()
+checkBorrowedPatchFillers env vi basePath patched sp =
+  when (vBorrowed vi && not (null copiedNonDupPaths)) $ do
+    let (rootKey, _, _) = resolveBorrowAlias env (vi, basePath, sp)
+    modify' $ \state ->
+      state
+        { sPrimaryOwnershipFailures =
+            Set.insert (vKey vi) $
+              Set.insert rootKey (sPrimaryOwnershipFailures state)
+        }
+    forM_ copiedNonDupPaths $ \p ->
       emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
         [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
         , related RoleConsumedHere sp "implicitly copied by this record patch"
         ]
-        ( "record patch would move the quantity-1 field '"
+        ( "record patch would copy the non-duplicable field '"
             <> T.takeWhile (/= '#') (vKey vi)
             <> "."
             <> pathText p
             <> "' out of a borrowed root (§12.3, §12.4, §13.2.5)"
         )
   where
-    copiedLinearPaths =
+    copiedNonDupPaths =
       [ p
-      | p <- linPaths vi
-      , not (any (pathsOverlap p) patched)
+      | p <- nonDupFields vi
+      , basePath `isPrefixOf` p
+      -- A patch removes this filler only when it replaces the protected field
+      -- itself or an ancestor. Updating a descendant reconstructs the
+      -- protected field and therefore still copies its omitted residue.
+      , not (any (`isPrefixOf` p) patched)
       ]
+
+-- | Static write paths selected by a projection-section update. Selector
+-- projections carry their identity and yielded paths in 'ProjUse'; accessor
+-- bundles conservatively yield the whole root. Unknown sections return no
+-- proof and therefore cannot suppress a protected filler diagnostic.
+sectionPatchPaths :: Env -> Expr -> [FieldPath]
+sectionPatchPaths env = \case
+  EReceiverSection (DotName n : rest) _ _ ->
+    let headExpr = foldl EDot (EVar n) rest
+     in case staticPathHead env headExpr >>= (`Map.lookup` eProjs env) of
+          Just pu -> map snd (puYields pu)
+          Nothing -> []
+  _ -> []
 
 -- ── Applications ─────────────────────────────────────────────────────
 
@@ -4000,13 +4513,90 @@ typeMayContainPositive = typeMayContainQuantity positiveLowerQuantity
 typeMayContainNonDuplicable :: Env -> Expr -> Bool
 typeMayContainNonDuplicable = typeMayContainQuantity nonDupQuantity
 
+data StorageDuplicability
+  = StorageDuplicable
+  | StorageNonDuplicable
+  | StorageDuplicabilityUnknown
+  deriving (Eq, Show)
+
+-- | Positive storage evidence for a read that must materialize a second owned
+-- value.  Absence of a non-duplicable quantity is not itself evidence: opaque
+-- heads, abstract type variables, open rows, and depth-exhausted summaries stay
+-- unknown and therefore fail closed.
+typeStorageDuplicability :: Env -> Expr -> StorageDuplicability
+typeStorageDuplicability env ty
+  | typeStorageFactsUnknown env ty = StorageDuplicabilityUnknown
+  | typeMayContainNonDuplicable env ty = StorageNonDuplicable
+  | otherwise = StorageDuplicable
+
+typeProvesStorageDuplicable :: Env -> Expr -> Bool
+typeProvesStorageDuplicable env ty =
+  typeStorageDuplicability env ty == StorageDuplicable
+
+attachTypeStorageDuplicability :: Env -> VInfo -> VInfo
+attachTypeStorageDuplicability env vi =
+  vi
+    { vStorageDuplicable =
+        vStorageDuplicable vi
+          || maybe False (typeProvesStorageDuplicable env) (vStoredTypeExpr vi)
+    }
+
+-- | Positive occurrence authority inherited from a checked record field.
+-- Omitted quantity is the specified omega default; explicit omega/>=1 fields
+-- are reusable. A borrowed root itself never gains this authority merely from
+-- its classifier or from the quantity of the borrowed view.
+declaredPathStorageDuplicable :: Env -> VInfo -> FieldPath -> Bool
+declaredPathStorageDuplicable env vi [] =
+  selectedTypeStorageDuplicable env vi []
+declaredPathStorageDuplicable env vi path =
+  declaredOccurrenceStorageDuplicable env vi path
+    && selectedTypeStorageDuplicable env vi path
+
+declaredOccurrenceStorageDuplicable :: Env -> VInfo -> FieldPath -> Bool
+declaredOccurrenceStorageDuplicable _ _ [] = False
+declaredOccurrenceStorageDuplicable env vi path =
+  occurrencePathStorageDuplicable vi path
+    || maybe False (go path) (vStoredTypeExpr vi)
+  where
+    go [] _ = True
+    go (field : rest) ty =
+      case find ((== field) . fsName) (recordShapeFieldsWith (eRecordShapes env) ty) of
+        Nothing -> False
+        Just shape
+          | not (quantityPermitsOwnedCopy (fsQuantity shape)) -> False
+          | null rest -> True
+          | Just fieldType <- fsType shape -> go rest fieldType
+          | otherwise -> False
+
+selectedTypeStorageDuplicable :: Env -> VInfo -> FieldPath -> Bool
+selectedTypeStorageDuplicable env vi path =
+  case vStoredTypeExpr vi >>= valueTypeAtPath env path of
+    Just ty -> typeProvesStorageDuplicable env ty
+    Nothing -> null path && vStorageDuplicable vi
+
+occurrencePathStorageDuplicable :: VInfo -> FieldPath -> Bool
+occurrencePathStorageDuplicable vi path =
+  any ((== path) . fst) relevant
+    && all (quantityPermitsOwnedCopy . snd) relevant
+  where
+    relevant = [(fieldPath, quantity) | (fieldPath, quantity) <- vPathFields vi, fieldPath `isPrefixOf` path]
+
+quantityPermitsOwnedCopy :: Maybe Quantity -> Bool
+quantityPermitsOwnedCopy = \case
+  Nothing -> True
+  Just QOmega -> True
+  Just QAtLeastOne -> True
+  _ -> False
+
 typeMayContainQuantity :: (Maybe Quantity -> Bool) -> Env -> Expr -> Bool
 typeMayContainQuantity qPred env ty =
   case typeStorageQuantityWithGroups (eDuplicableStorageHeads env) (eUnaryStorageHeads env) (eBinaryStorageHeads env) (eRecordShapes env) (eCtorGroupsByType env) ty of
     Just q -> qPred (Just q)
-    Nothing ->
-      typeStorageFactsUnknown env ty
-        && (qPred (Just QOne) || qPred (Just QAtMostOne))
+    -- Unknown storage is not positive evidence of a linear/affine component.
+    -- It remains unknown in 'typeStorageDuplicability', which is sufficient to
+    -- reject a borrowed-to-owned materialization without inventing a positive
+    -- lower-bound obligation for every abstract result type.
+    Nothing -> False
 
 typeStorageFactsUnknown :: Env -> Expr -> Bool
 typeStorageFactsUnknown env = go (0 :: Int) Set.empty
@@ -4015,7 +4605,9 @@ typeStorageFactsUnknown env = go (0 :: Int) Set.empty
       | depth > 32 = True
       | otherwise =
           case ty of
-            ERecordType {} -> False
+            ERecordType fields mtail _ ->
+              any (go (depth + 1) seen . rtfType) fields
+                || isJust mtail
             EAscription e _ _ -> go depth seen e
             ECaptures e _ _ -> go depth seen e
             EVariant arms mtail _ ->
@@ -4052,7 +4644,7 @@ typeStorageFactsUnknown env = go (0 :: Int) Set.empty
           let seen' = Set.insert hd seen
            in any (ctorGroupUnknown (depth + 1) seen' ty) (Map.findWithDefault [] hd (eCtorGroupsByType env))
       | Just _ <- typePathHead ty =
-          False
+          True
       | otherwise =
           go depth seen f
 
@@ -4079,130 +4671,26 @@ knownDuplicableStorageHead env hd =
 
 knownDuplicableStorageHeadIn :: Set.Set Text -> Text -> Bool
 knownDuplicableStorageHeadIn heads hd =
-  hd `Set.member` heads || isKnownDuplicableStorageHead hd
+  hd `Set.member` heads
 
 standardUnaryStorageHeadIn :: Set.Set Text -> Text -> Bool
 standardUnaryStorageHeadIn heads hd =
-  hd `Set.member` heads || isKnownUnaryStorageHead hd
+  hd `Set.member` heads
 
 standardBinaryStorageHeadIn :: Set.Set Text -> Text -> Bool
 standardBinaryStorageHeadIn heads hd =
-  hd `Set.member` heads || isKnownBinaryStorageHead hd
+  hd `Set.member` heads
 
-sameTypeHead :: Maybe Text -> Maybe Text -> Bool
-sameTypeHead (Just a) (Just b) = canonicalPreludeHead a == canonicalPreludeHead b
-sameTypeHead _ _ = False
-
-canonicalPreludeHead :: Text -> Text
-canonicalPreludeHead t =
-  fromMaybe t (T.stripPrefix "std.prelude." t)
-
-isKnownDuplicableStorageHead :: Text -> Bool
-isKnownDuplicableStorageHead t =
-  t
-    `elem`
-      [ -- Universe spellings are parser/kernel syntax, not user-definable
-        -- storage type constructors imported through a module scope.
-        "Type"
-      , "Type0"
-      , "Type1"
-      , "std.prelude.Type"
-      , "std.prelude.Type0"
-      , "std.prelude.Type1"
-      , "std.prelude.Unit"
-      , "std.prelude.Void"
-      , "std.prelude.Bool"
-      , "std.prelude.Ordering"
-      , "std.prelude.String"
-      , "std.prelude.Nat"
-      , "std.prelude.Int"
-      , "std.prelude.Integer"
-      , "std.prelude.Float"
-      , "std.prelude.Double"
-      , "std.prelude.Byte"
-      , "std.prelude.Bytes"
-      , "std.prelude.UnicodeScalar"
-      , "std.prelude.Grapheme"
-      , "std.prelude.Region"
-      , "std.prelude.Duration"
-      , "std.prelude.Instant"
-      , "std.prelude.IO"
-      , "std.prelude.UIO"
-      , "std.prelude.STM"
-      , "std.prelude.Elab"
-      , "std.prelude.Eff"
-      , "std.prelude.Ref"
-      , "std.prelude.TVar"
-      , "std.prelude.Fiber"
-      , "std.prelude.FiberId"
-      , "std.prelude.FiberRef"
-      , "std.prelude.Promise"
-      , "std.prelude.Scope"
-      , "std.prelude.Monitor"
-      , "std.prelude.BorrowView"
-      , "std.prelude.Syntax"
-      , "std.prelude.SyntaxOrigin"
-      , "std.prelude.Symbol"
-      , "std.prelude.CoreCtx"
-      , "std.prelude.Core"
-      , "std.prelude.CoreEq"
-      , "std.prelude.Code"
-      , "std.prelude.ClosedCode"
-      , "std.prelude.InterruptTag"
-      , "std.prelude.InterruptCause"
-      , "std.prelude.DefectTag"
-      , "std.prelude.DefectInfo"
-      , "std.deriving.shape.ShapeAdtKind"
-      , "std.deriving.shape.ShapeVisibility"
-      , "std.deriving.shape.ShapeField"
-      , "std.deriving.shape.ShapeConstructor"
-      , "std.deriving.shape.AdtShape"
-      , "std.deriving.shape.RecordShape"
-      , "std.deriving.shape.BoundField"
-      , "std.deriving.shape.BoundFieldPair"
-      , "std.atomic.AtomicRef"
-      , "std.atomic.LoadOrder"
-      , "std.atomic.StoreOrder"
-      , "std.atomic.RmwOrder"
-      , "std.atomic.CasFailureOrder"
-      , "std.array.mutable.MutArray"
-      , "std.supervisor.SupervisorStrategy"
-      , "std.supervisor.RestartPolicy"
-      , "std.supervisor.RestartIntensity"
-      , "std.supervisor.Supervisor"
-      , "std.ffi.I8"
-      , "std.ffi.I16"
-      , "std.ffi.I32"
-      , "std.ffi.I64"
-      , "std.ffi.U8"
-      , "std.ffi.U16"
-      , "std.ffi.U32"
-      , "std.ffi.U64"
-      , "std.ffi.Isize"
-      , "std.ffi.Usize"
-      , "std.ffi.F32"
-      , "std.ffi.F64"
-      , "std.ffi.RawPtr"
-      , "std.ffi.OpaqueHandle"
-      ]
-
-isKnownUnaryStorageHead :: Text -> Bool
-isKnownUnaryStorageHead t =
-  t
-    `elem`
-      [ "std.prelude.List"
-      , "std.prelude.Option"
-      , "std.prelude.Cause"
-      , "std.atomic.CompareExchangeResult"
-      ]
-
-isKnownBinaryStorageHead :: Text -> Bool
-isKnownBinaryStorageHead t =
-  t
-    `elem`
-      [ "std.prelude.Result"
-      , "std.prelude.Exit"
-      ]
+-- | Compare type-head spellings only through the declarations selected by
+-- resolution. Exact source equality remains valid for local heads; distinct
+-- spellings are equivalent only when both map to the same global identity.
+sameResolvedTypeHead :: Map Text GName -> Maybe Text -> Maybe Text -> Bool
+sameResolvedTypeHead identities (Just left) (Just right) =
+  left == right
+    || case (Map.lookup left identities, Map.lookup right identities) of
+         (Just leftIdentity, Just rightIdentity) -> leftIdentity == rightIdentity
+         _ -> False
+sameResolvedTypeHead _ _ _ = False
 
 walkApp :: Env -> Expr -> [Arg] -> Analysis WalkResult
 walkApp env (EDot recv (DotName m)) args
@@ -4218,7 +4706,7 @@ walkApp env f args
   | Just (places, aux) <- projPlacesOf env (EApp f args) = do
       rs <- mapM (walkE env) aux
       let u = foldr (seqU . fst . flatR) Map.empty rs
-          touch = placesTouch places
+          touch = placesBorrow places
       pure (rPlain (u `seqU` touch))
 walkApp env f args = do
   hr <- walkE env f
@@ -4309,7 +4797,7 @@ walkApp env f args = do
   pure ((rPlain (foldr (seqU . wrUsage . fst) hu rs)) {wrTaint = taint})
 
 walkArg :: Env -> [PInfo] -> Bool -> Arg -> PInfo -> Analysis (WalkResult, [Fact])
-walkArg env params resultCarried arg p = case arg of
+walkArg env params resultCarried arg sourceP = case arg of
   ArgImplicit _ -> pure (rNone, []) -- erased position (§12.2.1)
   ArgNamedBlock items _ -> do
     rs <- forM items $ \(n, me) -> do
@@ -4331,57 +4819,35 @@ walkArg env params resultCarried arg p = case arg of
         (,[]) <$> walkE env e
     | zeroQuantity (pQuantity p) -> pure (rNone, []) -- erased argument
     | pBorrow p -> borrowish e
-    -- a projection call argument touches its yield leaves: a move per
-    -- leaf under a consuming parameter (§30.2.2.3 MoveProjector), a
-    -- call-scoped borrow otherwise (ReadProjector)
-    | consuming
-    , Just (places, aux) <- projPlacesOf env e -> do
-        rs <- mapM (walkE env) aux
-        us <- mapM (\(vi, path, psp) -> movePlace env vi path psp) places
-        let u = foldr seqU (foldr (seqU . fst . flatR) Map.empty rs) us
-        pure
-          ( rPlain u
-          , [ FMove k fp fsp
-            | pl@(_, _, psp) <- places
-            , (k, fp, fsp) <- placeFootprintLocks env pl psp
-            ]
-          )
+    -- A non-borrow parameter receives an owned value. Each selected projector
+    -- leaf is a MoveProjector only when its storage facts prove that a
+    -- non-consuming read would duplicate a non-duplicable value; otherwise it
+    -- is a ReadProjector (§30.2.2.3). Quantity and access mode are independent,
+    -- so this applies to affine demand as well as positive-lower demand.
     | Just (places, aux) <- projPlacesOf env e -> do
         rs <- mapM (walkE env) aux
-        let u = foldr (seqU . fst . flatR) Map.empty rs
-            touch = placesTouch places
+        used <- mapM (\(vi, path, psp) -> ownedArgumentPlace vi path psp) places
+        let u =
+              foldr
+                (seqU . fst)
+                (foldr (seqU . fst . flatR) Map.empty rs)
+                used
         pure
-          ( rPlain (u `seqU` touch)
-          , [ FBorrow k fp fsp
-            | pl@(_, _, psp) <- places
-            , (k, fp, fsp) <- placeFootprintLocks env pl psp
-            ]
+          ( rPlain u
+          , concatMap snd used
           )
     | consuming
     , Just (vi, [], sp) <- placeOf env e
-    , vBorrowed vi -> do
-        case vEscape vi sp of
-          Just tsp | resultCarried ->
-            pure (WalkResult (Map.singleton (vKey vi) touchUC) (Just tsp) Map.empty, [])
-          _ -> do
-            -- §3.1.1A line 602: relate the borrow-introduction site (the
-            -- borrowed binding's binder) and the failing consuming use.
-            emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
-              [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
-              , related RoleConsumedHere sp "consumed by a quantity-1 parameter here"
-              ]
-              ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
-            pure (rPlain (Map.singleton (vKey vi) touchUC), [])
-    -- a direct place argument is counted at the parameter's demand
-    -- interval (§12.2.2); a definite consume is a move fact (§12.4)
-    | Just (vi, path, sp) <- placeOf env e
-    , null path || isLinearPath vi path -> do
+    , vBorrowed vi
+    , Just tsp <- vEscape vi sp
+    , resultCarried ->
+        pure (WalkResult (Map.singleton (vKey vi) touchUC) (Just tsp) Map.empty, [])
+    -- A direct place is read or moved according to the selected storage facts,
+    -- then counted at the parameter's complete demand interval (§12.2.2).
+    | Just (vi, path, sp) <- placeOf env e -> do
         let d = pDemand p
             escapeT = vEscape vi sp
-        u <-
-          if fst d >= 1
-            then movePlace env vi path sp
-            else pure (placeUse vi path sp)
+        (u, facts) <- ownedArgumentPlace vi path sp
         let latent = scaleU d (vLatent vi)
         checkCaptureBound p escapeT sp
         -- a tainted closure binding may flow only into an at-most-once
@@ -4401,21 +4867,7 @@ walkArg env params resultCarried arg p = case arg of
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
           _ -> pure ()
         pure
-          ( WalkResult (scaleU d u `seqU` latent) escapeT Map.empty
-          , [ FMove k fp msp
-            | fst d >= 1
-            , (k, fp, msp) <- placeFootprintLocks env (vi, path, sp) sp
-            ]
-          )
-    -- a definite consume of a deeper (non-linear) path still conflicts
-    -- with a live borrow of an overlapping path (§12.4)
-    | consuming
-    , Just (vi, path, sp) <- placeOf env e -> do
-        checkBorrowOverlap env vi path sp
-        pure
-          ( rPlain (Map.singleton (vKey vi) touchUC)
-          , [FMove k fp msp | (k, fp, msp) <- placeFootprintLocks env (vi, path, sp) sp]
-          )
+          (WalkResult (u `seqU` latent) escapeT Map.empty, facts)
     | otherwise -> do
         WalkResult u t l <- walkE env e
         checkCaptureBound p t (exprSpan e)
@@ -4451,19 +4903,59 @@ walkArg env params resultCarried arg p = case arg of
                 pure (rPlain (u' `seqU` l'), [])
           _ -> pure (WalkResult (u' `seqU` l') t Map.empty, [])
   where
+    p = case arg of
+      ArgExplicit expression ->
+        case Map.lookup (exprSpan expression) (eBorrowedArgumentDemands env) of
+          Just quantity ->
+            sourceP
+              { pQuantity = coreQuantity quantity
+              , pBorrow = True
+              , pKnown = True
+              }
+          Nothing -> sourceP
+      _ -> sourceP
     consuming = positiveLowerQuantity (pQuantity p)
-    placeUse vi path sp =
-      case path of
-        [] -> Map.singleton (vKey vi) (oneUC sp)
-        fs ->
-          Map.fromList
-            [ (vKey vi <> "." <> T.intercalate "." fs, oneUC sp)
-            , (vKey vi, touchUC)
-            ]
+    ownedArgumentPlace vi path sp
+      -- A checked omega/>=1 storage occurrence may be copied before an owned
+      -- transfer only when the selected payload is also proved duplicable.
+      | vBorrowed vi
+      , not (null path)
+      , declaredPathStorageDuplicable env vi path =
+          pure
+            ( scaleU (pDemand p) (placeRead vi path sp)
+            , []
+            )
+      | consuming || placeRequiresOwnership vi path = do
+          (moved, admissible) <- movePlaceChecked env vi path sp
+          pure
+            ( scaleU (pDemand p) moved
+            , [ FMove k fp msp
+              | admissible
+              , (k, fp, msp) <- placeFootprintLocks env (vi, path, sp) sp
+              ]
+            )
+      -- A non-consuming owned read can also materialize a structurally proved
+      -- copyable concrete value. Abstract and opaque classifiers stay unknown.
+      | vBorrowed vi
+      , declaredPathStorageDuplicable env vi path =
+          pure
+            ( scaleU (pDemand p) (placeRead vi path sp)
+            , []
+            )
+      | vBorrowed vi = do
+          (moved, _) <- movePlaceChecked env vi path sp
+          pure (scaleU (pDemand p) moved, [])
+      | otherwise =
+          pure
+            ( scaleU (pDemand p) (placeRead vi path sp)
+            , []
+            )
+    placeRead vi path sp =
+      Map.singleton (vKey vi) (if null path then touchAtUC sp else pathTouchAtUC sp)
     borrowish e = case placeOf env e of
       Just (vi, path, sp) ->
           pure
-            ( rPlain (placeBorrow vi path sp)
+            ( rPlain (scaleBorrowDemandU (pDemand p) (placeBorrow vi path sp))
             , [FBorrow k fp bsp | (k, fp, bsp) <- placeFootprintLocks env (vi, path, sp) sp]
             )
       Nothing
@@ -4472,7 +4964,7 @@ walkArg env params resultCarried arg p = case arg of
         | Just (places, aux) <- projPlacesOf env e -> do
             rs <- mapM (walkE env) aux
             let u = foldr (seqU . fst . flatR) Map.empty rs
-                touch = placesTouch places
+                touch = scaleBorrowDemandU (pDemand p) (placesBorrow places)
             pure
               ( rPlain (u `seqU` touch)
               , [ FBorrow k fp bsp
@@ -4486,39 +4978,52 @@ walkArg env params resultCarried arg p = case arg of
     inoutish e isp =
       case placeOf env e of
         Just (vi, path, sp) -> do
-          checkBorrowOverlap env vi path isp
+          admissible <- checkOwnedPlace env vi path isp "an inout argument"
           pure
-            ( rPlain (placeBorrow vi path sp)
-            , [FInout k fp isp | (k, fp, _) <- placeFootprintLocks env (vi, path, sp) isp]
+            ( rPlain (scaleBorrowDemandU (pDemand p) (placeBorrow vi path sp))
+            , [ FInout k fp isp
+              | admissible
+              , (k, fp, _) <- placeFootprintLocks env (vi, path, sp) isp
+              ]
             )
         Nothing -> case varPlaceOf env e of
           Just (vi, path, _) -> do
-            checkBorrowOverlap env vi path isp
+            _ <- checkBorrowOverlap env vi path isp
             pure
               ( rPlain Map.empty
               , [FInout k fp isp | (k, fp, _) <- placeFootprintLocks env (vi, path, isp) isp]
               )
           Nothing -> case projPlacesOf env e of
             Just (places, aux) -> do
-              forM_ places $ \(vi, path, _) -> checkBorrowOverlap env vi path isp
+              checked <- forM places $ \pl@(vi, path, _) -> do
+                admissible <- checkOwnedPlace env vi path isp "a computed inout argument"
+                pure (pl, admissible)
               rs <- mapM (walkE env) aux
-              let u = foldr (seqU . fst . flatR) (placesTouch places) rs
+              let u =
+                    foldr
+                      (seqU . fst . flatR)
+                      (scaleBorrowDemandU (pDemand p) (placesBorrow places))
+                      rs
               pure
                 ( rPlain u
                 , [ FInout k fp isp
-                  | pl <- places
+                  | (pl, admissible) <- checked
+                  , admissible
                   , (k, fp, _) <- placeFootprintLocks env pl isp
                   ]
                 )
             Nothing -> case projVarPlacesOf env e of
               Just (places, aux) -> do
-                forM_ places $ \(vi, path, _) -> checkBorrowOverlap env vi path isp
+                checked <- forM places $ \pl@(vi, path, _) -> do
+                  admissible <- checkOwnedPlace env vi path isp "a computed inout argument"
+                  pure (pl, admissible)
                 rs <- mapM (walkE env) aux
                 let u = foldr (seqU . fst . flatR) Map.empty rs
                 pure
                   ( rPlain u
                   , [ FInout k fp isp
-                    | pl <- places
+                    | (pl, admissible) <- checked
+                    , admissible
                     , (k, fp, _) <- placeFootprintLocks env pl isp
                     ]
                   )
@@ -4573,7 +5078,7 @@ usageAnonBorrowIntro env u =
     , any (touches vi) (Map.toList u)
     ]
   where
-    touches vi (k, c) = ucTouched c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
+    touches vi (k, c) = ucMayTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
 
 -- | Resolve a callable introduced in the current lexical scope. This is kept
 -- separate from 'calleeDemandName', whose static-path contract intentionally
@@ -4711,6 +5216,7 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
           borrowed = isJust mb
           anon = mb == Just (BorrowMark Nothing)
           place = placeOf envc rhs
+          patternPaths = borrowedPatternPaths pat
       (u, taint, latent, brs) <-
         if borrowed
           then case place of
@@ -4719,24 +5225,28 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
             -- §13.2.1: plus the fields a dependent field's type
             -- mentions); borrowing through a borrowed alias locks the
             -- original
-            Just pl@(vi, plPath, plSp) ->
+            Just (vi, plPath, plSp) ->
               pure
                 ( placeBorrow vi plPath plSp
                 , Nothing
                 , Map.empty
                 , -- §3.1.1A: the borrow-introduction site is the @let &@
                   -- binding span; carry it on every lock this borrow opens
-                  [(rk, fp, bsp) | (rk, fp, _) <- borrowLocks envc pl]
+                  [ (rk, fp, bsp)
+                  | (_, relativePath) <- patternPaths
+                  , (rk, fp, _) <- borrowLocks envc (vi, plPath ++ relativePath, plSp)
+                  ]
                 )
             -- `let & v = proj places` locks every yield leaf for the
             -- binder's scope (§30.2.2.3 BorrowProjector)
             Nothing
               | Just (places, aux) <- projPlacesOf envc rhs -> do
                   rs <- mapM (walkE envc) aux
-                  -- borrowing a place touches the root and, for a linear
-                  -- field path, that field path too, so the §13.2.1
-                  -- field obligation is discharged for the borrow's scope
-                  let u' = foldr (seqU . fst . flatR) (placesTouch places) rs
+                  -- Borrowing a projected place records borrowed-view demand
+                  -- and locks the root plus dependent field paths.  It does not
+                  -- transfer an owned linear field or discharge that field's
+                  -- owned obligation (§12.3, §12.4, §13.2.1).
+                  let u' = foldr (seqU . fst . flatR) (placesBorrow places) rs
                   pure
                     ( u'
                     , Nothing
@@ -4802,16 +5312,41 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
           fdeps = maybe [] (resolveDeps (eFieldDeps envc)) mty
           annotatedPathDeps = maybe [] (recordPathDeps envc) mty
           wholeRhsBinder = bindsWholeRhs pat
+          borrowRootStorage
+            | not borrowed = Nothing
+            | Just (vi, basePath, _) <- place = Just (vi, basePath)
+            | otherwise =
+                -- §12.3 hidden-root elaboration: a borrowed pattern over a
+                -- non-place first stores the RHS in a fresh owned temporary.
+                -- Preserve the checker's result/storage summary for that
+                -- temporary so aliases of its fields do not lose their
+                -- duplicability and quantity facts.
+                Just (storageInfo envc "$borrow-root" bsp rhs, [])
+          borrowedStorage =
+            Map.fromList
+              [ (nm, sliceStoredVInfo envc rootInfo (basePath ++ relativePath))
+              | borrowed
+              , Just (rootInfo, basePath) <- [borrowRootStorage]
+              , (nm, relativePath) <- patternPaths
+              ]
           mk nm = do
             k <- freshKey nm
             let storedInfo
+                  | borrowed = Map.lookup nm borrowedStorage
                   | wholeRhsBinder, not borrowed, not (isWildBinder pat) =
                       Just $
                         case mty of
                           Just ty | isActionStorageType envc ty -> storedValueInfoFromType envc k bsp ty
                           _ -> storageInfo envc k bsp rhs
                   | otherwise = Nothing
-                q' = q `orElse` (storedInfo >>= vQ)
+                -- Borrowed aliases receive the interval written on their own
+                -- binder (or the ordinary omitted/default omega interval).
+                -- The source place's quantity is referent storage metadata,
+                -- already preserved by 'sliceStoredVInfo', not the view's
+                -- usage capability.
+                q'
+                  | borrowed = q
+                  | otherwise = q `orElse` (storedInfo >>= vQ)
                 pathFields' = maybe annotatedPathFields (mergePathQuantities annotatedPathFields . vPathFields) storedInfo
                 pathDeps' = maybe annotatedPathDeps (mergePathDeps annotatedPathDeps . vPathDeps) storedInfo
                 fields' =
@@ -4821,9 +5356,13 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
                     storedInfo
                 nonDupValue' = maybe False vNonDupValue storedInfo
                 nonDupFields' = maybe [] vNonDupFields storedInfo
+                deps' = maybe fdeps (\info -> vDeps info ++ [d | d <- fdeps, d `notElem` vDeps info]) storedInfo
                 openTail' = storedInfo >>= vOpenTail
                 storedTypeText' = storedInfo >>= vStoredTypeText
                 storedTypeExpr' = storedInfo >>= vStoredTypeExpr
+                storageDuplicable' =
+                  maybe False vStorageDuplicable storedInfo
+                    || maybe False (typeProvesStorageDuplicable envc) storedTypeExpr'
             pure
               ( nm
               , (plainV k bsp)
@@ -4837,7 +5376,8 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
                   , vPathDeps = pathDeps'
                   , vNonDupValue = nonDupValue'
                   , vNonDupFields = nonDupFields'
-                  , vDeps = fdeps
+                  , vStorageDuplicable = storageDuplicable'
+                  , vDeps = deps'
                   , vOpenTail = openTail'
                   , vStoredTypeText = storedTypeText'
                   , vStoredTypeExpr = storedTypeExpr'
@@ -4849,11 +5389,12 @@ walkBindsWithStorage walkRhs storageInfo env binds = go env binds
       -- a borrowed binding of a place is a place alias for §12.4 locks;
       -- a binding of a (partial) projection application is a descriptor
       let aliasEntries =
-            [ (vKey vi, (rk, fp))
+            [ (vKey boundVi, (rk, basePath ++ relativePath))
             | borrowed
             , Just pl <- [place]
-            , let (rk, fp, _) = resolveBorrowAlias envc pl
-            , (_, vi) <- bound
+            , let (rk, basePath, _) = resolveBorrowAlias envc pl
+            , (nm, boundVi) <- bound
+            , Just relativePath <- [lookup nm patternPaths]
             ]
           descEntries =
             [ (nm, du)
@@ -4985,6 +5526,7 @@ multishotOpsInExecutedExpr env = go
       YieldPair k v -> go k ++ go v
     go = \case
       EVar {} -> []
+      EQuantityBorrowMarker {} -> []
       ERefFacet {} -> []
       EVarRead {} -> []
       EHole {} -> []
@@ -5722,7 +6264,7 @@ walkItems env0 items0 = go env0 items0
         checkMultishotCapture envc osp opn paths = do
           let usesVar vi u =
                 any
-                  (\(k, c) -> ucTouched c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k))
+                  (\(k, c) -> ucMayTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k))
                   (Map.toList u)
               offenders =
                 [ (vi, kind)

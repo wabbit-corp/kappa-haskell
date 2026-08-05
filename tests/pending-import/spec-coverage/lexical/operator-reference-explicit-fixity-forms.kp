@@ -39,4 +39,4 @@ let main = do
     println ((infix -) 5 2)
     println (neg1 9)
     println (post1 6)
--- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'postfix' at start of declaration" at line 24; stdout mismatch: expected "42\n3\n-9\n7\n", got ""

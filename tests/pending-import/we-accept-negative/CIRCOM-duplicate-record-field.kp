@@ -33,6 +33,8 @@ data BadBus : Type =
 
 --! assertDiagnosticFamily error kappa.name.ambiguous
 
+-- STATUS: SPEC-ISSUE — constructor-declaration field-name uniqueness and its diagnostic are not normatively pinned; the cited SA-CIRCOM-06 text is not in Spec.md.
+
 -- NEGATIVE: record with three occurrences of the same field name.
 data TripleField : Type =
     TripleField

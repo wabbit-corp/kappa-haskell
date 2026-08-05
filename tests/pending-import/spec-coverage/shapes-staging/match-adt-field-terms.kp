@@ -42,4 +42,4 @@ let sumFields value =
 
 eqP2 : P2 -> P2 -> Bool
 let eqP2 l r = $(deriveEq @P2 '{ type P2 } '{ l } '{ r })
--- STATUS(a0497523): FAIL — BoundField/BoundFieldPair carry only 'field' (no 'term'/'left'/'right' members), so §22.5 callbacks cannot use bound-field syntax (E_UNRESOLVED_MEMBER)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 17; first error: E_UNRESOLVED_MEMBER "no member 'term' on this receiver (§7.3)" at line 25

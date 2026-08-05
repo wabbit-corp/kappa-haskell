@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+import lemmas.(Token, left, right, equality)
+
+proof : left = right
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveProviderUsed proof theorem-search

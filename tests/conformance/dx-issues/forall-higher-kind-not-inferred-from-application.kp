@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+-- An unannotated explicit forall binder infers its classifier from the whole
+-- quantified type. Here the BifunctorLike premise and applications infer the
+-- binary parametric kind of p without a repeated full kind annotation.
+
+module main
+
+trait BifunctorLike p =
+    mapBoth : forall a b c d. (a -> b) -> (c -> d) -> p a c -> p b d
+
+mapFirst : forall p a b c.
+    (@_ : BifunctorLike p) -> (a -> b) -> p a c -> p b c
+let mapFirst f value = mapBoth f (\x -> x) value

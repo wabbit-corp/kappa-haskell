@@ -39,6 +39,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Builtins
+import Kappa.AsyncException (throwToAsync)
 import Kappa.Core
 import Kappa.Eval
 import Kappa.Pretty (renderTerm, renderValueShallow)
@@ -183,18 +184,162 @@ fiberIdOf tid =
       let i = fromIntegral (Map.size m) + 1
        in (Map.insert tid i m, i)
 
--- | §18.1.12 masking: a per-fiber stack of the mask-ENTRY explicit depths recorded
--- by enclosing 'mask' calls. The head is the depth that held just before the
--- innermost active 'mask' raised it. The internal '__restore' primitive — which a
--- 'mask' body invokes through its 'restore' argument — peeks the head to reset the
--- explicit mask depth to that entry level for one sub-action. This mirrors the
--- runtime's OP_MASK/OP_RESTORE (rt.c), where 'restore' resets @mask_depth@ to the
--- mask-entry level for one subcomputation.
-{-# NOINLINE maskEntryDepths #-}
-maskEntryDepths :: IORef (Map.Map ThreadId [Int])
-maskEntryDepths = unsafePerformIO (newIORef Map.empty)
+-- | §18.1.12 / §32.2.5 explicit interruption state. Frames are capabilities,
+-- not depth snapshots: each frame has one owner fiber and a stable identity.
+-- Restoring suspends only the owner's topmost active frame; stale, repeated,
+-- wrong-order, and cross-fiber restores are inert. A child inherits only its
+-- parent's effective state as a non-restorable base.
+data InterpMaskState
+  = MaskInterruptible
+  | Masked
+  | MaskUninterruptible
+  deriving stock (Eq, Ord, Show)
 
--- | §18.1.12 / §32.2.5 EXPLICIT interruption-point delivery (interp fix).
+data InterpMaskFrame = InterpMaskFrame
+  { imfOwner :: !ThreadId
+  , imfState :: !InterpMaskState
+  , imfSuspended :: !Bool
+  }
+
+data InterpFiberMask = InterpFiberMask
+  { ifmBase :: !InterpMaskState
+  , ifmFrames :: ![Int]
+  }
+
+data InterpMaskRegistry = InterpMaskRegistry
+  { imrNextFrame :: !Int
+  , imrFibers :: !(Map.Map ThreadId InterpFiberMask)
+  , imrFrames :: !(Map.Map Int InterpMaskFrame)
+  }
+
+emptyInterpFiberMask :: InterpFiberMask
+emptyInterpFiberMask = InterpFiberMask MaskInterruptible []
+
+{-# NOINLINE interpMaskRegistry #-}
+interpMaskRegistry :: IORef InterpMaskRegistry
+interpMaskRegistry = unsafePerformIO $
+  newIORef (InterpMaskRegistry 0 Map.empty Map.empty)
+
+effectiveMaskState :: ThreadId -> InterpMaskRegistry -> InterpMaskState
+effectiveMaskState tid registry =
+  foldr max (ifmBase fiber) activeStates
+  where
+    fiber = Map.findWithDefault emptyInterpFiberMask tid (imrFibers registry)
+    activeStates =
+      [ imfState frame
+      | frameId <- ifmFrames fiber
+      , Just frame <- [Map.lookup frameId (imrFrames registry)]
+      , not (imfSuspended frame)
+      ]
+
+currentMaskState :: IO InterpMaskState
+currentMaskState = do
+  tid <- myThreadId
+  effectiveMaskState tid <$> atomicReadIORef' interpMaskRegistry
+
+pushMaskFrame :: InterpMaskState -> IO Int
+pushMaskFrame state = do
+  tid <- myThreadId
+  atomicModifyIORef' interpMaskRegistry $ \registry ->
+    let frameId = imrNextFrame registry
+        fiber = Map.findWithDefault emptyInterpFiberMask tid (imrFibers registry)
+        frame = InterpMaskFrame tid state False
+        registry' = registry
+          { imrNextFrame = frameId + 1
+          , imrFibers = Map.insert tid (fiber {ifmFrames = frameId : ifmFrames fiber})
+              (imrFibers registry)
+          , imrFrames = Map.insert frameId frame (imrFrames registry)
+          }
+     in (registry', frameId)
+
+popMaskFrame :: Int -> IO ()
+popMaskFrame frameId = do
+  tid <- myThreadId
+  ok <- atomicModifyIORef' interpMaskRegistry $ \registry ->
+    let fiber = Map.findWithDefault emptyInterpFiberMask tid (imrFibers registry)
+     in case (ifmFrames fiber, Map.lookup frameId (imrFrames registry)) of
+          (top : rest, Just frame)
+            | top == frameId && imfOwner frame == tid ->
+                let fibers' = Map.insert tid (fiber {ifmFrames = rest}) (imrFibers registry)
+                    frames' = Map.delete frameId (imrFrames registry)
+                 in (registry {imrFibers = fibers', imrFrames = frames'}, True)
+          _ -> (registry, False)
+  unless ok $
+    throwIO (KappaError (VLit (LitStr "interpreter mask frame stack corruption")))
+
+topmostActiveFrame :: InterpMaskRegistry -> InterpFiberMask -> Maybe Int
+topmostActiveFrame registry = go . ifmFrames
+  where
+    go [] = Nothing
+    go (frameId : rest) =
+      case Map.lookup frameId (imrFrames registry) of
+        Just frame | not (imfSuspended frame) -> Just frameId
+        _ -> go rest
+
+suspendMaskFrame :: Int -> IO Bool
+suspendMaskFrame frameId = do
+  tid <- myThreadId
+  atomicModifyIORef' interpMaskRegistry $ \registry ->
+    let fiber = Map.findWithDefault emptyInterpFiberMask tid (imrFibers registry)
+     in case Map.lookup frameId (imrFrames registry) of
+          Just frame
+            | imfOwner frame == tid
+            , not (imfSuspended frame)
+            , topmostActiveFrame registry fiber == Just frameId ->
+                let frames' = Map.insert frameId (frame {imfSuspended = True})
+                      (imrFrames registry)
+                 in (registry {imrFrames = frames'}, True)
+          _ -> (registry, False)
+
+reinstateMaskFrame :: Int -> IO ()
+reinstateMaskFrame frameId = do
+  tid <- myThreadId
+  atomicModifyIORef_' interpMaskRegistry $ \registry ->
+    case Map.lookup frameId (imrFrames registry) of
+      Just frame
+        | imfOwner frame == tid && imfSuspended frame ->
+            registry
+              { imrFrames = Map.insert frameId (frame {imfSuspended = False})
+                  (imrFrames registry)
+              }
+      _ -> registry
+
+withMaskFrame :: InterpMaskState -> IO a -> IO a
+withMaskFrame state action = do
+  frameId <- pushMaskFrame state
+  action `CE.finally` popMaskFrame frameId
+
+withRestoredMaskFrame :: Int -> IO a -> IO a
+withRestoredMaskFrame frameId action = do
+  suspended <- suspendMaskFrame frameId
+  if suspended
+    then
+      ( do
+          state <- currentMaskState
+          when (state == MaskInterruptible) $
+            interruptCheckpoint ((== MaskInterruptible) <$> currentMaskState)
+          action
+      ) `CE.finally` reinstateMaskFrame frameId
+    else action
+
+registerChildMask :: ThreadId -> InterpMaskState -> IO ()
+registerChildMask tid base =
+  atomicModifyIORef_' interpMaskRegistry $ \registry ->
+    registry
+      { imrFibers = Map.insert tid (InterpFiberMask base []) (imrFibers registry)
+      }
+
+unregisterFiberMask :: ThreadId -> IO ()
+unregisterFiberMask tid =
+  atomicModifyIORef_' interpMaskRegistry $ \registry ->
+    let fiber = Map.lookup tid (imrFibers registry)
+        ownedFrames = maybe [] ifmFrames fiber
+     in registry
+          { imrFibers = Map.delete tid (imrFibers registry)
+          , imrFrames = foldr Map.delete (imrFrames registry) ownedFrames
+          }
+
+-- | §18.1.12 / §32.2.5 explicit interruption-point delivery.
 --
 -- GHC's 'uninterruptibleMask_' / 'mask' correctly DEFER an async exception during
 -- an interruptible blocking op (e.g. 'threadDelay'), but they then deliver the held
@@ -209,16 +354,17 @@ maskEntryDepths = unsafePerformIO (newIORef Map.empty)
 --
 --   * the fiber body runs fully masked (uninterruptibleMask_ in 'spawnExit'), so
 --     GHC never auto-delivers anywhere;
---   * 'maskDepth' is an explicit per-fiber counter (0 == interruptible), bumped by
---     'uninterruptible'/'mask' and lowered by 'restore' for a sub-action;
---   * the interrupt primitive RECORDS the cause into 'pendingInterrupt' and throwTo
---     wakes the target out of any parked interruption point;
+--   * identity-bearing semantic frames determine the effective mask state;
+--   * the interrupt primitive RECORDS the cause into 'pendingInterrupt' and an
+--     asynchronous host 'throwTo' wakes the target out of a parked point without
+--     making @interruptFork@ wait for target acceptance;
 --   * an interruption point ('__sleepForNanos', '__awaitFiber', STM-retry park,
 --     'cede', the promise/monitor awaits) runs its blocking call through the
 --     fiber's stored GHC unmask so the wake lands, then DELIVERS (re-raises) the
---     pending interrupt only when maskDepth==0, and otherwise RE-PARKS (swallows
+--     pending interrupt only when interruptible, and otherwise RE-PARKS (swallows
 --     the wake, the flag stays set for the next genuine unmasked point);
---   * 'poll' delivers the pending interrupt UNCONDITIONALLY (§18.1.12), even masked.
+--   * 'poll' pierces ordinary masking but is inert under an effective
+--     uninterruptible mask.
 --
 -- This makes whole-body-masked computations drop a pending interrupt (no
 -- interruption point after the region exit), while a 'restore'd sub-action stays a
@@ -227,65 +373,57 @@ maskEntryDepths = unsafePerformIO (newIORef Map.empty)
 -- | A rank-2 GHC unmask (@forall a. IO a -> IO a@) boxed so it can live in a Map.
 newtype Unmask = Unmask (forall a. IO a -> IO a)
 
-{-# NOINLINE maskDepth #-}
-maskDepth :: IORef (Map.Map ThreadId Int)
-maskDepth = unsafePerformIO (newIORef Map.empty)
+data PendingInterruptState = PendingInterruptState
+  { pisCause :: !Value
+  , pisHostWakeAbsorbed :: !Bool
+  }
 
 {-# NOINLINE pendingInterrupt #-}
-pendingInterrupt :: IORef (Map.Map ThreadId Value)
+pendingInterrupt :: IORef (Map.Map ThreadId PendingInterruptState)
 pendingInterrupt = unsafePerformIO (newIORef Map.empty)
 
 {-# NOINLINE fiberUnmask #-}
 fiberUnmask :: IORef (Map.Map ThreadId Unmask)
 fiberUnmask = unsafePerformIO (newIORef Map.empty)
 
--- | This fiber's current mask depth (0 == interruptible).
-currentMaskDepth :: IO Int
-currentMaskDepth = do
-  tid <- myThreadId
-  Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
-
--- | Run @act@ with this fiber's mask depth raised by one (uninterruptible / mask
--- entry); restored on every exit path.  NO interrupt is delivered at the boundary.
-withMaskDepthBump :: IO a -> IO a
-withMaskDepthBump act = do
-  tid <- myThreadId
-  atomicModifyIORef_' maskDepth (Map.insertWith (+) tid 1)
-  act `CE.finally` atomicModifyIORef_' maskDepth (Map.update dec tid)
-  where
-    dec d =
-      let d' = d - 1
-       in if d' <= 0 then Nothing else Just d'
-
--- | Run @act@ with this fiber's mask depth SET to @d@ (a 'mask's @restore@ resets
--- to the mask-entry level for one sub-action); restored afterwards.
-withMaskDepthSet :: Int -> IO a -> IO a
-withMaskDepthSet d act = do
-  tid <- myThreadId
-  let setDepth depth =
-        if depth <= 0 then Map.delete tid else Map.insert tid depth
-  prev <- atomicModifyIORef' maskDepth $ \m ->
-    (setDepth d m, Map.findWithDefault 0 tid m)
-  act `CE.finally` atomicModifyIORef_' maskDepth (setDepth prev)
-
 -- | Record a pending interrupt cause for @tid@ (first request wins, §18.1.12).
 recordPending :: ThreadId -> Value -> IO ()
 recordPending tid cause =
   atomicModifyIORef_' pendingInterrupt $ \m ->
-    if Map.member tid m then m else Map.insert tid cause m
+    if Map.member tid m
+      then m
+      else Map.insert tid (PendingInterruptState cause False) m
+
+-- | Record that the target has accepted the host wake. This distinction avoids
+-- synchronously re-raising the logical request while its matching 'throwTo' is
+-- still in flight, which would otherwise permit duplicate late delivery.
+recordAbsorbedInterrupt :: ThreadId -> Value -> IO ()
+recordAbsorbedInterrupt tid cause =
+  atomicModifyIORef_' pendingInterrupt $ \m ->
+    case Map.lookup tid m of
+      Just pending ->
+        Map.insert tid (pending {pisHostWakeAbsorbed = True}) m
+      Nothing ->
+        Map.insert tid (PendingInterruptState cause True) m
 
 -- | This fiber's pending interrupt cause, if any.
-takePendingIfUnmasked :: IO (Maybe Value)
-takePendingIfUnmasked = do
+takeAbsorbedPendingWhen :: IO Bool -> IO (Maybe Value)
+takeAbsorbedPendingWhen allowed = do
   tid <- myThreadId
-  d <- Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
-  if d /= 0
+  canDeliver <- allowed
+  if not canDeliver
     then pure Nothing
     else
       atomicModifyIORef' pendingInterrupt $ \m ->
         case Map.lookup tid m of
           Nothing -> (m, Nothing)
-          Just c -> (Map.delete tid m, Just c)
+          Just pending
+            | pisHostWakeAbsorbed pending ->
+                (Map.delete tid m, Just (pisCause pending))
+          Just _ -> (m, Nothing)
+
+pendingRequestState :: ThreadId -> IO (Maybe PendingInterruptState)
+pendingRequestState tid = Map.lookup tid <$> atomicReadIORef' pendingInterrupt
 
 -- | §32.2.6 loop-backedge safe point.  A forked fiber runs FULLY MASKED at the
 -- GHC level (spawnExit: uninterruptibleMask_), so a 'throwTo' interrupt lands
@@ -294,14 +432,13 @@ takePendingIfUnmasked = do
 -- pending interrupt (the §32.2.6 interruption-observation gap, mirroring the
 -- native backends' in-place CK loop / native scalar loop before fix SP).  Calling
 -- this at each loop back-edge makes the interrupt observable there: if one is
--- pending AND the fiber is unmasked (mask_depth==0 — 'takePendingIfUnmasked'
--- returns Nothing when masked, so suppression holds) it is delivered by
+-- pending AND the fiber is interruptible it is delivered by
 -- re-raising it, exactly like the native KK_LOOP / krt2_safepoint back-edge.
 -- Keeps interp == native for "a tight loop IS interrupted" / "a masked loop is
 -- NOT interrupted mid-loop".
 --
 -- IMPORTANT (async-exception discipline): the request side ('interruptWait' /
--- '__interruptNoWait') does BOTH recordPending AND throwTo.  The throwTo is an
+-- '__interruptNoWait') does BOTH recordPending AND request a throwTo wake.  The wake is an
 -- ASYNC exception deferred by the fiber's uninterruptibleMask_.  If we merely
 -- 'throwIO' the recorded cause here, that deferred async throwTo stays in flight
 -- and later fires at the fiber's next interruptible op (e.g. the tryPutMVar in
@@ -316,46 +453,104 @@ takePendingIfUnmasked = do
 -- safe point absorbs the async throwTo and delivers iff unmasked, never leaving
 -- a dangling async exception.
 loopSafepoint :: IO ()
-loopSafepoint = interruptPoint (CE.allowInterrupt >> pure unitV) >> pure ()
+loopSafepoint =
+  interruptCheckpoint ((== MaskInterruptible) <$> currentMaskState)
+
+data SuppressedInterruptPoint
+  = RetrySuppressedPoint
+  | ReturnFromSuppressedPoint
 
 -- | A genuine interruption point: run the (parking) blocking @block@ through this
 -- fiber's GHC unmask so a 'throwTo' wake can land, then decide per §32.2.5:
 --
---   * unmasked (maskDepth==0)  => DELIVER: re-raise the pending interrupt;
---   * masked    (maskDepth>0)  => RE-PARK: swallow the wake and retry @block@
+--   * interruptible => DELIVER: re-raise the pending interrupt;
+--   * masked        => RE-PARK: swallow the wake and retry @block@
 --     (the flag stays set, so a later unmasked point delivers).  This is the
 --     native "masked parked sleep re-parks, does not fail/shorten" behavior.
 --
 -- A point with no fiber unmask registered (the main fiber, before any fork) simply
 -- runs @block@ unmasked-as-is and checks the flag after.
 interruptPoint :: IO Value -> IO Value
-interruptPoint block = do
+interruptPoint =
+  interruptPointWhen RetrySuppressedPoint
+    ((== MaskInterruptible) <$> currentMaskState)
+
+interruptCheckpoint :: IO Bool -> IO ()
+interruptCheckpoint allowed =
+  () <$ interruptPointWhen ReturnFromSuppressedPoint allowed
+    (CE.allowInterrupt >> pure unitV)
+
+interruptPointWhen
+  :: SuppressedInterruptPoint
+  -> IO Bool
+  -> IO Value
+  -> IO Value
+interruptPointWhen suppressed allowed block = do
   tid <- myThreadId
   um <- Map.lookup tid <$> atomicReadIORef' fiberUnmask
   case um of
-    Nothing -> block   -- main fiber: not a forked interruptible target
+    Nothing -> block >>= finishWithoutHost tid
     Just (Unmask unmask) -> go unmask
   where
     go unmask = do
       r <- try (unmask block) :: IO (Either Interrupt Value)
       case r of
-        Right v -> do
-          -- the block returned without an async wake; a pending interrupt that
-          -- arrived just before parking is still delivered here if unmasked
-          -- (await/STM-retry/sleep is an interruption point, §32.2.5).
-          mc <- takePendingIfUnmasked
-          case mc of
-            Just c -> throwIO (Interrupt c)
-            Nothing -> pure v
+        Right v -> finish unmask v
         Left (Interrupt cause) -> do
           tid <- myThreadId
-          recordPending tid cause
-          d <- currentMaskDepth
-          if d == 0
-            then do
-              atomicModifyIORef_' pendingInterrupt (Map.delete tid)
-              throwIO (Interrupt cause)        -- DELIVER at this interruption point
-            else go unmask                     -- RE-PARK (masked): retry the block
+          recordAbsorbedInterrupt tid cause
+          mc <- takeAbsorbedPendingWhen allowed
+          case mc of
+            Just pendingCause -> throwIO (Interrupt pendingCause)
+            Nothing -> case suppressed of
+              RetrySuppressedPoint -> go unmask
+              ReturnFromSuppressedPoint -> pure unitV
+
+    finish unmask value = do
+      canDeliver <- allowed
+      if not canDeliver
+        then pure value
+        else do
+          tid <- myThreadId
+          pending <- pendingRequestState tid
+          case pending of
+            Nothing -> pure value
+            Just request
+              | pisHostWakeAbsorbed request -> do
+                  atomicModifyIORef_' pendingInterrupt (Map.delete tid)
+                  throwIO (Interrupt (pisCause request))
+              | otherwise -> absorbRequestedWake unmask value
+
+    -- The request side records before calling 'throwTo'. If this fiber observes
+    -- that logical request first, wait until the matching host wake has actually
+    -- been accepted before re-raising it synchronously. This prevents a second,
+    -- late async delivery after the fiber has already published its Exit.
+    absorbRequestedWake unmask value = do
+      r <- try (unmask (yield >> CE.allowInterrupt >> pure unitV))
+        :: IO (Either Interrupt Value)
+      case r of
+        Left (Interrupt cause) -> do
+          tid <- myThreadId
+          recordAbsorbedInterrupt tid cause
+          finish unmask value
+        Right _ -> do
+          tid <- myThreadId
+          pending <- pendingRequestState tid
+          case pending of
+            Just request | not (pisHostWakeAbsorbed request) ->
+              absorbRequestedWake unmask value
+            _ -> finish unmask value
+
+    finishWithoutHost tid value = do
+      mc <- takeAbsorbedPendingWhen allowed
+      case mc of
+        Just cause -> throwIO (Interrupt cause)
+        Nothing -> do
+          pending <- pendingRequestState tid
+          case pending of
+            Just request | pisHostWakeAbsorbed request ->
+              throwIO (Interrupt (pisCause request))
+            _ -> pure value
 
 -- | The current fiber's value for a fiber-local cell: its override if set,
 -- else the cell's initial value.
@@ -384,6 +579,7 @@ spawnExit :: RT -> Value -> IO (ThreadId, MVar Value)
 spawnExit rt action = do
   parentTid <- myThreadId
   snap <- Map.findWithDefault Map.empty parentTid <$> atomicReadIORef' fiberLocals
+  inheritedMask <- currentMaskState
   mv <- newEmptyMVar
   ready <- newEmptyMVar
   -- §32.2.5 interp fix: the child runs FULLY MASKED (uninterruptibleMask_), so GHC
@@ -399,6 +595,7 @@ spawnExit rt action = do
             childTid <- myThreadId
             atomicModifyIORef_' fiberLocals (Map.insert childTid snap)
             atomicModifyIORef_' fiberUnmask (Map.insert childTid (Unmask unmask))
+            registerChildMask childTid inheritedMask
             -- Do not return a source-visible Fiber until the child is registered
             -- and inside the protected driver. A parent-side cede is only a yield,
             -- not a guarantee that the child has reached its handler.
@@ -420,7 +617,7 @@ spawnExit rt action = do
                             -- it as the fiber ends (ThreadIds can be reused, so a stale
                             -- entry would mis-gate a future fiber).
                             atomicModifyIORef_' fiberUnmask (Map.delete childTid)
-                            atomicModifyIORef_' maskDepth (Map.delete childTid)
+                            unregisterFiberMask childTid
                             atomicModifyIORef_' pendingInterrupt (Map.delete childTid)
                             _ <- tryPutMVar mv terminalExit
                             pure ()
@@ -641,7 +838,7 @@ runScope rt reg0 selfLabel env0 items0 = do
           CE.toException (CauseReraise (VCtor prelThen [causeOf p, causeOf cleanup]))
       runExitsFrom primary = do
         exits <- atomicModifyIORef' exitsRef $ \exits0 -> ([], exits0)
-        withMaskDepthBump (loopExits primary exits)
+        withMaskFrame Masked (loopExits primary exits)
         where
           loopExits acc [] = pure acc
           loopExits acc (exitAction : more) = do
@@ -715,13 +912,13 @@ runScope rt reg0 selfLabel env0 items0 = do
         KUsing pat acquireT releaseT -> do
           -- §32.2.5: raise the EXPLICIT mask depth for acquire (an interruption
           -- point inside it is suppressed), mirroring bracketM's masked acquire.
-          resource <- withMaskDepthBump (runIOValue rt =<< evalK rt env acquireT)
+          resource <- withMaskFrame Masked (runIOValue rt =<< evalK rt env acquireT)
           releaseFn <- evalK rt env releaseT
           releasedRef <- newIORef False
           let release = do
                 first <- atomicModifyIORef' releasedRef $ \done -> (True, not done)
                 when first $ do
-                  () <$ withMaskDepthBump (runIOValue rt (vapp ec releaseFn Expl resource))
+                  () <$ withMaskFrame Masked (runIOValue rt (vapp ec releaseFn Expl resource))
           atomicModifyIORef_' exitsRef (release :)
           bindOrDie pat resource $ \bs ->
             go (reverse bs ++ env) rest
@@ -829,6 +1026,13 @@ runPrimIO rt p rawArgs =
         let a' = force ec a
          in a' `seq` a' : forceArgs as
 
+runMaskPrimitive :: RT -> InterpMaskState -> Value -> IO Value
+runMaskPrimitive rt state body = do
+  frameId <- pushMaskFrame state
+  let restore = VPrim "__restore" [VLit (LitInt (fromIntegral frameId))]
+  runIOValue rt (vapp (rtEC rt) body Expl restore)
+    `CE.finally` popMaskFrame frameId
+
 runPrimIO' :: RT -> Text -> [Value] -> IO Value
 runPrimIO' rt p args = case (p, args) of
   ("printString", [VLit (LitStr s)]) -> rtEmit rt s >> pure unitV
@@ -849,7 +1053,7 @@ runPrimIO' rt p args = case (p, args) of
   -- KappaError, so a finalizer/release also runs when the body is interrupted.)
   ("finallyIO", [body, fin]) -> do
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    _ <- withMaskDepthBump (runIOValue rt fin)
+    _ <- withMaskFrame Masked (runIOValue rt fin)
     case r of
       Right v -> pure v
       Left err -> throwIO err
@@ -860,7 +1064,7 @@ runPrimIO' rt p args = case (p, args) of
   -- OP_ONEXIT_FIN reason-carrying finalizer.
   ("onExit", [body, handler]) -> do
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    _ <- withMaskDepthBump (runIOValue rt (vapp ec handler Expl (exitOf r)))
+    _ <- withMaskFrame Masked (runIOValue rt (vapp ec handler Expl (exitOf r)))
     either throwIO pure r
   -- §18.1.4 onInterrupt: the handler runs ONLY when the body exits via
   -- interruption, receiving the 'InterruptCause'. Other exits (normal, typed
@@ -869,7 +1073,7 @@ runPrimIO' rt p args = case (p, args) of
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
     case r of
       Left e | Just cause <- interruptCauseOfException e ->
-        withMaskDepthBump (runIOValue rt (vapp ec handler Expl cause)) >> throwIO e
+        withMaskFrame Masked (runIOValue rt (vapp ec handler Expl cause)) >> throwIO e
       _ -> either throwIO pure r
   -- §18.1.4/§18.11: fork spawns a cooperative child fiber (a GHC green thread
   -- on the single OS agent — non-threaded RTS ⇒ no parallelism, weak fairness
@@ -892,28 +1096,26 @@ runPrimIO' rt p args = case (p, args) of
   ("__interruptWait", [cause, VFiber tid mv]) ->
     interruptWait tid mv cause >> pure unitV
   ("__interruptNoWait", [cause, VFiber tid _]) -> do
-    -- §32.2.5: RECORD the pending cause on the target, then throwTo to WAKE it out
-    -- of any parked interruption point; the target's interruptPoint decides whether
+    -- §32.2.5: RECORD the pending cause on the target, then launch a non-blocking
+    -- host wake. The target's interruptPoint decides whether
     -- to deliver (unmasked) or re-park (masked).  Recording first means a wake that
     -- races the target into a park still finds the flag at the next point.
     recordPending tid cause
-    throwTo tid (Interrupt cause) >> pure unitV
+    throwToAsync tid (Interrupt cause) >> pure unitV
   -- Same as __interruptNoWait, only differently typed (free result channel); used
   -- by `disconnect`'s onInterrupt finalizer (PRIMITIVES #5).
   ("__interruptForkAny", [cause, VFiber tid _]) -> do
     recordPending tid cause
-    throwTo tid (Interrupt cause) >> pure unitV
+    throwToAsync tid (Interrupt cause) >> pure unitV
   -- §18.1.5 cede: yield to the scheduler (also an interruption point — GHC
   -- delivers any pending throwTo at the yield).
   -- §18.1.5 cede yields to the scheduler and is an interruption point: after the
   -- yield, deliver a pending interrupt if this fiber is unmasked (else keep it
   -- pending — cede does not re-park).
-  ("cede", _) -> do
-    yield
-    mc <- takePendingIfUnmasked
-    case mc of
-      Just c -> throwIO (Interrupt c)
-      Nothing -> pure unitV
+  ("cede", _) ->
+    interruptPointWhen ReturnFromSuppressedPoint
+      ((== MaskInterruptible) <$> currentMaskState)
+      (yield >> CE.allowInterrupt >> pure unitV)
   -- §18.1.2 sandbox: run the action and expose its full terminal Cause in the
   -- typed-error channel — every failure (Fail/Interrupt/Defect) becomes a
   -- typed Fail carrying the Cause value.
@@ -991,74 +1193,34 @@ runPrimIO' rt p args = case (p, args) of
   ("withScope", [useFn]) -> do
     reg <- newIORef []
     r <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
-    withMaskDepthBump (shutdownScopeReg reg)
+    withMaskFrame Masked (shutdownScopeReg reg)
     either throwIO pure r
-  -- §18.1.12 interruption masking. The interpreter runs fibers on GHC green
-  -- threads where interruption is an async 'Interrupt' exception, so masking
-  -- maps directly onto 'Control.Exception' masking — the oracle the native
-  -- backends (krt2_uninterruptible/krt2_mask/krt2_poll) must match.
-  --
-  -- `uninterruptible body` suppresses delivery for the whole body: a pending
-  -- interrupt is held until the region is left (uninterruptibleMask_ blocks even
-  -- the interruptible-blocking escape hatch, matching "delivery suppressed while
-  -- body executes"). This is what makes `bracketM`'s acquire register its
-  -- finalizer before a born-interrupted fiber's pending interrupt lands.
-  -- §32.2.5 interp fix: `uninterruptible body` raises this fiber's EXPLICIT mask
-  -- depth for the body's duration; a pending interrupt is NOT delivered at the
-  -- region exit (only at an interruption point reached while unmasked).  The body
-  -- already runs under the fiber-level GHC uninterruptibleMask_, so GHC delivers
-  -- nothing here either; the depth counter is what an interruption point consults.
+  -- §18.1.12 interruption masking. The host thread remains physically masked;
+  -- these semantic frames decide where explicit interruption points deliver.
   ("uninterruptible", [body]) ->
-    withMaskDepthBump (runIOValue rt body)
-  -- `poll` is an explicit checkpoint that delivers a pending interrupt
-  -- UNCONDITIONALLY — even inside a masked region (§18.1.12) — else returns Unit.
-  -- It consults the explicit pending flag directly (not GHC's allowInterrupt),
-  -- ignoring the mask depth.
-  ("poll", _) -> do
-    tid <- myThreadId
-    mc <- atomicModifyIORef' pendingInterrupt $ \m ->
-      case Map.lookup tid m of
-        Nothing -> (m, Nothing)
-        Just c -> (Map.delete tid m, Just c)
-    case mc of
-      Just c -> do
-        throwIO (Interrupt c)
-      Nothing -> pure unitV
-  -- `mask f` runs `f` masked and hands it a `restore`.  We record the mask-ENTRY
-  -- depth (the depth before this mask raised it) on a per-fiber stack so the
-  -- internal '__restore' prim can reset the explicit mask depth to that entry
-  -- level for one sub-action.  The depth is bumped for the body and the entry
-  -- record popped on every exit path ('CE.finally').
-  ("__mask", [f]) -> do
-    tid <- myThreadId
-    entry <- Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
-    atomicModifyIORef_' maskEntryDepths (Map.insertWith (++) tid [entry])
-    let pop = atomicModifyIORef_' maskEntryDepths (Map.update popEntry tid)
-    withMaskDepthBump (runIOValue rt (vapp ec f Expl (VPrim "__restore" []))) `CE.finally` pop
-    where
-      popEntry (_ : rest)
-        | null rest = Nothing
-        | otherwise = Just rest
-      popEntry [] = Nothing
-  -- '__restore act' (supplied by `mask` as its body's `restore`): run `act` at the
-  -- interruptibility that held at the enclosing `mask`'s ENTRY — i.e. with the
-  -- explicit mask depth reset to that entry level (often 0 => interruptible).  With
-  -- no active mask (defensive — the elaborator only produces this under `mask`),
-  -- run the action unchanged.
-  ("__restore", [act]) -> do
-    tid <- myThreadId
-    es <- atomicReadIORef' maskEntryDepths
-    case Map.lookup tid es of
-      Just (d : _) -> withMaskDepthSet d (runIOValue rt act)
-      _ -> runIOValue rt act
+    withMaskFrame MaskUninterruptible (runIOValue rt body)
+  -- `poll` pierces ordinary masking, but is inert while the effective state is
+  -- uninterruptible (§18.1.12).
+  ("poll", _) ->
+    interruptPointWhen ReturnFromSuppressedPoint
+      ((/= MaskUninterruptible) <$> currentMaskState)
+      (CE.allowInterrupt >> pure unitV)
+  ("__mask", [f]) -> runMaskPrimitive rt Masked f
+  ("__uninterruptibleMask", [f]) ->
+    runMaskPrimitive rt MaskUninterruptible f
+  -- A restore capability names its exact frame. Invalid/stale/repeated,
+  -- wrong-order, and cross-fiber uses execute the action under the current state.
+  ("__restore", [VLit (LitInt rawFrameId), act]) ->
+    withRestoredMaskFrame (fromInteger rawFrameId) (runIOValue rt act)
   -- §18.1.12 rank-2 adapter `__restoreAt raw act` (what the surface `mask` hands
   -- its body, see Prelude `__restoreAt`): forward `act` to the captured raw
-  -- restore. `__mask` pushed `VPrim "__restore" []`, but the elaborator COERCES
+  -- restore. The mask primitive captured the exact frame identity, while the
+  -- elaborator COERCES
   -- it to the rank-2 type `forall y. IO e y -> IO e y` — i.e. `\{y} -> __restore`
   -- — so `raw` carries a LEADING ERASED type binder. Peel it with a type
   -- placeholder (`y` is RuntimeErased, §31.2), then apply the action and run
-  -- (rebuilding `VPrim "__restore" [act]`, which the `__restore` case above
-  -- handles at the per-fiber mask-entry level). This mirrors the native lowering
+  -- (rebuilding `VPrim "__restore" [frame, act]`, which the `__restore` case above
+  -- authenticates). This mirrors the native lowering
   -- (a bare `kapp(raw, act)`, where the kunit type slot was already absorbed by
   -- the wrapper), keeping interp == C == LLVM.
   ("__restoreAt", [raw, act]) ->
@@ -1094,7 +1256,7 @@ runPrimIO' rt p args = case (p, args) of
     old <- getFiberLocal rid
     setFiberLocal rid v
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    withMaskDepthBump (setFiberLocal rid old)
+    withMaskFrame Masked (setFiberLocal rid old)
     either throwIO pure r
   -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
   -- transaction directly (no concurrent agent ⇒ trivially serializable);

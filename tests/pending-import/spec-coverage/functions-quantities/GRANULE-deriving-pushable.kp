@@ -38,4 +38,4 @@ pushLinear : (1 xs : List2 Int) -> List2 Int
 let pushLinear xs = push xs   --!! kappa.quantity.satisfies
 
 --! assertDiagnosticFamily error kappa.quantity.satisfies
--- STATUS(a0497523): HARNESS-ERROR — asserted family kappa.quantity.satisfies is registered by Spec §3.2.5 but not in the harness/compiler diagnostic registry; independently, quantity polymorphism is unimplemented (QuantitySatisfies is E_NAME_UNRESOLVED and the `(q xs : ...)` binder misparses).
+-- STATUS(74742dfd): HARNESS-ERROR — line 38: inline marker 'kappa.quantity.satisfies' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); line 40: directive 'assertDiagnosticFamily': 'kappa.quantity.satisfies' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)

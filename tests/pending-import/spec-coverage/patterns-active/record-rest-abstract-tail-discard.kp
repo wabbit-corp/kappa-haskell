@@ -29,4 +29,4 @@ let forgetTail (@0 r : RecRow) (rec : (name : String | r)) : String =
 -- E_TYPE_EQUALITY_MISMATCH on the let line (record patterns over open-row
 -- scrutinees are broken), so the §17.2.1/§12.2.6 discard obligation is
 -- never checked.
--- STATUS(a0497523): FAIL — unchanged (kappa.row.tail-quantity not produced for the record-pattern discard).
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.row.tail-quantity was produced

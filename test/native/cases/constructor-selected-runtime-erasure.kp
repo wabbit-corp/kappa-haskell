@@ -1,0 +1,20 @@
+--! mode run
+--! entry main
+--! assertStdout "7\n"
+
+-- A constructor field may be erased by evidence selected from an earlier
+-- binder even when its abstract type has no intrinsic erasure classifier.
+-- Native construction, layout verification, and pattern binding must all use
+-- that checked telescope annotation rather than re-running a type-only test.
+module main
+
+data ErasedBox : Type =
+    MkErasedBox : forall (0 a : Type). (@0 proofIsProp : IsProp a) -> a -> Int -> ErasedBox
+
+readBox : ErasedBox -> Int
+let readBox box =
+    match box
+    case MkErasedBox _ value -> value
+
+main : UIO Unit
+let main = printlnString (showInt (readBox (MkErasedBox @(1 = 1) @(summon (IsProp (1 = 1))) refl 7)))

@@ -1,0 +1,24 @@
+-- DX issue found while creating the first package ports. An empty module-name
+-- prefix is the natural way to say “all modules below these source roots”, but
+-- the build planner silently selects none. This staged build-manifest test
+-- should build once `modulesUnder ""` is defined as the root selector (or be
+-- changed to assert a focused manifest diagnostic if empty prefixes are banned).
+let buildConfig : BuildConfig = package
+    { name = "modules-under-empty-prefix-dx"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = []
+    , targets =
+        [ executable
+            { name = "root-selector"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , main = module "main"
+            , modules = modulesUnder ""
+            , dependencies = []
+            , hostBindings = []
+            }
+        ]
+    }

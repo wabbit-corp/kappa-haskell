@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+unitValue : Unit
+let unitValue = derive (Unit)
+
+self :
+    forall (a : Type) (x : a).
+    x = x
+let self @x = derive (x = x)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType unitValue Unit
+--! assertDeriveOutcome self Solved

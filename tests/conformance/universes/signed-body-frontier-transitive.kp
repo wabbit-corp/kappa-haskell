@@ -1,0 +1,32 @@
+-- A signed declaration body is not semantically closed merely because its
+-- immediate callee body has been checked.  The complete transitive body SCC
+-- must close before generated universe constraints are published upstream.
+--! mode check
+--! requires capability kcoreText
+--! dumpFormat kcore
+--! canonicalDumps
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStageDumpRoundTrips KCore
+
+module main
+
+first.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let first A = second A
+
+second.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let second A = third A
+
+third.{u, v} :
+    (ordinary 0 A : Type u) ->
+    Type v
+let third A = A
+
+result : Type1
+let result = first.{0, 1} Int
+
+--! assertType result Type1

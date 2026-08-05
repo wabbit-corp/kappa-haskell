@@ -31,7 +31,4 @@ let elseRemainderImpossible p =
         case Box x -> x
         case impossible
 
--- STATUS(a0497523): FAIL — 2 errors (E_IMPOSSIBLE_REACHABLE,
--- E_INDEXED_IMPOSSIBLE_REACHABLE): the impossible/case-impossible checkers
--- do not consult failure-side LacksCtor/narrowed HasCtor flow facts, even
--- though exhaustiveness (omitting the Empty arm) and projection do.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_IMPOSSIBLE_REACHABLE "'impossible' is not provably unreachable here (§17.1.4)" at line 23

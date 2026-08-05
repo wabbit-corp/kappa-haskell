@@ -34,4 +34,4 @@ let main = do
 --! mode run
 --! assertNoErrors
 --! assertStdout "arg-some\n3\n-1\n"
--- STATUS(a0497523): FAIL — safe-nav member application args are applied AFTER Option-wrapping the member: E_APPLICATION_NONCALLABLE on callee Option (Int -> Int); same root cause as the pinned check-mode gap in application-dotted/safe-nav-member-args.kp, so the run-mode branch-locality contract is unobservable today.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 4; first error: E_APPLICATION_NONCALLABLE "this expression is not callable" at line 28; stdout mismatch: expected "arg-some\n3\n-1\n", got ""

@@ -32,4 +32,4 @@ let cast0 p v =
 -- E_TYPE_EQUALITY_MISMATCH: matching `refl` performs no equality-induction
 -- refinement in this compiler, so the erased proof-only/type-refining
 -- matches that §17.1.3 accepts are rejected.
--- STATUS(a0497523): FAIL — unchanged (sym0/cast0 still E_TYPE_EQUALITY_MISMATCH; no equality induction on refl).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 15

@@ -27,4 +27,4 @@ let badLazyOnly (>=1 x : Int) : Int = --!! E_QTT_LINEAR_DROP
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
--- STATUS(a0497523): FAIL — the compiler accepts badLazyOnly (0 errors): a forced lazy is treated as demanding its captures at least once, so the §16.2.2 categorical MUST NOT on lazy-capturing >=1 variables is not enforced (see the spec-issue recorded with this batch about the tension with the at-most-once interval paragraph).
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_QTT_LINEAR_DROP] on line 23 (no diagnostics); expected 1 errors, got 0; no diagnostic with family kappa.quantity.positive-lower-bound was produced

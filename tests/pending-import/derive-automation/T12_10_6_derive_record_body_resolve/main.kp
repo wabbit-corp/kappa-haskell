@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+proof : True = True
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! requires capability stageDumps
+--! assertNoErrors
+--! assertDeriveRecordPresent KFrontIR.BODY_RESOLVE proof
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveRecordPresent' is not defined by Appendix T (§T.3))

@@ -15009,19 +15009,39 @@ Introduction of `Need A` suspensions requires `Shareable A` and obeys the captur
 <!-- types.quantification -->
 ### 11.3 Universal quantification
 
-`forall` is implicit quantity-`0` dependent-product sugar.
+`forall` is implicit quantity-`0` dependent-product sugar. The classifier of
+an unannotated binder is inferred from every use in the remainder of the
+quantifier telescope and body before its default is selected.
 
 ```kappa
 forall a. T
 ```
 
-elaborates as if written:
+introduces a fresh classifier metavariable `?K` and elaborates provisionally as
+if written:
 
 ```kappa
-(@parametric 0 a : Type ?u) -> T
+(@parametric 0 a : ?K) -> T
 ```
 
-where `?u` is a fresh bare-`Type` universe metavariable.
+Uses of `a` in `T` constrain `?K`. After the complete quantified type has been
+elaborated:
+
+* if `?K` remains unconstrained, it defaults to `Type ?u`, where `?u` is a
+  fresh bare-`Type` universe metavariable;
+* if the inferred classifier is a parametric kind, the binder is finalized as
+  `parametric 0` with parametric formation; and
+* otherwise the binder is finalized as `ordinary 0` with ordinary formation.
+
+This inference is recursive through higher kinds. For example:
+
+```kappa
+forall p a b. p a -> p b
+```
+
+may infer `p : (parametric 0 A : Type ?u) -> Type ?v`. A source annotation or
+explicit observation mode remains authoritative and is never rewritten by
+this inference rule.
 
 ```kappa
 forall (A : Type0). T
@@ -37059,6 +37079,7 @@ Normative rule:
   True, False,
   None, Some,
   Ok, Err,
+  Left, Right,
   Nil, (::),
   LT, EQ, GT,
   refl
@@ -37080,6 +37101,7 @@ Normative rule:
   True, False,
   None, Some,
   Ok, Err,
+  Left, Right,
   Nil, (::),
   LT, EQ, GT,
   refl
@@ -37191,7 +37213,7 @@ QueryCore m q a, QueryUse, QueryCard, QueryMode,
 RawComprehension a, ComprehensionPlan a,
 
 -- standard data containers
-Option a, Result e a, List a, Array a, SizedArray n a, Set a, Map k v,
+Option a, Result e a, Either a b, List a, Array a, SizedArray n a, Set a, Map k v,
 
 -- resource and proof basics
 Res a r, Match a r, Dec p, Reflects p b, BoolRelation a,
@@ -37213,6 +37235,18 @@ Duration, Instant, TimeoutError, RaceResult a b,
 -- strings, regex, equality, and suspension
 Regex, (=), Thunk a, Need a
 ```
+
+`Either` is the canonical branch-symmetric binary coproduct. Unlike `Result`, neither parameter nor constructor has
+failure/success semantics:
+
+```kappa
+data Either (0 a : Type) (0 b : Type) : Type =
+    Left a
+    Right b
+```
+
+Portable APIs that distinguish failure from success SHOULD use `Result`; APIs whose branches have equal semantic status
+SHOULD use `Either`.
 
 `Byte` is a raw 8-bit octet type. It is not a character type and does not receive portable numeric instances by default.
 
@@ -37278,6 +37312,7 @@ Fin.Fin, Refined.Refined,
 Ordering.LT, Ordering.EQ, Ordering.GT,
 Option.None, Option.Some,
 Result.Ok, Result.Err,
+Either.Left, Either.Right,
 List.Nil, List.(::),
 Res.(:&),
 Match.Hit, Match.Miss,
@@ -37309,6 +37344,7 @@ Implicitly imported unqualified constructor subset (§28):
 True, False,
 None, Some,
 Ok, Err,
+Left, Right,
 Nil, (::),
 LT, EQ, GT,
 refl
@@ -38874,7 +38910,7 @@ or `AdditiveMonoid Instant`.
 * `Dec p` packages a decision procedure for proposition `p`, carrying either positive evidence `Yes p` or a refutation
   `No (p -> False)`.
 
-`Option`, `List`, `Result`, `IO`, `Eff`, `Eq`, `Ord`, `IsProp`, `IsSet`, `sameDynRep`, and `checkedCastWith` are
+`Option`, `List`, `Result`, `Either`, `IO`, `Eff`, `Eq`, `Ord`, `IsProp`, `IsSet`, `sameDynRep`, and `checkedCastWith` are
 universe-generalized through hidden declaration universe parameters wherever their elaborated types permit it. `Dec`,
 `(=)`, `pathInd`, and `subst` expose the explicit standard schemas specified by §11.4.1.
 
@@ -41591,6 +41627,13 @@ The result dependency set is:
 Df union propagate(mode, x, B, Da)
 ```
 
+After every application step, this set is made relative to the checked result classifier. Parametric origins already
+carried by that classifier are removed before the next argument in the application spine is considered; analysis and
+reflection barriers are never removed. Thus the source type carried by the classifier of a partially applied
+polymorphic function does not become an ordinary observation merely because the function is subsequently saturated.
+Using a type constructor as static code remains parametric because its classifier is a universe and therefore does not
+carry the constructor argument.
+
 where:
 
 ```text
@@ -41889,7 +41932,11 @@ An `interfaceDecl` associates a source-free, fully checked record telescope
 with a declaration in the same KCoreText dependency environment. It does not
 declare a second global identity. Its universe telescope MUST agree with the
 named declaration, its term MUST expose a record telescope, and duplicate
-interfaces for one declaration are rejected.
+interfaces for one declaration are rejected. An interface is declaration-owner
+authority: it MUST be issued by the module that declares the named definition,
+axiom, data family, or constructor. A downstream module MUST NOT issue or
+replace an interface for an imported declaration, and certificate declarations
+do not confer declaration ownership.
 
 `constraintBlock` appears only in level-certificate and schema-certificate declarations as the explicit assumption
 context of the certificate being checked.
@@ -41925,7 +41972,7 @@ binder ::=
 observationMode ::= 'ordinary' | 'parametric'
 formationMode   ::= 'ordinary' | 'parametric'
 explicitness    ::= 'explicit' | 'implicit'
-accessMode      ::= 'value' | 'borrow' | 'borrow[' regionRef ']'
+accessMode      ::= 'value' | 'runtime-erased(' term ')' | 'borrow' | 'borrow[' regionRef ']' | 'borrow-term(' term ')'
 binderOrigin    ::= 'generated'
 quantity        ::= '0' | '1' | 'omega' | 'affine' | 'relevant' | 'quantity-term(' term ')'
 regionRef       ::= localRef | globalRef
@@ -41939,6 +41986,16 @@ Binder provenance participates in canonical interface text and semantic identity
 proof value does not. A definition's or
 axiom's mode is the independently verified dependency summary for uses of that global facet; it is not inferred from
 quantity, from its result classifier, or from readable naming.
+
+`quantity-term(term)` and `borrow-term(term)` are complete checked static
+metadata, not opaque annotations. A checkpoint verifier MUST check their
+payloads independently at the exact standard `Quantity` and `Region`
+classifiers, respectively, in the binder's incoming scope. The compact
+`borrow[regionRef]` form is canonical when the selected region is a direct
+local or global reference; `borrow-term(term)` preserves a selected
+first-class region expression when substitution makes that compact form
+inapplicable. An ill-scoped or ill-typed metadata term invalidates the
+checkpoint.
 
 A constructor field block maps each named field's authoritative `fieldRef` to its zero-based position in the direct
 constructor payload telescope. Anonymous positional fields are omitted. Field identities and positions are checked
@@ -41981,9 +42038,13 @@ blockItem ::=
     'let' binder '=' term ';'
 
 localDef ::=
-    'def' observationMode localRef universeTelescope? ':' term '{'
+    'def' localDefHeader '{'
         'body' '=' term ';'
     '}'
+
+localDefHeader ::=
+    observationMode localRef universeTelescope? ':' term
+  | binder universeTelescope?
 
 localRecGroup ::=
     'letrec' '{' localDef+ '}' 'in' term
@@ -41992,6 +42053,14 @@ caseAlt ::=
     'case' globalUse binder* '{' term '}'
   | 'default' '{' term '}'
 ```
+
+The compact `localDefHeader` form is canonical exactly when the local binder
+has ordinary formation, quantity `omega`, explicit value access, and
+source-written origin. A local definition with any other binder attribute uses
+the expanded `binder universeTelescope?` form, so canonical text retains its
+complete checked access and erasure contract. `runtime-erased(term)` records
+the selected evidence term for the binder's checked `RuntimeErased` goal; it is
+an access mode in KCore metadata and does not reintroduce a runtime slot.
 
 <!-- compiler.kcore.text_format.generic_extension_nodes -->
 ##### Generic extension nodes
@@ -42049,6 +42118,7 @@ evidenceRef ::=
     localRef
   | globalUse
   | 'certificate' '(' certificateRef universeInstantiation? ')'
+  | 'term-evidence' '(' term ')'
 
 certificateRef ::= '@certificate.' qualifiedName '#' stableId
 
@@ -42074,6 +42144,13 @@ levelProof ::=
 integerList ::=
     integer (',' integer)*
 ```
+
+`term-evidence(term)` preserves selected first-class evidence that is not a
+direct local/global reference or a replayable level certificate. A checkpoint
+verifier MUST check that term independently against the exact asserted
+`LevelLe lower upper` proposition. Substitution and alpha-renaming apply to
+quantity, access, and evidence payloads exactly as they do to ordinary term
+occurrences; retaining a stale semantic identity is invalid.
 
 `arithmetic [i1, ..., in]` is the complete portable replay form for rigid level entailment.
 

@@ -1,0 +1,24 @@
+@PrivateByDefault module main
+
+data Flag : Type =
+    Off
+    On
+
+explicitSet : IsSet Flag
+let explicitSet = derive
+
+needsSet : IsSet Flag => Flag
+let needsSet = Off
+
+accepted : Flag
+let accepted =
+    block
+        let localEvidence = explicitSet
+        needsSet
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceConstructionMode explicitSet fresh-independent

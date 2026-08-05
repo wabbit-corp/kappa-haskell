@@ -6,4 +6,4 @@
 --! packageMode
 --! assertNoErrors
 --! assertType ok dsl.tag.Tag
--- STATUS(a0497523): FAIL — E_UNSUPPORTED "this quoted-literal form is not supported by this implementation" at the t-prefixed literal: only the conventional g/b prefixes are wired; user prefixes resolving to Elab (QuotedLiteralMacro t) (§6.5) are rejected. The dsl module (instance + summon prefix value) itself checks clean.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_UNSUPPORTED "this quoted-literal form is not supported by this implementation" at line 7

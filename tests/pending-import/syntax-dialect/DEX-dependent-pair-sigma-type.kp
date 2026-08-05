@@ -74,3 +74,9 @@ let getNat nz =
 
 --! assertType mkPacked PackedArray
 --! assertType mkNonZero NonZero
+
+-- STATUS: SPEC-ISSUE — the fixture passes mechanically, but `=>` is the
+-- constraint-premise syntax and bracket forms are List literals; the Spec
+-- describes dependent Sigma/tuple telescopes without providing a portable
+-- anonymous dependent-pair surface spelling. Rewriting this as a named
+-- dependent record would duplicate existing conformance coverage.

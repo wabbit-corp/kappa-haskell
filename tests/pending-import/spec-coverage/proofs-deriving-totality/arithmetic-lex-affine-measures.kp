@@ -41,8 +41,4 @@ let affine a b decreases addInt (max0 a) (mulInt 2 (max0 b)) =
         if leInt b 0 then 0 else affine a (subInt b 1)
     else affine (subInt a 1) b
 
--- STATUS(a0497523): FAIL — all three MUST-accept SCCs get
--- W_TERMINATION_UNVERIFIED: the verifier handles neither 3-component
--- lexicographic tuples (even with equal earlier components), nor a
--- first-component decrease with a later-component reset, nor affine
--- combinations of max0 measures.
+-- STATUS(74742dfd): FAIL — expected 0 warnings, got 3

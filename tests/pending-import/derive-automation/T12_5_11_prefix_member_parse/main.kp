@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+trait Reflective (parametric 0 a : Type) =
+    relation : (& x : a) -> (& y : a) -> Bool
+
+    derive complete :
+        (& x : a) -> (& y : a) ->
+        (x = y -> relation x y = True)
+
+instance Reflective Bool =
+    let relation x y = x == y
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDerivedMember complete for Reflective Bool
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDerivedMember' is not defined by Appendix T (§T.3))

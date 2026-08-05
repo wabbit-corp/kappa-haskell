@@ -1,0 +1,18 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+maybeRead : (<=1 & box : Box) -> Unit
+let maybeRead (<=1 & box : Box) : Unit = ()
+
+bad : (1 & box : Box) -> Unit
+let bad (1 & box : Box) : Unit =
+    maybeRead box
+
+-- A borrowed parameter still carries its selected interval demand. Passing an
+-- exactly-once borrowed view to an affine borrowed parameter admits a path
+-- that never demands the view and therefore violates its positive lower bound.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

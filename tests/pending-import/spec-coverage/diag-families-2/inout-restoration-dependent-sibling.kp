@@ -32,4 +32,4 @@ bad : (1 s : Sized) -> UIO Unit
 let bad (1 s : Sized) : UIO Unit = do
     grow ~s.buffer
     pure ()
--- STATUS(a0497523): FAIL — the restoration failure is reported as E_TYPE_EQUALITY_MISMATCH in kappa.type.mismatch (actual Vec 2 Byte vs expected Vec s.len Byte) instead of the §3.3.6 kappa.inout.restoration family
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.inout.restoration was produced; no diagnostic message matches /(Vec|buffer|len|restor)/ (saw: "type mismatch")

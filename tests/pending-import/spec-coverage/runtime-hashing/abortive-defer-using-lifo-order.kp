@@ -47,4 +47,4 @@ let main =
         case note n k -> do
             printlnString ("note:" ++ showInt n)
             k ()
--- STATUS(a0497523): FAIL — prints "note:1\nnote:2\nnote:3\nnote:40\nresult:0": the using-release and both defers run EAGERLY in registration order at the moment they are registered (before the op site), instead of unwinding masked-LIFO at abandonment; only the suppression of the post-op note 99 is honored.
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "note:40\nnote:3\nnote:2\nnote:1\nresult:0\n", got "note:1\nnote:2\nnote:3\nnote:40\nresult:0\n"

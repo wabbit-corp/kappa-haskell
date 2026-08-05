@@ -23,4 +23,4 @@ let badBorrowed (0 & x : Proof) : Int = peek x --!! E_QTT_ERASED_RUNTIME_USE
 
 --! mode check
 --! assertErrorCount 2
--- STATUS(a0497523): FAIL — the compiler accepts both functions (0 errors): lending a quantity-0 binding to a runtime `&` parameter via borrow introduction bypasses the erased-runtime-use check (direct runtime uses of the same binders ARE rejected with E_QTT_ERASED_RUNTIME_USE).
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_QTT_ERASED_RUNTIME_USE] on line 18 (no diagnostics); no diagnostic error[E_QTT_ERASED_RUNTIME_USE] on line 22 (no diagnostics); expected 2 errors, got 0

@@ -11,4 +11,4 @@ let main = do
     var threshold = 1
     let ys = [ for x in [1, 2, 3], if x > threshold, yield x ]    --!! kappa.var.mutable-binding
     printlnString (showInt (foldl addInt 0 ys))
--- STATUS(a0497523): FAIL — var current-value read in a filter clause accepted with 0 errors (hoisted); Spec 18.3.1 now requires E_VAR_READ_CROSSES_BOUNDARY
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_VAR_READ_CROSSES_BOUNDARY] was produced (no diagnostics); no diagnostic error[kappa.var.mutable-binding] on line 12 (no diagnostics)

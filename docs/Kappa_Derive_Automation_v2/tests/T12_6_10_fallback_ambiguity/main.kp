@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+trait Pick =
+    value : Bool
+
+fallback instance Pick =
+    let value = True
+
+fallback instance Pick =
+    let value = False
+
+let selected : Pick = summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertDiagnostic error E_INSTANCE_FALLBACK_AMBIGUOUS

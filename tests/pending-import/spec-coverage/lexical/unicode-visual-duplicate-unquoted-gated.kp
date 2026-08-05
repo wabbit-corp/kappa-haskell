@@ -14,4 +14,4 @@ let A = 1
 let Α = 2 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
 let А = 3 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
 
--- STATUS(a0497523): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability unicode-names: not provided

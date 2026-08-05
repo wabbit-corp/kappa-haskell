@@ -30,4 +30,4 @@ let main = do
     printlnString (showInt bareUse)
     printlnString (showInt sectionUse)
     printlnString (showInt chained)
--- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 7; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'postfix' at start of declaration" at line 16; stdout mismatch: expected "6\n6\n7\n", got ""

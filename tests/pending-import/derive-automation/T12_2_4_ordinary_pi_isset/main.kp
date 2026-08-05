@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+functionsAreSet :
+    forall (a : Type) (b : a -> Type).
+    (forall (x : a). IsSet (b x)) ->
+    IsSet ((x : a) -> b x)
+let functionsAreSet pointwise = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed functionsAreSet function-extensionality
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

@@ -33,4 +33,4 @@ let handled =
 main : Int
 let main = runPure handled
 
--- STATUS(a0497523): UNSUPPORTED — harness provides only the 'interpreter' backend profile; 'backend zig' + mode compile reports unsupported. Program body verified clean under mode check.
+-- STATUS(74742dfd): UNSUPPORTED — backend zig is not provided

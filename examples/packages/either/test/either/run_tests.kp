@@ -1,0 +1,10 @@
+module either.run_tests
+
+import data.either.*
+
+main : UIO Unit
+let main =
+    match swap (Left 42 : Either Int String)
+    case Left ignored -> printlnString "EITHER TESTS: FAIL"
+    case Right value ->
+        printlnString (if eqInt value 42 then "EITHER TESTS: ALL PASS" else "EITHER TESTS: FAIL")

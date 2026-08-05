@@ -1,0 +1,78 @@
+module contravariant.run_tests
+
+import data.either.*
+import data.functor.contravariant.*
+import data.functor.contravariant.divisible.*
+import data.functor.contravariant.decidable.*
+import std.unicode.(graphemeCount)
+
+runPredicate : forall a. Predicate a -> a -> Bool
+let runPredicate predicate input =
+    match predicate
+    case MkPredicate test -> test input
+
+contramapWorks : Bool
+let contramapWorks =
+    let longEnough = MkPredicate (\n -> n >= 4)
+    let textLongEnough = contramap (\text -> natToInt (graphemeCount text)) longEnough
+    runPredicate textLongEnough "four" && not (runPredicate textLongEnough "two")
+
+equivalenceWorks : Bool
+let equivalenceWorks =
+    let sameParity = MkEquivalence (\left -> \right -> eqInt (modInt left 2) (modInt right 2))
+    match contramap (\text -> natToInt (graphemeCount text)) sameParity
+    case MkEquivalence same -> same "aa" "bbbb" && not (same "a" "bb")
+
+divideWorks : Bool
+let divideWorks =
+    let even = MkPredicate (\n -> eqInt (modInt n 2) 0)
+    let odd = MkPredicate (\n -> eqInt (modInt n 2) 1)
+    let adjacent = divide (\n -> Split n (addInt n 1)) even odd
+    runPredicate adjacent 2 && not (runPredicate adjacent 3)
+
+chooseWorks : Bool
+let chooseWorks =
+    let positive = MkPredicate (\n -> n > 0)
+    let nonempty = MkPredicate (\text -> natToInt (graphemeCount text) > 0)
+    let either = choose (\value -> value) positive nonempty
+    runPredicate either (Left 1) && runPredicate either (Right "yes") &&
+        not (runPredicate either (Left 0))
+
+lostVoid : Predicate Void
+let lostVoid = lose (\value -> value)
+
+data PhantomValue a =
+    MkPhantomValue (tag : Int)
+
+instance Functor PhantomValue =
+    let map function value =
+        match value
+        case MkPhantomValue tag -> MkPhantomValue tag
+
+instance Contravariant PhantomValue =
+    let contramap function value =
+        match value
+        case MkPhantomValue tag -> MkPhantomValue tag
+
+phantomValue : PhantomValue String
+let phantomValue = phantom (MkPhantomValue 42 : PhantomValue Int)
+
+phantomWorks : Bool
+let phantomWorks =
+    match phantomValue
+    case MkPhantomValue tag -> eqInt tag 42
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    printlnString (line "contravariant.contramap" contramapWorks)
+    printlnString (line "contravariant.equivalence" equivalenceWorks)
+    printlnString (line "contravariant.divide" divideWorks)
+    printlnString (line "contravariant.choose" chooseWorks)
+    printlnString (line "contravariant.phantom" phantomWorks)
+    if contramapWorks && equivalenceWorks && divideWorks && chooseWorks && phantomWorks then
+        printlnString "CONTRAVARIANT TESTS: ALL PASS"
+    else
+        printlnString "CONTRAVARIANT TESTS: FAIL"

@@ -28,13 +28,13 @@ let useScope sc = do
 
 classify : Cause Void -> IO Void String
 let classify c = match c
-    case Both (Defect (DefectInfo UnhandledChildFailure m1)) (Defect (DefectInfo UnhandledChildFailure m2)) -> ioPure "both-unhandled-child-defects"
-    case Both _ _ -> ioPure "both-but-wrong-operands"
-    case Defect (DefectInfo UnhandledChildFailure m) -> ioPure "single-defect-only"
+    case Cause.Both (Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m1)) (Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m2)) -> ioPure "both-unhandled-child-defects"
+    case Cause.Both _ _ -> ioPure "both-but-wrong-operands"
+    case Cause.Defect (DefectInfo DefectTag.UnhandledChildFailure m) -> ioPure "single-defect-only"
     case _ -> ioPure "cause:other"
 
 main : UIO Unit
 let main = do
     let r <- catchIO (ioBind (sandbox (withScope useScope)) (\v -> ioPure "scope-succeeded")) classify
     printlnString r
--- STATUS(a0497523): FAIL — prints "scope-succeeded": scope exit ignores unacknowledged child Fail exits entirely (no UnhandledChildFailure defect is produced, so no Both composition either).
+-- STATUS(e25d64e1): FAIL — stdout mismatch: expected two unhandled-child defects, got "scope-succeeded\n"

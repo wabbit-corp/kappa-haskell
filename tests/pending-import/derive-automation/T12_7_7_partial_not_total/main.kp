@@ -1,0 +1,26 @@
+@PrivateByDefault module main
+
+data Fork : Type =
+    Root
+    Left
+    Right
+
+derive Eq Fork
+
+instance Preorder Fork =
+    let leq x y =
+        if x == y then
+            True
+        else
+            match x
+            case Root -> True
+            case _    -> False
+
+instance PartialOrder Fork = derive
+instance Ord Fork = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive
+--! assertDiagnosticMatch leqTotal

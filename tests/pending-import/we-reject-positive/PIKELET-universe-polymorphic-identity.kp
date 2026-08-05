@@ -5,17 +5,23 @@
 -- Spec: types.universes.inference_sketch, types.universes.cumulativity,
 --       expressions.lambdas, types.quantification
 --
--- Kappa exposes universe polymorphism via an explicit `forall (u : TypeLevel)`
--- binder (§11.3). `forall` introduces `@0`-implicit binders separated by
--- `.` from the body. A single definition can then be applied at multiple
--- universe levels, eliminating the Pikelet pain of needing a separate
--- `id^1` for each level.
+-- Kappa exposes universe polymorphism in two complementary ways. An explicit
+-- bounded `forall (u : TypeLevel)` telescope (§11.1.2.8, §11.3) needs an
+-- erased `u < ω` outer-ceiling witness. An ordinary unannotated
+-- `forall a. ...` instead leaves the universe metavariable to declaration
+-- generalization, producing the hidden schema `idImplicit.{u}` with
+-- `a : Type u` (§11.1.2.3). Both forms must instantiate at multiple levels.
 
 --! mode check
+--! assertNoWarnings
 
--- POSITIVE: identity polymorphic over both a universe level and a type
--- using the implicit-binder `forall` sugar. Both `u` and `A` are `@0`.
-idAll : forall (u : TypeLevel) (A : Type u). A -> A
+-- POSITIVE: identity polymorphic over both a bounded universe level and a
+-- type. The proof is compile-time-only and synthesized at each use.
+idAll :
+    forall (u : TypeLevel).
+    forall (@0 uBound : u < ω).
+    forall (A : Type u).
+    A -> A
 let idAll x = x
 
 -- POSITIVE: applied at Type0 by inferring `u`.
@@ -30,16 +36,21 @@ let useTy = idAll Nat
 useTy1 : Type1
 let useTy1 = idAll Type0
 
--- POSITIVE: bare `Type` is universe-polymorphic surface syntax — each
--- occurrence introduces a fresh inferred level. The compiler resolves the
--- universe metavariable from the surrounding context.
-idBare : forall (A : Type). A -> A
-let idBare x = x
+-- POSITIVE: an unannotated `forall a.` binder gets an inferred `Type u`
+-- annotation. The unsolved `u` is generalized into a hidden declaration
+-- universe parameter, rather than requiring a term-level TypeLevel binder.
+idImplicit : forall a. a -> a
+let idImplicit x = x
 
-useBareNat : Nat
-let useBareNat = idBare 1
+useImplicitNat : Nat
+let useImplicitNat = idImplicit 1
 
-useBareTy : Type0
-let useBareTy = idBare Nat
+useImplicitTy : Type0
+let useImplicitTy = idImplicit Nat
+
+useImplicitTy1 : Type1
+let useImplicitTy1 = idImplicit Type0
 
 --! assertNoErrors
+
+-- STATUS(8c3c7747): PASS — explicit bounded levels and inferred declaration-universe polymorphism both instantiate through Type2.

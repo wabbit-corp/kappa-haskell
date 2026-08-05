@@ -51,3 +51,5 @@ test4 : Nat
 let test4 = doubleMap 2 3    -- 2*(2*3) = 12
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_OPERATOR_NON_ASSOCIATIVE at line 23; current source or fixture is not portable v1 and must be rewritten before promotion.

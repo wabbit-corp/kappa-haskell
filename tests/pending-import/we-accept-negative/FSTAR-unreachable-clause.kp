@@ -21,3 +21,5 @@ let color_value c =
       case Blue  -> 3
 
 --! assertDiagnosticFamily warning kappa.pattern.unreachable
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: the Spec standardizes the family but does not require a warning for an ordinary redundant arm.

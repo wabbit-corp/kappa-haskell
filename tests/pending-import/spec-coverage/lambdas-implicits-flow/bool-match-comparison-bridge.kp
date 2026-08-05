@@ -38,9 +38,4 @@ let useMatchAlias n =
     case True -> small n
     case False -> 0
 
--- STATUS(a0497523): FAIL — both branches raise E_UNSOLVED_IMPLICIT
--- (kappa.implicit.unsolved) "= Bool (< Integer __inst_Ord_6 @0 10) True":
--- the §17.1.6 branch assumption is not keyed on a compound scrutinee
--- expression, and the let-bound c = True fact is not transported through
--- the alias to the comparison shape. Same goal discharges fine from an
--- `if n < 10` condition or a `case _ if n == 0` guard.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type = Bool (< Integer #generated.instance-dictionary.std.prelude.Ord@<std.prelude>:453:1 @0 10) True" at line 29

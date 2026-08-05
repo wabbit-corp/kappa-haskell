@@ -34,4 +34,4 @@ let instantOrderAt a b = compare a b
 
 instantTextAt : Instant -> String
 let instantTextAt a = show a
--- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT x6: no Eq/Ord/Show instances for Duration or Instant; only the ad-hoc durationCompare/instantNanos helpers exist
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Eq Duration" at line 17; assertEval: 'sameSpan' evaluates to _.== (Duration (mulInt 5 1000000)) (Duration (mulInt 5000 1000)), expected True; assertEval: 'spanOrder' evaluates to _.compare (Duration (mulInt 5 1000000)) (Duration (mulInt 1 1000000000)), expected LT

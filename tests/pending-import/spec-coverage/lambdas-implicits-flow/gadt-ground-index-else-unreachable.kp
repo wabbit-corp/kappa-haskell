@@ -38,8 +38,4 @@ let predOf v =
         match v
         case impossible
 
--- STATUS(a0497523): FAIL — E_INDEXED_IMPOSSIBLE_REACHABLE: the empty-match
--- remainder check does not combine the branch's LacksCtor Succ flow fact
--- with ground-index refutation of Zero, although each ingredient works
--- alone (single-arm Succ matches are exhaustive at this index, and
--- narrowing-derived projection works on non-indexed types).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_INDEXED_IMPOSSIBLE_REACHABLE "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)" at line 39

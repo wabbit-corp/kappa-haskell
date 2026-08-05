@@ -27,4 +27,4 @@ let main = do
     match closeCode .< 7 >.
     case Some _ -> printlnString "closed"
     case None -> printlnString "open"
--- STATUS(a0497523): FAIL — closeCode returns Some for open code '.< x >.' mentioning the enclosing quote's binder (prints 6, not 5): the scope check does not treat quote-bound-variable freeness as open per §23.4
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "5\nclosed\n", got "6\nclosed\n"

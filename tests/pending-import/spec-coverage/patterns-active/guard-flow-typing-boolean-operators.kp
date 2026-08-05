@@ -45,4 +45,4 @@ let pickNot q =
 -- .value projection: the compiler implements §16.4.2 flow narrowing in
 -- `if` conditions but not in guard position (§17.1.9's lowering of guards
 -- containing &&, ||, not is unimplemented).
--- STATUS(a0497523): FAIL — unchanged (3x E_UNRESOLVED_MEMBER; guard-position §16.4.2 lowering unimplemented).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNRESOLVED_MEMBER "no member 'value' on this receiver (§7.3)" at line 24

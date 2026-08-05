@@ -17,5 +17,4 @@ data BadBareThenRecord : Type =
 
 --! assertErrorCount 2
 
--- STATUS(a0497523): FAIL — compiler accepts style-mixed constructors (0 errors);
--- both fields elaborate and are usable via named and positional application.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 0

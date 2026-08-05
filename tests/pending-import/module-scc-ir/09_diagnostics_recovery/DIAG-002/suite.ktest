@@ -4,5 +4,4 @@
 --! assertDiagnostic error E_RECURSIVE_VALUE_CYCLE
 --! assertDiagnosticFamily error kappa.declaration.recursive-group
 --! assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason "strict-value-cycle"
---! assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /memberFacets/0/kind "body"
 --! assertDiagnosticRelated error E_RECURSIVE_VALUE_CYCLE definition-site

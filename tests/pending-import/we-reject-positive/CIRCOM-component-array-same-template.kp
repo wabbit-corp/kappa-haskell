@@ -43,3 +43,5 @@ h256 : HashCircuit 256
 let h256 = MkHash { rounds = 64, output = 0 }
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_TYPE_EQUALITY_MISMATCH at line 17; current source or fixture is not portable v1 and must be rewritten before promotion.

@@ -30,10 +30,17 @@ let startXs segs = map (.start.x) segs
 projectX : Point -> Int
 let projectX = (.x)
 
--- POSITIVE: receiver section with an argument (method-call sugar).
+-- POSITIVE: a field receiver section passed through two higher-order
+-- combinators. This is field projection, not method-call sugar.
 type Counter = (count : Int,)
--- (.count) used directly in a pipeline
 totalCount : Array Counter -> Int
 let totalCount cs =
   let counts = map (.count) cs
   in foldl (+) 0 counts
+
+--! assertType getXs Array Point -> Array Int
+--! assertType startXs Array Segment -> Array Int
+--! assertType projectX Point -> Int
+--! assertType totalCount Array Counter -> Int
+
+-- STATUS(8c3c7747): FAIL — contextual argument types are not propagated into receiver sections passed to `map`, so their fresh receiver type remains undetermined (§16.1.1.1, §28.2).

@@ -35,4 +35,4 @@ let splitName (@0 r : RecRow) (rec : (name : String | r)) : String =
 -- on the let line: record patterns over open-row scrutinees are broken,
 -- and kappa.row.context-mismatch is not a registered family in this
 -- implementation.
--- STATUS(a0497523): FAIL — unchanged (2 errors; open-row record patterns still broken, no kappa.row.context-mismatch).
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 19; no diagnostic message matches /context|home|prefix|row/ (saw: "type mismatch"; "unresolved name 'n' (not in scope)")

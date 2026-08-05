@@ -29,4 +29,4 @@ let checkInstances = do
 
 ok : String
 let ok = $(checkInstances)
--- STATUS(a0497523): FAIL — requireRuntimeFieldInstances reports KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE even though 'Eq Custom' resolves ordinarily at this site (the impl's satisfiability probe finds no instance)
+-- STATUS: SPEC-ISSUE — decide whether handwritten Eq may synthesize IsSet and eqSound/eqComplete from (==)

@@ -24,4 +24,4 @@ let x = MkT 1
 
 y : T
 let y = OtherT True
--- STATUS(a0497523): FAIL — no diagnostic at all; the two data declarations merge into one type with constructor set {MkT, OtherT} and the file checks clean
+-- STATUS: SPEC-ISSUE — duplicate rejection is required, but E_DUPLICATE_DECLARATION is not a portable Spec alias

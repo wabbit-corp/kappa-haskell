@@ -21,4 +21,4 @@ trait Marker (0 a : Type) --!! E_CONFIG_RESTRICTED_FORM
 
 let helper x = x --!! E_CONFIG_RESTRICTED_FORM
 
--- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; the implementation has no config-schema checker yet (local data in config units is currently always rejected by the config-expression checker)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability configMode: not provided

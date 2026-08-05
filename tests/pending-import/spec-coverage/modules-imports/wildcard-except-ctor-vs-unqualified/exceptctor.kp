@@ -12,4 +12,4 @@ badMatch : Box -> Int
 let badMatch b =
     match b
       case Box n -> n --!! E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN
--- STATUS(a0497523): FAIL — except (ctor Box) removes the entire same-spelling binding group, so even the type facet becomes unresolved
+-- STATUS(e25d64e1): FAIL — ctor-qualified except incorrectly removes the Box type facet and cascades into unresolved-name diagnostics

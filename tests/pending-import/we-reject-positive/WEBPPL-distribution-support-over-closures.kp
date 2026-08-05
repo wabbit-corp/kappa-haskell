@@ -41,3 +41,5 @@ let catOverTags = Categorical { ps = [0.5, 0.5], vs = [Inc, Dbl] }
 --! assertNoErrors
 --! assertType catOverTags (Categorical FnTag)
 --! assertType applyFn (FnTag -> Int -> Int)
+
+-- STATUS(f1b025a3): PASS

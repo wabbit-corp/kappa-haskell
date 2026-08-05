@@ -53,4 +53,4 @@ let main = do
     catchIO useCounter reportFailure
     ioPure ()
 
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — portable source cannot construct BridgeOrigin/BridgeContract or a complete stub BridgeHandle

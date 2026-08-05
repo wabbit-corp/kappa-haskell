@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+result : Dec (True = True)
+let result = reflectsDec (IsTrue refl)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType result Dec (True = True)

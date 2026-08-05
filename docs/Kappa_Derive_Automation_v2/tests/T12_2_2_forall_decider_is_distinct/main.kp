@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+bad :
+    (decision : forall (x : Bool) (y : Bool). Dec (x = y)) ->
+    IsSet Bool
+let bad decision =
+    hedberg decision
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH

@@ -76,4 +76,4 @@ let shadowTest =
 
 --! assertType shadowTest Int
 
--- STATUS(a0497523): FAIL (numeric/application diagnostics do not satisfy pinned kappa.type.mismatch)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 54 (saw: E_NUMERIC_LITERAL_DOMAIN_MISMATCH@54, E_TYPE_EQUALITY_MISMATCH@64)

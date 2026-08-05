@@ -32,6 +32,7 @@ let handleAllElse (e : AppError) : Int =
     case _      -> 0    --!! kappa.pattern.unreachable
 
 --! assertDiagnosticFamily error kappa.pattern.unreachable
+-- STATUS(2a161551): FAIL — TEST-ISSUE: ordinary shadowed arms are legal first-match code; the Spec does not mandate a redundancy diagnostic.
 
 -- Bool exhaustiveness: True+False already covers everything.
 let boolToInt (b : Bool) : Int =

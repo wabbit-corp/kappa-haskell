@@ -1,8 +1,11 @@
-# DIAG-008: Generated dependency provenance
+# DIAG-008: Undefined derive target remains unresolved
 
-A generated edge that creates an invalid cycle points primarily at the generating source construct.
+An implementation-defined test capability cannot invent source-language declarations or change name resolution.
+Because `BadRecursiveOperation` is neither declared by the suite nor standardized by the spec, the derive target is an
+ordinary unresolved name. A portable source-only fixture cannot manufacture the generated dependency cycle described by
+the old version of this test.
 
 ## Normative targets
 
-* `§3.1.5A`
-* `§9.5.7`
+* `§7.1A`
+* `§14.5`

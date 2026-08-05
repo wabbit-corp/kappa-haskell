@@ -1,0 +1,17 @@
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Cell = (count : Int, <=1 tok : Token)
+
+takeAffine : (<=1 tok : Token) -> Token
+let takeAffine (<=1 tok : Token) : Token = tok
+
+bad : (& cell : Cell) -> Token
+let bad (& cell : Cell) : Token = takeAffine cell.tok
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

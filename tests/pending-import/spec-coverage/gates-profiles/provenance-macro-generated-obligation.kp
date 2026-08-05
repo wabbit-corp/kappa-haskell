@@ -22,4 +22,4 @@ bad : (1 t : Token) -> (Token, Token)
 let bad t =
     $(dupSyntax '{ t })
 
--- STATUS(a0497523): FAIL — primary is correctly the user-written splice, but no macro provenance is exposed (no macro-invocation-site/generated-site related origin or payload entry)
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.quantity.unsatisfied has a related origin with role macro-invocation-site (saw roles: ); no error diagnostic matching kappa.quantity.unsatisfied has a related origin with role generated-site (saw roles: )

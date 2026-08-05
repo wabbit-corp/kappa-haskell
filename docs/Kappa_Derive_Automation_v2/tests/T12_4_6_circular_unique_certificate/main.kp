@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+trait Circular =
+    token : Unit
+    evidence uniqueness =
+        \left right -> IsSubsingleton.allEqual left right
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnostic error E_EVIDENCE_UNIQUENESS_CYCLE

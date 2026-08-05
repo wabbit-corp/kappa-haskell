@@ -29,6 +29,4 @@ let ok opts =
 bad : List Msg -> List Int
 let bad msgs =
     [ for? Ping t in msgs, yield openT t ] --!! kappa.quantity.positive-lower-bound
--- STATUS(a0497523): FAIL — compiler accepts bad (0 errors): for? checks ROW
--- droppability but never the droppability of the discarded non-matching ELEMENT,
--- so the quantity-1 Token inside Pong is silently dropped.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[kappa.quantity.positive-lower-bound] on line 31 (no diagnostics)

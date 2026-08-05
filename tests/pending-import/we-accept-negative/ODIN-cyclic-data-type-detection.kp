@@ -46,6 +46,7 @@ data BadLoop : Type =        --!! kappa.termination.failure
     BadLoop BadLoop
 
 --! assertDiagnosticFamily error kappa.termination.failure
+-- STATUS(2a161551): FAIL — TEST-ISSUE: recursive ADTs are boxed and strictly positive; the source language's inline-struct cycle restriction does not apply to `data Nat = S Nat`.
 
 -- NEGATIVE: a mutual cycle: A contains B, B contains A, with no indirection.
 data CycleA : Type =         --!! kappa.termination.failure

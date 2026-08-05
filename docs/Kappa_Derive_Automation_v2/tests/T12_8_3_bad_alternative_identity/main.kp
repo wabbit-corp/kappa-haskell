@@ -1,0 +1,28 @@
+@PrivateByDefault module main
+
+data Choice (0 a : Type) : Type =
+    Empty
+    Full (value : a)
+
+instance Functor Choice =
+    let map f value =
+        match value
+        case Empty -> Empty
+        case Full x -> Full (f x)
+
+instance Applicative Choice =
+    let pure x = Full x
+    let liftA2 f left right =
+        match (left, right)
+        case (Full x, Full y) -> Full (f x y)
+        case _ -> Empty
+
+instance Alternative Choice =
+    let empty = Empty
+    let (<|>) _ _ = Empty
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_UNSOLVED
+--! assertDiagnosticMatch alternativeLeftIdentity|alternativeRightIdentity

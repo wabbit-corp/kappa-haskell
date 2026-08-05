@@ -29,4 +29,4 @@ let chooseByProjection @alt x y = alt.orElse x y
 
 emptyByProjection : forall (f : (0 A : Type) -> Type) (a : Type). (@alt : Alternative f) -> f a
 let emptyByProjection @alt = alt.empty
--- STATUS(a0497523): FAIL — generic orElse is E_TYPE_EQUALITY_MISMATCH (prelude binds orElse : Option a -> a -> a, not the Alternative member); alt.orElse and alt.empty are E_UNRESOLVED_MEMBER (members are spelled emptyA / absent); only (<|>) conforms
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 25

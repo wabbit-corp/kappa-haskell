@@ -1,8 +1,9 @@
 module mid
 
 -- §8.4: `ctorAll` may not be combined with an export alias, mirroring
--- the import-item rule of §8.3.
+-- the import-item rule of §8.3. The Spec requires rejection but does not
+-- define a portable diagnostic identity.
 export xlib.(type Rose(..) as Tree) --!! E_IMPORT_ITEM_MALFORMED
 
 --! assertErrorCount 1
--- STATUS(a0497523): FAIL — export items accept ctorAll+alias without diagnostic (the import side rejects the same combination)
+-- STATUS: SPEC-ISSUE — ctorAll-plus-alias rejection has no normative diagnostic identity

@@ -9,27 +9,21 @@
 -- run; a checker relying on an unprotected ambient quotation stack
 -- must not false-positive on either transfer.
 
-instance Lift Integer =
-    let liftCode n = __codeQuote n
-
-buildCode : Integer -> Code Integer
-let buildCode n = .< n + 1 >.
-
 viaHandler : Code Integer
 let viaHandler =
     block
         scoped effect Ask =
-            1 ask : Unit -> Integer
+            1 ask : Unit -> Code Integer
 
         let comp : Eff <[Ask : Ask]> (Code Integer) =
             do
-                let n <- Ask.ask ()
-                pure (buildCode n)
+                let nCode <- Ask.ask ()
+                pure .< .~nCode + 1 >.
 
         let handled =
             deep handle Ask comp with
                 case return x -> pure x
-                case ask _ k -> k 10
+                case ask _ k -> k .< 10 >.
 
         runPure handled
 
@@ -52,6 +46,6 @@ let main = do
     let f <- fork buildInFiber
     let ex <- await f
     match ex
-    case Success c -> runInt c
-    case Failure _ -> printlnString "fiber failed"
--- STATUS(a0497523): PASS
+    case Exit.Success c -> runInt c
+    case Exit.Failure _ -> printlnString "fiber failed"
+-- STATUS(e25d64e1): PASS

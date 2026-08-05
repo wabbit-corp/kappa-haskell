@@ -33,4 +33,4 @@ forgetExtras :
 let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : (name : String,) =
     (name = rec.name,)
 
--- STATUS(a0497523): FAIL — StableUnderRecChange and RecTailSatisfies are not defined in v1 (E_NAME_UNRESOLVED); the spec's own §13.2.7 premise spellings cannot be expressed
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_NAME_UNRESOLVED "unresolved name 'StableUnderRecChange' (not in scope)" at line 14

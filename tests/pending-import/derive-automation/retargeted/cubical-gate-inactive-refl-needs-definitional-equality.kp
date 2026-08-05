@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- Retargeted from tests/conformance/spec-coverage/rows-props/cubical-gate-inactive-no-funext.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- Comment/name retarget only; every executable pin is unchanged. The old text (and
+-- the "-no-funext" filename) asserted that §11.5 forbids function extensionality
+-- while the gate is off; at HEAD §11.5 states the portable funExt of §11.4.1
+-- remains available under an inactive gate, so the fixture now pins only that
+-- refl requires definitional equality.
+--
+-- §11.5: while the reserved 'cubical-paths' gate is inactive, equality is
+-- the intensional family of §11.4.1, and refl proves f = g only when f and
+-- g are definitionally equal: alpha-renamed lambdas are (accepted), but
+-- pointwise-equal, non-convertible lambdas are not. The portable funExt of
+-- §11.4.1 remains available as an APPLIED proof principle that could close
+-- the pointwise gap (funExt (\x -> ...) : (\x -> addInt x 0) = (\x -> x)),
+-- but per §11.4.1 no extensionality principle makes pointwise equality
+-- judgmental or adds function eta to conversion, so refl alone still fails.
+module main
+
+alphaOk : (\x -> addInt x 1) = (\y -> addInt y 1)
+let alphaOk = refl
+
+noFunext : (\x -> addInt x 0) = (\x -> x)
+let noFunext = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(3014a0d9): PASS

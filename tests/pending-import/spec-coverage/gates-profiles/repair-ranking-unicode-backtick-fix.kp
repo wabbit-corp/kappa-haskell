@@ -12,4 +12,4 @@ module main
 
 let λ = 1 --!! E_FEATURE_INACTIVE
 
--- STATUS(a0497523): FAIL — no fix-its at all on kappa.feature.gated; the local backtick repair is not offered
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.feature.gated has a fix with applicability machine-applicable; no error diagnostic matching kappa.feature.gated has a machine-applicable fix to apply

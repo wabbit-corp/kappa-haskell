@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+relation : BoolRelation Bool
+let relation _ _ = True
+
+first : IsEquivalence Bool relation
+let first = derive
+
+second : IsEquivalence Bool relation
+let second = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEvidenceSemanticIdentityEquals first second

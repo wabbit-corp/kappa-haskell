@@ -10,4 +10,4 @@
 --! requires capability buildManifest
 --! assertNoErrors
 
--- STATUS(a0497523): UNSUPPORTED — buildManifest capability not provided; kappa build --manifest --check accepts this manifest and reports the resolved package description
+-- STATUS(74742dfd): UNSUPPORTED — requires capability buildManifest: not provided

@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+derive IsSet Color
+derive Eq Color
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertSharedDerivedEvidence for IsSet Color
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertSharedDerivedEvidence' is not defined by Appendix T (§T.3))

@@ -42,8 +42,4 @@ let partial = MkTagged 5
 --! assertEval overridden 1
 --! assertType partial Int -> Tagged
 
--- STATUS(a0497523): FAIL — the compiler does not parse/elaborate a default
--- clause inside a GADT Pi binder: (offset : Int = base * 2) yields
--- E_NOT_A_TYPE "expected a type; this expression has type Int -> Type" on
--- the constructor signature (the same signature without the default is
--- accepted), and everything downstream cascades.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 6; first error: E_NOT_A_TYPE "expected a type; this expression has type Integer" at line 11; assertEval: 'defaultedOffset' evaluates to _, expected 6; assertEval: 'overridden' evaluates to _.fromInteger 1, expected 1

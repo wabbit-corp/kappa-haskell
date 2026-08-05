@@ -63,3 +63,4 @@ let main = do
     println (bigNat + 1 > bigNat)
     println (classify big)
     println (big + 1)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability representationQueries: not provided

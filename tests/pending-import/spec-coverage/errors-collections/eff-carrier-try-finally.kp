@@ -27,4 +27,4 @@ let handled =
     deep handle Log comp with
         case return x -> pure x
         case emit _ k -> k ()
--- STATUS(a0497523): FAIL — E_TYPE_EQUALITY_MISMATCH x3 "actual: Eff ... expected: IO _ _": surface try/finally hardcodes the IO carrier, while its own §19.2 rule-5 elaboration (defer in the Eff do-block) typechecks.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 21

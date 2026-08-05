@@ -12,4 +12,4 @@ let f x = mulInt x 2
 
 r : Int
 let r = f -3
--- STATUS(a0497523): FAIL — f -3 still parses as subtraction (type mismatch); Spec 5.5.1 adjacency now classifies a juxtaposed prefix occurrence
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 14; assertEval: 'r' evaluates to subInt (\ordinary x -> mulInt @0 2) 3, expected (negInt 6)

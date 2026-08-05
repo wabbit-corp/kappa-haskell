@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq _ _ = True
+
+instance PartialOrder Bit = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_UNSOLVED
+--! assertDiagnosticMatch leqAntisym

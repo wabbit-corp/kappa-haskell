@@ -449,6 +449,7 @@ renderExprSrc = render
       EVar n -> nameText n
       ERefFacet n _ -> "ref " <> nameText n
       EVarRead n _ -> "readRef (ref " <> nameText n <> ")"
+      EQuantityBorrowMarker _ -> "&"
       EHole Nothing _ -> "_"
       EHole (Just n) _ -> "?" <> nameText n
       EIntLit v _ _ -> T.pack (show v)

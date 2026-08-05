@@ -30,4 +30,4 @@ let good c =
     case Full v if True -> Some refl
     case _ -> None
 
--- STATUS(a0497523): FAIL — compiler accepts the file with 0 errors: the residual arm after a neutrally-guarded constructor arm unsoundly gets LacksCtor c Full, proving (c is Full) = False against the guarded-branches rule
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_TYPE_EQUALITY_MISMATCH] on line 23 (no diagnostics)

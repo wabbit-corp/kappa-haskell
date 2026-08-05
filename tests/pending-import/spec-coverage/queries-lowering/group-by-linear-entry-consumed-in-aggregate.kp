@@ -45,4 +45,4 @@ let bad src =
         yield sumList g.count
     ]
 
--- STATUS(a0497523): FAIL — no diagnostics: group by replaces the row environment without checking that the non-droppable (linear) pre-group entry t was consumed or transferred, so `bad` is accepted; the positive `good` half checks clean.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic error[E_QUERY_ROW_NOT_DROPPABLE] was produced (no diagnostics); no diagnostic error[E_QUERY_ROW_NOT_DROPPABLE] on line 44 (no diagnostics)

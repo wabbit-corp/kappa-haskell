@@ -11,8 +11,8 @@ data Res : Type =
 data Proof : Type =
     MkProof
 
-readRes : (& r : Res) -> Int
-let readRes (& r : Res) : Int =
+readRes : (1 & r : Res) -> Int
+let readRes (1 & r : Res) : Int =
     match r
     case MkRes n -> n
 

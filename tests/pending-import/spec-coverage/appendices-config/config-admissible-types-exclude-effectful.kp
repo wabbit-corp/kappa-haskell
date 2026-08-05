@@ -18,4 +18,4 @@ let cell : Ref Int = 0 --!! E_CONFIG_UNRESOLVED_NAME
 
 let g : Int -> Int = 0 --!! E_CONFIG_TYPE
 
--- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; manifest-checker cross-check matches all three markers (plus cascaded E_CONFIG_TYPE on the unresolved-annotation lines)
+-- STATUS(74742dfd): UNSUPPORTED — requires capability configMode: not provided

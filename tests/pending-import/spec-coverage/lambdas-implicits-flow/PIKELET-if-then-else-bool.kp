@@ -38,4 +38,4 @@ let badArms = if True then 1 else "two"    --!! kappa.type.mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
 
--- STATUS(a0497523): FAIL (condition mismatch uses a specialized numeric-literal family)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.mismatch] on line 33 (saw: E_NUMERIC_LITERAL_DOMAIN_MISMATCH@33, E_TYPE_EQUALITY_MISMATCH@37)

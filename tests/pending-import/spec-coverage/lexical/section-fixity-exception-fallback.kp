@@ -46,4 +46,4 @@ let main = do
     println (lsec 10)
     println negd
     println pre
--- STATUS(a0497523): FAIL — REVISED to Spec 5.5.2 role-marked definitions; compiler does not parse them yet (was green under the superseded plain-definition syntax)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'prefix' at start of declaration" at line 28; stdout mismatch: expected "25\n20\n-5\n105\n", got ""

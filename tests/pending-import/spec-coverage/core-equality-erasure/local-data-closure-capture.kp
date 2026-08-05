@@ -43,4 +43,4 @@ let badArgs x = x --!! E_TYPE_EQUALITY_MISMATCH
 badSites : LocalOf Int -> OtherOf Int
 let badSites x = x --!! E_TYPE_EQUALITY_MISMATCH
 
--- STATUS(a0497523): FAIL — local data declarations inside block are E_UNSUPPORTED ("this local declaration form is not supported inside block"), so closure conversion, Type-valued escape, and site-identity are all unreachable
+-- STATUS(e25d64e1): FAIL — expected only the 2 intentional type mismatches, but got 4 errors: §30.1.1 permits LocalOf/OtherOf to closure-convert their parametric type dependency, so the two extra E_PARAMETRIC_TYPE_PROMOTION diagnostics are incorrect

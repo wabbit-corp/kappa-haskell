@@ -1,6 +1,7 @@
-# DIAG-003: Positivity payload includes polarity path
+# DIAG-003: Cross-family negative occurrence
 
-A cross-family negative occurrence records its structural path.
+A cross-family negative occurrence is rejected by the strict-positivity family and relates the constructor declaration.
+The suite does not conflate the separately required polarity-path and occurrence-kind payload facts.
 
 ## Normative targets
 

@@ -20,4 +20,4 @@ setLen :
 let setLen (@0 r : RecRow) (rec : (len : Int | r)) (n : Int) : (len : Int | r) =
     rec.{ len = n }
 
--- STATUS(a0497523): FAIL — compiler accepts the premise-free tail-preserving update (0 errors); the §13.2.5 StableUnderRecChange obligation for changedLabels is not generated, which is unsound for dependent abstract tails.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0

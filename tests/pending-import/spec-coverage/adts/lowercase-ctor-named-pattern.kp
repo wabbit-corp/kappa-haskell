@@ -24,8 +24,4 @@ let got = get (some 9)
 --! assertNoErrors
 --! assertEval got 9
 
--- STATUS(a0497523): FAIL — 'case some { v } -> v' does not parse: the whole
--- enclosing let is dropped with E_RECOVERY_DECLARATION_SKIPPED "unexpected
--- 'let' at start of declaration". Positional 'case some v' works, and named
--- patterns on capitalized constructors work, so the named-pattern grammar
--- appears to require a capitalized head, contrary to §10.1.2.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration" at line 16; assertEval: 'got' evaluates to get (some 9), expected 9

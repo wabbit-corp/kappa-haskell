@@ -27,4 +27,4 @@ let useTy = MkT 1
 
 useTr : Integer
 let useTr = frob 41
--- STATUS(a0497523): FAIL — E_NOT_A_TYPE at `useTy : T`: type position resolves T to the trait facet (the trait displaced the data type instead of coexisting kind-filtered)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_NOT_A_TYPE "expected a type; this expression has type (parametric 0 a : Type ?u28937) -> Type" at line 25

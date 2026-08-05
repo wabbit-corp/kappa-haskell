@@ -1,0 +1,7 @@
+@PrivateByDefault module eqs
+
+public data Bit : Type =
+    O
+    I
+
+derive Eq Bit

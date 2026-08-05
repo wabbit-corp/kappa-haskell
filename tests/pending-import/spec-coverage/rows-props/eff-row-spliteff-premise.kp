@@ -21,4 +21,4 @@ hasAsk : forall (e : EffRow). ContainsEff e AskE AskE => Eff e Int -> Eff e Int
 let hasAsk (@0 e : EffRow) (@_ : ContainsEff e AskE AskE) (comp : Eff e Int) : Eff e Int =
     comp
 
--- STATUS(a0497523): FAIL — SplitEff/ContainsEff intrinsic traits are not in scope (E_NAME_UNRESOLVED); §11.3.1's intrinsic effect-row traits are unimplemented
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_NAME_UNRESOLVED "unresolved name 'SplitEff' (not in scope)" at line 16

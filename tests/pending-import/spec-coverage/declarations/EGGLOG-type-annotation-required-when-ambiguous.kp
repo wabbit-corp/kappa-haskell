@@ -38,4 +38,4 @@ let badEmpty = NilA                      --!! kappa.type.missing-signature
 twoEmptyList : ListA Int
 let twoEmptyList = NilA
 
--- STATUS(a0497523): FAIL (missing signature is not diagnosed before finalized-Core failure)
+-- STATUS(74742dfd): FAIL — no diagnostic error[kappa.type.missing-signature] on line 33 (no diagnostics); no diagnostic with family kappa.type.missing-signature was produced

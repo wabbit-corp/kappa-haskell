@@ -17,16 +17,17 @@ failIt : forall (@0 a : Type). ElabDiagnostic -> Elab a
 let failIt d = failElabDiagnostic d
 
 warnSeverity : DiagnosticSeverity
-let warnSeverity = DiagnosticWarning
+let warnSeverity = DiagnosticSeverity.DiagnosticWarning
 
 machine : DiagnosticFixApplicability
-let machine = MachineApplicable
+let machine = DiagnosticFixApplicability.MachineApplicable
 
 mkFix : String -> List ElabDiagnosticEdit -> ElabDiagnosticFix
 let mkFix title edits =
-    (title = title, applicability = MachineApplicable, edits = edits)
+    (title = title, applicability = DiagnosticFixApplicability.MachineApplicable, edits = edits)
 
 mkEdit : SyntaxOrigin -> String -> ElabDiagnosticEdit
 let mkEdit o replacement =
     (origin = o, replacement = replacement)
--- STATUS(a0497523): FAIL — ElabDiagnostic/DiagnosticSeverity/DiagnosticFixApplicability/emitElabDiagnostic/failElabDiagnostic are all E_NAME_UNRESOLVED (structured diagnostic surface unimplemented)
+
+-- STATUS(6c99ee15): FAIL — E_NAME_UNRESOLVED ElabDiagnostic (§21.9 structured-diagnostic API unimplemented)

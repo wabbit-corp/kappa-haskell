@@ -48,3 +48,5 @@ let flag_desc (f : Flag) : String =
 
 -- expect: classify_bad, classify_three_dupes, classify_string_dupe rejected with unreachable;
 --         classify_ok, flag_desc accepted
+
+-- STATUS(2a161551): FAIL — TEST-ISSUE: duplicate literal arms need not be rejected or warned about by the current Spec.

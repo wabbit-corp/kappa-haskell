@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- DX expectation encountered in the `bifunctors` smoke tests. A long curried
+-- call is naturally formatted with one argument per indented line, especially
+-- when it follows `match`. Kappa currently says there is no continuation
+-- context and then skips the next declaration, so users must add parentheses
+-- around the entire application even though indentation already makes the
+-- grouping visually unambiguous. This becomes pervasive in higher-kinded code,
+-- whose trait arguments and lambdas make single-line calls unusually long.
+
+module main
+
+answer : Int
+let answer = addInt
+    20
+    22

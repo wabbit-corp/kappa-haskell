@@ -28,4 +28,4 @@ main : UIO Unit
 let main = do
     printlnString (showInt n)
 
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 7; first error: E_NOT_A_TYPE "expected a type; this expression has type Option __this.a" at line 14; stdout mismatch: expected "1\n", got ""

@@ -1,0 +1,51 @@
+module bifunctors.run_tests
+
+import data.bifunctor.*
+import data.bifoldable.*
+import data.bitraversable.*
+import data.either.*
+import std.unicode.(graphemeCount)
+
+pairMapped : Bool
+let pairMapped =
+    match bimap (\x -> addInt x 1) graphemeCount (Pair 41 "four")
+    case Pair n len -> eqInt n 42 && eqInt (natToInt len) 4
+
+folded : Bool
+let folded =
+    eqInt (bifoldr addInt addInt 0 (Pair 20 22)) 42
+
+traversed : Bool
+let traversed =
+    match (bitraverse (\x -> Some (addInt x 1))
+                      (\x -> Some (addInt x 2))
+                      (Pair 19 21))
+    case None -> False
+    case Some pair ->
+        match pair
+        case Pair a b -> eqInt a 20 && eqInt b 23
+
+eitherMapped : Bool
+let eitherMapped =
+    let leftValue : Either Int Nat = bimap (\n -> addInt n 1) graphemeCount (Left 41)
+    let rightValue : Either Int Nat = bimap (\n -> addInt n 1) graphemeCount (Right "four")
+    match leftValue
+    case Right ignored -> False
+    case Left leftNumber ->
+        match rightValue
+        case Left ignored -> False
+        case Right rightNumber -> eqInt leftNumber 42 && eqInt (natToInt rightNumber) 4
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    printlnString (line "bimap.pair" pairMapped)
+    printlnString (line "bifoldr.pair" folded)
+    printlnString (line "bitraverse.option" traversed)
+    printlnString (line "bimap.either" eitherMapped)
+    if pairMapped && folded && traversed && eitherMapped then
+        printlnString "BIFUNCTORS TESTS: ALL PASS"
+    else
+        printlnString "BIFUNCTORS TESTS: FAIL"

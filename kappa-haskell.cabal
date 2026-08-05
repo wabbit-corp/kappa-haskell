@@ -24,6 +24,7 @@ common deps
     build-depends:
         , array       >=0.5
         , base        >=4.17 && <5
+        , binary      >=0.8
         , bytestring  >=0.11
         , containers  >=0.6
         , directory   >=1.3
@@ -50,6 +51,7 @@ library
         Kappa.Backend.Repr
         Kappa.Backend.Verify
         Kappa.Arithmetic
+        Kappa.AsyncException
         Kappa.Builtins
         Kappa.Build.Lock
         Kappa.Build.Plan
@@ -58,11 +60,28 @@ library
         Kappa.Build.Types
         Kappa.Cardinality
         Kappa.Check
+        Kappa.Check.Artifact
+        Kappa.Check.GeneratedPrelude
+        Kappa.Check.Pending
+        Kappa.Check.Patch
+        Kappa.Check.UniverseConstraints
         Kappa.Config
         Kappa.Core
         Kappa.CoreText
         Kappa.CoreLint
         Kappa.CoreOps
+        Kappa.KFrontIR.Identity
+        Kappa.KFrontIR.Origin
+        Kappa.KFrontIR.Types
+        Kappa.KFrontIR.Build
+        Kappa.KFrontIR.Dump
+        Kappa.KFrontIR.Expand
+        Kappa.KFrontIR.Facts
+        Kappa.KFrontIR.Phase
+        Kappa.KFrontIR.Query
+        Kappa.KFrontIR.Verify
+        Kappa.DependencyFrontier
+        Kappa.DirectedGraph
         Kappa.Diagnostic
         Kappa.Eval
         Kappa.Explain
@@ -71,6 +90,7 @@ library
         Kappa.Lexer
         Kappa.Level
         Kappa.LevelEvidence
+        Kappa.MonotoneWorklist
         Kappa.NominalVariance
         Kappa.Observation
         Kappa.ObservationDeps
@@ -85,18 +105,23 @@ library
         Kappa.Resolve
         Kappa.SemanticHash
         Kappa.Source
+        Kappa.StructuralBinary
         Kappa.Syntax
         Kappa.SyntaxOps
+        Kappa.SurfaceValidation
         Kappa.TestHarness
         Kappa.Termination
         Kappa.Token
         Kappa.TypeTag
         Kappa.Unicode
         Kappa.UnicodeData
+        Kappa.UniverseProjection
         Kappa.Usage
 
     other-modules:
         Data.Integer.SAT
+        Kappa.KFrontIR.Identity.Internal
+        Kappa.KFrontIR.Types.Internal
 
     hs-source-dirs:   src
     default-language: GHC2021
@@ -122,6 +147,14 @@ executable kappa
     -- fire the deadlock detector on a throwTo immediately followed by a wait).
     ghc-options:      -threaded -rtsopts "-with-rtsopts=-N1 -K64m"
 
+executable gen-kappa-prelude
+    import:           warnings, deps
+    main-is:          GeneratePreludeArtifact.hs
+    build-depends:    kappa-haskell
+    hs-source-dirs:   app
+    default-language: GHC2021
+    default-extensions: LambdaCase, OverloadedStrings
+
 test-suite kappa-test
     import:           warnings, deps
     type:             exitcode-stdio-1.0
@@ -133,3 +166,13 @@ test-suite kappa-test
     -- same RTS settings as the executable (single-capability threaded runtime,
     -- 64m stack), so in-process fixtures behave identically to the CLI
     ghc-options:      -threaded -rtsopts "-with-rtsopts=-N1 -K64m"
+
+test-suite kappa-async-wake-test
+    import:           warnings, deps
+    type:             exitcode-stdio-1.0
+    main-is:          AsyncWakeSpec.hs
+    build-depends:    kappa-haskell
+    hs-source-dirs:   test
+    default-language: GHC2021
+    default-extensions: DerivingStrategies
+    ghc-options:      -threaded

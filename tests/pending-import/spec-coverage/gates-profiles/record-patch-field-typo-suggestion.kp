@@ -20,4 +20,4 @@ base : (name : String, age : Integer)
 let base = (name = "ada", age = 36)
 
 let bad = base.{ agee = 37 } --!! kappa.name.unresolved
--- STATUS(a0497523): FAIL — E_UNKNOWN_FIELD payload is {"kind":"none"}: no name, no suggestion, no fix (message does not even list the fields)
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/name = agee (saw: /payload/name=<absent>); no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = age (saw: /payload/suggestion=<absent>); no error diagnostic matching kappa.name.unresolved has a fix with applicability maybe-applicable

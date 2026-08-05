@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+unitValue : Unit
+let unitValue = derive
+
+reflexive :
+    forall (a : Type) (x : a).
+    x = x
+let reflexive = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertDeriveOutcome unitValue Solved
+--! assertDeriveOutcome reflexive Solved
+--! assertDeriveProofChecks reflexive

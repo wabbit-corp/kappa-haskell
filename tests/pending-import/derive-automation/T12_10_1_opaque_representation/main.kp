@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+import secret.(Token)
+
+derive Eq Token
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.derive

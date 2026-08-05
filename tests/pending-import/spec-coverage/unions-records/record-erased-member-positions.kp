@@ -29,6 +29,4 @@ let badRuntime r = r.index
 -- NEGATIVE (2): opaque member with written non-0 quantity is ill-formed
 type BadOpaque = (opaque 1 T : Type, value : this.T)
 
--- STATUS(a0497523): FAIL — the compiler accepts both negatives (0
--- errors): erased record-field projections are not usage-checked at
--- runtime demand, and `opaque 1 T : Type` is not rejected.
+-- STATUS(74742dfd): FAIL — expected 2 errors, got 1; first error: E_QTT_QUANTITY_UNSATISFIED "an opaque record member must have quantity 0 in portable v1 (§13.2.1)" at line 30

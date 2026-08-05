@@ -1,0 +1,59 @@
+module profunctors.run_tests
+
+import data.bifunctor.*
+import data.either.*
+import data.profunctor.core.*
+import data.profunctor.strong.*
+import data.profunctor.choice.*
+import data.profunctor.closed.*
+import std.unicode.(graphemeCount)
+
+run : forall a b. Fn a b -> a -> b
+let run wrapped input =
+    match wrapped
+    case MkFn function -> function input
+
+dimapped : Bool
+let dimapped =
+    eqInt (run (dimap graphemeCount (\n -> addInt n 1) (MkFn natToInt)) "abcd") 5
+
+strongMapped : Bool
+let strongMapped =
+    match run (firstP (MkFn (\n -> addInt n 1))) (Pair 41 "kept")
+    case Pair n text -> eqInt n 42 && text == "kept"
+
+choiceMapped : Bool
+let choiceMapped =
+    match run (rightP (MkFn graphemeCount)) (Right "four")
+    case Left untouched -> False
+    case Right n -> eqInt (natToInt n) 4
+
+starMapped : Bool
+let starMapped =
+    match (dimap graphemeCount (\n -> addInt n 1)
+                 (MkStar (\n -> Some (natToInt n))))
+    case MkStar function ->
+        match function "four"
+        case None -> False
+        case Some n -> eqInt n 5
+
+closedMapped : Bool
+let closedMapped =
+    let lifted = closed (MkFn (\n -> addInt n 1))
+    let reader = run lifted (\flag -> if flag then 41 else 0)
+    eqInt (reader True) 42 && eqInt (reader False) 1
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    printlnString (line "profunctor.dimap" dimapped)
+    printlnString (line "profunctor.strong" strongMapped)
+    printlnString (line "profunctor.choice" choiceMapped)
+    printlnString (line "profunctor.star" starMapped)
+    printlnString (line "profunctor.closed" closedMapped)
+    if dimapped && strongMapped && choiceMapped && starMapped && closedMapped then
+        printlnString "PROFUNCTORS TESTS: ALL PASS"
+    else
+        printlnString "PROFUNCTORS TESTS: FAIL"

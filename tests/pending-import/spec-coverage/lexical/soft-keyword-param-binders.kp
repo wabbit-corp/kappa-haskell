@@ -21,4 +21,4 @@ let applyC case x = x
 
 applyD : (Integer -> Integer) -> Integer -> Integer
 let applyD do x = x
--- STATUS(a0497523): FAIL — all three declarations skipped whole (E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let'" at col 1); match/case/do rejected as bare param binders while 'effect' is accepted there
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration" at line 17

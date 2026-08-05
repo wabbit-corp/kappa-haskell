@@ -1,0 +1,21 @@
+@PrivateByDefault module main
+
+trait A =
+    proofA : True = True
+
+trait B =
+    proofB : True = True
+
+fallback instance B => A = derive
+fallback instance A => B = derive
+
+value : A
+let value = summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability fallbackInstances
+--! assertDiagnostic error E_INSTANCE_SEARCH_NONTERMINATING
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

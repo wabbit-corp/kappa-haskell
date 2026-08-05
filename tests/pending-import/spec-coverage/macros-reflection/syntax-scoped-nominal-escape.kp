@@ -1,5 +1,8 @@
 --! mode check
---! assertDiagnosticMatch (scoped|nominal).*(escape|scope)|(escape|scope).*(scoped|nominal)
+-- No portable code/family exists for scoped-nominal escape (ledger
+-- Part III); the regex accepts any wording that names the escape, the
+-- scope rule, or the escaping token itself.
+--! assertDiagnosticMatch escape|scope|Token
 
 -- §21.4 + §9.3.1.1: a Syntax value's hidden scope metadata records local
 -- nominal-scope tokens; a Syntax value mentioning a scoped local nominal
@@ -15,4 +18,5 @@ let bad =
         scoped data Token : Type =
             Token
         '{ type Token }
--- STATUS(a0497523): FAIL — 'scoped data' inside block is E_UNSUPPORTED (scoped local declarations unimplemented), so the scoped-nominal Syntax escape rule is unreachable
+
+-- STATUS(6c99ee15): FAIL — no diagnostics: scoped-nominal escape accepted (soundness gap; §21.4/§9.3.1.1)

@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+choosePath :
+    forall (a : Type) (x : a) (y : a).
+    (p : x = y) ->
+    (q : x = y) ->
+    x = y
+let choosePath p q = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnostic error E_DERIVE_AMBIGUOUS

@@ -1,0 +1,4 @@
+--! assertStepNoErrors 0
+--! assertStepNoErrors 1
+--! assertStepEvidenceSemanticIdentityEquals 0 1 main.evidence
+--! assertStepArtifactFingerprintDiffers 0 1 main.evidence

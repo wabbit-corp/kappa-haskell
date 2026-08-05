@@ -1,0 +1,4 @@
+--! assertStepNoErrors 0
+--! assertStepNoErrors 1
+--! assertStepSemanticHashDiffers 0 1 main.result
+--! assertStepInterfaceHashDiffers 0 1 main

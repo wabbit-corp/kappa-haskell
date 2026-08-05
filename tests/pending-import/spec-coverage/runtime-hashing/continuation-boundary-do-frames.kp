@@ -42,4 +42,4 @@ let main =
         case note n k -> do
             printlnString ("note:" ++ showInt n)
             k ()
--- STATUS(a0497523): FAIL — prints "note:90\nnote:10\nnote:50\nresult:7": an Eff do-block defer whose action performs an effect runs EAGERLY at registration time (probed separately: with no abandonment at all, "defer (Log.note 90)" still fires before a later Log.note 50), so exit-action stacks never reach the captured segment and the boundary rule cannot be exercised.
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "note:10\nnote:50\nnote:90\nresult:7\n", got "note:90\nnote:10\nnote:50\nresult:7\n"

@@ -1,0 +1,19 @@
+let buildConfig : BuildConfig =
+    package
+        ( name = "test.fragment_known_disabled"
+        , version = semver "0.0.0"
+        , sourceRoots =
+            [ sourceRoot "src"
+            ]
+        , fragmentAxes =
+            [ axis "flavor" [tag "selected", tag "disabled"]
+            ]
+        , targets =
+            [ library
+                ( name = "lib"
+                , backend = jvm ()
+                , fragments = tags ["selected"]
+                , modules = modulesUnder "demo"
+                )
+            ]
+        )

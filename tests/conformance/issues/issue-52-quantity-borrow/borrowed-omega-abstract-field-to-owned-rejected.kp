@@ -1,0 +1,17 @@
+module main
+
+type Box (a : Type) = (value : a,)
+
+consumeOpaque : forall (a : Type). (1 x : a) -> a
+let consumeOpaque x = x
+
+bad : forall (a : Type). (& box : Box a) -> a
+let bad box = consumeOpaque box.value
+
+-- The omitted field quantity is omega, but that is only the occurrence-side
+-- permission to duplicate. The abstract payload has no visible duplicability
+-- authority, so an owned transfer from the borrowed field must fail closed.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

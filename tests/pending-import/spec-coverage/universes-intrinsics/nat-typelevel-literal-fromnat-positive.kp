@@ -109,3 +109,4 @@ succImageNotDefinitional :
     (n : Nat) ->
     typeLevelFromInteger (Nat.Succ n) = typeLevelSucc (typeLevelFromInteger n)
 let succImageNotDefinitional n = refl --!! E_TYPE_MISMATCH
+-- STATUS: SPEC-ISSUE — the Spec names typeLevelFiniteBelowOmega but omits its canonical signature/application form

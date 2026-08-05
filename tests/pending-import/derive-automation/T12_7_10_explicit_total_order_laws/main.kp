@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+relation : BoolRelation Bool
+let relation x y =
+    match (x, y)
+    case (True, False) -> False
+    case _             -> True
+
+laws : IsTotalOrder Bool relation
+let laws = derive
+
+needsAmbient : Ord Bool
+let needsAmbient = laws
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

@@ -1,0 +1,26 @@
+let buildConfig : BuildConfig = package
+    { name = "recursion-schemes"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = []
+    , targets =
+        [ library
+            { name = "recursion-schemes"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , modules = modulesUnder "data.functor.foldable"
+            , dependencies = []
+            }
+        , executable
+            { name = "recursion-schemes-tests"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , main = module "recursion_schemes.run_tests"
+            , modules = modulesUnder "data.functor.foldable"
+            , dependencies = []
+            , hostBindings = []
+            }
+        ]
+    }

@@ -1,0 +1,6 @@
+module main
+
+import helper.*
+
+main : UIO Unit
+let main = printInt answer

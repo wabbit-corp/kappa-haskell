@@ -59,4 +59,4 @@ let main = do
     catchIO (lookupKey "greeting") reportStoreError
     ioPure ()
 
--- STATUS(a0497523): PASS
+-- STATUS: SPEC-ISSUE — portable source cannot inspect BridgeFailure, construct bridge values, or implement a complete stub BridgeHandle

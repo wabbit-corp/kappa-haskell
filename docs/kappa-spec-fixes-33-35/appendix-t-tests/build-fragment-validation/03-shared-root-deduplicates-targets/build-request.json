@@ -1,0 +1,7 @@
+{
+  "mode": "check",
+  "targets": [
+    "a",
+    "b"
+  ]
+}

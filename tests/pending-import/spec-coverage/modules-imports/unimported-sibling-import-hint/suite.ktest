@@ -3,4 +3,4 @@
 --! assertErrorCount 1
 --! assertDiagnostic error E_NAME_UNRESOLVED
 --! assertDiagnosticMatch lib
--- STATUS(a0497523): FAIL — message is only "unresolved name 'helperValue' (not in scope)"; the exporting sibling module 'lib' is never mentioned
+-- STATUS(74742dfd): FAIL — no diagnostic message matches /lib/ (saw: "unresolved name 'helperValue' (not in scope)")

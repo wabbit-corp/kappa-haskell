@@ -11,4 +11,4 @@ let bare = ~~5
 
 parenApp : Int
 let parenApp = (~~ 5)
--- STATUS(a0497523): PASS
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 10; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'prefix' at start of declaration" at line 4; assertEval: 'bare' evaluates to _, expected -5; assertEval: 'parenApp' evaluates to \ordinary __x -> _, expected -5

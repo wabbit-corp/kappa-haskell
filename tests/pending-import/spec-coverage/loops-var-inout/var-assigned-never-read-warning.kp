@@ -38,4 +38,4 @@ let loopOk limit =
 
 main : UIO Unit
 let main = printlnString "ok"
--- STATUS(a0497523): FAIL — write-only and never-touched vars compile with 0 warnings; Spec 3.2.20 now mandates W_VAR_NEVER_READ (expected 2)
+-- STATUS(74742dfd): FAIL — expected 2 warnings, got 0

@@ -1,0 +1,26 @@
+@PrivateByDefault module main
+
+data Vec (n : Nat) (0 a : Type) : Type =
+    VNil  : Vec 0 a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (n + 1) a
+
+mapVec :
+    forall (n : Nat) (a : Type) (b : Type).
+    (a -> b) -> Vec n a -> Vec n b
+let mapVec f xs =
+    match xs
+    case VNil -> VNil
+    case VCons head tail -> VCons (f head) (mapVec f tail)
+
+mapVecIdentity :
+    forall (n : Nat) (a : Type) (xs : Vec n a).
+    mapVec (\x -> x) xs = xs
+let mapVecIdentity = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed mapVecIdentity indexed-induction
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveProviderUsed' is not defined by Appendix T (§T.3))

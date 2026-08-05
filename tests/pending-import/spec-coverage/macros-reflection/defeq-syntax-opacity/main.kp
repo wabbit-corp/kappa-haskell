@@ -5,20 +5,28 @@ module main
 -- module's visibility/opacity rules: a transparent global delta-unfolds
 -- (True), beta-reduction applies (True), but an imported opaque
 -- definition stays opaque here, so `secret` is NOT judged equal to its
--- hidden body 7 (False).
+-- hidden body 7 (False). Elab actions re-enter object code only through
+-- $(...) splices (§21.2, §21.9), so each probe computes its Bool inside
+-- a splice and reifies it as quoted True/False syntax.
 import oplib.(secret)
 
 two : Integer
 let two = 2
 
 deltaEq : Bool
-let deltaEq = defEqSyntax '{ two } '{ 2 }
+let deltaEq = $(do
+    let b <- defEqSyntax '{ two } '{ 2 }
+    pure (if b then '{ True } else '{ False }))
 
 betaEq : Bool
-let betaEq = defEqSyntax '{ (\x -> x) 2 } '{ 2 }
+let betaEq = $(do
+    let b <- defEqSyntax '{ (\x -> x) 2 } '{ 2 }
+    pure (if b then '{ True } else '{ False }))
 
 opaqueEq : Bool
-let opaqueEq = defEqSyntax '{ secret } '{ 7 }
+let opaqueEq = $(do
+    let b <- defEqSyntax '{ secret } '{ 7 }
+    pure (if b then '{ True } else '{ False }))
 
 main : UIO Unit
 let main = do
@@ -29,4 +37,5 @@ let main = do
 --! mode run
 --! assertNoErrors
 --! assertStdout "True\nTrue\nFalse\n"
--- STATUS(a0497523): PASS
+
+-- STATUS(6c99ee15): FAIL — E_UNSOLVED_IMPLICIT (FromInteger inside quotation; §21.1 defers quote-site implicits — impl gap); the former Elab-vs-Bool phase error is fixed via splices

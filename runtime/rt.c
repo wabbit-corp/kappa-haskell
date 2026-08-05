@@ -38,6 +38,105 @@ const char *const KRT2_CAPABILITIES[] = {
   "rt-core", "rt-parallel", "rt-blocking", "rt-shared-stm", "rt-atomics", NULL
 };
 
+#define KRT2_KIND_MASK_FRAME "krt2.maskFrame"
+
+static void recompute_mask_state(Fiber *f) {
+  KMaskState effective = f->mask_base;
+  for (MaskFrame *frame = f->mask_top; frame; frame = frame->prev) {
+    if (frame->active && !frame->suspended && frame->state > effective)
+      effective = frame->state;
+  }
+  f->mask_effective = effective;
+}
+
+KMaskState krt2i_mask_state(Fiber *f) {
+  return f ? f->mask_effective : KMASK_INTERRUPTIBLE;
+}
+
+int krt2i_mask_interruptible(Fiber *f) {
+  return krt2i_mask_state(f) == KMASK_INTERRUPTIBLE;
+}
+
+int krt2i_mask_uninterruptible(Fiber *f) {
+  return krt2i_mask_state(f) == KMASK_UNINTERRUPTIBLE;
+}
+
+MaskFrame *krt2i_mask_push(Fiber *f, KMaskState state) {
+  MaskFrame *frame = (MaskFrame *)GC_MALLOC(sizeof(MaskFrame));
+  frame->owner = f;
+  frame->state = state;
+  frame->active = 1;
+  frame->suspended = 0;
+  frame->prev = f->mask_top;
+  f->mask_top = frame;
+  recompute_mask_state(f);
+  return frame;
+}
+
+static void retire_mask_frame(MaskFrame *frame) {
+  frame->active = 0;
+  frame->suspended = 0;
+  frame->owner = NULL;
+  frame->prev = NULL;
+}
+
+void krt2i_mask_pop(Fiber *f, MaskFrame *frame) {
+  if (!frame || frame->owner != f || !frame->active || f->mask_top != frame)
+    krt_fail("internal: interruption mask-frame stack mismatch");
+  MaskFrame *prev = frame->prev;
+  retire_mask_frame(frame);
+  f->mask_top = prev;
+  recompute_mask_state(f);
+}
+
+int krt2i_mask_suspend(Fiber *f, MaskFrame *frame) {
+  if (!frame || frame->owner != f || !frame->active || frame->suspended)
+    return 0;
+  MaskFrame *top = f->mask_top;
+  while (top && (!top->active || top->suspended)) top = top->prev;
+  if (top != frame) return 0;
+  frame->suspended = 1;
+  recompute_mask_state(f);
+  return 1;
+}
+
+void krt2i_mask_reinstate(Fiber *f, MaskFrame *frame) {
+  if (!frame || frame->owner != f || !frame->active || !frame->suspended)
+    krt_fail("internal: interruption mask-frame restore mismatch");
+  frame->suspended = 0;
+  recompute_mask_state(f);
+}
+
+static DynamicState *capture_dynamic_state(Fiber *f) {
+  DynamicState *state = (DynamicState *)GC_MALLOC(sizeof(DynamicState));
+  state->exits = f->cur_exits;
+  state->mask_top = f->mask_top;
+  return state;
+}
+
+static void install_dynamic_state(Fiber *f, DynamicState *state) {
+  if (!state) krt_fail("internal: missing captured dynamic state");
+  f->cur_exits = state->exits;
+  f->mask_top = state->mask_top;
+  recompute_mask_state(f);
+}
+
+/* A tail-resumptive transfer discards the clause continuation.  Retire any
+ * clause-local mask frames whose KK_POPMASK frames are discarded with it, so
+ * escaped restore closures are inert and do not retain the fiber or parent
+ * chain.  The handler prompt's mask top must be an ancestor of the current one. */
+static void discard_masks_to(Fiber *f, MaskFrame *boundary) {
+  while (f->mask_top != boundary) {
+    MaskFrame *frame = f->mask_top;
+    if (!frame || frame->owner != f || !frame->active)
+      krt_fail("internal: tail resumption crossed an invalid mask boundary");
+    MaskFrame *prev = frame->prev;
+    retire_mask_frame(frame);
+    f->mask_top = prev;
+  }
+  recompute_mask_state(f);
+}
+
 /* ── Exit / Cause / outcome constructors (§28 shapes) ───────────────────────
  * All result ctors the runtime builds now carry their FIXED KCT_ id (kappart.h)
  * so a .kp id-based `match` dispatches correctly; the old by-name ctor1/ctor2
@@ -107,6 +206,7 @@ KValue *krt2_interrupt_fork_as(KValue *c, KValue *f) { return op2(OP_INTERRUPT_F
 KValue *krt2_uninterruptible(KValue *b)   { return op1(OP_UNINTERRUPTIBLE, "rt.uninterruptible", b); }
 KValue *krt2_poll(void)                   { return op0(OP_POLL, "rt.poll"); }
 KValue *krt2_mask(KValue *f)              { return op1(OP_MASK, "rt.mask", f); }
+KValue *krt2_uninterruptible_mask(KValue *f) { return op1(OP_UNINTERRUPTIBLE_MASK, "rt.uninterruptibleMask", f); }
 KValue *krt2_ensuring(KValue *body, KValue *fin) { return krt2_finally(body, fin); } /* = finally */
 KValue *krt2_blocking(KValue *body)       { return op1(OP_BLOCKING, "rt.blocking", body); }
 
@@ -482,7 +582,8 @@ static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *contr
         int origin_kind = rkind;
         KValue *origin_val = rval;
         Fiber *masked_fiber = g_cur_fiber;
-        if (masked_fiber) masked_fiber->mask_depth++;
+        MaskFrame *finalizer_mask =
+            masked_fiber ? krt2i_mask_push(masked_fiber, KMASK_MASKED) : NULL;
         for (int i = xs->n - 1; i >= 0; i--) {
           KValue *fin = finalizer_action_for_reason(xs->items[i], origin_kind, origin_val);
           int fin_control = RK_NORMAL;
@@ -492,7 +593,7 @@ static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *contr
           krt2_sync_reason(fr, fin_control, &ckind, &cval);
           compose_reason_into(&rkind, &rval, ckind, cval);
         }
-        if (masked_fiber && masked_fiber->mask_depth > 0) masked_fiber->mask_depth--;
+        if (finalizer_mask) krt2i_mask_pop(masked_fiber, finalizer_mask);
         return krt2_sync_apply_reason(rkind, rval, control);
       }
       case OP_DEFER:
@@ -597,7 +698,7 @@ static void *blocking_worker_main(void *arg) {
   int saved_blocking_lane = g_on_blocking_lane;
   g_on_blocking_lane = 1;
   if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-      && f->mask_depth == 0) {
+      && krt2i_mask_interruptible(f)) {
     if (deliver_interrupt(req->rt, f)) fiber_step(req->rt, f);
   } else {
     fiber_step(req->rt, f);
@@ -663,7 +764,8 @@ KValue *krt2_run_legacy_finalizers(KValue *primary, KValue **defers, int *count)
   KValue *origin_val = rval;
 
   Fiber *masked_fiber = g_cur_fiber;
-  if (masked_fiber) masked_fiber->mask_depth++;
+  MaskFrame *finalizer_mask =
+      masked_fiber ? krt2i_mask_push(masked_fiber, KMASK_MASKED) : NULL;
   while (*count > 0) {
     KValue *fin = defers[--(*count)];
     fin = finalizer_action_for_reason(fin, origin_kind, origin_val);
@@ -674,7 +776,7 @@ KValue *krt2_run_legacy_finalizers(KValue *primary, KValue **defers, int *count)
     krt2_sync_reason(fr, fin_control, &ckind, &cval);
     compose_reason_into(&rkind, &rval, ckind, cval);
   }
-  if (masked_fiber && masked_fiber->mask_depth > 0) masked_fiber->mask_depth--;
+  if (finalizer_mask) krt2i_mask_pop(masked_fiber, finalizer_mask);
 
   return krt2_sync_reify_reason(rkind, rval);
 }
@@ -689,10 +791,10 @@ static KValue *loop_branch(KEnv *env, KValue *c) {
   return krt2_break();                          /* condition False: exit the loop   */
 }
 
-/* `restore` (the function `mask` hands to its body): runs `act` at the
- * interruptibility level that held at mask entry, captured in env[0]. */
+/* `restore` carries the exact GC-stable MaskFrame identity in env[0]. The
+ * CK-machine authenticates its owner/topmost/active state before suspension. */
 static KValue *restore_fn(KEnv *env, KValue *act) {
-  return op2(OP_RESTORE, "rt.restore", act, kvar(env, 0));  /* [act, outerDepth] */
+  return op2(OP_RESTORE, "rt.restore", act, kvar(env, 0));  /* [act, frame token] */
 }
 
 /* §18.7/§19.5/§32.2.6 abort-exit tokens for legacy native do-scopes.
@@ -1001,7 +1103,9 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
   f->daemon = 0;
   f->locals = NULL;               /* §18.1.7 FiberRef overrides (lazily allocated) */
   f->all_prev = f->all_next = NULL;
-  f->mask_depth = 0;
+  f->mask_base = KMASK_INTERRUPTIBLE;
+  f->mask_effective = KMASK_INTERRUPTIBLE;
+  f->mask_top = NULL;
   f->resumed = 0;                 /* fix 2: set on each (re)entry to fiber_step    */
   /* §32.2.20 abandonment drain: no drain is in progress on a fresh fiber.  This
    * is the empty drain_ae stack.  GC_MALLOC already zeroes, but making it
@@ -1062,6 +1166,10 @@ static void mark_exit_stack_shared(ExitStack *xs) {
   for (int i = 0; i < xs->n; i++) krc_mark_shared_recursive(xs->items[i]);
 }
 
+static void mark_dynamic_state_shared(DynamicState *state) {
+  if (state) mark_exit_stack_shared(state->exits);
+}
+
 static void mark_handler_shared(Handler *h) {
   if (!h) return;
   krc_mark_shared_recursive(h->ret);
@@ -1081,7 +1189,7 @@ static void mark_abort_exits_shared(AbortExit *ae) {
 static void mark_abandon_end_shared(AbandonEnd *ae) {
   for (; ae; ae = ae->prev_drain) {
     mark_cont_stack_shared(ae->kont);
-    mark_exit_stack_shared(ae->saved_exits);
+    mark_dynamic_state_shared(ae->saved_dynamic);
     krc_mark_shared_recursive(ae->rval);
     krc_mark_shared_recursive(ae->rlabel);
   }
@@ -1100,10 +1208,10 @@ static void mark_resumption_shared(Resumption *r) {
   if (!r) return;
   mark_cont_stack_shared(r->head);
   if (!r->head) mark_cont_stack_shared(r->tail);
-  mark_exit_stack_shared(r->cur_exits);
+  mark_dynamic_state_shared(r->captured);
+  mark_dynamic_state_shared(r->prompt);
   krc_mark_shared_recursive(r->label);
   mark_handler_shared((Handler *)r->handler);
-  mark_exit_stack_shared((ExitStack *)r->handler_exits);
 }
 
 static void mark_cont_aux_shared(Cont *c) {
@@ -1117,7 +1225,10 @@ static void mark_cont_aux_shared(Cont *c) {
       break;
     case KK_HANDLER:
       mark_handler_shared((Handler *)c->aux);
-      mark_exit_stack_shared((ExitStack *)c->aux2);
+      mark_dynamic_state_shared((DynamicState *)c->aux2);
+      break;
+    case KK_RESTORESTATE:
+      mark_dynamic_state_shared((DynamicState *)c->aux);
       break;
     case KK_ABANDON:
       mark_resumption_shared((Resumption *)c->aux);
@@ -1187,6 +1298,9 @@ void krt2i_mark_fgn_payload_shared(const char *kind, void *payload) {
   } else if (strcmp(kind, KRT2_KIND_FIBERREF) == 0) {
     /* FiberRef handles are immediate ids today; this branch pins the exported
      * kind as carrying no hidden KValue payload if a host wraps one as K_FGN. */
+  } else if (strcmp(kind, KRT2_KIND_MASK_FRAME) == 0) {
+    /* MaskFrame contains only scheduler metadata and links to other MaskFrames;
+     * it owns no KValue payload. The GC traces the frame chain itself. */
 #ifndef NDEBUG
   } else if (strncmp(kind, "rt.", 3) == 0 || strncmp(kind, "krt2.", 5) == 0) {
     assert(!"unhandled runtime K_FGN kind in krt2i_mark_fgn_payload_shared");
@@ -1206,6 +1320,11 @@ static void assert_exit_stack_shared(ExitStack *xs, Krt2AssertSharedChild assert
   for (int i = 0; i < xs->n; i++) assert_child(ctx, xs->items[i]);
 }
 
+static void assert_dynamic_state_shared(
+    DynamicState *state, Krt2AssertSharedChild assert_child, void *ctx) {
+  if (state) assert_exit_stack_shared(state->exits, assert_child, ctx);
+}
+
 static void assert_handler_shared(Handler *h, Krt2AssertSharedChild assert_child, void *ctx) {
   if (!h) return;
   assert_child(ctx, h->ret);
@@ -1221,7 +1340,7 @@ static void assert_abort_exits_shared(AbortExit *ae, Krt2AssertSharedChild asser
 static void assert_abandon_end_shared(AbandonEnd *ae, Krt2AssertSharedChild assert_child, void *ctx) {
   for (; ae; ae = ae->prev_drain) {
     assert_cont_stack_shared(ae->kont, assert_child, ctx);
-    assert_exit_stack_shared(ae->saved_exits, assert_child, ctx);
+    assert_dynamic_state_shared(ae->saved_dynamic, assert_child, ctx);
     assert_child(ctx, ae->rval);
     assert_child(ctx, ae->rlabel);
   }
@@ -1240,10 +1359,10 @@ static void assert_resumption_shared(Resumption *r, Krt2AssertSharedChild assert
   if (!r) return;
   assert_cont_stack_shared(r->head, assert_child, ctx);
   if (!r->head) assert_cont_stack_shared(r->tail, assert_child, ctx);
-  assert_exit_stack_shared(r->cur_exits, assert_child, ctx);
+  assert_dynamic_state_shared(r->captured, assert_child, ctx);
+  assert_dynamic_state_shared(r->prompt, assert_child, ctx);
   assert_child(ctx, r->label);
   assert_handler_shared((Handler *)r->handler, assert_child, ctx);
-  assert_exit_stack_shared((ExitStack *)r->handler_exits, assert_child, ctx);
 }
 
 static void assert_cont_aux_shared(Cont *c, Krt2AssertSharedChild assert_child, void *ctx) {
@@ -1257,7 +1376,10 @@ static void assert_cont_aux_shared(Cont *c, Krt2AssertSharedChild assert_child, 
       break;
     case KK_HANDLER:
       assert_handler_shared((Handler *)c->aux, assert_child, ctx);
-      assert_exit_stack_shared((ExitStack *)c->aux2, assert_child, ctx);
+      assert_dynamic_state_shared((DynamicState *)c->aux2, assert_child, ctx);
+      break;
+    case KK_RESTORESTATE:
+      assert_dynamic_state_shared((DynamicState *)c->aux, assert_child, ctx);
       break;
     case KK_ABANDON:
       assert_resumption_shared((Resumption *)c->aux, assert_child, ctx);
@@ -1292,7 +1414,8 @@ void krt2i_assert_fgn_payload_shared(const char *kind, void *payload,
              strcmp(kind, KRT2_KIND_MONITOR) == 0 ||
              strcmp(kind, KRT2_KIND_TVAR) == 0 ||
              strcmp(kind, KRT2_KIND_ATOMIC) == 0 ||
-             strcmp(kind, KRT2_KIND_FIBERREF) == 0) {
+             strcmp(kind, KRT2_KIND_FIBERREF) == 0 ||
+             strcmp(kind, KRT2_KIND_MASK_FRAME) == 0) {
     return;
   } else if (strncmp(kind, "rt.", 3) == 0 || strncmp(kind, "krt2.", 5) == 0) {
     assert(!"unhandled runtime K_FGN kind in krt2i_assert_fgn_payload_shared");
@@ -1432,7 +1555,11 @@ Fiber *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, in
   Fiber *child = fiber_new(rt, action);
   child->daemon = daemon;
   child->cur_scope = attach;
-  if (parent) child->locals = fiber_locals_snapshot(parent->locals); /* copy-on-fork */
+  if (parent) {
+    child->locals = fiber_locals_snapshot(parent->locals); /* copy-on-fork */
+    child->mask_base = krt2i_mask_state(parent);
+    child->mask_effective = child->mask_base;
+  }
   Scope *dscope = atomic_load_explicit(&rt->daemon_scope, memory_order_acquire);
   if (!daemon && attach) {
     krt2i_scope_attach(rt, attach, child); /* att_scope+link+live++ */
@@ -1489,7 +1616,7 @@ static int do_await(Rt *rt, Fiber *f, KValue *handle) {
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
   w->f = f; w->want_exit = 1; w->next = child->waiters; child->waiters = w;
   krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, child, w);
-  int park_unmasked = (f->mask_depth == 0);
+  int park_unmasked = krt2i_mask_interruptible(f);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&child->lock);
   if (krt2i_claim_pending_after_park(f, park_unmasked)) {
@@ -1539,7 +1666,7 @@ static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
   w->f = f; w->want_exit = 1; w->next = p->waiters; p->waiters = w;
   krt2i_register_park_waiter(f, KPARK_PROMISE_WAITERS, p, w);
-  int park_unmasked = (f->mask_depth == 0);
+  int park_unmasked = krt2i_mask_interruptible(f);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&p->lock);
   if (krt2i_claim_pending_after_park(f, park_unmasked)) {
@@ -1680,17 +1807,17 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
     if (drain_ae) return unwind(rt, f, RK_DRAIN, NULL, NULL);
     return apply_reason(rt, f, rkind, rval, rlabel);
   }
-  /* §32.2.5: finalizers run MASKED.  Push a KK_POPMASK beneath the KK_FINSEQ and
-   * raise mask_depth now, so the entire drain — every finalizer body's internal
-   * steps AND the sequence itself — is uninterruptible, and mask is restored
+  /* §32.2.5: finalizers run under a fresh ordinary MASKED frame. Push its
+   * KK_POPMASK beneath KK_FINSEQ so the entire drain — every finalizer body's
+   * internal steps and the sequence itself — stays masked, and the frame is removed
    * exactly once when the drain completes: on the normal path (KK_FINSEQ done ->
    * apply_reason descends through the KK_POPMASK) and on the abnormal/abandonment
    * path (unwind through KK_FINSEQ also descends through it).  Without this an
    * async interrupt delivered between finalizer steps (the fiber_step-top check
-   * fires while mask_depth==0) would unwind into the KK_FINSEQ and silently
+   * fires while interruptible) would unwind into the KK_FINSEQ and silently
    * abandon the scope's remaining defers — a §18.7 exactly-once violation. */
-  f->k = cont_new(KK_POPMASK, NULL, f->k);
-  f->mask_depth++;
+  MaskFrame *finalizer_mask = krt2i_mask_push(f, KMASK_MASKED);
+  f->k = cont_new2(KK_POPMASK, NULL, finalizer_mask, NULL, f->k);
   FinSeq *fs = (FinSeq *)GC_MALLOC(sizeof(FinSeq));
   fs->xs = xs; fs->i = xs->n - 1; fs->rlabel = rlabel; fs->drain_ae = drain_ae;
   fs->origin_kind = drain_ae ? RK_DRAIN : rkind;
@@ -1719,7 +1846,7 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
  * continuation `kont`.  We splice a KK_ABANDEND terminal onto the slice's tail so
  * the RK_DRAIN walk lands there (not on the fiber's &g_done) and hands control
  * back.  `kont` is the clause's post-handler continuation (already f->k here),
- * and `f->cur_exits` is the clause's exit-state, both restored after the drain.
+ * The clause's dynamic exit/mask state is restored after the drain.
  * This runs only on the GENERAL/abortive path; a tail-resumptive or resumed
  * clause never reaches here. */
 #ifdef KRT2_ABANDON_INSTRUMENT
@@ -1740,7 +1867,7 @@ static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
 #endif
   AbandonEnd *ae = (AbandonEnd *)GC_MALLOC(sizeof(AbandonEnd));
   ae->kont        = f->k;          /* the clause's continuation (after KK_ABANDON) */
-  ae->saved_exits = f->cur_exits;  /* the clause's exit-state, resumed post-drain  */
+  ae->saved_dynamic = capture_dynamic_state(f);
   ae->rkind = post_kind; ae->rval = post_val; ae->rlabel = post_label;
   /* Land the RK_DRAIN walk on KK_ABANDEND rather than the fiber's &g_done.  The
    * slice was self-terminated at capture (r->tail->next == &g_done); re-point it
@@ -1753,7 +1880,7 @@ static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
   r->tail->next = cont_new2(KK_ABANDEND, NULL, ae, NULL, ae->kont);
   f->drain_ae = ae;
   f->k = r->head;                  /* re-root at the op-site frame to drain it     */
-  f->cur_exits = r->cur_exits;     /* under the captured body's exit-action state  */
+  install_dynamic_state(f, r->captured);
   return unwind(rt, f, RK_DRAIN, NULL, NULL);
 }
 
@@ -1805,7 +1932,7 @@ static int finish_abandon_drain(Rt *rt, Fiber *f, Cont *c,
   int    okind = ae->rkind;
   KValue *oval = ae->rval;
   compose_reason_into(&okind, &oval, live_kind, live_val); /* H2: don't swallow it  */
-  f->cur_exits = ae->saved_exits;
+  install_dynamic_state(f, ae->saved_dynamic);
   if (ae != (AbandonEnd *)f->drain_ae) {
 #ifdef KRT2_ABANDON_INSTRUMENT
     g_rt_foreign_hits++;
@@ -1926,10 +2053,10 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
                  (const char *)op->as.str.p);
         return unwind(rt, f, RK_FAIL, kstr0(msg), NULL);
       }
-      ExitStack *body_exits = f->cur_exits;       /* the captured body's exits   */
-      ExitStack *handler_exits = (ExitStack *)c->aux2; /* what the prompt restores */
+      DynamicState *prompt = (DynamicState *)c->aux2;
       Resumption *r = (Resumption *)GC_MALLOC(sizeof(Resumption));
-      r->cur_exits = body_exits;
+      r->captured = capture_dynamic_state(f);
+      r->prompt = prompt;
       r->used = 0;
       r->tail_res = 0;
       /* §4b TAIL-RESUMPTIVE FAST PATH.  When the clause resumes its continuation
@@ -1953,9 +2080,9 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
          * runs `h->ret` — exactly the general path, without any sever or re-push. */
         r->head = head;
         r->tail = NULL;                  /* unused on the fast path (no re-link)    */
-        r->label = NULL; r->handler = NULL; r->handler_exits = NULL;
+        r->label = NULL; r->handler = NULL;
         f->k = c->next;                  /* the clause runs outside the prompt      */
-        f->cur_exits = handler_exits;    /* under the cur_exits the prompt restores */
+        install_dynamic_state(f, prompt);
         return run_op_clause(rt, f, clause, payload, kfgn(r, KRT2_KIND_RESUMPTION));
       }
       /* ── general 4a path (sever + re-link + deep re-push) ──────────────────────
@@ -1976,9 +2103,9 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
        * shallow handler does not.  Carry the reinstall context so the splice path
        * (do_resume) can re-push the SAME (label, ret, ops) beneath the body. */
       if (h->deep) {
-        r->label = c->a; r->handler = h; r->handler_exits = handler_exits;
+        r->label = c->a; r->handler = h;
       } else {
-        r->label = NULL; r->handler = NULL; r->handler_exits = NULL;
+        r->label = NULL; r->handler = NULL;
       }
       f->k = c->next;                  /* pop the handler: the clause runs outside  */
       /* §32.2.20/.21 abandonment guard.  When the clause completes WITHOUT having
@@ -1990,7 +2117,7 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
        * perform (identity resumption) captured no slice, so there is nothing to
        * drain and no frame is added. */
       if (r->head) f->k = cont_new2(KK_ABANDON, NULL, r, NULL, f->k);
-      f->cur_exits = handler_exits;    /* under the cur_exits the prompt restores   */
+      install_dynamic_state(f, prompt);
       return run_op_clause(rt, f, clause, payload, kfgn(r, KRT2_KIND_RESUMPTION));
     }
   }
@@ -2018,10 +2145,13 @@ static int do_resume(Rt *rt, Fiber *f, KValue *kbox, KValue *value) {
    * tail-perform case (head == the KK_HANDLER frame itself) re-enters the prompt
    * directly, so deliver(value) runs `h->ret` — matching the general path. */
   if (r->tail_res) {
+    discard_masks_to(f, r->prompt->mask_top);
     f->k = r->head;
-    f->cur_exits = r->cur_exits;
+    install_dynamic_state(f, r->captured);
     return deliver(rt, f, value);
   }
+  DynamicState *caller = capture_dynamic_state(f);
+  f->k = cont_new2(KK_RESTORESTATE, NULL, caller, NULL, f->k);
   /* §32.2.22 deep reinstall: re-push the handler beneath the spliced body so the
    * resumed computation is re-handled.  do_perform POPPED the handler frame
    * (f->k advanced to c->next), so f->k now points at the handler's own
@@ -2031,16 +2161,13 @@ static int do_resume(Rt *rt, Fiber *f, KValue *kbox, KValue *value) {
    * auto-reinstall, §18.1.21). */
   if (r->handler) {
     Handler *h = (Handler *)r->handler;
-    f->k = cont_new2(KK_HANDLER, r->label, h, r->handler_exits, f->k);
+    f->k = cont_new2(KK_HANDLER, r->label, h, caller, f->k);
   }
-  /* Reinstate the captured body's exit-action state, then splice the sub-chain. */
+  /* Reinstate the captured dynamic state, then splice the sub-chain. */
+  install_dynamic_state(f, r->captured);
   if (r->head) {
     r->tail->next = f->k;        /* re-link the severed tail onto the live chain  */
     f->k = r->head;              /* re-root at the op-site frame                  */
-    f->cur_exits = r->cur_exits; /* re-enter under the captured do-scope state    */
-  } else {
-    /* identity resumption: nothing captured, deliver at the (re)installed point   */
-    if (r->handler) f->cur_exits = r->cur_exits;
   }
   return deliver(rt, f, value);
 }
@@ -2059,11 +2186,14 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       f->k = c->next; f->cur = c->a; return 1;
     case KK_CATCH:                       /* success path: catch is transparent */
       f->k = c->next; f->cur = krt2_pure(v); return 1;
-    case KK_POPMASK:                     /* leaving an uninterruptible region   */
-      if (f->mask_depth > 0) f->mask_depth--;
+    case KK_POPMASK:                     /* leaving one exact mask frame         */
+      krt2i_mask_pop(f, (MaskFrame *)c->aux);
       f->k = c->next; f->cur = krt2_pure(v); return 1;
-    case KK_SETMASK:                     /* restore mask to the stored level     */
-      f->mask_depth = (uint32_t)(uintptr_t)c->aux;
+    case KK_SETMASK:                     /* reinstate one suspended mask frame   */
+      krt2i_mask_reinstate(f, (MaskFrame *)c->aux);
+      f->k = c->next; f->cur = krt2_pure(v); return 1;
+    case KK_RESTORESTATE:                /* resumed segment returned to its caller */
+      install_dynamic_state(f, (DynamicState *)c->aux);
       f->k = c->next; f->cur = krt2_pure(v); return 1;
     case KK_LOOP:                        /* an iteration body completed normally */
       f->cur = c->a;                     /* re-run `iterate`; KEEP the KK_LOOP    */
@@ -2071,13 +2201,13 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
        * re-entering from the run queue, so a tight non-ceding loop would ignore a
        * pending interrupt AND starve the worker.  Treat the back-edge as a safe
        * point: (1) flag a deliverable interrupt so the fiber_step gate delivers it
-       * on the next turn (mask_depth>0 keeps it suppressed — held until mask exit);
+       * on the next turn (masking keeps it suppressed until an allowed point);
        * (2) spend a fairness quantum and, when it runs out, CEDE — re-enqueue this
        * fiber behind other runnables and stop stepping (a yield, not a finish; the
        * `if (!deliver(...)) return;` caller just returns from fiber_step, leaving the
        * re-enqueued fiber owned by the run queue). */
       if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-          && f->mask_depth == 0)
+          && krt2i_mask_interruptible(f))
         f->safepoint_hit = 1;
       if (f->backedge_budget == 0) {
         f->backedge_budget = KRT2_BACKEDGE_QUANTUM;
@@ -2128,7 +2258,7 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
     case KK_HANDLER: {                    /* §18.1.21 body completed: run `return` */
       Handler *h = (Handler *)c->aux;
       f->k = c->next;
-      f->cur_exits = (ExitStack *)c->aux2; /* leave the handled body's do-scopes  */
+      install_dynamic_state(f, (DynamicState *)c->aux2);
       f->cur = kapp(h->ret, v);            /* `case return x -> ...` (Eff res)     */
       return 1;
     }
@@ -2178,10 +2308,13 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
       case KK_BIND: case KK_THEN:
         f->k = c->next; continue;       /* the sequel does not run on an abnormal exit */
       case KK_POPMASK:
-        if (f->mask_depth > 0) f->mask_depth--;
+        krt2i_mask_pop(f, (MaskFrame *)c->aux);
         f->k = c->next; continue;
       case KK_SETMASK:
-        f->mask_depth = (uint32_t)(uintptr_t)c->aux;
+        krt2i_mask_reinstate(f, (MaskFrame *)c->aux);
+        f->k = c->next; continue;
+      case KK_RESTORESTATE:
+        install_dynamic_state(f, (DynamicState *)c->aux);
         f->k = c->next; continue;
       case KK_CATCH:
         if (rkind == RK_FAIL) { f->k = c->next; f->cur = kapp(c->a, rval); return 1; }
@@ -2198,7 +2331,7 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
           /* fix SP: a `continue` is a loop back-edge too — same safe point as the
            * normal KK_LOOP completion (interrupt-observation + fairness cede). */
           if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-              && f->mask_depth == 0)
+              && krt2i_mask_interruptible(f))
             f->safepoint_hit = 1;
           if (f->backedge_budget == 0) {
             f->backedge_budget = KRT2_BACKEDGE_QUANTUM;
@@ -2250,8 +2383,8 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
          * fail/return/break/continue/interrupt unwinding through the handled body
          * propagates past the prompt transparently (the body's captured do-scope
          * defers already ran on the KK_DOSCOPE frames crossed before reaching
-         * here).  Restore the cur_exits the prompt would reinstate, then drop. */
-        f->cur_exits = (ExitStack *)c->aux2;
+         * here).  Restore the dynamic state outside the prompt, then drop. */
+        install_dynamic_state(f, (DynamicState *)c->aux2);
         f->k = c->next; continue;
       case KK_BLOCKING:
         leave_blocking_region(f);
@@ -2313,7 +2446,7 @@ static int deliver_interrupt(Rt *rt, Fiber *f) {
 
 int krt2i_deliver_pending_before_park(Rt *rt, Fiber *f) {
   if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-      && f->mask_depth == 0) {
+      && krt2i_mask_interruptible(f)) {
     return deliver_interrupt(rt, f) ? 1 : -1;
   }
   return 0;
@@ -2344,7 +2477,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
      * explicit poll — NOT at a mask-region exit.  `resumed` is set when the fiber
      * (re-)enters fiber_step from the run queue and is consumed on the first turn,
      * so this gate fires ONLY on that resume turn.  Without the `resumed` guard,
-     * dropping mask_depth to 0 mid-step (KK_POPMASK/KK_SETMASK) would make the very
+     * changing the effective mask mid-step (KK_POPMASK/KK_SETMASK) would make the very
      * next non-suspending step a delivery point and wrongly interrupt a fiber whose
      * whole body was masked — the §18.1.12/§32.2.5 masked-sleep suppression bug.
      * OP_POLL delivers independently of this flag (§18.1.12: poll delivers even
@@ -2357,12 +2490,13 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
      * queue, so `resumed` stays 0 — yet the spec requires a pending interrupt to be
      * observable at such safe points.  Deliver on `safepoint_hit` too.  This does
      * NOT reintroduce the masked-sleep suppression bug: safepoint_hit is set ONLY at
-     * a genuine back-edge (and only when mask_depth==0), never on a mask-region exit. */
-    int entering_mask = (op == OP_UNINTERRUPTIBLE || op == OP_MASK);
+     * a genuine back-edge (and only when interruptible), never on a mask-region exit. */
+    int entering_mask =
+        (op == OP_UNINTERRUPTIBLE || op == OP_UNINTERRUPTIBLE_MASK || op == OP_MASK);
     if (!entering_mask
         && (f->resumed || f->safepoint_hit)
         && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-        && f->mask_depth == 0) {
+        && krt2i_mask_interruptible(f)) {
       f->resumed = 0;
       f->safepoint_hit = 0;
       if (!deliver_interrupt(rt, f)) return; /* finished */
@@ -2437,7 +2571,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         int dp = krt2i_deliver_pending_before_park(rt, f);
         if (dp < 0) return;
         if (dp > 0) break;
-        int park_unmasked = (f->mask_depth == 0);
+        int park_unmasked = krt2i_mask_interruptible(f);
         krt2i_submit_sleep(rt, f, (uint64_t)ns);
         if (krt2i_claim_pending_after_park(f, park_unmasked)) {
           krt2i_cancel_sleep(rt, f);
@@ -2482,38 +2616,46 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, kunit())) return;
         break;
       }
-      case OP_UNINTERRUPTIBLE:
-        f->mask_depth++;
-        f->k = cont_new(KK_POPMASK, NULL, f->k);
+      case OP_UNINTERRUPTIBLE: {
+        MaskFrame *frame = krt2i_mask_push(f, KMASK_UNINTERRUPTIBLE);
+        f->k = cont_new2(KK_POPMASK, NULL, frame, NULL, f->k);
         f->cur = kctor_arg(cur, 0);
         break;
-      case OP_POLL:                          /* deliver a pending interrupt even if masked */
-        if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)) {
+      }
+      case OP_POLL: /* explicit checkpoint in ordinary Masked, inert in Uninterruptible */
+        if (!krt2i_mask_uninterruptible(f)
+            && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)) {
           if (!deliver_interrupt(rt, f)) return; /* finished; else run its finalizers */
           break;
         }
         if (!deliver(rt, f, kunit())) return;
         break;
-      case OP_MASK: {                          /* mask f: f gets `restore` (§18.1.12) */
-        uint32_t outer = f->mask_depth;
-        f->mask_depth++;
-        f->k = cont_new2(KK_SETMASK, NULL, (void *)(uintptr_t)outer, NULL, f->k);
-        KValue *restore = kclo(restore_fn, kpush(kint((int64_t)outer), NULL));
+      case OP_MASK:
+      case OP_UNINTERRUPTIBLE_MASK: {
+        KMaskState state =
+            (op == OP_MASK) ? KMASK_MASKED : KMASK_UNINTERRUPTIBLE;
+        MaskFrame *frame = krt2i_mask_push(f, state);
+        f->k = cont_new2(KK_POPMASK, NULL, frame, NULL, f->k);
+        KValue *token = kfgn(frame, KRT2_KIND_MASK_FRAME);
+        KValue *restore = kclo(restore_fn, kpush(token, NULL));
         f->cur = kapp(kctor_arg(cur, 0), restore);
         break;
       }
-      case OP_RESTORE: {                       /* run an action at the mask-entry level */
-        uint32_t saved = f->mask_depth;
-        f->mask_depth = (uint32_t)kas_int(kctor_arg(cur, 1));
-        f->k = cont_new2(KK_SETMASK, NULL, (void *)(uintptr_t)saved, NULL, f->k);
+      case OP_RESTORE: {
+        MaskFrame *frame =
+            (MaskFrame *)kas_fgn_kind(kctor_arg(cur, 1), KRT2_KIND_MASK_FRAME);
+        int suspended = krt2i_mask_suspend(f, frame);
+        if (suspended)
+          f->k = cont_new2(KK_SETMASK, NULL, frame, NULL, f->k);
         f->cur = kctor_arg(cur, 0);
-        /* `restore` re-enters an action at the mask-entry interruptibility level.
-         * If that level is interruptible and a request is already pending, the
-         * restored action itself is the interruption point; otherwise an already
-         * pending interrupt can be missed until the restored action later parks. */
-        if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-            && f->mask_depth == 0)
-          f->safepoint_hit = 1;
+        /* A successful suspension that exposes Interruptible is an immediate
+         * interruption point. Invalid/stale/wrong-order capabilities are inert. */
+        if (suspended
+            && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+            && krt2i_mask_interruptible(f)) {
+          if (!deliver_interrupt(rt, f)) return;
+          continue;
+        }
         break;
       }
       /* ── structured concurrency ─────────────────────────────────────── */
@@ -2653,9 +2795,10 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         h->deep = (kctor_tagid(kctor_arg(cur, 0)) == KCT_TRUE);
         h->ret  = kctor_arg(cur, 2);
         h->ops  = kctor_arg(cur, 3);
-        /* aux2 saves the cur_exits to reinstate when the prompt is removed (the
-         * return clause and op clauses run OUTSIDE the handled body's scopes). */
-        f->k = cont_new2(KK_HANDLER, kctor_arg(cur, 1), h, f->cur_exits, f->k);
+        /* aux2 saves the complete dynamic state outside the prompt.  Return and
+         * operation clauses run outside the handled body's scopes and masks. */
+        f->k = cont_new2(
+            KK_HANDLER, kctor_arg(cur, 1), h, capture_dynamic_state(f), f->k);
         f->cur = kctor_arg(cur, 4);              /* the handled body (an Eff comp) */
         break;
       }
@@ -2713,7 +2856,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
             KValue *r = krun_io(cur);
             if (completed_blocking_native
                 && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-                && f->mask_depth == 0) {
+                && krt2i_mask_interruptible(f)) {
               if (!deliver_interrupt(rt, f)) return;
               break;
             }
@@ -2724,10 +2867,10 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
              * native loop hit a safe point with a deliverable interrupt, deliver it
              * now (the bridge's result is discarded — the fiber unwinds).  Masked
              * suppression already held inside krt2_safepoint (it never sets the flag
-             * when mask_depth>0). */
+             * when the effective state is masked). */
             if (f->safepoint_hit
                 && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-                && f->mask_depth == 0) {
+                && krt2i_mask_interruptible(f)) {
               f->safepoint_hit = 0;
               if (kis_fail(r)) {
                 KValue *primary = krt2_cause_interrupt(f->interrupt_cause);
@@ -2780,7 +2923,7 @@ static void fiber_step(Rt *rt, Fiber *f) {
   } else {
     if (f->safepoint_hit
         && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-        && f->mask_depth == 0) {
+        && krt2i_mask_interruptible(f)) {
       f->resumed = 0;
       f->safepoint_hit = 0;
       atomic_store_explicit(&f->interrupt_pending, 0, memory_order_relaxed);
@@ -2844,8 +2987,8 @@ KValue *kpf_run_eff(KValue **a) { return krt2_run_eff(a[0]); }
  * worker and then returns 0, preserving the current scalar loop's C-local state.
  *
  * Returns 1 iff the loop should abort to let the runtime deliver a pending
- * interrupt at this safe point — i.e. interrupt_pending && mask_depth==0.  A
- * masked fiber (mask_depth>0) returns 0: suppression holds, the interrupt is
+ * interrupt at this safe point — i.e. pending and effectively Interruptible. A
+ * masked fiber returns 0: suppression holds, and the interrupt is
  * delivered only after the mask exits (an interruption point reached unmasked).
  * 0 if there is no current fiber (a pure top-level native call off any fiber).
  *
@@ -2857,7 +3000,7 @@ int krt2_safepoint(void) {
   Fiber *f = g_cur_fiber;
   if (!f) return 0;
   if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-      && f->mask_depth == 0) {
+      && krt2i_mask_interruptible(f)) {
     f->safepoint_hit = 1;   /* the fiber_step gate delivers on the next turn */
     return 1;
   }

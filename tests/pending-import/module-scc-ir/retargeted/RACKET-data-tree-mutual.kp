@@ -1,21 +1,22 @@
 -- Retargeted from tests/conformance/spec-coverage/adts/RACKET-data-tree-mutual.kp (Spec 107 module-SCC/induction-recursion revision, 2026-08-01).
 -- §9.2 now lets a separate signature and its definition occur in either textual order, and
 -- source position never enables or disables recursion — the "preceding signatures" framing
--- is rewritten. All outcomes are unchanged.
+-- is rewritten. This fixture keeps the positive mutual-family coverage focused;
+-- non-exhaustive matching is exercised by dedicated diagnostics fixtures.
 
 -- Source: Racket guide data structures, Racket letrec for mutual data types
 -- Source tests: racket letrec.rktl (corpus repos/github-racket-racket/tests/pkgs/racket-test-core/tests/racket/letrec.rktl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
--- Spec: §10.1 (data declarations), §10.4 (mutually recursive data groups), §9.2/§15 (recursive SCC members need complete explicit signatures, in either textual order), §17.1 (exhaustiveness), §3.2.9 (kappa.pattern.non-exhaustive)
+-- Spec: §10.1 (data declarations), §10.4 (mutually recursive data groups), §9.2/§15 (recursive SCC members need complete explicit signatures, in either textual order)
 -- NOTE: overlaps with tests/conformance/data_types/positivity-mutual-accept.kp (mutual data acceptance only)
 --
 -- Pins: mutually recursive data types (Tree defined via Forest and vice versa)
 -- are accepted; mutually recursive consumer functions over them typecheck when
 -- each SCC member has a complete explicit signature (separate or complete
 -- inline) — per §9.2 the separate signature may appear before or after its
--- definition, and source position does not enable or disable recursion; a
--- match over the family missing a constructor is non-exhaustive.
+-- definition, and source position does not enable or disable recursion.
 
 --! mode check
+--! assertNoErrors
 
 data MTree (0 a : Type) : Type =
     MLeaf
@@ -76,13 +77,4 @@ let sample = MNode 1 (MCons (MNode 2 MNil) MNil)
 counted : Int
 let counted = countTree sample
 
--- NEGATIVE: non-exhaustive match on MTree (missing the MLeaf case).
-badCount : MTree a -> Int
-let badCount t =
-    match t               --!! E_PATTERN_NON_EXHAUSTIVE
-    case MNode _ _ -> 1
-
---! assertDiagnosticFamily error kappa.pattern.non-exhaustive
 --! assertEval counted 2
-
--- STATUS(f1e4161b): PASS

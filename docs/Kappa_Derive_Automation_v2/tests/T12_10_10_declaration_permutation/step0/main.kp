@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+data Color : Type =
+    Red
+    Green
+derive IsSet Color
+derive Eq Color
+
+proof : Red = Red
+let proof = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors

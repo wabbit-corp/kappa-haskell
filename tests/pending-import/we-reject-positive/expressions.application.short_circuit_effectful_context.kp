@@ -46,3 +46,5 @@ staticTrue : Bool -> Eff <[exn : Exn]> Bool
 let staticTrue _ = True || (exn.throw "never"; pure False)
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: MIXED — short-circuiting is valid, but the test uses unsupported semicolon sequencing and undeclared bare effect labels.

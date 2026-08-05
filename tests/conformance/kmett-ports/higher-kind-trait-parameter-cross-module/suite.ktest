@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+-- STATUS(8c3c7747): PASS — imported trait interfaces preserve the inferred higher kind.

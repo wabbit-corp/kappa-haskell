@@ -13,4 +13,4 @@ import std.bytes as Bytes
 
 n : Nat
 let n = Bytse.bytesLength Bytse.emptyBytes --!! kappa.name.unresolved
--- STATUS(a0497523): FAIL — suggestion is still the non-resolving prelude type Byte; Spec 3.1.7 now requires transposition-aware, qualifier-context-aware ranking (expected Bytes)
+-- STATUS(74742dfd): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = Bytes (saw: /payload/suggestion=Byte; /payload/suggestion=Byte)

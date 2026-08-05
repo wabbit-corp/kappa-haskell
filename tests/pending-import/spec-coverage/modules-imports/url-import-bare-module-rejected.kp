@@ -5,7 +5,7 @@ module main
 -- `as`, `.*`, `.(...)`, or `.* except (...)`. (The spec names no
 -- diagnostic family; E_IMPORT_ITEM_MALFORMED is the closest registered
 -- code.)
-import "https://example.com/lib" --!! E_IMPORT_ITEM_MALFORMED
+import "https://example.com/lib#sha256:0000000000000000000000000000000000000000000000000000000000000000" --!! E_IMPORT_ITEM_MALFORMED
 
 --! assertErrorCount 1
--- STATUS(a0497523): FAIL — the bare URL form is diagnosed only via the pinning gate (E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE), not rejected as an ill-formed bare module form
+-- STATUS: SPEC-ISSUE — bare URL imports require rejection but have no normative diagnostic identity or precedence over URL-provider errors

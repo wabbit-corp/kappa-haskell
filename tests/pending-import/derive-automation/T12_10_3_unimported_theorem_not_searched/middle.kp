@@ -1,0 +1,14 @@
+@PrivateByDefault module middle
+
+import hidden
+
+public type Token = hidden.Token
+
+public opaque left : Token
+let left = hidden.left
+
+public opaque right : Token
+let right = hidden.right
+
+public marker : Unit
+let marker = ()

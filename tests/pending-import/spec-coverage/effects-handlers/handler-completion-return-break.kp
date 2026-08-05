@@ -44,4 +44,4 @@ let main = do
     printlnString (stringAppend "late:" (showInt (runPure (early False))))
     let r <- rounds
     printlnString (stringAppend "rounds:" (showInt r))
--- STATUS(a0497523): FAIL — 3 errors: a do block written immediately after the label is rejected ("the handled computation of 'handle' must have an Eff type", 2x) and the in-handled-do break is E_BREAK_OUTSIDE_LOOP — completions are confined per do-scope, so §18.1.21.1/§18.1.22.1 Break/Return propagation through handlers is unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_TYPE_EQUALITY_MISMATCH "the handled computation of 'handle' must have an Eff type (§18.1.21)" at line 19; stdout mismatch: expected "early:99\nlate:6\nrounds:1\n", got ""

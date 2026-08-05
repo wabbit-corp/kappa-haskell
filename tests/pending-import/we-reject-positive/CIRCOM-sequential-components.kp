@@ -45,3 +45,5 @@ let arrayOfComponents (a b c : Int) : Int =
     comps[0].out + comps[1].out + comps[2].out
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_TYPE_EQUALITY_MISMATCH at line 40; current source or fixture is not portable v1 and must be rewritten before promotion.

@@ -1,0 +1,58 @@
+-- Retargeted from tests/conformance/spec-coverage/adts/CURRY-singleton-data-wrapper-deriving-wrapper-eq.kp (unified derive / canonical evidence revision, 2026-08-02).
+-- Flips back to accept (undoing the nat/fin-revision flip to reject):
+-- eqSound/eqComplete are now `derive` synthesized members (§14.1, §14.2) and
+-- IsSet is a `derive` supertrait slot (§14.1.4), so an instance supplying only
+-- (==) is complete.
+--
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (newtype LIST a = LIST [a] deriving (Eq, Read, Show); testReadShowNT).
+-- Spec: §10.1 (`data` declarations: a Curry newtype is a
+--       single-constructor single-field data declaration), §14.1
+--       (`trait derive IsSet a => Eq` with `derive eqSound` /
+--       `derive eqComplete`), §14.2 (a synthesized member creates a typed
+--       per-instance derivation obligation the instance may override),
+--       §14.1.4 (a synthesized supertrait slot raises a
+--       `derive (IsSet IntListW)` obligation on instance completion),
+--       §14.5.1/§14.5.5/§14.5.7 (baseline providers: structural
+--       Reflects (x = y) (x == y) certificate, functional induction over the
+--       comparator's checked recursive equations, equality reflection through
+--       completed `Int` `Eq` evidence, no-confusion, Hedberg -> IsSet).
+
+module test
+
+--! mode check
+
+-- A transparent single-constructor wrapper around `List Int`.
+data IntListW : Type =
+    MkIntListW (payload : List Int)
+
+-- POSITIVE: the constructor applies as an ordinary function.
+wrap : List Int -> IntListW
+let wrap xs = MkIntListW xs
+
+--! assertType wrap (List Int -> IntListW)
+
+eqIntList : List Int -> List Int -> Bool
+let eqIntList xs ys =
+    match (xs, ys)
+    case (Nil, Nil) -> True
+    case (x :: xr, y :: yr) -> if x == y then eqIntList xr yr else False
+    case _ -> False
+
+-- POSITIVE: a handwritten `Eq` instance supplying only `(==)` is accepted.
+-- `eqSound`/`eqComplete` are synthesized against the handwritten structural
+-- comparator (functional induction from `eqIntList`'s checked equations,
+-- `Int` `Eq` reflection, and the §10.2.1 no-confusion package), and the
+-- `derive IsSet a` supertrait slot is discharged by the synthesized-slot
+-- `derive (IsSet IntListW)` obligation (Hedberg from the completed decision
+-- procedure).
+-- §14.5.2's `derive RefinementView` provider is not applicable here because
+-- the payload carries no predicate/IsProp evidence fields.
+instance Eq IntListW =
+    let (==) a b =
+        match a
+        case MkIntListW xs ->
+            match b
+            case MkIntListW ys -> eqIntList xs ys
+
+--! assertNoErrors

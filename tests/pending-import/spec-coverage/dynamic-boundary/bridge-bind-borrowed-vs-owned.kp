@@ -28,4 +28,4 @@ useOwned :
     IO H.Error (BridgePackage surface)
 let useOwned handle name = bindModuleOwned handle name
 
--- STATUS(a0497523): FAIL — std.bridge stub lacks the BridgeHandle.Error associated type and the canonical borrow/captures bindModule signatures (E_UNRESOLVED_MEMBER on H.Error, 3 errors).
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 3; first error: E_UNRESOLVED_MEMBER "'Error' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)" at line 19

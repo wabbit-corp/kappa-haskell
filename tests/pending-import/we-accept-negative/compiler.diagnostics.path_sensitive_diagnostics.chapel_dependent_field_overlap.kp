@@ -48,3 +48,4 @@ let badOverlap sb =
     len_ref
 
 --! assertDiagnosticFamily error kappa.borrow.overlap
+-- STATUS(2a161551): FAIL — TEST-ISSUE: the first borrow is never used after the second is introduced, so its non-lexical lifetime has ended and there is no live overlap.

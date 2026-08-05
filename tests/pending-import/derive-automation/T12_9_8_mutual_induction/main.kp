@@ -1,0 +1,29 @@
+@PrivateByDefault module main
+
+data EvenTree : Type =
+    EvenLeaf
+    EvenNode (child : OddTree)
+
+data OddTree : Type =
+    OddNode (child : EvenTree)
+
+sizeEven : EvenTree -> Nat
+let sizeEven tree =
+    match tree
+    case EvenLeaf -> 1
+    case EvenNode child -> 1 + sizeOdd child
+
+sizeOdd : OddTree -> Nat
+let sizeOdd tree =
+    match tree
+    case OddNode child -> 1 + sizeEven child
+
+positiveEven :
+    (tree : EvenTree) ->
+    (0 < sizeEven tree) = True
+let positiveEven = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors

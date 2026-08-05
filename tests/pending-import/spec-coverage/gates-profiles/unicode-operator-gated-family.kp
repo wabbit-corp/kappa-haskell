@@ -17,4 +17,4 @@ let g = 3
 
 let composed = f ∘ g --!! E_FEATURE_INACTIVE
 
--- STATUS(a0497523): FAIL — the Unicode operator is rejected as bare E_UNEXPECTED_CHARACTER with no family/payload; the lexer's kappa.feature.gated unicode-operator path is unreachable
+-- STATUS(74742dfd): FAIL — no diagnostic with family kappa.feature.gated was produced; no error diagnostic matching kappa.feature.gated has payload /payload/constructKind = unicode-operator (saw: ); no error diagnostic matching kappa.feature.gated has payload /payload/owningGate = unicode-names (saw: ); no diagnostic error[E_FEATURE_INACTIVE] on line 18 (saw: E_UNEXPECTED_CHARACTER@18)

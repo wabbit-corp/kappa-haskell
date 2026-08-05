@@ -47,4 +47,4 @@ let main = do
     let f <- fork body
     let _ <- await f
     pure ()
--- STATUS(a0497523): FAIL — laws 1-3 hold, law 4 fails: prints caught:e2 — the finalizer error e2 REPLACES the body error e1, violating §18.1.25.1 law 4 (MUST NOT replace e1).
+-- STATUS(74742dfd): FAIL — stdout mismatch: expected "unit:7\nf1\nf2\nnested:3\nf1\nf2\nflat:3\nfin\ncaught:boom\nfin2\ncaught:e1\n", got "unit:7\nf1\nf2\nnested:3\nf1\nf2\nflat:3\nfin\ncaught:boom\nfin2\ncaught:e2\n"

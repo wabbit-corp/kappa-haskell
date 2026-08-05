@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+trait LawfulIdentity (parametric 0 a : Type) =
+    identity : a -> a
+    derive identityLaw :
+        forall (x : a). identity x = x
+
+instance LawfulIdentity Bool =
+    let identity x = x
+    let identityLaw = refl
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertMemberCompletionMode identityLaw for LawfulIdentity Bool explicit

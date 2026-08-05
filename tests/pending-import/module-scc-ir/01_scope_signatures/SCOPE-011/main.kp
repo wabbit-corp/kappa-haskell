@@ -1,4 +1,2 @@
 let loop n =
     loop n
-
--- STATUS(f1e4161b): FAIL — E_MISSING_EXPLICIT_SIGNATURE

@@ -3,9 +3,8 @@ module main
 -- §8.3: the bare dotted form `import a.b.c` is disambiguated after module
 -- discovery. Here BOTH interpretations are resolvable — module a.b.c
 -- exists AND module a.b exports an item `c` — so the form is a
--- compile-time error. (The spec names no diagnostic family;
--- E_NAME_AMBIGUOUS is the closest registered code.)
-import a.b.c --!! E_NAME_AMBIGUOUS
+-- compile-time error in the normative dotted-import family.
+import a.b.c --!! kappa.import.ambiguous-dotted
 
 --! assertErrorCount 1
--- STATUS(a0497523): FAIL — no ambiguity error; the compiler silently prefers the singleton-item interpretation of the bare dotted form
+-- STATUS(e25d64e1): HARNESS-ERROR — normative family kappa.import.ambiguous-dotted is not registered

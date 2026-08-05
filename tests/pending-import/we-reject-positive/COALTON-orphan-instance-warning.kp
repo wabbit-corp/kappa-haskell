@@ -49,3 +49,5 @@ instance LocalTrait a => Eq (List a) =
     let (==) xs ys = False
 
 --! assertNoErrors
+
+-- STATUS: SPEC-ISSUE — currently FAIL: Eq requires IsSet/law evidence; this test tracks the proposed ergonomic auto-derivation rule.

@@ -1,0 +1,30 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+first : Eq Bit
+let first =
+    block
+        instance Eq Bit = derive
+        summon
+
+second : Eq Bit
+let second =
+    block
+        instance Eq Bit =
+            let (==) x y =
+                match (x, y)
+                case (O, O) -> True
+                case (I, I) -> True
+                case _      -> False
+        summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertNoErrors
+--! assertEvidenceSemanticIdentityEquals first second
+--! assertEvidenceArtifactFingerprintDiffers first second

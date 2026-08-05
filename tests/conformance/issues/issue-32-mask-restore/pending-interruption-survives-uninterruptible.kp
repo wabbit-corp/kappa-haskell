@@ -1,0 +1,50 @@
+module main
+
+import std.prelude.(type Exit(..))
+
+main : UIO Unit
+let main =
+    do
+        let ready <- newPromise @Void @Unit
+        let gate <- newPromise @Void @Unit
+        let inside <- newPromise @Void @Bool
+        let after <- newPromise @Void @Bool
+
+        let child <- fork (
+            ensuring
+                (
+                    do
+                        uninterruptible (
+                            do
+                                completePromise ready (Success ())
+                                awaitPromise gate
+                                poll
+                                completePromise inside (Success True)
+                                pure ()
+                        )
+                        poll
+                        completePromise after (Success True)
+                        pure ()
+                )
+                (
+                    do
+                        completePromise inside (Success False)
+                        completePromise after (Success False)
+                        pure ()
+                )
+        )
+
+        awaitPromise ready
+        interruptFork child
+        completePromise gate (Success ())
+        let survivedInside <- awaitPromise inside
+        let survivedAfter <- awaitPromise after
+        let _ <- await child
+        println survivedInside
+        println survivedAfter
+
+--! mode run
+--! requires capability runTask
+--! entry main
+--! assertStdout "True\nFalse\n"
+--! assertExitCode 0

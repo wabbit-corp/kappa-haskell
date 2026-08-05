@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+dependentPairSet :
+    forall (a : Type) (b : a -> Type).
+    IsSet a ->
+    (forall (x : a). IsSet (b x)) ->
+    IsSet (first : a, second : b this.first)
+let dependentPairSet base fibers = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed dependentPairSet hlevel

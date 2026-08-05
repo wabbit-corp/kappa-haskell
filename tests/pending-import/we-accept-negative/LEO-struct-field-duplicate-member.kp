@@ -72,3 +72,4 @@ let a = A { x = 1 }
 b : B
 let b = B { x = True }
 
+-- STATUS: SPEC-ISSUE — constructor-declaration field-name uniqueness and its diagnostic are not normatively pinned; the cited SA-LEO text is not in Spec.md.

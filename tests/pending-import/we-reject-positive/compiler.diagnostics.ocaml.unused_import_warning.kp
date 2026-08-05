@@ -21,3 +21,5 @@ let result = abs (-5)
 --! mode check
 --! assertNoErrors
 --! assertNoWarnings
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: imports/expects are not satisfied by this standalone compilation unit (§8.2, §9.4).

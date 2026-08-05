@@ -34,4 +34,4 @@ let badMany t =
         yield consumeTok t + x --!! E_QTT_LINEAR_OVERUSE
     ]
 
--- STATUS(a0497523): FAIL — the negative is rejected correctly, but the positive is too: comprehension-body demands on outer lexical variables are blanket-multiplied to ω instead of by the pipeline cardinality (§20.10.5), so consuming t under a QZeroOrOne Option-source pipeline gets E_QTT_LINEAR_OVERUSE at line 26.
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 2; first error: E_QTT_LINEAR_OVERUSE "'t' is consumed more often than its affine quantity permits (§12.2)" at line 26

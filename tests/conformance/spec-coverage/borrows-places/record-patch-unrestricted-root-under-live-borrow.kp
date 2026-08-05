@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.5 reconstructs an unrestricted record by reading its omitted fields.
+-- A live shared borrow therefore does not conflict with either patch: neither
+-- form transfers ownership from the original record.
+module main
+
+type Pair = (left : Int, right : Int)
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+patchSame : (p : Pair) -> Int
+let patchSame (p : Pair) : Int =
+    let & l = p.left
+    in let p2 = p.{ left = 10 }
+    in addInt (observe l) p2.left
+
+patchDisjoint : (p : Pair) -> Int
+let patchDisjoint (p : Pair) : Int =
+    let & l = p.left
+    in let p2 = p.{ right = 5 }
+    in addInt (observe l) p2.right

@@ -40,4 +40,4 @@ let loose = %%% 2 * 3
 -- postfix 90 > 60: 1 + (2 ??) = 6
 post : Int
 let post = 1 + 2 ??
--- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 15; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'prefix' at start of declaration" at line 21; assertDeclKinds: decl kinds are [fixity, let, fixity, let, fixity, let, signature, let, signature, let, signature, let], expected [fixity, signature, let, fixity, signature, let, fixity, signature, let, signature, let, signature, let, signature, let]; assertEval: 'tight' evaluates to mulInt _ 3, expected 306; assertEval: 'loose' evaluates to _, expected 106; assertEval: 'post' evaluates to addInt 1 _, expected 6

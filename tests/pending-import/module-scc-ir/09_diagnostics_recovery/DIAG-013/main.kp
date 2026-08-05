@@ -3,5 +3,3 @@ type Alias = makeType
 makeType : Type
 let makeType =
     Alias
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

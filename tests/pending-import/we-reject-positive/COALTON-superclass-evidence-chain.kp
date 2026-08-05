@@ -64,3 +64,5 @@ let bindThenMap =
     (Identity 5) >>= fn n -> fmap (fn x -> x + 1) (Identity n)
 
 --! assertNoErrors
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_PARAMETRIC_TYPE_PROMOTION at line 18; current source or fixture is not portable v1 and must be rewritten before promotion.

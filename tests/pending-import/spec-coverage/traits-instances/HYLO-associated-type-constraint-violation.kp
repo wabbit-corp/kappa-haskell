@@ -53,3 +53,4 @@ instance PrintContainer RawBox =
 
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.implicit.unsolved
+-- STATUS(e25d64e1): FAIL — expected 1 error, got 3; trait member display reports E_TRAIT_MEMBER_TELESCOPE_MISMATCH

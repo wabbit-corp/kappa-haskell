@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+-- DX regression encountered across the bifunctors, profunctors, and
+-- contravariant ports. `Result error value` carries intentional
+-- failure/success meaning, so the portable prelude provides a distinct,
+-- branch-symmetric `Either a b` with unqualified `Left` and `Right`
+-- constructors as the ecosystem-wide canonical binary coproduct.
+
+module main
+
+swap : forall a b. Either a b -> Either b a
+let swap value =
+    match value
+    case Left left -> Right left
+    case Right right -> Left right

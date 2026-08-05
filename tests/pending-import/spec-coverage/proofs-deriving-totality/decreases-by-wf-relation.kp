@@ -19,7 +19,4 @@ down : Int -> Int
 let down n decreases n by myLt =
     if leInt n 0 then 0 else down (subInt n 1)
 
--- STATUS(a0497523): FAIL — the checker does not consume WellFounded
--- evidence and does not reason through Type-valued relations (prelude
--- notes the witness "is not modelled"); the SCC is accepted only as
--- unverified (W_TERMINATION_UNVERIFIED) instead of termination-certified.
+-- STATUS: SPEC-ISSUE — WellFounded is opaque and the portable prelude exposes no constructor or theorem yielding this witness

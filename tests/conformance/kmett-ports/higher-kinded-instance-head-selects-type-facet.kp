@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- Compiler regression found while porting Edward Kmett's `bifunctors`.
+-- §7.2/§7.5 contextual facet selection requires the `PairF` occurrence in the
+-- instance head to select the type facet. The current checker instead selects
+-- the same-spelling constructor facet and reports that its runtime function
+-- type does not have the higher kind required by `BifunctorLike`.
+
+module main
+
+trait BifunctorLike
+    (parametric 0 p : (parametric 0 A : Type) -> (parametric 0 B : Type) -> Type)
+
+data PairF (parametric 0 a : Type) (parametric 0 b : Type) : Type =
+    PairF (left : a) (right : b)
+
+instance BifunctorLike PairF
+-- STATUS(8c3c7747): FAIL — E_TYPE_EQUALITY_MISMATCH: the instance head incorrectly selects PairF's constructor facet.

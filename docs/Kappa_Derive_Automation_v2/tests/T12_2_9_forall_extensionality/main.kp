@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+implicitExtensionality :
+    forall (a : Type)
+           (b : a -> Type)
+           (f : forall (x : a). b x)
+           (g : forall (x : a). b x).
+    (forall (x : a). f @x = g @x) ->
+    f = g
+let implicitExtensionality pointwise =
+    forallExt pointwise
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability deriveTrace
+--! assertNoErrors
+--! assertType implicitExtensionality forall (a : Type) (b : a -> Type) (f : forall (x : a). b x) (g : forall (x : a). b x). (forall (x : a). f @x = g @x) -> f = g

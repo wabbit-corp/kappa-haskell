@@ -1,0 +1,23 @@
+module generated_instance_universe_principalization
+
+trait Generic (parametric 0 a : Type)
+instance Generic a
+
+trait Closed (parametric 0 a : Type)
+instance Closed TypeLevel
+
+genericInt : Generic Int
+let genericInt = summon (Generic Int)
+
+genericType : Generic Type0
+let genericType = summon (Generic Type0)
+
+genericType1 : Generic Type1
+let genericType1 = summon (Generic Type1)
+
+closedTypeLevel : Closed TypeLevel
+let closedTypeLevel = summon (Closed TypeLevel)
+
+--! mode check
+--! assertNoErrors
+--! assertStageDumpRoundTrips KCore

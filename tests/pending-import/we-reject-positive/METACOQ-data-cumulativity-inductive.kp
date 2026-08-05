@@ -37,3 +37,5 @@ let useUBoxAtType = MkUBox Nat
 --! assertNoErrors
 --! assertType useSmall Box Nat
 --! assertType useLarger Type1
+
+-- STATUS(f1b025a3): FAIL — TEST-ISSUE: E_HOLE_UNSOLVED at line 31; current source or fixture is not portable v1 and must be rewritten before promotion.

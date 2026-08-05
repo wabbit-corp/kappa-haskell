@@ -18,4 +18,4 @@ data Color : Type =
 probe : Color
 let probe = Red
 
--- STATUS(a0497523): FAIL — compiler absorbs the deeper ctor line as an application continuation (Green becomes an argument type of Red: E_NAME_UNRESOLVED/E_TYPE_EQUALITY_MISMATCH) instead of rejecting with E_UNEXPECTED_INDENTATION
+-- STATUS(74742dfd): FAIL — no diagnostic error[E_UNEXPECTED_INDENTATION] was produced (saw: E_NAME_UNRESOLVED@16, E_TYPE_EQUALITY_MISMATCH@19)

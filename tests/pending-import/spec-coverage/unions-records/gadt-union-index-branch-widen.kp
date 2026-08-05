@@ -28,4 +28,4 @@ let useIt s v =
     case SmallShape -> v
     case BigShape   -> v
 
--- STATUS(a0497523): FAIL — the forced index equality never refines the type-variable index: both arms E_TYPE_EQUALITY_MISMATCH with "actual: @3", leaking the internal metavariable name in the user-facing diagnostic.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 28

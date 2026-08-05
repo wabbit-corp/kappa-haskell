@@ -12,4 +12,4 @@ let axes = [axis "os" [tag "linux", tag "macos"]]
 let cli = executable "cli" (native "cc" "arm64-apple-darwin") (tags []) (SelModule "main") (modulesUnder "src") [] []
 
 let buildConfig : BuildConfig = package "kappa-demo" (semver version) roots axes deps [] [cli]
--- STATUS(a0497523): UNSUPPORTED — requires capability buildManifest: not provided
+-- STATUS(74742dfd): UNSUPPORTED — requires capability buildManifest: not provided

@@ -24,4 +24,4 @@ let unifyChecked xs = unify xs
 
 main : UIO Unit
 let main = ioPure ()
--- STATUS(a0497523): FAIL — the compiler's std.config only exports ConfigInputKey and a `configInput` key constructor; the §29.7 portable minimum (ConfigPath, ConfigConflict, ConfigConflictSide, ConfigUnify/ConfigOverride/ConfigMerge, input, tryUnify, unify, <&>) is missing (E_IMPORT_ITEM_NOT_FOUND x16)
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 16; first error: E_IMPORT_ITEM_NOT_FOUND "module 'std.config' does not export 'ConfigPath' (Spec §8.3)" at line 12

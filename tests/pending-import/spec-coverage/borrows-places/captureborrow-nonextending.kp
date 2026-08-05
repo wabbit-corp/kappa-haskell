@@ -30,4 +30,4 @@ let bad () : (Unit -> Int) =
         let v = captureBorrow n
         \() -> withBorrowView v (\m -> observe m) --!! E_QTT_BORROW_ESCAPE
 
--- STATUS(a0497523): FAIL — compiler reports 0 errors: the closure captures the reified BorrowView v (region env {rho}) and returns it from the introducing scope, but view-values are not taint-tracked through closures, violating §12.3 "the same rule applies to first-class borrowed-view values".
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_QTT_BORROW_ESCAPE]; no diagnostic error[E_QTT_BORROW_ESCAPE] on line 31 (no diagnostics)

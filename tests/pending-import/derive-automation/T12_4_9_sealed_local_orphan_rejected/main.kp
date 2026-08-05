@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+trait Chosen =
+    value : Bool
+
+let bad =
+    block
+        instance Chosen =
+            let value = True
+        summon
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! requires capability evidenceUniqueness
+--! assertDiagnostic error E_INSTANCE_LOCAL_ORPHAN
+--! assertDiagnosticFamily error kappa.instance.local-orphan
+
+-- STATUS(3014a0d9): HARNESS-ERROR — harness errors

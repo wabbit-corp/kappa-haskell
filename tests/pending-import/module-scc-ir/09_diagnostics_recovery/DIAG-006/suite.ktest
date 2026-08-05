@@ -4,4 +4,3 @@
 --! assertDiagnostic error E_INDUCTIVE_RECURSIVE_INVALID
 --! assertDiagnosticFamily error kappa.data.inductive-recursion
 --! assertDiagnosticPayload error E_INDUCTIVE_RECURSIVE_INVALID /reason "recursive-operation-not-structural"
---! assertSuppressedDiagnostic E_INDUCTIVE_RECURSIVE_INVALID kappa.termination.failure

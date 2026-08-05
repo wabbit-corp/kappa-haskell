@@ -27,4 +27,4 @@ let myty = pure (summon (InterpolatedMacro Type))
 
 v : myty"ignored"
 let v = 42
--- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH (actual Type1, expected Type): InterpolatedMacro Type is ill-kinded, so no type-producing handler (including the §6.3.5 `type` signature) can be written
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_ELAB_STUCK "this elaboration-time action could not be executed by the Elab evaluator (§21.9; see SPEC_COMPLIANCE.md for the provided subset)" at line 28

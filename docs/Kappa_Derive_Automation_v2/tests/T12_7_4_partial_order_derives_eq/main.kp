@@ -1,0 +1,27 @@
+@PrivateByDefault module main
+
+data Bit : Type =
+    O
+    I
+
+instance Preorder Bit =
+    let leq x y =
+        match (x, y)
+        case (I, O) -> False
+        case _      -> True
+
+instance PartialOrder Bit = derive
+
+same : Bool
+let same = O == O
+
+different : Bool
+let different = O == I
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertEval same True
+--! assertEval different False
+--! assertDerivedSupertrait Eq Bit from PartialOrder Bit

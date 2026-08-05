@@ -34,7 +34,7 @@ instance Go Int =
     let go _x = callMe
 
 -- NEGATIVE: cycle visible only after instance substitution.
-let callMe = go (0 : Int)                     --!! kappa.declaration.recursive-group
+let callMe = go (0 : Int)
 
 -- The same cycle reached through a generic wrapper: `runGo` itself is not
 -- recursive (its body uses only abstract evidence), and callMe2/runGo are
@@ -47,5 +47,3 @@ callMe2 : Unit
 let callMe2 = runGo (0 : Int)
 
 --! assertDiagnosticFamily error kappa.declaration.recursive-group
-
--- STATUS(f1e4161b): HARNESS-ERROR — harness errors

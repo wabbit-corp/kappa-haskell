@@ -1,11 +1,13 @@
-data UCode.{u} : Type u =
-    BaseU (A : Type u)
-    NestU (inner : UCode.{u}) (sample : UEl.{u} inner)
+data UCode.{u} : Type (succ u) =
+    BaseU (ordinary 0 A : Type u)
+    NestU
+        (ordinary 0 v : TypeLevel)
+        (@0 lower : v <= u)
+        (inner : UCode.{v})
+        (sample : UEl.{v} inner)
 
 UEl.{u} : UCode.{u} -> Type u
 let UEl code decreases structural code =
     match code
     case BaseU A -> A
-    case NestU inner sample -> UEl inner
-
--- STATUS(f1e4161b): FAIL — E_NAME_UNRESOLVED
+    case NestU v inner sample -> UEl inner

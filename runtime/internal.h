@@ -62,9 +62,10 @@ enum {
   OP_INTERRUPT,           /* [fiber]          interrupt (request + wait)   */
   OP_INTERRUPT_FORK,      /* [fiber]          interruptFork (no wait)      */
   OP_UNINTERRUPTIBLE,     /* [body]           uninterruptible body         */
-  OP_POLL,                /* []               poll (deliver even if masked)*/
+  OP_UNINTERRUPTIBLE_MASK,/* [f]              uninterruptibleMask f        */
+  OP_POLL,                /* []               poll (pierce ordinary masking only) */
   OP_MASK,                /* [f]              mask: f gets `restore` (§18.1.12) */
-  OP_RESTORE,             /* [act, outerDepth] run act at the mask-entry interruptibility */
+  OP_RESTORE,             /* [act, frame]      suspend one authenticated mask frame */
   /* structured concurrency (§18.1.8, §32.2.3) */
   OP_NEW_SCOPE,           /* []               newScope -> Scope            */
   OP_FORK_IN,             /* [scope, action]  forkIn -> Fiber              */
@@ -159,10 +160,13 @@ enum { RK_NORMAL, RK_FAIL, RK_RETURN, RK_BREAK, RK_CONTINUE, RK_INTERRUPT, RK_RE
 
 /* ── continuation frames (the stackless "K" of the CK-machine) ──────────── */
 typedef struct Cont Cont;
+typedef struct Fiber Fiber;
+typedef struct MaskFrame MaskFrame;
 typedef enum {
   KK_DONE, KK_BIND, KK_THEN, KK_CATCH,
-  KK_POPMASK,   /* lower the fiber's mask_depth by 1 on the way out (uninterruptible) */
-  KK_SETMASK,   /* restore mask_depth to a stored level on the way out (mask/restore) */
+  KK_POPMASK,   /* remove exactly the MaskFrame introduced by this region */
+  KK_SETMASK,   /* reinstate exactly one temporarily suspended MaskFrame */
+  KK_RESTORESTATE, /* restore clause dynamic state after a resumed segment */
   KK_DOSCOPE,   /* a do-scope boundary: run its exit actions on any way out       */
   KK_FINSEQ,    /* run a do-scope's exit actions LIFO, then resume a saved Reason  */
   KK_LOOP,      /* a loop boundary: break/continue target it                      */
@@ -189,8 +193,7 @@ struct Cont {
   void   *aux;  /* KK_DOSCOPE: this scope's ExitStack*; KK_FINSEQ: FinSeq*;
                  * KK_HANDLER: this prompt's Handler*                              */
   void   *aux2; /* KK_DOSCOPE: the saved (parent) ExitStack* to restore on exit;
-                 * KK_HANDLER: the saved cur_exits to reinstate when the prompt is
-                 * removed (the handler clause runs OUTSIDE the body's do-scopes)  */
+                 * KK_HANDLER: the DynamicState outside the prompt                  */
   Cont   *next;
 };
 
@@ -207,6 +210,15 @@ typedef struct Handler {
  * on every way out of the scope (§18.7, §32.2.19).  GC_MALLOC'd. */
 typedef struct { KValue **items; int n, cap; } ExitStack;
 
+/* Fiber-local dynamic control state that crosses a handler boundary as one
+ * semantic unit (Spec section 32.2.13).  Exit stacks and mask frames are stored
+ * separately on Fiber for fast ordinary execution, but a perform/resume must
+ * capture, install, and restore them together. */
+typedef struct DynamicState {
+  ExitStack *exits;
+  MaskFrame *mask_top;
+} DynamicState;
+
 /* A dynamically-active exit action that must run if generated synchronous C
  * aborts at a scalar/boxed-loop safe point before ordinary scope exit reaches
  * its finalizers. The token is also captured by the ordinary finalizer wrapper
@@ -222,7 +234,7 @@ typedef struct AbortExit {
  * run all its do-scope exit actions. */
 typedef struct AbandonEnd {
   Cont      *kont;
-  ExitStack *saved_exits;
+  DynamicState *saved_dynamic;
   int        rkind;
   KValue    *rval;
   KValue    *rlabel;
@@ -240,10 +252,10 @@ typedef struct {
 typedef struct Resumption {
   Cont      *head;
   Cont      *tail;
-  ExitStack *cur_exits;
+  DynamicState *captured;
+  DynamicState *prompt;
   KValue    *label;
   void      *handler;
-  void      *handler_exits;
   int        used;
   int        tail_res;
 } Resumption;
@@ -252,9 +264,27 @@ typedef struct Resumption {
 typedef enum { F_RUNNABLE, F_RUNNING, F_PARKED, F_DONE } FStatus;
 
 typedef struct Waiter Waiter;   /* a parked fiber on some object's waiter list */
-typedef struct Fiber  Fiber;
 typedef struct Scope  Scope;
 typedef struct ScopeLink ScopeLink;
+
+typedef enum {
+  KMASK_INTERRUPTIBLE = 0,
+  KMASK_MASKED = 1,
+  KMASK_UNINTERRUPTIBLE = 2
+} KMaskState;
+
+/* §18.1.12 / §32.2.5: semantic identity is the frame allocation itself. A
+ * restore closure carries this pointer and can suspend it only on its owner
+ * fiber while it is the topmost active frame. Frames are GC allocated because
+ * restore closures may outlive their dynamic region; 'active' then makes the
+ * stale capability inert. */
+struct MaskFrame {
+  Fiber *owner;
+  KMaskState state;
+  int active;
+  int suspended;
+  struct MaskFrame *prev;
+};
 
 typedef enum {
   KPARK_NONE = 0,
@@ -299,14 +329,16 @@ struct Fiber {
   /* interruption + masking (§18.1.4, §18.1.12) */
   _Atomic int     interrupt_pending;
   KValue         *interrupt_cause;   /* the InterruptCause value (set under lock) */
-  uint32_t        mask_depth;        /* 0 == interruptible                       */
+  KMaskState      mask_base;         /* non-restorable state inherited at fork   */
+  KMaskState      mask_effective;    /* cached max(base, active frame states)     */
+  MaskFrame      *mask_top;          /* newest frame, including suspended frames */
   /* §32.2.5 interruption-point gate (fix 2).  A pending interrupt becomes
    * observable only AT an interruption point — a runtime suspension/resume
    * (sleep/await/STM-retry/cede) or an explicit poll — NOT at a mask-region exit.
    * Set to 1 each time the fiber (re-)enters fiber_step from the run queue (a fork
    * resume or a park wake); cleared after the first delivery check of that turn.
-   * So `pending && mask_depth==0 && resumed` is true ONLY on the genuine resume
-   * turn — dropping mask_depth to 0 mid-step (KK_POPMASK/KK_SETMASK) no longer
+   * So `pending && effective==Interruptible && resumed` is true ONLY on the
+   * genuine resume turn — changing frames mid-step no longer
    * makes the next non-suspending step a delivery point (the masked-sleep
    * suppression bug §18.1.12/§32.2.5).  OP_POLL delivers regardless of this flag. */
   int             resumed;
@@ -354,7 +386,7 @@ struct Fiber {
    * KK_LOOP that re-runs `iterate` in place, or a codegen-emitted native scalar
    * loop) must still (a) observe a pending interrupt and (b) restore fairness —
    * the spec's loop-backedge safe points.  `safepoint_hit` is set at a back-edge
-   * when a pending interrupt is deliverable (mask_depth==0); the fiber_step gate
+   * when a pending interrupt is deliverable (effective state Interruptible); the fiber_step gate
    * then delivers it even though the fiber did not (re-)enter from the run queue
    * (`resumed`==0).  `backedge_budget` counts back-edges down from a fixed quantum
    * so a tight loop periodically CEDES (re-enqueues behind other runnables) for
@@ -365,6 +397,14 @@ struct Fiber {
   /* doubly-linked membership in rt->all (the strong GC root set) */
   Fiber          *all_prev, *all_next;
 };
+
+KMaskState krt2i_mask_state(Fiber *f);
+int krt2i_mask_interruptible(Fiber *f);
+int krt2i_mask_uninterruptible(Fiber *f);
+MaskFrame *krt2i_mask_push(Fiber *f, KMaskState state);
+void krt2i_mask_pop(Fiber *f, MaskFrame *frame);
+int krt2i_mask_suspend(Fiber *f, MaskFrame *frame);
+void krt2i_mask_reinstate(Fiber *f, MaskFrame *frame);
 
 /* A supervision scope (§18.1.8, §32.2.3): a set of attached, not-yet-terminated
  * child fibers, plus fibers parked waiting for it to drain (shutdownScope /

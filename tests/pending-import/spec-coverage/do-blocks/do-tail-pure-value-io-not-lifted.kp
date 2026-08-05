@@ -27,4 +27,4 @@ main : UIO Int
 let main = do
     printInt 1
     n
--- STATUS(a0497523): FAIL — accepted with 0 errors: the IO-family do block silently passes the bare pure Int tail through (Check.hs statementInferable corpus accommodation), contra §18.2.2/§18.8.6; the identical shape over Option is rejected
+-- STATUS(74742dfd): FAIL — expected 1 errors, got 0; no diagnostic with family kappa.type.mismatch was produced

@@ -28,4 +28,4 @@ type Box : Type = (a : Type, @tc : Pretty this.a, val : this.a)
 box : Box
 let box = (a = Int, val = 5)
 
--- STATUS(a0497523): FAIL — omitted @-fields are never synthesized; the literal is rejected with E_TYPE_EQUALITY_MISMATCH 'record literal fields do not match the expected record type'
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "record literal fields do not match the expected record type (expected: v, p)" at line 23

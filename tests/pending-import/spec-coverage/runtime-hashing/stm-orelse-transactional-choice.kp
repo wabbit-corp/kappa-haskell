@@ -26,4 +26,4 @@ let main = do
     let clean <- atomically (newTVar 0)
     let b <- atomically (retry <|> rightWrite clean)
     printlnString ("right-after-retry:" ++ showInt b)
--- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT: the prelude declares the Alternative trait but provides no `Alternative STM` instance, so the §18.1.13-required transactional choice (`<|>` / orElse) is not implemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Alternative STM" at line 21; stdout mismatch: expected "left-wins:1\nmarker-untouched:0\nright-after-retry:2\n", got ""

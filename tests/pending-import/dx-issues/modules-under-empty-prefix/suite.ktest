@@ -1,0 +1,7 @@
+--! mode check
+--! requires capability buildManifest
+--! assertNoErrors
+
+-- The buildManifest harness currently stages only manifest evaluation. The
+-- intended assertion includes target module resolution: `modulesUnder ""`
+-- must select `helper` as well as the explicit main module.

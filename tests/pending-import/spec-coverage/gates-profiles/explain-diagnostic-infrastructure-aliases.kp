@@ -17,4 +17,4 @@ module main
 main : IO Unit
 let main = println "ok"
 
--- STATUS(a0497523): FAIL — explain registry lacks entries for E_RECOVERY_INSERTED_TOKEN, E_RECOVERY_MISSING_NODE, E_PROVENANCE_MISSING, E_PROVENANCE_CYCLE, E_SYNTHETIC_ORIGIN_UNMAPPED
+-- STATUS(74742dfd): FAIL — no registered explanation for diagnostic code or family 'E_RECOVERY_INSERTED_TOKEN' (§3.1.2A); no registered explanation for diagnostic code or family 'E_RECOVERY_MISSING_NODE' (§3.1.2A); no registered explanation for diagnostic code or family 'E_PROVENANCE_MISSING' (§3.1.2A); no registered explanation for diagnostic code or family 'E_PROVENANCE_CYCLE' (§3.1.2A); no registered explanation for diagnostic code or family 'E_SYNTHETIC_ORIGIN_UNMAPPED' (§3.1.2A)

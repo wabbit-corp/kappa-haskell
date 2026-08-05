@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+
 -- | Pure, portable value-level arithmetic reasoning.
 --
 -- This module deliberately knows nothing about Core, source names, implicit
@@ -37,6 +39,7 @@ module Kappa.Arithmetic
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM)
+import Data.Data (Data)
 import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -61,13 +64,13 @@ data AExpr
   | AMax !AExpr !AExpr
   | AMin !AExpr !AExpr
   | AIf !AFormula !AExpr !AExpr
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data ACmp = ACmpLt | ACmpLe | ACmpEq | ACmpNe
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data AFact = AFact !ACmp !AExpr !AExpr
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A checked Boolean combination of authenticated arithmetic atoms.
 -- Connective identity is established by the Core/KCore clients before a
@@ -78,7 +81,7 @@ data AFormula
   | AAnd !AFormula !AFormula
   | AOr !AFormula !AFormula
   | ANot !AFormula
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Logical domain of an integer-primitive comparison operand.  Both logical
 -- Nat and Integer lower through the same runtime primitives, so every client
@@ -86,7 +89,7 @@ data AFormula
 data PrimitiveComparisonDomain
   = PrimitiveComparisonNatural
   | PrimitiveComparisonInteger
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Pure specialization of 'decodePrimitiveComparisonOperandM'.
 decodePrimitiveComparisonOperand
@@ -142,19 +145,19 @@ decodePrimitiveComparisonOperandM bridge expression domain operand =
       _ -> Nothing
 
 data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ALin = ALin !Integer !(Map Int Integer)
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | One multiplicative word. Adjacent equal factors are run-length encoded,
 -- but their left-to-right order is semantic: §15.8.4 does not authorize
 -- multiplicative commutation for the portable semiring theories.
 newtype Monomial = Monomial [(Int, Int)]
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 newtype Poly = Poly (Map Monomial Integer)
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Canonical material retained in an arithmetic certificate.  A verifier
 -- recomputes this value instead of trusting a Boolean decision or a claimed
@@ -168,7 +171,7 @@ data ArithmeticNormalForm
   | NormalLowerBound !Integer
   | NormalDisequality
   | NormalCaseSplit !AFormula !ArithmeticReplay !ArithmeticReplay
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data ArithmeticProofRule
   = ProvePolynomialEquality
@@ -177,14 +180,14 @@ data ArithmeticProofRule
   | ProveNonStrictLowerBound
   | ProveDisequality
   | ProveCaseSplit
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 data ArithmeticReplay = ArithmeticReplay
   { arGoal :: !AFact
   , arRule :: !ArithmeticProofRule
   , arNormalForm :: !ArithmeticNormalForm
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Deterministic proof tree for one arithmetic Boolean formula. Atomic
 -- leaves retain the existing independently replayable arithmetic witness.
@@ -201,7 +204,7 @@ data ArithmeticFormulaReplay
   | ReplayOrFalse !ArithmeticFormulaReplay !ArithmeticFormulaReplay
   | ReplayNot !ArithmeticFormulaReplay
   | ReplayAssumptionCases ![ArithmeticAssumptionCaseReplay]
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | One canonical case induced by non-atomic assumptions. A contradictory
 -- case records the first assumption fact whose negation follows from the
@@ -212,7 +215,7 @@ data ArithmeticAssumptionCaseReplay
   = ReplayAssumptionContradiction !Int !ArithmeticReplay
   | ReplayAssumptionImpossible !Int
   | ReplayAssumptionGoal !ArithmeticFormulaReplay
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | The exact partial-operation contract used while replaying one arithmetic
 -- certificate.  The expression language is shared, but natural subtraction
@@ -222,7 +225,7 @@ data ArithmeticAssumptionCaseReplay
 data ArithmeticSemantics
   = ArithmeticNaturalSemantics
   | ArithmeticIntegerSemantics
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | Reindex every atom in one arithmetic fact into a certificate-local
 -- context. A missing atom is a scope error, not a fresh variable.

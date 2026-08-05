@@ -22,8 +22,11 @@
  * still waiting on live==0 — forks a NEW daemon B (another forever-sleeper).  B
  * is therefore forked DURING the drain.  With the fix B attaches to the still-
  * published daemon scope, is born-interrupted, and is reaped before the drain
- * returns.  WITHOUT the fix B reads daemon_scope==NULL, attaches to nothing, and
- * leaks — one extra fiber pinned in rt->all per run.
+ * returns.  A finalizer runs Masked and B inherits that state as its base under
+ * Spec §§18.1.12/32.2.5, so B explicitly polls before parking; ordinary sleep
+ * cannot puncture the inherited mask.  WITHOUT the publication fix B reads
+ * daemon_scope==NULL, attaches to nothing, and leaks — one extra fiber pinned in
+ * rt->all per run.
  *
  * The test runs run_main many times and asserts the live-fiber count stays
  * bounded (does NOT grow ~linearly with the run count).  Before the fix it grows
@@ -50,10 +53,13 @@ static KValue *forever_sleep(void) {
   return krt2_then(krt2_sleep_for(kint(HOUR_NANOS)), krt2_pure(kint(0)));
 }
 
-/* the inner daemon B (forked from A's finalizer, i.e. DURING the drain).  Plain
- * forever-sleeper, no further forking — so the cascade stops at one extra fiber.
- * With the fix it is born-interrupted and reaped; without it, it leaks. */
-static KValue *daemon_b_body(void) { return forever_sleep(); }
+/* The inner daemon B is forked from A's masked finalizer.  Child fibers inherit
+ * the parent's effective state as a non-restorable base state, so B must opt in
+ * to delivery with poll before it parks.  There is no further fork, hence the
+ * cascade still stops at one extra fiber. */
+static KValue *daemon_b_body(void) {
+  return krt2_then(krt2_poll(), forever_sleep());
+}
 
 /* A's finalizer: forkDaemon(B), then unit.  This runs while the run-boundary
  * drain is in progress (A is being interrupted), so B is forked in the window.

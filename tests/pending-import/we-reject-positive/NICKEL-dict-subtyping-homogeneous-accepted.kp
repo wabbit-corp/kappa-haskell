@@ -58,3 +58,5 @@ numDictAsDyn : {_ : Dyn}
 let numDictAsDyn = (homogeneousRecord : {_ : Dyn})
 
 --! assertNoErrors
+
+-- STATUS: SPEC-ISSUE — currently FAIL: {_ : T} dictionary subtyping is explicitly proposed here but is not part of the v1 Spec.

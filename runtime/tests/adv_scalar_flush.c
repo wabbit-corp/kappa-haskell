@@ -20,7 +20,7 @@
  *       Exit is Failure(Interrupt).
  *   T2 (masked suppression): the SAME loop body under uninterruptible() with a
  *       finite bound runs to COMPLETION despite an async interrupt — krt2_safepoint()
- *       returns 0 throughout (mask_depth>0), no mid-loop abort.
+ *       returns 0 throughout (effective state Uninterruptible), no mid-loop abort.
  */
 #include "kappart2.h"
 #include "kappart2_harness.h"

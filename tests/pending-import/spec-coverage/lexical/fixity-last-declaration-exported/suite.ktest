@@ -1,5 +1,4 @@
 --! mode check
 --! packageMode
---! assertNoErrors
---! assertEval chain 54
---! assertEval prec 25
+--! assertErrorCount 1
+--! assertDiagnostic error E_DUPLICATE_DECLARATION

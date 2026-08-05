@@ -6,6 +6,9 @@
 -- `interruptAs (InterruptCause Requested (Some id)) fiber` where id is the
 -- CURRENT CALLER's fiber id — the initiating fiber MUST be recorded in the
 -- delivered InterruptCause, not dropped to None.
+-- NOTE: the FiberId.MkFiberId pattern below matches this repository's
+-- prelude; the spec declares FiberId opaque (expect data), so a portable
+-- respelling would compare through provided operations instead.
 module main
 
 sleeper : UIO Int
@@ -15,8 +18,8 @@ let sleeper = do
 
 sameId : FiberId -> FiberId -> Bool
 let sameId a b = match a
-    case MkFiberId x -> match b
-      case MkFiberId y -> x == y
+    case FiberId.MkFiberId x -> match b
+      case FiberId.MkFiberId y -> x == y
 
 main : UIO Unit
 let main = do
@@ -25,11 +28,11 @@ let main = do
     interrupt f
     let ex <- await f
     match ex
-      case Success v -> printlnString "completed"
-      case Failure (Interrupt (InterruptCause Requested (Some by))) ->
+      case Exit.Success v -> printlnString "completed"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested (Some by))) ->
         if sameId by me
-          then printlnString "initiator:caller"
-          else printlnString "initiator:other-fiber"
-      case Failure (Interrupt (InterruptCause Requested None)) -> printlnString "initiator:none"
-      case Failure c -> printlnString "other-cause"
--- STATUS(a0497523): FAIL — compiler gap AND test bug: (gap) prelude 'interrupt' sends InterruptCause Requested None, spec §18.1.4 requires Some(caller id) — fixed copy runs 'initiator:none'; (bug) if/then/else must be one line (§5.4) and the ctor import is missing.
+        then printlnString "initiator:caller"
+        else printlnString "initiator:other-fiber"
+      case Exit.Failure (Cause.Interrupt (InterruptCause InterruptTag.Requested None)) -> printlnString "initiator:none"
+      case Exit.Failure c -> printlnString "other-cause"
+-- STATUS(3014a0d9): FAIL — initiator recorded as none; §32.2.8 requires the requesting fiber id

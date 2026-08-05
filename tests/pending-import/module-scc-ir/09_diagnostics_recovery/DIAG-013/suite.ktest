@@ -1,7 +1,6 @@
 --! mode check
 --! scriptMode
 --! assertErrorCount 1
---! assertDiagnostic error E_RECURSIVE_GROUP_UNSUPPORTED
+--! assertDiagnostic error E_RECURSIVE_VALUE_CYCLE
 --! assertDiagnosticFamily error kappa.declaration.recursive-group
---! assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /reason "unsupported-mixed-cycle"
---! assertDiagnosticPayload error E_RECURSIVE_GROUP_UNSUPPORTED /attemptedClassifications/0 "term-recursive"
+--! assertDiagnosticPayload error E_RECURSIVE_VALUE_CYCLE /reason "strict-value-cycle"

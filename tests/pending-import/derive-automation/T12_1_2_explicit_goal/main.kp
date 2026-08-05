@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+unitValue : Unit
+let unitValue = derive (Unit)
+
+self :
+    forall (a : Type) (x : a).
+    x = x
+let self @x = derive (x = x)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertType unitValue Unit
+--! assertDeriveOutcome self Solved
+
+-- STATUS(3014a0d9): HARNESS-ERROR — unknown directive 'assertDeriveOutcome' is not defined by Appendix T (§T.3))

@@ -25,6 +25,7 @@ module Kappa.CoreOps
   , substTerm
   , substTopTerm
   , substTopTermAt
+  , instantiateEtaConstructor
   , coreToNeutralLevelTerm
   , termAsLevel
   , zonkTermWith
@@ -34,6 +35,7 @@ module Kappa.CoreOps
   , metaIdsOf
   , levelMetasOfTerm
   , levelParamsOfTerm
+  , roleLevelParamsOfTerm
   , termNodeLevels
   , itemPatternLevels
   , declarationUniverseConstraints
@@ -49,12 +51,13 @@ module Kappa.CoreOps
   , termClosed
   , globalsOfTerm
   , spineOfTerm
+  , spineOfTermWithErasure
   ) where
 
 import Control.Applicative ((<|>))
 import Data.Bifunctor (bimap)
 import qualified Data.ByteString as BS
-import Data.List (foldl', nub)
+import Data.List (foldl', nub, sort)
 import Data.Monoid (All (..), Any (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -254,8 +257,8 @@ specializeTraitMemberProjectionType outerDepth parameterCount arguments dictiona
   | otherwise = preserveEvidence 0 memberType
   where
     preserveEvidence evidenceDepth = \case
-      CPiEvidenceM mode formation Impl q borrowed name assumption@(Just _) origin domain codomain ->
-        CPiEvidenceM mode formation Impl q borrowed name assumption origin domain
+      CPiRuntimeM mode formation Impl q borrowed name assumption@(Just _) origin runtimeErasure domain codomain ->
+        CPiRuntimeM mode formation Impl q borrowed name assumption origin runtimeErasure domain
           <$> preserveEvidence (evidenceDepth + 1) codomain
       residual ->
         specializePrefix evidenceDepth (arguments ++ [dictionary]) residual
@@ -312,37 +315,94 @@ specializeTraitMemberStorageType outerDepth parameterCount arguments dictionary 
 -- depth is intentionally not exposed here; use 'foldTermWithDepth' when a query
 -- cares about de Bruijn levels.
 foldTerm :: Monoid m => (Term -> m) -> (KItem -> m) -> Term -> m
-foldTerm termF itemF = go
+foldTerm = foldTermWithMetadata AllAuthenticatedMetadata
+
+-- | Select which term-bearing metadata participates in a structural fold.
+-- Scope, serialization, and certificate validation use the complete view.
+-- Representation-role inference uses the represented view so changing a
+-- proof object cannot change a nominal family's runtime variance.
+data TermFoldMetadata
+  = AllAuthenticatedMetadata
+  | RepresentedTypeMetadata
+
+foldTermWithMetadata
+  :: Monoid m
+  => TermFoldMetadata
+  -> (Term -> m)
+  -> (KItem -> m)
+  -> Term
+  -> m
+foldTermWithMetadata metadata termF itemF = go
   where
+    foldRuntimeErasure runtimeErasure =
+      case metadata of
+        AllAuthenticatedMetadata -> foldMap go runtimeErasure
+        RepresentedTypeMetadata -> mempty
+
+    foldSchemaSourceArguments sourceArguments =
+      case metadata of
+        AllAuthenticatedMetadata -> foldMap go sourceArguments
+        RepresentedTypeMetadata -> mempty
+
+    foldSchemaTargetArguments targetArguments =
+      case metadata of
+        AllAuthenticatedMetadata -> foldMap go targetArguments
+        -- A certified schema lift proves that these ordinary arguments are
+        -- preserved while only the nominal universe spine changes. Their
+        -- classifiers therefore do not constrain the enclosing family's
+        -- role (§10.4.3.1); malformed metadata is handled by the complete
+        -- authenticated traversal instead.
+        RepresentedTypeMetadata -> mempty
+
     go t = termF t <> case t of
       CVar _ -> mempty
       CLocal _ _ -> mempty
       CGlobal _ _ -> mempty
       CLamM _ _ _ _ b -> go b
-      CPiEvidenceM _ _ _ _ _ _ _ _ a b -> go a <> go b
-      CApp _ f a -> go f <> go a
+      CPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure a b ->
+        foldRuntimeErasure runtimeErasure <> go a <> go b
+      CAppM _ runtimeErasure f a ->
+        foldRuntimeErasure runtimeErasure <> go f <> go a
       CSort _ -> mempty
       CLevel _ -> mempty
       CUniverseLift _ _ _ t' -> go t'
       CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
-        foldMap go sourceArguments <> foldMap go targetArguments <> go t'
-      CArithmeticProof certificate -> foldMapArithmeticCertificate go certificate
+        foldSchemaSourceArguments sourceArguments
+          <> foldSchemaTargetArguments targetArguments
+          <> go t'
+      CArithmeticProof certificate ->
+        case metadata of
+          AllAuthenticatedMetadata -> foldMapArithmeticCertificate go certificate
+          RepresentedTypeMetadata -> mempty
       CLit _ -> mempty
       CCtorI _ _ ann arguments -> foldMap go ann <> foldMap (go . caTerm) arguments
       CMatch s scrutineeAnn resultAnn alts ->
         go s <> foldMap go scrutineeAnn <> foldMap go resultAnn <> foldMap goAlt alts
-      CRecordTQ fs -> foldMap (go . rfType) fs
+      CRecordTQ fs ->
+        foldMap
+          (\field -> foldRuntimeErasure (rfRuntimeErasure field) <> go (rfType field))
+          fs
       CRecordV fs -> foldMap (go . snd) fs
       CProjM _ e _ -> go e
       CProjAtM _ e _ _ -> go e
       CVariantT ms -> foldMap go ms
       CInject _ e -> go e
-      CLetM _ _ _ a b c -> go a <> go b <> go c
-      CLetRecM _ _ _ a b c -> go a <> go b <> go c
-      CLetPolyM _ _ _ _ a b c -> go a <> go b <> go c
-      CLetRecPolyM _ _ _ _ a b c -> go a <> go b <> go c
+      CLetRuntimeM _ _ _ runtimeErasure a b c ->
+        foldRuntimeErasure runtimeErasure <> go a <> go b <> go c
+      CLetRecRuntimeM _ _ _ runtimeErasure a b c ->
+        foldRuntimeErasure runtimeErasure <> go a <> go b <> go c
+      CLetPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+        foldRuntimeErasure runtimeErasure <> go a <> go b <> go c
+      CLetRecPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+        foldRuntimeErasure runtimeErasure <> go a <> go b <> go c
       CLetRecGroupM _ definitions body ->
-        foldMap (\definition -> go (clrdType definition) <> go (clrdRhs definition)) definitions <> go body
+        foldMap
+          (\definition ->
+             foldRuntimeErasure (clrdRuntimeErasure definition)
+               <> go (clrdType definition)
+               <> go (clrdRhs definition))
+          definitions
+          <> go body
       CMeta _ -> mempty
       CDo _ items -> foldMap goK items
       CSealE _ e -> go e
@@ -426,8 +486,10 @@ foldTermWithDepth termF = go
       CLocal _ _ -> mempty
       CGlobal _ _ -> mempty
       CLamM _ _ _ _ b -> go (d + 1) b
-      CPiEvidenceM _ _ _ _ _ _ _ _ a b -> go d a <> go (d + 1) b
-      CApp _ f a -> go d f <> go d a
+      CPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure a b ->
+        foldMap (go d) runtimeErasure <> go d a <> go (d + 1) b
+      CAppM _ runtimeErasure f a ->
+        foldMap (go d) runtimeErasure <> go d f <> go d a
       CSort _ -> mempty
       CLevel _ -> mempty
       CUniverseLift _ _ _ t' -> go d t'
@@ -442,19 +504,33 @@ foldTermWithDepth termF = go
           <> foldMap (go d) scrutineeAnn
           <> foldMap (go d) resultAnn
           <> foldMap (goAlt d) alts
-      CRecordTQ fs -> foldMap (go d . rfType) fs
+      CRecordTQ fs ->
+        foldMap
+          (\field ->
+             foldMap (go d) (rfRuntimeErasure field)
+               <> go d (rfType field))
+          fs
       CRecordV fs -> foldMap (go d . snd) fs
       CProjM _ e _ -> go d e
       CProjAtM _ e _ _ -> go d e
       CVariantT ms -> foldMap (go d) ms
       CInject _ e -> go d e
-      CLetM _ _ _ a b c -> go d a <> go d b <> go (d + 1) c
-      CLetRecM _ _ _ a b c -> go d a <> go (d + 1) b <> go (d + 1) c
-      CLetPolyM _ _ _ _ a b c -> go d a <> go d b <> go (d + 1) c
-      CLetRecPolyM _ _ _ _ a b c -> go d a <> go (d + 1) b <> go (d + 1) c
+      CLetRuntimeM _ _ _ runtimeErasure a b c ->
+        foldMap (go d) runtimeErasure <> go d a <> go d b <> go (d + 1) c
+      CLetRecRuntimeM _ _ _ runtimeErasure a b c ->
+        foldMap (go d) runtimeErasure <> go d a <> go (d + 1) b <> go (d + 1) c
+      CLetPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+        foldMap (go d) runtimeErasure <> go d a <> go d b <> go (d + 1) c
+      CLetRecPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+        foldMap (go d) runtimeErasure <> go d a <> go (d + 1) b <> go (d + 1) c
       CLetRecGroupM _ definitions body ->
         let d' = d + length definitions
-         in foldMap (\definition -> go d (clrdType definition) <> go d' (clrdRhs definition)) definitions
+         in foldMap
+              (\definition ->
+                 foldMap (go d) (clrdRuntimeErasure definition)
+                   <> go d (clrdType definition)
+                   <> go d' (clrdRhs definition))
+              definitions
               <> go d' body
       CMeta _ -> mempty
       CDo _ items -> goItems d items
@@ -596,9 +672,13 @@ mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
         CLocal i universes -> CLocal i universes
         CGlobal g universes -> CGlobal g universes
         CLamM mode ic q n b -> CLamM mode ic q n (go (d + 1) b)
-        CPiEvidenceM mode formation ic q brw n assumption origin a b ->
-          CPiEvidenceM mode formation ic q brw n assumption origin (go d a) (go (d + 1) b)
-        CApp ic fn a -> CApp ic (go d fn) (go d a)
+        CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
+          CPiRuntimeM mode formation ic q brw n assumption origin
+            (fmap (go d) runtimeErasure)
+            (go d a)
+            (go (d + 1) b)
+        CAppM ic runtimeErasure fn a ->
+          CAppRuntime ic (fmap (go d) runtimeErasure) (go d fn) (go d a)
         CSort u -> CSort u
         CLevel u -> CLevel u
         CUniverseLift from to evidence t' ->
@@ -625,17 +705,20 @@ mapTermAndPatternsWithDepth f rewritePattern rewriteAnnotation = go
         CProjAtM mode e n i -> CProjAtM mode (go d e) n i
         CVariantT ms -> CVariantT (map (go d) ms)
         CInject tag e -> CInject tag (go d e)
-        CLetM mode q n a b c -> CLetM mode q n (go d a) (go d b) (go (d + 1) c)
-        CLetRecM mode q n a b c -> CLetRecM mode q n (go d a) (go (d + 1) b) (go (d + 1) c)
-        CLetPolyM mode q n telescope a b c ->
-          CLetPolyM mode q n telescope (go d a) (go d b) (go (d + 1) c)
-        CLetRecPolyM mode q n telescope a b c ->
-          CLetRecPolyM mode q n telescope (go d a) (go (d + 1) b) (go (d + 1) c)
+        CLetRuntimeM mode q n runtimeErasure a b c ->
+          CLetRuntimeM mode q n (fmap (go d) runtimeErasure) (go d a) (go d b) (go (d + 1) c)
+        CLetRecRuntimeM mode q n runtimeErasure a b c ->
+          CLetRecRuntimeM mode q n (fmap (go d) runtimeErasure) (go d a) (go (d + 1) b) (go (d + 1) c)
+        CLetPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+          CLetPolyRuntimeM mode q n telescope (fmap (go d) runtimeErasure) (go d a) (go d b) (go (d + 1) c)
+        CLetRecPolyRuntimeM mode q n telescope runtimeErasure a b c ->
+          CLetRecPolyRuntimeM mode q n telescope (fmap (go d) runtimeErasure) (go d a) (go (d + 1) b) (go (d + 1) c)
         CLetRecGroupM telescope definitions body ->
           let d' = d + length definitions
            in CLetRecGroupM telescope
                 [ definition
-                    { clrdType = go d (clrdType definition)
+                    { clrdRuntimeErasure = fmap (go d) (clrdRuntimeErasure definition)
+                    , clrdType = go d (clrdType definition)
                     , clrdRhs = go d' (clrdRhs definition)
                     }
                 | definition <- definitions
@@ -956,6 +1039,35 @@ weakenTermUnderBinderAt outerDepth =
 substTopTerm :: Term -> Term -> Term
 substTopTerm = substTopTermAt 0
 
+-- | Instantiate the exact eta-expanded constructor shape produced by the
+-- checker without repeatedly substituting through an already-built payload.
+-- The recognizer is deliberately strict: every supplied argument must consume
+-- one matching lambda and every constructor field must be a bare reference to
+-- one of those lambdas. Any other term stays on the ordinary beta-reduction
+-- path.
+instantiateEtaConstructor :: [(Icit, Term)] -> Term -> Maybe Term
+instantiateEtaConstructor supplied = go [] supplied
+  where
+    go environment ((argumentIcit, argument) : rest) = \case
+      CLamM _ binderIcit _ _ body
+        | binderIcit == argumentIcit -> go (argument : environment) rest body
+      _ -> Nothing
+    go environment [] = \case
+      CCtorI constructor universes annotation fields ->
+        CCtorI constructor universes annotation <$> traverse (instantiateField environment) fields
+      _ -> Nothing
+
+    instantiateField environment field = case caTerm field of
+      CVar index
+        | index >= 0
+        , Just argument <- atIndex index environment ->
+            Just field {caTerm = argument}
+      _ -> Nothing
+
+    atIndex 0 (value : _) = Just value
+    atIndex index (_ : rest) = atIndex (index - 1) rest
+    atIndex _ [] = Nothing
+
 -- | Substitute an argument for the innermost binder of a body whose enclosing
 -- context has the supplied depth.  Kappa level variables use de Bruijn
 -- /levels/ (outermost first), so ordinary de Bruijn-index substitution is not
@@ -1169,10 +1281,17 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CLocal i universes -> CLocal i (map resolve universes)
       CGlobal g universes -> CGlobal g (map resolve universes)
       CLamM mode ic q n b -> CLamM mode ic q n (go seen resolve (d + 1) b)
-      CPiEvidenceM mode formation ic q brw n assumption origin a b ->
+      CPiRuntimeM mode formation ic q brw n assumption origin runtimeErasure a b ->
         let assumption' = fmap (bimap resolve resolve) assumption
-         in CPiEvidenceM mode formation ic q brw n assumption' origin (go seen resolve d a) (go seen resolve (d + 1) b)
-      CApp ic f a -> CApp ic (go seen resolve d f) (go seen resolve d a)
+         in CPiRuntimeM mode formation ic q brw n assumption' origin
+              (fmap (go seen resolve d) runtimeErasure)
+              (go seen resolve d a)
+              (go seen resolve (d + 1) b)
+      CAppM ic runtimeErasure f a ->
+        CAppRuntime ic
+          (fmap (go seen resolve d) runtimeErasure)
+          (go seen resolve d f)
+          (go seen resolve d a)
       CSort u -> CSort (resolve u)
       CLevel u -> CLevel (resolve u)
       CUniverseLift from to evidence t ->
@@ -1214,15 +1333,17 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CProjAtM mode e f i -> CProjAtM mode (go seen resolve d e) f i
       CVariantT ms -> CVariantT (map (go seen resolve d) ms)
       CInject tg e -> CInject tg (go seen resolve d e)
-      CLetM mode q n a b c -> CLetM mode q n (go seen resolve d a) (go seen resolve d b) (go seen resolve (d + 1) c)
-      CLetRecM mode q n a b c -> CLetRecM mode q n (go seen resolve d a) (go seen resolve (d + 1) b) (go seen resolve (d + 1) c)
-      CLetPolyM mode q n telescope a b c ->
+      CLetRuntimeM mode q n runtimeErasure a b c ->
+        CLetRuntimeM mode q n (fmap (go seen resolve d) runtimeErasure) (go seen resolve d a) (go seen resolve d b) (go seen resolve (d + 1) c)
+      CLetRecRuntimeM mode q n runtimeErasure a b c ->
+        CLetRecRuntimeM mode q n (fmap (go seen resolve d) runtimeErasure) (go seen resolve d a) (go seen resolve (d + 1) b) (go seen resolve (d + 1) c)
+      CLetPolyRuntimeM mode q n telescope runtimeErasure a b c ->
         let scoped = liftLevelResolver (dutParameterCount telescope) resolve
-         in CLetPolyM mode q n (resolveTelescope scoped telescope)
+         in CLetPolyRuntimeM mode q n (resolveTelescope scoped telescope) (fmap (go seen scoped d) runtimeErasure)
               (go seen scoped d a) (go seen scoped d b) (go seen resolve (d + 1) c)
-      CLetRecPolyM mode q n telescope a b c ->
+      CLetRecPolyRuntimeM mode q n telescope runtimeErasure a b c ->
         let scoped = liftLevelResolver (dutParameterCount telescope) resolve
-         in CLetRecPolyM mode q n (resolveTelescope scoped telescope)
+         in CLetRecPolyRuntimeM mode q n (resolveTelescope scoped telescope) (fmap (go seen scoped d) runtimeErasure)
               (go seen scoped d a) (go seen scoped (d + 1) b) (go seen resolve (d + 1) c)
       CLetRecGroupM telescope definitions body ->
         let scoped = liftLevelResolver (dutParameterCount telescope) resolve
@@ -1230,7 +1351,8 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
          in CLetRecGroupM
               (resolveTelescope scoped telescope)
               [ definition
-                  { clrdType = go seen scoped d (clrdType definition)
+                  { clrdRuntimeErasure = fmap (go seen scoped d) (clrdRuntimeErasure definition)
+                  , clrdType = go seen scoped d (clrdType definition)
                   , clrdRhs = go seen scoped d' (clrdRhs definition)
                   }
               | definition <- definitions
@@ -1251,10 +1373,11 @@ zonkTermWith resolveMeta resolveLevel = go Set.empty resolveLevel
       CQuote qs slots -> CQuote qs (map (go seen resolve d) slots)
 
     goRecordField seen resolve d field =
-      field
-        { rfLevelAssumption = fmap (bimap resolve resolve) (rfLevelAssumption field)
-        , rfType = go seen resolve d (rfType field)
-        }
+      fmap (go seen resolve d)
+        ( field
+            { rfLevelAssumption = fmap (bimap resolve resolve) (rfLevelAssumption field)
+            }
+        )
 
     goPat seen resolve d = \case
       CPWild -> CPWild
@@ -1374,10 +1497,75 @@ levelMetasOfTerm = nub . foldTerm here item
 -- positions.  This is the rigid counterpart of 'levelMetasOfTerm' and is used
 -- by built-in/interface verification to derive and validate telescope arity.
 levelParamsOfTerm :: Term -> [Int]
-levelParamsOfTerm = nub . foldTerm here item
+levelParamsOfTerm = sort . nub . foldTerm here item
   where
     here = concatMap levelParams . termNodeLevels
     item = concatMap levelParams . itemPatternLevels
+
+-- | Declaration-universe parameters that constrain nominal role inference.
+-- This has a deliberately separate name from 'levelParamsOfTerm': scope and
+-- serialization checks must inspect all authenticated metadata, while role
+-- inference observes only the represented type. The dedicated metadata fold
+-- below keeps proof-only evidence out while preserving every represented
+-- occurrence, including all alternatives of an or-pattern.
+roleLevelParamsOfTerm :: Term -> [Int]
+roleLevelParamsOfTerm =
+  sort . nub . roleTermLevels
+  where
+    roleTermLevels =
+      foldTermWithMetadata
+        RepresentedTypeMetadata
+        (concatMap levelParams . roleTermNodeLevels)
+        (concatMap levelParams . roleItemPatternLevels)
+
+-- | Level-bearing positions that affect represented type structure. Evidence
+-- and lexical bound annotations remain visible to 'termNodeLevels', but are
+-- deliberately absent here because independent certificate validation, not
+-- nominal runtime variance, authenticates them.
+roleTermNodeLevels :: Term -> [Level]
+roleTermNodeLevels = \case
+  CPiRuntimeM {} -> []
+  CUniverseLift from to _ _ -> [from, to]
+  CSchemaLift _ source target _ _ _ _ _ _ -> source ++ target
+  CMatch _ _ _ alternatives ->
+    concatMap (roleCorePatternLevels . caPat) alternatives
+  CRecordTQ _ -> []
+  term -> termNodeLevels term
+
+roleCorePatternLevels :: CorePat -> [Level]
+roleCorePatternLevels = \case
+  CPCtorM _ bridges _ _ universes patterns ->
+    universes
+      ++ concatMap bridgeTypeLevels bridges
+      ++ concatMap roleCorePatternLevels patterns
+  CPTuple patterns -> concatMap roleCorePatternLevels patterns
+  CPRecordM fields _ -> concatMap (roleCorePatternLevels . snd) fields
+  CPInject _ pattern' -> roleCorePatternLevels pattern'
+  CPOr patterns _ -> concatMap roleCorePatternLevels patterns
+  CPAsM _ _ pattern' -> roleCorePatternLevels pattern'
+  _ -> []
+  where
+    -- A propositional bridge's checked type is represented static structure;
+    -- its proof and forced-equality witnesses are authentication metadata.
+    bridgeTypeLevels = \case
+      ConstructorPropositionalBridge ty _ -> representedTermLevels ty
+      ConstructorForcedEquality {} -> []
+    representedTermLevels =
+      foldTermWithMetadata
+        RepresentedTypeMetadata
+        roleTermNodeLevels
+        roleItemPatternLevels
+
+roleItemPatternLevels :: KItem -> [Level]
+roleItemPatternLevels = \case
+  KBind _ pattern' _ _ -> roleCorePatternLevels pattern'
+  KLet _ pattern' _ -> roleCorePatternLevels pattern'
+  KLetQ pattern' _ recovery ->
+    roleCorePatternLevels pattern'
+      ++ maybe [] (roleCorePatternLevels . fst) recovery
+  KFor _ pattern' _ _ _ -> roleCorePatternLevels pattern'
+  KUsing pattern' _ _ -> roleCorePatternLevels pattern'
+  _ -> []
 
 -- | Every level-bearing position stored directly on a Core node. Keep proof
 -- assumption metadata in this shared inventory: it is authenticated static
@@ -1386,7 +1574,7 @@ termNodeLevels :: Term -> [Level]
 termNodeLevels = \case
   CGlobal _ universes -> universes
   CLocal _ universes -> universes
-  CPiEvidenceM _ _ _ _ _ _ relation _ _ _ -> maybe [] (\(lower, upper) -> [lower, upper]) relation
+  CPiRuntimeM _ _ _ _ _ _ relation _ _ _ _ -> maybe [] (\(lower, upper) -> [lower, upper]) relation
   CSort level -> [level]
   CLevel level -> [level]
   CUniverseLift from to evidence _ ->
@@ -1512,30 +1700,54 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
       | exhausted n = True
       | otherwise = case t of
           CMeta m -> m == target
-          CApp _ f a -> go (next n) f || go (next n) a
+          CAppM _ runtimeErasure f a ->
+            any (go (next n)) runtimeErasure
+              || go (next n) f
+              || go (next n) a
           CUniverseLift _ _ _ t' -> go (next n) t'
           CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments t' ->
             any (go (next n)) sourceArguments
               || any (go (next n)) targetArguments
               || go (next n) t'
           CLam _ _ _ b -> go (next n) b
-          CPi _ _ _ _ a b -> go (next n) a || go (next n) b
+          CPiRuntimeM _ _ _ _ _ _ _ _ runtimeErasure a b ->
+            any (go (next n)) runtimeErasure
+              || go (next n) a
+              || go (next n) b
           CCtorI _ _ _ arguments -> any (go (next n) . caTerm) arguments
           CMatch scrut _ _ alts ->
             go (next n) scrut
               || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
-          CRecordTQ fs -> any (go (next n) . rfType) fs
+          CRecordTQ fs ->
+            any
+              (\field ->
+                 any (go (next n)) (rfRuntimeErasure field)
+                   || go (next n) (rfType field))
+              fs
           CRecordV fs -> any (go (next n) . snd) fs
           CProj e _ -> go (next n) e
           CProjAt e _ _ -> go (next n) e
           CVariantT ms -> any (go (next n)) ms
           CInject _ e -> go (next n) e
-          CLet _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
-          CLetRec _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
-          CLetPolyM _ _ _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
-          CLetRecPolyM _ _ _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
+          CLetRuntimeM _ _ _ runtimeErasure a b c ->
+            any (go (next n)) runtimeErasure
+              || go (next n) a || go (next n) b || go (next n) c
+          CLetRecRuntimeM _ _ _ runtimeErasure a b c ->
+            any (go (next n)) runtimeErasure
+              || go (next n) a || go (next n) b || go (next n) c
+          CLetPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+            any (go (next n)) runtimeErasure
+              || go (next n) a || go (next n) b || go (next n) c
+          CLetRecPolyRuntimeM _ _ _ _ runtimeErasure a b c ->
+            any (go (next n)) runtimeErasure
+              || go (next n) a || go (next n) b || go (next n) c
           CLetRecGroupM _ definitions body ->
-            any (\definition -> go (next n) (clrdType definition) || go (next n) (clrdRhs definition)) definitions
+            any
+              (\definition ->
+                 any (go (next n)) (clrdRuntimeErasure definition)
+                   || go (next n) (clrdType definition)
+                   || go (next n) (clrdRhs definition))
+              definitions
               || go (next n) body
           CIf a b c -> go (next n) a || go (next n) b || go (next n) c
           CThunkE e suspensionType ->
@@ -1601,7 +1813,15 @@ globalsOfTerm = foldTerm here (const Set.empty)
 -- | Split a left-associated application spine into its head and ordered
 -- arguments.
 spineOfTerm :: Term -> (Term, [(Icit, Term)])
-spineOfTerm = go []
+spineOfTerm term =
+  let (function, arguments) = spineOfTermWithErasure term
+   in (function, [(icit, argument) | (icit, _, argument) <- arguments])
+
+-- | Split an application spine without discarding the checker-selected
+-- runtime representation attached to each argument occurrence.
+spineOfTermWithErasure :: Term -> (Term, [(Icit, RuntimeErasure Term, Term)])
+spineOfTermWithErasure = go []
   where
-    go acc (CApp ic f a) = go ((ic, a) : acc) f
+    go acc (CAppRuntime ic runtimeErasure f a) =
+      go ((ic, runtimeErasure, a) : acc) f
     go acc f = (f, acc)

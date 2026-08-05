@@ -38,4 +38,4 @@ let viaLocalType =
 
         sizeOf MkToken
 
--- STATUS(a0497523): FAIL — local `trait`/`data`/`instance` items inside `block` are rejected wholesale with E_UNSUPPORTED ("this local declaration form is not supported inside block by this implementation"); the §9.3.1/§14.3 local-instance forms are unimplemented.
+-- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_UNSUPPORTED "this local declaration form is not supported inside block by this implementation" at line 21

@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+falseNotTrue : False = True -> Void
+let falseNotTrue equality =
+    match equality
+    case impossible
+
+result : Dec (False = True)
+let result = reflectsDec (Reflects.IsFalse falseNotTrue)
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+
+-- STATUS(3014a0d9): UNSUPPORTED — unmet requires

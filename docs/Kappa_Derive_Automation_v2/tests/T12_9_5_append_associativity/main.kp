@@ -1,0 +1,22 @@
+@PrivateByDefault module main
+
+data Seq (0 a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : Seq a)
+
+append : Seq a -> Seq a -> Seq a
+let append left right =
+    match left
+    case Nil -> right
+    case Cons h t -> Cons h (append t right)
+
+appendAssoc :
+    forall (a : Type) (xs : Seq a) (ys : Seq a) (zs : Seq a).
+    append (append xs ys) zs = append xs (append ys zs)
+let appendAssoc = derive
+
+--! mode check
+--! packageMode
+--! requires capability deriveAutomation
+--! assertNoErrors
+--! assertDeriveProviderUsed appendAssoc structural-induction

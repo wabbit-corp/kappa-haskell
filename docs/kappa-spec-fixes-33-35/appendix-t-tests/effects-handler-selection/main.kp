@@ -1,0 +1,87 @@
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+distinctLabels : Int
+let distinctLabels =
+    block
+        scoped effect outer : State
+        scoped effect inner : State
+
+        runPure (
+            deep handle outer
+                deep handle inner
+                    do
+                        inner.put 1
+                        outer.put 2
+                        inner.get ()
+                with
+                    case return x -> pure x
+                    case get _ k -> k 10
+                    case put _ k -> k ()
+            with
+                case return x -> pure x
+                case get _ k -> k 20
+                case put _ k -> k ()
+        )
+
+shallowDoesNotReinstall : Int
+let shallowDoesNotReinstall =
+    block
+        scoped effect state : State
+
+        runPure (
+            deep handle state
+                handle state
+                    do
+                        state.put 0
+                        state.get ()
+                with
+                    case return x -> pure x
+                    case get _ k -> k 1
+                    case put _ k -> k ()
+            with
+                case return x -> pure x
+                case get _ k -> k 2
+                case put _ k -> k ()
+        )
+
+nearestSameLabel : Int
+let nearestSameLabel =
+    block
+        scoped effect state : State
+
+        runPure (
+            deep handle state
+                deep handle state
+                    state.get ()
+                with
+                    case return x -> pure x
+                    case get _ k -> k 1
+                    case put _ k -> k ()
+            with
+                case return x -> pure x
+                case get _ k -> k 2
+                case put _ k -> k ()
+        )
+
+reboundIdentity : Int
+let reboundIdentity =
+    block
+        scoped effect state : State
+        let rebound = state
+
+        runPure (
+            deep handle rebound (state.get ()) with
+                case return x -> pure x
+                case get _ k -> k 7
+                case put _ k -> k ()
+        )
+
+--! assertNoErrors
+--! assertEval distinctLabels 10
+--! assertEval shallowDoesNotReinstall 2
+--! assertEval nearestSameLabel 1
+--! assertEval reboundIdentity 7
