@@ -177,6 +177,7 @@ import Kappa.Level
   , compareClosedLevel
   , emptyLevelAssignmentGraphBudget
   , emptyAssumptions
+  , equivalentLevelMetaAssignments
   , insertAssumption
   , instantiateLocalLevelParams
   , levelVars
@@ -616,50 +617,6 @@ minimizeOwnedDeclarationClassifiers
     -- minimized, so caller result classifiers see the callee's equalities and
     -- lower bounds instead of defaulting independently.
     materializeProvisionalUniverseConstraintsFor ownedSymbols
-
--- | Unconditional atomic inequalities form a preorder on level metas. By
--- antisymmetry, every strongly connected component denotes one universe
--- identity. Quotienting these identities before minimization preserves a
--- single generalizable parameter; feeding the cycle to the least-lower-bound
--- solver would instead monomorphize the whole component to zero.
-equivalentLevelMetaAssignments
-  :: Set LevelMeta
-  -> Set LevelMeta
-  -> Set LevelMeta
-  -> [LevelConstraint]
-  -> Map LevelMeta Level
-equivalentLevelMetaAssignments protectedGeneralizable generalizable minimizable constraints =
-  Map.fromList
-    [ (meta, LMeta representative)
-    | members <- DirectedGraph.stronglyConnectedComponents graph
-    , let representative =
-            List.minimumBy (\left right -> compare (priority left) (priority right)) members
-    , meta <- members
-    , meta /= representative
-    -- A source parameter owned by another declaration is rigid at this
-    -- boundary. Only fresh occurrence metas, or source identities owned by
-    -- this declaration itself, may be redirected to the local representative.
-    , meta `Set.notMember` protectedGeneralizable
-        || meta `Set.member` generalizable
-    ]
-  where
-    -- Preserve inference-role provenance across the quotient. A class that
-    -- contains a source-generalizable meta denotes that source choice even if
-    -- it also contains fresh dependency-instantiation metas. Otherwise prefer
-    -- a minimizable representative so quotienting cannot accidentally turn an
-    -- elaboration choice into a declaration schema parameter (§11.1.2.4A).
-    priority meta
-      | meta `Set.member` generalizable = (0 :: Int, meta)
-      | meta `Set.member` minimizable = (1, meta)
-      | otherwise = (2, meta)
-    edges =
-      [ (lower, upper)
-      | constraint <- constraints
-      , null (assumptionsList (lcAssumptions constraint))
-      , LMeta lower <- [normalizeLevel (lcLhs constraint)]
-      , LMeta upper <- [normalizeLevel (lcRhs constraint)]
-      ]
-    graph = DirectedGraph.fromEdges edges
 
 -- | A source-generalizable level remains a schema parameter unless the
 -- completed declaration constraints determine it uniquely (§11.1.2.4A).
@@ -1347,11 +1304,27 @@ principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners = do
               (csProvisionalUniverseInstantiationsByConsumer st)
           | owner <- Set.toList currentSymbols
           ]
-      currentConstraints =
+      ownedConstraints =
         concat
           [ Map.findWithDefault [] owner (csLevelConstraintsByOwner st)
           | owner <- Set.toAscList currentSymbols
           ]
+      -- Unowned constraints arise at occurrence boundaries such as generated
+      -- member accessors and transactional evidence search. When this closeout
+      -- explicitly includes unowned occurrence metas, their constraints are
+      -- part of the same solver region. Selecting the observable metas while
+      -- omitting these equations lets the least-level solver minimize an
+      -- occurrence before its exact rigid identity is considered.
+      unownedConstraints
+        | includeUnowned =
+            [ constraint
+            | constraint <- csLevelConstraints st
+            , Map.notMember
+                (lcIdentity constraint)
+                (csLevelConstraintOwners st)
+            ]
+        | otherwise = []
+      currentConstraints = ownedConstraints ++ unownedConstraints
       ownedConstraintMetas =
         Set.fromList
           [ meta
@@ -1489,9 +1462,35 @@ principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners = do
                   (levelMetas (lcLhs constraint) ++ levelMetas (lcRhs constraint))
         , not (Set.null (Set.intersection connectedMetas metas))
         ]
+      -- A completed body may introduce fresh occurrence metas only after its
+      -- public schema has been generalized.  Quotient exact equality cycles
+      -- before asking the least-solution solver to minimize those
+      -- occurrences.  Otherwise an occurrence equal to a protected source
+      -- parameter can be selected independently as zero, destroying the
+      -- already-published schema identity.  Restricting the assignments to
+      -- selected occurrence targets keeps source and foreign identities rigid.
+      equivalentDefaults =
+        Map.restrictKeys
+          ( equivalentLevelMetaAssignments
+              ( projectGeneralizableLevelMetas
+                  assignments
+                  (csLevelGeneralizableMetas st)
+              )
+              generalizableMetas
+              targets
+              relevantConstraints
+          )
+          targets
       targetGroups = selectedConstraintGroups targets relevantConstraints
-  if Map.null identityDefaults
-    then
+  if not (Map.null equivalentDefaults)
+    then do
+      -- Recompute the selected closure after quotienting.  Every installed
+      -- assignment removes a target meta, so this recursion strictly
+      -- decreases just like the recursive-schema identity path below.
+      installLevelAssignments equivalentDefaults
+      principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners
+    else if Map.null identityDefaults
+      then
       forM_ targetGroups $ \(componentTargets, componentConstraints) -> do
         let componentOwners =
               Set.fromList
@@ -1512,12 +1511,12 @@ principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners = do
           PrincipalBoundarySolved candidate -> installLevelAssignments candidate
           PrincipalBoundaryDeferred -> pure ()
           PrincipalBoundaryRejected _ -> pure ()
-    else do
-      -- Re-enter with the identity defaults materialized so target components
-      -- and constraints are recomputed from the new substitution. Each chosen
-      -- meta disappears from 'identityCandidate', so recursion decreases.
-      installLevelAssignments identityDefaults
-      principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners
+      else do
+        -- Re-enter with the identity defaults materialized so target components
+        -- and constraints are recomputed from the new substitution. Each chosen
+        -- meta disappears from 'identityCandidate', so recursion decreases.
+        installLevelAssignments identityDefaults
+        principalizeFinalizedOccurrenceUniversesFor includeUnowned eligibleOwners
 
 -- | Close solver-local universe occurrences in body-complete declarations
 -- without publishing their declaration telescope early. Source metas remain

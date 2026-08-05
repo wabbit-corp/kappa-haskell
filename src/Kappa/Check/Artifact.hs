@@ -23,6 +23,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Check
+import Kappa.Check.Support (setCheckInstances)
 import Kappa.Core
 import Kappa.CoreOps (levelMetasOfTerm, metaIdsOf, termScopedAt)
 import Kappa.Eval
@@ -445,6 +446,7 @@ restoreCheckedPrelude expectedSourceHash artifact
       CheckedValueFromBody -> eval context [] <$> cgaBody encoded
       CheckedClosedValue term -> Just (eval context [] term)
     restored =
+      setCheckInstances restoredInstances $
       builtinState
         { csGlobals = globals
         , csDatas = Map.fromList (map (fmap restoreData) (cprDatas artifact))
@@ -452,7 +454,6 @@ restoreCheckedPrelude expectedSourceHash artifact
         , csTraits = Map.fromList (map (fmap restoreTrait) (cprTraits artifact))
         , csBareTraitMembers = Map.fromList (cprBareTraitMembers artifact)
         , csTraitMemberOwners = Map.fromList (cprTraitMemberOwners artifact)
-        , csInstances = map restoreInstance (cprInstances artifact)
         , csInstanceUniverseInterfaces = Map.fromList (cprInstanceUniverseInterfaces artifact)
         , csUniverseInterfaceValues = Set.fromList (cprUniverseInterfaceValues artifact)
         , csFinalizedUniverseInterfaces = Set.fromList (cprFinalizedUniverseInterfaces artifact)
@@ -483,6 +484,7 @@ restoreCheckedPrelude expectedSourceHash artifact
         , csAllowUnsafeIntrinsics = False
         , csEmbeddedLoad = False
         }
+    restoredInstances = map restoreInstance (cprInstances artifact)
     restoreData encoded =
       DataInfo (cdaConstructors encoded) (cdaParameterCount encoded) (cdaLevel encoded)
     restoreConstructor encoded =

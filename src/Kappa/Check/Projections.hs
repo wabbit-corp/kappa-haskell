@@ -352,17 +352,10 @@ pendingEvidenceComponentsFromRoots roots = do
   pure (collect (Set.intersection roots (pegPendingIds graph)))
 
 pendingEntryIsNumericLiteral :: PendingEvidenceEntry -> CheckM Bool
-pendingEntryIsNumericLiteral entry =
-  refreshPendingEntry entry >>= \case
-    VGlobN trait _
-      | trait == gPrel traitFromInteger
-          || trait == gPrel traitFromFloat ->
-          pure True
-    VGlobI trait _ _
-      | trait == gPrel traitFromInteger
-          || trait == gPrel traitFromFloat ->
-          pure True
-    _ -> pure False
+pendingEntryIsNumericLiteral entry = do
+  goal <- refreshPendingEntry entry
+  state <- get
+  pure (isJust (numericLiteralCarrierIn state goal))
 
 -- | A rigid semantic trait argument is an ordinary instance-search input, not
 -- a guess from the ambient instance set.  It may therefore anchor bounded

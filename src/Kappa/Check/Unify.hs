@@ -58,7 +58,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import Numeric.Natural (Natural)
 import Kappa.Builtins
 import Kappa.Cardinality
@@ -170,6 +169,7 @@ import Kappa.Level
   , compareClosedLevel
   , emptyLevelAssignmentGraphBudget
   , emptyAssumptions
+  , equivalentLevelMetaAssignments
   , insertAssumption
   , instantiateLocalLevelParams
   , levelVars
@@ -962,8 +962,49 @@ principalizeBodyUniverseInstantiations owner interfaceType body0 = do
       constraints =
         map
           (substituteLevelConstraintMetas assignments)
-          (levelConstraintsOwnedBy st ownerSymbols)
-  if Set.null targets
+          (levelConstraintsOwnedBy st ownerSymbols ++ bodyLiftConstraints body)
+      preferredAliases =
+        Map.restrictKeys
+          ( equivalentLevelMetaAssignments
+              interfaceMetas
+              interfaceMetas
+              targets
+              constraints
+          )
+          targets
+      -- Materialized cumulative coercions are typed Core obligations.  Their
+      -- original side-table constraints may already have been discharged
+      -- into evidence, but occurrence-level principalization still needs the
+      -- certified lower/upper relation to choose metas appearing in the
+      -- body.  Reconstruct only those semantic judgments, preserving the
+      -- certificate's recorded dependencies as assumptions.
+      bodyLiftConstraints term =
+        zipWith toConstraint [-1, -2 ..]
+          ( foldTermWithDepth
+              (\_ node -> case node of
+                  CUniverseLift _ _ (UniverseEvidence steps) _ -> steps
+                  _ -> [])
+              0
+              term
+          )
+      toConstraint identity (UniverseEvidenceStep lower upper dependencies) =
+        LevelConstraint
+          { lcIdentity = identity
+          , lcLhs = lower
+          , lcRhs = upper
+          , lcOrigin = ConstraintOrigin "typed cumulative coercion" "declaration-body principalization"
+          , lcAssumptions =
+              foldr (uncurry insertAssumption) emptyAssumptions dependencies
+          }
+  if not (Map.null preferredAliases)
+    then do
+      -- A body occurrence exactly equal to a published interface identity is
+      -- that identity, not an independent least-level choice. Re-enter after
+      -- installing the alias so the selected set and residual constraints are
+      -- recomputed from the authoritative representative.
+      installLevelAssignments preferredAliases
+      principalizeBodyUniverseInstantiations owner interfaceType body
+    else if Set.null targets
     then normalizeProvisionalBodyReferences body
     else do
       let diagnosticSpan = Span "<universe-inference>" (Pos 1 1) (Pos 1 1)

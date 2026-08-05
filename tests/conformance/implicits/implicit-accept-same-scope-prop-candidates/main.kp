@@ -1,0 +1,14 @@
+-- §16.3.3: multiple local candidates are coherent when IsProp is available
+-- for their exact goal. Integer equality is a proposition through IsSet Int,
+-- so implicit resolution chooses a deterministic local proof.
+module main
+
+needProof : (@proof : 1 = 1) -> Int
+let needProof @proof = 7
+
+coherent : (@left : 1 = 1) -> (@right : 1 = 1) -> Int
+let coherent @left @right = needProof
+
+--! mode check
+--! assertNoErrors
+--! assertType coherent (@left : 1 = 1) -> (@right : 1 = 1) -> Int

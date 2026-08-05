@@ -128,6 +128,7 @@ import Kappa.Level
   , LevelConstraint (..)
   , normalizeLevel
   , renderLevel
+  , substituteLevelParams
   , substituteLevelMetas
   , levelMetas
   )
@@ -541,58 +542,106 @@ instantiateCheckedTraitDefault
   -> Span
   -> GName
   -> [Level]
+  -> Text
   -> [Term]
   -> [(Text, Term)]
   -> GName
-  -> CheckM (Term, Value)
-instantiateCheckedTraitDefault ctx site trait traitUniverses argumentTerms dictionaryFields defaultGlobal = do
+  -> CheckM (Term, Value, Value)
+instantiateCheckedTraitDefault ctx site trait traitUniverses member argumentTerms dictionaryFields defaultGlobal = do
   definitions <- gets csGlobals
-  case Map.lookup defaultGlobal definitions of
-    Nothing -> do
+  let memberName = memberGlobal trait member
+  case (Map.lookup defaultGlobal definitions, Map.lookup memberName definitions) of
+    (Nothing, _) -> do
       errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
         "checked trait default template is missing from the semantic environment"
-      anyHole ctx
-    Just definition -> do
+      recover
+    (_, Nothing) -> do
+      errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+        "checked trait-member interface is missing from the semantic environment"
+      recover
+    (Just definition, Just memberDefinition) -> do
       let totalUniverses = dutParameterCount (gdUniverses definition)
-      if length traitUniverses > totalUniverses
+          memberUniverses = dutParameterCount (gdUniverses memberDefinition)
+      if length traitUniverses > totalUniverses || memberUniverses /= totalUniverses
         then do
           errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
-            "checked trait default template has fewer universe parameters than its owning trait"
-          anyHole ctx
+            "checked trait default template and member accessor have mismatched universe schemas"
+          recover
         else do
           suffix <- replicateM (totalUniverses - length traitUniverses) freshLevelInstantiationMeta
           let universes = traitUniverses ++ suffix
           recordRecursiveSchemaOccurrence (Just ctx) False site defaultGlobal universes
           (template, templateType) <- specializeGlobalAt ctx defaultGlobal definition universes
           argumentValues <- mapM (evalIn ctx) argumentTerms
+          memberType <-
+            instantiateTraitMemberTypeAtUniverses
+              ctx
+              site
+              trait
+              member
+              universes
+              argumentValues
+              dictionaryFields
           traitParameterClassifiers
             ctx
             site
             trait
             traitUniverses
-            [(Impl, value) | value <- argumentValues] >>= \case
+            [(Expl, value) | value <- argumentValues] >>= \case
               Nothing -> do
                 errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
                   "checked trait default has an argument without a checked classifier"
-                anyHole ctx
+                recover
               Just classifiers -> do
                 let dictionaryTerm = CRecordV (sortOn fst dictionaryFields)
                     dictionaryTypeTerm =
                       foldl
-                        (CApp Impl)
+                        (CApp Expl)
                         (CGlobal trait traitUniverses)
                         argumentTerms
                 dictionaryType <- evalIn ctx dictionaryTypeTerm
-                applyGeneratedCoreSpine
-                  ctx
-                  site
-                  template
-                  templateType
-                  ( [ (Impl, term, classifier)
-                    | (term, classifier) <- zip argumentTerms classifiers
-                    ]
-                      ++ [(Impl, dictionaryTerm, dictionaryType)]
-                  )
+                (term, instantiatedType) <-
+                  applyGeneratedCoreSpine
+                    ctx
+                    site
+                    template
+                    templateType
+                    ( [ (Impl, term, classifier)
+                      | (term, classifier) <- zip argumentTerms classifiers
+                      ]
+                        ++ [(Impl, dictionaryTerm, dictionaryType)]
+                    )
+                let (appliedHead, appliedArguments) = spineOfTerm term
+                    specializedBody =
+                      zonkTermWith
+                        (\_ _ -> Nothing)
+                        (substituteLevelParams universes)
+                        0
+                        <$> gdCoreBody definition
+                    specialized = do
+                      body <- specializedBody
+                      case appliedHead of
+                        CGlobal global levels
+                          | global == defaultGlobal
+                          , levels == universes ->
+                              Just
+                                ( simplifyDecisionTermAt
+                                    (ctxLen ctx)
+                                    (foldl (\function (icit, argument) -> CApp icit function argument) body appliedArguments)
+                                )
+                        _ -> Nothing
+                case specialized of
+                  Just checkedBody
+                    | termScopedAt (ctxLen ctx) checkedBody ->
+                        pure (checkedBody, instantiatedType, memberType)
+                  _ -> do
+                    errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
+                      "checked trait default could not be specialized to closed instance Core"
+                    recover
+  where
+    recover = do
+      (term, ty) <- anyHole ctx
+      pure (term, ty, ty)
 
 elabNamedDeclLambda :: Ctx -> [Binder] -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
 elabNamedDeclLambda = elabLambdaWith True False
@@ -1552,6 +1601,7 @@ checkModule st0 m =
         -- that rely on an opaque definition unfolding) are checked, seal
         -- the module's 'opaque' definitions against δ-unfolding downstream.
         opaqueSealPass
+        finalizeTraitDictionaryInterfaces
       (_, st1) =
         runState
           passes
@@ -2404,6 +2454,19 @@ headerTrait (TraitDecl supers n params members) sp = do
         let mtyTm = foldr (\(v, mode, formation, q, kT) b -> CPiFormedM mode formation Impl q False v kT b) mtyTm0 universalBinders
         mtyV <- evalIn pctx mtyTm
         pure (mtyTm, mtyV, runtimeErased)
+      -- A signature-less default still declares a function member when it
+      -- has source binders (§14.2).  Its header therefore carries a
+      -- classifier-authenticated provisional result beneath the complete
+      -- binder telescope; the body pass constrains that interface and the
+      -- ordinary declaration finalizers reject anything left unresolved.
+      elabInferredDefaultMemberTy binders = do
+        telescope <- elabTele pctx binders
+        memberCtx <- extendTeleCtx pctx telescope
+        resultLevel <- freshGeneralizableLevelMeta
+        resultType <- freshMetaFor memberCtx (VSort resultLevel)
+        let memberTypeTerm = foldr telePi resultType telescope
+        memberType <- evalIn pctx memberTypeTerm
+        pure (memberTypeTerm, memberType, False)
       memberName (mn, _, _, _, _, _, _, _, _) = mn
       memberTerm (mn, tm, _, mode, formation, q, _, _, _) = RecordField mn mode formation q Nothing RuntimeRelevant tm
       memberQ mn = case T.uncons mn of
@@ -2448,7 +2511,7 @@ headerTrait (TraitDecl supers n params members) sp = do
             rest
         TraitDerived mn mtyE memberSpan ->
           goMembers acc done (TraitSig mn mtyE memberSpan : rest)
-        TraitDefault (LetDef (Just mn) _ _ _ _ _ mty _ _) _
+        TraitDefault definition@(LetDef (Just mn) _ _ _ _ _ mty _ _) _
           -- a default for an already-declared member supplies its
           -- definition only; the declaration owns the dictionary
           -- field (§14.2: declaration vs definition forms)
@@ -2457,11 +2520,9 @@ headerTrait (TraitDecl supers n params members) sp = do
               let memberSchema = nameUniverseSchema mn
                   memberOwner = memberGlobal g (nameText mn)
                   elaborateMember = case mty of
-                    Just t -> elabMemberTy acc t
-                    Nothing -> do
-                      mTm <- freshMeta
-                      mV <- evalIn pctx mTm
-                      pure (mTm, mV, False)
+                    Just resultType ->
+                      elabMemberTy acc (foldr EArrow resultType (ldBinders definition))
+                    Nothing -> elabInferredDefaultMemberTy (ldBinders definition)
               (mtyTm, mtyV, runtimeErased) <- case memberSchema of
                 Nothing -> elaborateMember
                 Just _ ->
@@ -3027,23 +3088,36 @@ elaborateTraitDefaults trait declarationSite = do
                             memberCtx
                             superterms
                             memberTerms
+                        superValues <-
+                          forM superterms $ \(field, term) ->
+                            (field,) <$> evalIn memberCtx term
                         checked <-
-                          withThis (Just (ThisTraitSibs siblingTypes)) $
-                            checkTraitMemberExpressionAgainst
-                              (Map.findWithDefault Ordinary member (tiMemberModes info))
-                              memberCtx
-                              memberType
-                              (ldBinders definition)
-                              Nothing
-                              (ldBody definition)
-                              defaultSite
+                          withTraitSupers superValues $ do
+                            pendingBefore <-
+                              gets (Set.fromList . map pendingEntryMeta . csPending)
+                            result <-
+                              withThis (Just (ThisTraitSibs siblingTypes)) $
+                                checkTraitMemberExpressionAgainst
+                                  (Map.findWithDefault Ordinary member (tiMemberModes info))
+                                  memberCtx
+                                  memberType
+                                  (ldBinders definition)
+                                  Nothing
+                                  (ldBody definition)
+                                  defaultSite
+                            pendingAfter <-
+                              gets (Set.fromList . map pendingEntryMeta . csPending)
+                            flushPendingSelected
+                              (Set.difference pendingAfter pendingBefore)
+                            flushDeferredTypeEqualities False
+                            pure result
                         let closed =
                               wrapTraitMemberPrefix
                                 prefixBinders
                                 (substThisTm dictionary checked)
                         principalized <-
                           principalizeBodyUniverseInstantiations
-                            traitGlobal
+                            accessor
                             (gdType checkedInterface)
                             closed
                         zonked <- zonkTermM 0 principalized
@@ -3059,7 +3133,7 @@ elaborateTraitDefaults trait declarationSite = do
                                 && null (unsolvedMetasOf current finalizedTemplate)
                                 && null (levelMetasOfTerm finalizedTemplate)
                         if not finalized
-                          then do
+                          then
                             errAt defaultSite "E_UNSOLVED_METAVARIABLE"
                               (Just "kappa.type.unsolved-metavariable")
                               ( "ordinary default member '" <> member
@@ -5416,23 +5490,21 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                 -- specialization uses the selected trait universes and the
                 -- partial dictionary assembled at this exact completion point.
                 Just defaultGlobal -> do
-                  memberTyV <-
-                    memberSigInstance
-                      g
-                      traitUniverses
-                      mn
-                      argTms
-                      ctxP'
-                      (catMaybes superFields ++ reverse done)
-                  (tm, instantiatedType) <-
+                  (tm, instantiatedType, memberTyV) <-
                     instantiateCheckedTraitDefault
                       ctxP'
                       sp
                       g
                       traitUniverses
+                      mn
                       argTms
                       (catMaybes superFields ++ reverse done)
                       defaultGlobal
+                  -- The checked default and accessor share one declaration-
+                  -- universe occurrence. The accessor is the authoritative
+                  -- member interface, so a second independently freshened
+                  -- member occurrence would only introduce a spurious equality
+                  -- component at dictionary completion.
                   expectType ctxP' sp instantiatedType memberTyV
                   pure
                     ( Just

@@ -392,8 +392,17 @@ simplifyDecisionTermAt = go
           | (index, field) <- zip [0 :: Int ..] fs
           ]
       CRecordV fs -> CRecordV [(n, go depth x) | (n, x) <- fs]
-      CProjM mode e f -> CProjM mode (go depth e) f
-      CProjAtM mode e f i -> CProjAtM mode (go depth e) f i
+      CProjM mode e f ->
+        case go depth e of
+          CRecordV fields
+            | Just value <- lookup f fields -> go depth value
+          receiver -> CProjM mode receiver f
+      CProjAtM mode e f i ->
+        case go depth e of
+          CRecordV fields
+            | Just (storedField, value) <- indexMaybe i fields
+            , storedField == f -> go depth value
+          receiver -> CProjAtM mode receiver f i
       CVariantT ms -> CVariantT (map (go depth) ms)
       CInject tag e -> CInject tag (go depth e)
       CLetRuntimeM mode q n runtimeErasure a b c ->
@@ -462,6 +471,12 @@ simplifyDecisionTermAt = go
       | any (== Just True) xs = Just True
       | all (== Just False) xs = Just False
       | otherwise = Nothing
+
+    indexMaybe index values
+      | index < 0 = Nothing
+      | otherwise = case drop index values of
+          value : _ -> Just value
+          [] -> Nothing
 
 -- ── Abstract arithmetic (the measure prover) ──────────────────────────
 --

@@ -19286,19 +19286,24 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
           access <- convertRuntimeErasure fieldsEnv KValue scopedRuntimeErasure
           rest' <- goFields nextLocals nextLevels (fieldCount + 1) (local : fieldsEnv) rest
           pure ((stableFieldRef name, KBinder mode formation (quantityToText quantity) KExplicit access BinderSourceWritten ref ty') : rest')
-    goRecordValues envHere = goValues []
+    goRecordValues envHere recordFields remainingFields =
+      goValues (map rfName recordFields) [] recordFields remainingFields
       where
-        goValues _ [] remaining
+        goValues _ _ [] remaining
           | null remaining = pure []
           | otherwise =
               conversionError
                 "record value contains fields absent from its checked structural interface"
-        goValues prior (field : rest) remaining = do
+        goValues expectedNames prior (field : rest) remaining = do
           value <-
             maybe
               ( conversionError
                   ( "record value is missing checked field "
                       <> rfName field
+                      <> "; checked fields: "
+                      <> T.intercalate ", " expectedNames
+                      <> "; remaining value fields: "
+                      <> T.intercalate ", " (map fst remaining)
                   )
               )
               pure
@@ -19314,6 +19319,7 @@ coreToTextWithExpected conversionContext certificates expected0 term0 =
                 (kcoreReadableName (rfName field), converted)
           later <-
             goValues
+              expectedNames
               (prior ++ [convertedField])
               rest
               remaining'

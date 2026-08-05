@@ -54,6 +54,7 @@ module Kappa.Check.StateOps
   , withDemand
   , withGeneralizableBareTypeLevels
   , withIncompleteSelfEvidenceForbidden
+  , withTraitSupers
   , withThis
   , withVarReadBlock
   , withoutGeneralizableBareTypeLevels
@@ -593,6 +594,18 @@ withThis tm act = do
   r <- act
   modify' $ \st -> st {csThis = old}
   pure r
+
+-- | Run one trait-member action with the owning trait's checked supertrait
+-- premises available to implicit resolution. Both signatures and ordinary
+-- defaults use this scope so a supertrait operation selects the same
+-- @this.__superN@ evidence path in types and bodies.
+withTraitSupers :: [(Text, Value)] -> CheckM a -> CheckM a
+withTraitSupers supers action = do
+  previous <- gets csTraitSupers
+  modify' $ \state -> state {csTraitSupers = supers}
+  result <- action
+  modify' $ \state -> state {csTraitSupers = previous}
+  pure result
 
 -- | Reject reification of the dictionary currently being completed only at
 -- an explicit fresh-evidence request. Method calls may still dispatch through

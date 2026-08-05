@@ -47,6 +47,7 @@ module Kappa.Check.Kernel
   , elabTele
   , ensureTopLevelDataFamilyHeader
   , expectType
+  , finalizeTraitDictionaryInterfaces
   , finalizeLocalLambdaContracts
   , finalizePendingNominalSummaries
   , finishDataHeaderIn
@@ -75,6 +76,7 @@ module Kappa.Check.Kernel
   , instantiateGlobal
   , instantiateInstanceOccurrence
   , instantiateTraitMemberType
+  , instantiateTraitMemberTypeAtUniverses
   , isPropClosure
   , levelAssumptionFromExpr
   , materializeOwnedInterfaceUniverseProofs
@@ -6046,33 +6048,33 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
               pure (Just (CVar i))
             else put st0 >> go (i + 1) (shadowName e ++ seen) rest
         else go (i + 1) (shadowName e ++ seen) rest
-    -- a second matching candidate in the same scope (no closure
-    -- boundary between the two) is ambiguous unless the goal is authenticated
-    -- trait evidence. Every fully applied trait goal carries compiler-issued
-    -- @IsTrait G@ and therefore @IsSubsingleton G@ (§14.4), so same-scope
-    -- candidates are coherent and the existing innermost-first order is the
-    -- deterministic representative required by §16.3.3 step 1.
-    reportAmbiguous i next = do
-      coherentTraitGoal <- isTraitGoal goal
+    -- A second matching candidate in the same scope (no closure boundary
+    -- between the two) is ambiguous unless the goal is authenticated as a
+    -- proposition or trait. Both cases carry @IsSubsingleton G@, so the
+    -- existing innermost-first order is the deterministic representative
+    -- required by §16.3.3 step 1. Keep this query shared with derivation search:
+    -- neither path may assume proof irrelevance for an arbitrary equality.
+    reportAmbiguous _ Nothing = pure ()
+    reportAmbiguous i (Just j) = do
+      coherentGoal <- derivationGoalCoherent ctx sp goal
       let lvlOf ix = ctxLen ctx - 1 - ix
-      forM_ next $ \j -> do
-        let l1 = lvlOf i
-            l2 = lvlOf j
-            separated = any (\b -> l2 < b && b <= l1) (ctxBarriers ctx)
-        unless (separated || coherentTraitGoal) $
-          -- §3.1.1A: cite the goal site; the competing candidates are
-          -- local context binders without stored source spans, so the
-          -- payload records candidate names with sites unavailable.
-          report $
-            withPayload
-              ( withPayloadField "candidates"
-                  (T.intercalate ", " [candName i, candName j]) $
-                  withPayloadField "candidateSitesAvailable" "false" $
-                    payloadKind "implicit-ambiguous"
-              )
-              $ withRelated (related RoleObligationRequiredHere sp "implicit goal raised here")
-              $ diag SevError StageElaborate "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous") sp
-                  "two implicit candidates in the same scope satisfy this implicit goal; the resolution is ambiguous (§16.3.3)"
+          l1 = lvlOf i
+          l2 = lvlOf j
+          separated = any (\b -> l2 < b && b <= l1) (ctxBarriers ctx)
+      unless (separated || coherentGoal) $
+        -- §3.1.1A: cite the goal site; the competing candidates are
+        -- local context binders without stored source spans, so the
+        -- payload records candidate names with sites unavailable.
+        report $
+          withPayload
+            ( withPayloadField "candidates"
+                (T.intercalate ", " [candName i, candName j]) $
+                withPayloadField "candidateSitesAvailable" "false" $
+                  payloadKind "implicit-ambiguous"
+            )
+            $ withRelated (related RoleObligationRequiredHere sp "implicit goal raised here")
+            $ diag SevError StageElaborate "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous") sp
+                "two implicit candidates in the same scope satisfy this implicit goal; the resolution is ambiguous (§16.3.3)"
     candName ix = case drop ix (ctxEntries ctx) of
       (e : _) -> ceName e
       [] -> "?"
@@ -6152,36 +6154,49 @@ flushPendingWith :: Bool -> Bool -> Bool -> CheckM ()
 flushPendingWith final defaultNumerics deferLevelEvidence =
   flushPendingWithPolicy final defaultNumerics deferLevelEvidence True
 
+-- | Whether the current evidence flush occurs before or after the enclosing
+-- inference boundary has applied every defaulting rule authorized by the
+-- language. Keeping this phase explicit prevents an intermediate evidence
+-- checkpoint from diagnosing an ambiguity that declaration finalization is
+-- required to resolve.
+data PendingDefaultingPhase
+  = PendingDefaultsOpen
+  | PendingDefaultsApplied
+  deriving (Eq, Show)
+
 -- | Resolve the current pending queue with an explicit policy for obligations
 -- that remain unsolved. Ordinary declaration and module boundaries diagnose
 -- such obligations. Scoped inference boundaries (notably existential
 -- introduction) instead retain them for the enclosing boundary, after using
 -- all locally available information to solve the reachable subset.
 flushPendingWithPolicy :: Bool -> Bool -> Bool -> Bool -> CheckM ()
-flushPendingWithPolicy final True deferLevelEvidence reportUnsolved = do
-  -- §6.1.5 defaults a numeric literal only after ordinary term inference for
-  -- its enclosing declaration. First close any coupled constraint component
-  -- rooted in numeric evidence: all contextual equations are now available,
-  -- and a unique principal solution such as @Rangeable ?a@ together with
-  -- @Contains (Rangeable.Range ?a) Nat@ must determine @?a := Nat@ before
-  -- defaulting. Isolated numeric evidence remains ambiguous and is left for
-  -- the ordinary default below, so the open global instance set still cannot
-  -- choose an otherwise unconstrained literal carrier.
-  ready <- pendingEvidenceRetryIds final
-  pending <- gets (filter ((`Set.member` ready) . pendingEntryMeta) . csPending)
-  settlePendingNumericComponents pending
-  defaultPendingNumericGoals ready
-  flushPendingWithPolicy final False deferLevelEvidence reportUnsolved
-flushPendingWithPolicy final False deferLevelEvidence reportUnsolved = do
+flushPendingWithPolicy final defaultNumerics deferLevelEvidence reportUnsolved = do
+  defaultingPhase <-
+    if defaultNumerics
+      then do
+        -- §6.1.5 defaults a numeric literal only after ordinary term inference
+        -- for its enclosing declaration. First close any coupled constraint
+        -- component rooted in numeric evidence: all contextual equations are
+        -- now available, and a unique principal solution such as
+        -- @Rangeable ?a@ together with @Contains (Rangeable.Range ?a) Nat@
+        -- must determine @?a := Nat@ before defaulting. Isolated numeric
+        -- evidence remains for the ordinary default below, so the open global
+        -- instance set cannot choose an unconstrained literal carrier.
+        ready <- pendingEvidenceRetryIds final
+        pending <- gets (filter ((`Set.member` ready) . pendingEntryMeta) . csPending)
+        settlePendingNumericComponents pending
+        defaultPendingNumericGoals ready
+        pure PendingDefaultsApplied
+      else pure PendingDefaultsOpen
   if reportUnsolved
     then do
       attempted <- settlePendingEvidenceToFixedPoint final deferLevelEvidence
       unless (Set.null attempted) $
-        flushPendingPassSelected attempted final deferLevelEvidence True
+        flushPendingPassSelected defaultingPhase attempted final deferLevelEvidence True
     else do
       ready <- pendingEvidenceRetryIds final
       unless (Set.null ready) $
-        flushPendingPassSelected ready final deferLevelEvidence False
+        flushPendingPassSelected defaultingPhase ready final deferLevelEvidence False
   prunePendingEvidenceAttempts
 
 -- | Resolve pending evidence to a semantic fixed point before any diagnostic
@@ -6208,7 +6223,7 @@ settlePendingEvidenceToFixedPoint final deferLevelEvidence = do
                 "pending evidence dependency worklist exceeded its monotone step budget"
               pure attempted
             else do
-              flushPendingPassSelected ready final deferLevelEvidence False
+              flushPendingPassSelected PendingDefaultsOpen ready final deferLevelEvidence False
               go
                 (remaining - 1)
                 False
@@ -6217,8 +6232,8 @@ settlePendingEvidenceToFixedPoint final deferLevelEvidence = do
 -- | Retry only the selected evidence identities. Dormant entries are copied
 -- back to the queue in their original insertion order, so scheduling changes
 -- neither source-order diagnostics nor candidate precedence.
-flushPendingPassSelected :: Set MetaId -> Bool -> Bool -> Bool -> CheckM ()
-flushPendingPassSelected selected final deferLevelEvidence reportUnsolved = do
+flushPendingPassSelected :: PendingDefaultingPhase -> Set MetaId -> Bool -> Bool -> Bool -> CheckM ()
+flushPendingPassSelected defaultingPhase selected final deferLevelEvidence reportUnsolved = do
   st <- get
   let pend = reverse (csPending st)
   put st {csPending = []}
@@ -6283,9 +6298,14 @@ flushPendingPassSelected selected final deferLevelEvidence reportUnsolved = do
         -- is zonked and stored before the goal is finally committed,
         -- so a late local-candidate solution would leak local rigids
         -- into the stored term (see zonkTermM)
+        awaitingDeclaredDefault <-
+          case defaultingPhase of
+            PendingDefaultsOpen -> goalAwaitsDeclaredDefault g
+            PendingDefaultsApplied -> pure False
         let noLocalCandidates = not (any ceImplicitLocal (ctxEntries ctx))
             shouldDefer =
-              (not final && isJust recordedLevelConstraint)
+              awaitingDeclaredDefault
+                || (not final && isJust recordedLevelConstraint)
                 || ( (stillFlex || stillUniverseFlexible)
                        && ( (not final
                                && (noLocalCandidates || (stillUniverseFlexible && not stillFlex)))
@@ -6336,6 +6356,21 @@ flushPendingPassSelected selected final deferLevelEvidence reportUnsolved = do
                         Set.insert mid (csDiagnosedPendingEvidence state)
                     }
                 retirePendingLevelEvidence mid
+
+-- | Does this evidence goal still depend on a declaration-boundary default?
+-- Only a bare carrier metavariable is eligible: a structured carrier remains
+-- an ordinary underconstrained goal and is diagnosed rather than guessed.
+-- Additional language-level defaulting classes belong here, while queue
+-- scheduling depends only on 'PendingDefaultingPhase'.
+goalAwaitsDeclaredDefault :: Value -> CheckM Bool
+goalAwaitsDeclaredDefault goal = do
+  state <- get
+  case numericLiteralCarrierIn state goal of
+    Just (_, carrier) ->
+      forceM carrier >>= \case
+        VFlex _ [] -> pure True
+        _ -> pure False
+    Nothing -> pure False
 
 -- | Replay conversions that were blocked on postponed evidence. A resolved
 -- component must still satisfy the original equality. A component that
@@ -6424,15 +6459,17 @@ defaultAllPendingNumericGoals = do
   defaultPendingNumericGoals selected
 
 defaultNumericLiteralGoal :: Value -> CheckM ()
-defaultNumericLiteralGoal = \case
-  VGlobN trait [(_, carrier)]
-    | trait == gPrel traitFromInteger ->
-        defaultCarrier carrier prelInt
-    | trait == gPrel traitFromFloat ->
-        -- Float is the surface alias; Double is the canonical runtime
-        -- carrier and the declared FromFloat default (§6.1.5).
-        defaultCarrier carrier prelDouble
-  _ -> pure ()
+defaultNumericLiteralGoal goal = do
+  state <- get
+  case numericLiteralCarrierIn state goal of
+    Just (trait, carrier)
+      | trait == gPrel traitFromInteger ->
+          defaultCarrier carrier prelInt
+      | trait == gPrel traitFromFloat ->
+          -- Float is the surface alias; Double is the canonical runtime
+          -- carrier and the declared FromFloat default (§6.1.5).
+          defaultCarrier carrier prelDouble
+    _ -> pure ()
   where
     -- The trait goal retains the carrier value captured when the literal was
     -- elaborated. That value may since have been solved to another meta by an
@@ -10378,21 +10415,27 @@ focusedDerivation sourceDepth ctx site goal roots = do
       expressions -> Just (ETuple expressions site)
 
 -- | Multiple exact inhabitants may be merged only when the goal is already
--- known coherent: authenticated trait evidence, direct h-level evidence, or
--- the structural IsProp closure. The query never assumes UIP for arbitrary
--- equality fibers.
+-- known coherent: authenticated trait evidence, a compiler-owned level
+-- proposition, direct h-level evidence, or the structural IsProp closure.
+-- Level comparisons are proof propositions by §11.1.2.2 and are recognized
+-- through selected operator/global identity. The query never assumes UIP for
+-- arbitrary equality fibers.
 derivationGoalCoherent :: Ctx -> Span -> Value -> CheckM Bool
 derivationGoalCoherent ctx site goal = do
   traitGoal <- isTraitGoal goal
   if traitGoal
     then pure True
     else do
-      direct <- hLevelTraitEvidence ctx site prelIsProp goal
-      case direct of
-        Just _ -> pure True
-        Nothing -> do
-          propositionGoal <- globalValueM prelIsProp [(Expl, goal)]
-          isJust <$> isPropClosure ctx site propositionGoal
+      levelProposition <- isJust <$> authenticatedLevelGoalRelation ctx goal
+      if levelProposition
+        then pure True
+        else do
+          direct <- hLevelTraitEvidence ctx site prelIsProp goal
+          case direct of
+            Just _ -> pure True
+            Nothing -> do
+              propositionGoal <- globalValueM prelIsProp [(Expl, goal)]
+              isJust <$> isPropClosure ctx site propositionGoal
 
 -- | Synthesize a type for @expr@, elaborating it to a core 'Term' along the
 -- way. Used wherever the term determines its own type (a variable, literal,
@@ -15466,6 +15509,48 @@ instantiateTraitMemberType ctx site trait traitUniverses member arguments doneFi
     traitUniverses >>= \case
       Nothing -> pure (VSort LZero)
       Just (_, projectionType) -> peelGenerated ctx projectionType arguments
+  where
+    peelGenerated = peelTraitMemberType ctx site doneFields
+
+-- | Instantiate a trait member at one already-selected declaration-universe
+-- occurrence. Ordinary default templates and their accessors have the same
+-- interface, so instance completion uses this entry point to keep both sides
+-- on one occurrence rather than unifying two independently freshened suffixes.
+instantiateTraitMemberTypeAtUniverses
+  :: Ctx
+  -> Span
+  -> GName
+  -> Text
+  -> [Level]
+  -> [Value]
+  -> [(Text, Term)]
+  -> CheckM Value
+instantiateTraitMemberTypeAtUniverses ctx site trait member universes arguments doneFields = do
+  definitions <- gets csGlobals
+  let memberName = memberGlobal trait member
+  case Map.lookup memberName definitions of
+    Nothing -> malformed "checked trait-member interface is missing from the semantic environment"
+    Just definition
+      | dutParameterCount (gdUniverses definition) /= length universes ->
+          malformed "checked trait-member interface has a mismatched universe schema"
+      | otherwise -> do
+          recordRecursiveSchemaOccurrence (Just ctx) False site memberName universes
+          (_, projectionType) <- specializeGlobalAt ctx memberName definition universes
+          peelTraitMemberType ctx site doneFields ctx projectionType arguments
+  where
+    malformed message = do
+      errAt site "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler") message
+      pure (VSort LZero)
+
+peelTraitMemberType
+  :: Ctx
+  -> Span
+  -> [(Text, Term)]
+  -> Ctx
+  -> Value
+  -> [Value]
+  -> CheckM Value
+peelTraitMemberType ctx site doneFields = peelGenerated
   where
     peelGenerated activeCtx ty remaining = do
       forced <- forceM ty
@@ -26839,6 +26924,236 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
       expectType ctx sp ty listT
       pure tm
 
+finalizedTraitMemberFieldType
+  :: CheckState
+  -> Map GName GlobalDef
+  -> GName
+  -> Text
+  -> Maybe Term
+finalizedTraitMemberFieldType state globals trait member = do
+  info <- Map.lookup trait (csTraits state)
+  traitDefinition <- Map.lookup trait globals
+  definition <- Map.lookup (memberGlobal trait member) globals
+  let context = (ecOf state) {ecGlobals = Globals globals}
+      projectionType = globalCoreType context definition
+      ownerUniverseCount = dutParameterCount (gdUniverses traitDefinition)
+      memberUniverseCount = dutParameterCount (gdUniverses definition)
+      constraints = map snd (generatedConstraintBinders projectionType)
+      ownerConstraints =
+        map snd
+          (generatedConstraintBinders (globalCoreType context traitDefinition))
+      localConstraints =
+        [ constraint
+        | constraint <- constraints
+        , not
+            ( any
+                (equivalentUniverseConstraint constraint)
+                ownerConstraints
+            )
+        ]
+  guard (memberUniverseCount >= ownerUniverseCount)
+  universeSubstitution <-
+    principalTraitMemberUniverses
+      ownerUniverseCount
+      memberUniverseCount
+      localConstraints
+  let
+      specializedConstraints =
+        [ UniverseConstraint
+            (substituteLevelParams universeSubstitution lower)
+            (substituteLevelParams universeSubstitution upper)
+        | UniverseConstraint lower upper <- constraints
+        ]
+      withoutConstraints = dropGeneratedConstraints projectionType
+  let authorized (UniverseConstraint lower upper) =
+        proveLevelLeq emptyAssumptions lower upper == Proved
+          || any
+               (equivalentUniverseConstraint (UniverseConstraint lower upper))
+               ownerConstraints
+  guard (all authorized specializedConstraints)
+  dictionaryPi <- dropTraitParameters (tiParamCount info) withoutConstraints
+  case dictionaryPi of
+    CPiEvidenceM _ _ Impl _ _ _ _ _ domain codomain -> do
+      guard (termHeadGlob domain == Just trait)
+      let fieldType =
+            zonkTermWith
+              (\_ _ -> Nothing)
+              (substituteLevelParams universeSubstitution)
+              0
+              ( substTopTermAt
+                  (tiParamCount info)
+                  (CGlobal thisG [])
+                  codomain
+              )
+      guard
+        ( all (< ownerUniverseCount) (levelParamsOfTerm fieldType)
+            && termScopedAt (tiParamCount info) fieldType
+        )
+      pure fieldType
+    _ -> Nothing
+  where
+    dropGeneratedConstraints term =
+      case generatedConstraintBinders term of
+        [] -> term
+        _ : _ -> case term of
+          CPiEvidenceM _ _ Impl Q0 _ _ (Just _) BinderGenerated _ codomain ->
+            dropGeneratedConstraints codomain
+          _ -> term
+
+    dropTraitParameters 0 term = Just term
+    dropTraitParameters count (CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) =
+      dropTraitParameters (count - 1) codomain
+    dropTraitParameters _ _ = Nothing
+
+-- | Instantiate a public member's independent universe suffix at its
+-- principal least solution for the checker-only dictionary record. The public
+-- accessor retains the full suffix and its generated proof telescope; only
+-- this internal record copy is specialized, which is representation-safe
+-- because declaration levels erase before runtime lowering.
+principalTraitMemberUniverses
+  :: Int
+  -> Int
+  -> [UniverseConstraint]
+  -> Maybe [Level]
+principalTraitMemberUniverses ownerUniverseCount memberUniverseCount constraints = do
+  let localParameters = [ownerUniverseCount .. memberUniverseCount - 1]
+      syntheticMeta parameter = -1000000 - parameter
+      provisional =
+        map LParam [0 .. ownerUniverseCount - 1]
+          ++ [LMeta (syntheticMeta parameter) | parameter <- localParameters]
+      targets = Set.fromList (map syntheticMeta localParameters)
+      origin =
+        ConstraintOrigin
+          "trait-member physical universe specialization"
+          "trait dictionary interface"
+      solverConstraints =
+        [ LevelConstraint
+            identity
+            (substituteLevelParams provisional lower)
+            (substituteLevelParams provisional upper)
+            origin
+            emptyAssumptions
+        | (identity, UniverseConstraint lower upper) <- zip [0 ..] constraints
+        ]
+  solution <- either (const Nothing) Just (solveLevelConstraintsFor targets solverConstraints)
+  let principalAssignments =
+        Map.union
+          (lsAssignments solution)
+          (Map.fromSet (const LZero) targets)
+      instantiate = substituteLevelMetas principalAssignments
+      result =
+        map LParam [0 .. ownerUniverseCount - 1]
+          ++ [instantiate (LMeta (syntheticMeta parameter)) | parameter <- localParameters]
+  pure result
+
+finalizedTraitMemberFields
+  :: CheckState
+  -> Map GName GlobalDef
+  -> GName
+  -> TraitInfo
+  -> Maybe (Map Text Term)
+finalizedTraitMemberFields state globals trait info =
+  Map.fromList
+    <$> traverse
+      (\member ->
+         (member,) <$> finalizedTraitMemberFieldType state globals trait member)
+      (tiMembers info)
+
+finalizedTraitSuperFields :: TraitInfo -> Maybe [(Text, Term)]
+finalizedTraitSuperFields info =
+  traverse
+    (\(field, term) ->
+       (field,) <$> dropTraitParameters (tiParamCount info) term)
+    (tiSupers info)
+  where
+    dropTraitParameters 0 term = Just term
+    dropTraitParameters count (CLamM _ _ _ _ body) =
+      dropTraitParameters (count - 1) body
+    dropTraitParameters _ _ = Nothing
+
+-- | Rebuild a trait's opaque dictionary value from finalized public
+-- authorities. The original record interface contributes only its checked
+-- binder and field layout; retaining any provisional field type would let
+-- retired universe metas escape into artifacts and backend IR.
+rebuildTraitDictionaryInterface
+  :: CheckState
+  -> Map GName GlobalDef
+  -> GName
+  -> TraitInfo
+  -> GlobalDef
+  -> Maybe GlobalDef
+rebuildTraitDictionaryInterface state globals trait info definition = do
+  interface <- gdRecordInterface definition
+  superFields <- Map.fromList <$> finalizedTraitSuperFields info
+  memberFields <- finalizedTraitMemberFields state globals trait info
+  rebuilt <- rebuild (Map.union memberFields superFields) (tiParamCount info) interface
+  let context = (ecOf state) {ecGlobals = Globals globals}
+      rebuiltValue = eval context [] rebuilt
+      closedInterface = quote context 0 rebuiltValue
+  guard
+    ( termScopedAt 0 closedInterface
+        && null (metaIdsOf closedInterface)
+        && null (levelMetasOfTerm closedInterface)
+    )
+  pure
+    definition
+      { gdValue = Just rebuiltValue
+      , gdRecordInterface = Just closedInterface
+      }
+  where
+    rebuild fieldTypes remaining = \case
+      CLamM mode icit quantity name body
+        | remaining > 0 ->
+            CLamM mode icit quantity name
+              <$> rebuild fieldTypes (remaining - 1) body
+      CRecordTQ fields
+        | remaining == 0 ->
+            CRecordTQ
+              <$> traverse
+                (\field -> do
+                   fieldType <- Map.lookup (rfName field) fieldTypes
+                   pure field {rfType = fieldType})
+                fields
+      _ -> Nothing
+
+-- | Close every current-module trait dictionary after declaration universe
+-- and evidence finalization. This final sweep is required even for traits
+-- generalized during the header pass: their member projections may only have
+-- reached their final public interface later in the module transaction.
+finalizeTraitDictionaryInterfaces :: CheckM ()
+finalizeTraitDictionaryInterfaces = do
+  state <- get
+  let currentModule = csModule state
+      localTraits =
+        Map.filterWithKey
+          (\(GName owner _) _ -> owner == currentModule)
+          (csTraits state)
+      rebuilt =
+        Map.mapMaybeWithKey
+          (\trait info -> do
+             definition <- Map.lookup trait (csGlobals state)
+             rebuildTraitDictionaryInterface
+               state
+               (csGlobals state)
+               trait
+               info
+               definition)
+          localTraits
+      failures = Map.keysSet localTraits `Set.difference` Map.keysSet rebuilt
+  forM_ (Set.toAscList failures) $ \trait ->
+    errAt noSpan "E_UNSOLVED_METAVARIABLE"
+      (Just "kappa.type.unsolved-metavariable")
+      ( "trait dictionary interface '"
+          <> gKey trait
+          <> "' did not close to finalized Core"
+      )
+  unless (Map.null rebuilt) $
+    modify' $ \current ->
+      invalidateSemanticCaches
+        current
+          { csGlobals = Map.union rebuilt (csGlobals current)
+          }
+
 -- | Generalize the still-observable universe metas of newly declared globals
 -- into one hidden telescope per semantic declaration SCC (§11.1.2.3A).
 -- Ordinary term metas are excluded by 'levelMetasOfTerm'.  References inside
@@ -28049,101 +28364,6 @@ generalizeDeclarationUniversesWith
                     in gd {gdType = eval repairedTypeContext [] coreType}
                  else gd)
             globalsWithRepairedCoreTypes
-        -- The public generated member projections are the finalized checked
-        -- authority for a trait dictionary's field telescope.  The opaque
-        -- dictionary value was elaborated before declaration-universe
-        -- principalization; retaining that provisional record can leave an
-        -- owner carrier at @Type u@ while an operation in one of its fields is
-        -- spuriously specialized to @Type 0@.  Recover each field after the
-        -- projection declaration has been generalized, then substitute the
-        -- projection's dictionary binder back to the canonical @this@
-        -- neutral used by record interfaces.
-        finalizedTraitMemberFieldType globals trait member = do
-          info <- Map.lookup trait (csTraits st)
-          definition <- Map.lookup (memberGlobal trait member) globals
-          let context = (ecOf st) {ecGlobals = Globals globals}
-              projectionType = globalCoreType context definition
-          -- A declaration-level universe-evidence prefix is not part of the
-          -- dictionary field itself.  Traits with such a prefix need their
-          -- evidence promoted to the owning trait telescope before a field
-          -- can be recovered; do not guess that transformation here.
-          guard (null (generatedConstraintBinders projectionType))
-          dictionaryPi <- dropTraitParameters (tiParamCount info) projectionType
-          case dictionaryPi of
-            CPiEvidenceM _ _ Impl _ _ "__d" _ _ _ codomain ->
-              pure
-                ( substTopTermAt
-                    (tiParamCount info)
-                    (CGlobal thisG [])
-                    codomain
-                )
-            _ -> Nothing
-          where
-            dropTraitParameters 0 term = Just term
-            dropTraitParameters count (CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) =
-              dropTraitParameters (count - 1) codomain
-            dropTraitParameters _ _ = Nothing
-        finalizedTraitMemberFields globals trait info =
-          Map.fromList
-            <$> traverse
-              (\member ->
-                 (member,) <$> finalizedTraitMemberFieldType globals trait member)
-              (tiMembers info)
-        finalizedTraitSuperFields info =
-          traverse
-            (dropTraitParameters (tiParamCount info) . snd)
-            (tiSupers info)
-          where
-            dropTraitParameters 0 term = Just term
-            dropTraitParameters count (CLamM _ _ _ _ body) =
-              dropTraitParameters (count - 1) body
-            dropTraitParameters _ _ = Nothing
-        rebuildTraitDictionaryInterface globals trait info definition = do
-          value <- gdValue definition
-          let context = (ecOf st) {ecGlobals = Globals globals}
-              rebuild memberFields remaining = \case
-                CLamM mode icit quantity name body
-                  | remaining > 0 ->
-                      CLamM mode icit quantity name
-                        (rebuild memberFields (remaining - 1) body)
-                CRecordTQ fields
-                  | remaining == 0 ->
-                      CRecordTQ
-                        [ field
-                            { rfType =
-                                Map.findWithDefault
-                                  (rfType field)
-                                  (rfName field)
-                                  memberFields
-                            }
-                        | field <- fields
-                        ]
-                term -> term
-              checkedInterface = quote context 0 value
-              rebuilt =
-                maybe
-                  checkedInterface
-                  (\memberFields ->
-                     rebuild memberFields (tiParamCount info) checkedInterface)
-                  (finalizedTraitMemberFields globals trait info)
-              rebuiltValue = eval context [] rebuilt
-              -- Universe repair may transiently insert evidence carrying the
-              -- provisional metas of a member projection.  The checked NbE
-              -- value normalizes that evidence away while retaining the
-              -- structural record telescope.  Persist only that canonical,
-              -- closed interface; an open interface must never become
-              -- artifact or KCore authority.
-              closedInterface = quote context 0 rebuiltValue
-          guard
-            ( termScopedAt 0 closedInterface
-                && null (metaIdsOf closedInterface)
-                && null (levelMetasOfTerm closedInterface)
-            )
-          pure
-            definition
-              { gdValue = Just rebuiltValue
-              , gdRecordInterface = Just closedInterface
-              }
         traitRewriteOwners =
           Set.intersection
             (Map.keysSet (csTraits st))
@@ -28161,8 +28381,9 @@ generalizeDeclarationUniversesWith
             traitRewriteOwners
             (\global definition ->
                fromMaybe definition $ do
-                 info <- Map.lookup global (csTraits st)
+                 info <- Map.lookup global traits'
                  rebuildTraitDictionaryInterface
+                   st
                    globalsRebuilt
                    global
                    info
@@ -28229,9 +28450,10 @@ generalizeDeclarationUniversesWith
                                . zonkRawTerm
                        finalizedClauses = do
                          info <- Map.lookup family traits'
-                         supers <- finalizedTraitSuperFields info
+                         supers <- map snd <$> finalizedTraitSuperFields info
                          fields <-
                            finalizedTraitMemberFields
+                             st
                              globalsWithTraitInterfaces
                              family
                              info

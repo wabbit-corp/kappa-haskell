@@ -52,6 +52,7 @@ module Kappa.Level
   , weakenLevelLocalsAt
   , solveLevelConstraints
   , solveLevelConstraintsFor
+  , equivalentLevelMetaAssignments
   , uniquelyDeterminedLevelAssignmentsFor
   , inferPrincipalLevelsFor
   , mergeLevelAssignments
@@ -70,7 +71,7 @@ import Control.Monad (guard)
 import Data.Data (Data)
 import Data.Integer.SAT qualified as SAT
 import Data.Graph (SCC (..), stronglyConnComp)
-import Data.List (nub, sort, sortOn)
+import Data.List (minimumBy, nub, sort, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import qualified Data.Set as Set
@@ -81,6 +82,48 @@ import qualified Kappa.DirectedGraph as DirectedGraph
 import Kappa.SemanticHash (sha256Hex)
 
 type LevelMeta = Int
+
+-- | Quotient unconditional atomic inequality cycles before minimizing
+-- universe metavariables. By antisymmetry, every strongly connected component
+-- denotes one universe identity. 'preferred' identities win representation;
+-- 'secondary' identities win over otherwise unconstrained metas. Protected
+-- identities are never redirected unless they are themselves preferred.
+--
+-- The operation is provenance-aware but checker-independent, so declaration
+-- publication and body-occurrence closeout can share the same rule.
+equivalentLevelMetaAssignments
+  :: Set.Set LevelMeta
+  -> Set.Set LevelMeta
+  -> Set.Set LevelMeta
+  -> [LevelConstraint]
+  -> Map LevelMeta Level
+equivalentLevelMetaAssignments protected preferred secondary constraints =
+  Map.fromList
+    [ (meta, LMeta representative)
+    | members <- DirectedGraph.stronglyConnectedComponents graph
+    , let representative = minimumBy (\left right -> compare (priority left) (priority right)) members
+    , meta <- members
+    , meta /= representative
+    , meta `Set.notMember` protected || meta `Set.member` preferred
+    ]
+  where
+    priority meta
+      | meta `Set.member` preferred = (0 :: Int, meta)
+      -- A protected declaration identity is rigid at this boundary. It must
+      -- represent an equivalence class ahead of fresh minimizable occurrence
+      -- metas; merely refusing to rewrite it leaves the fresh representative
+      -- free to collapse independently.
+      | meta `Set.member` protected = (1, meta)
+      | meta `Set.member` secondary = (2, meta)
+      | otherwise = (3, meta)
+    edges =
+      [ (lower, upper)
+      | constraint <- constraints
+      , null (assumptionsList (lcAssumptions constraint))
+      , LMeta lower <- [normalizeLevel (lcLhs constraint)]
+      , LMeta upper <- [normalizeLevel (lcRhs constraint)]
+      ]
+    graph = DirectedGraph.fromEdges edges
 
 -- | A serializable, alpha-stable fragment of typed Core used as the identity
 -- of an opaque but admissible TypeLevel term. Locals are de Bruijn /levels/
@@ -363,7 +406,7 @@ emptyDeclarationUniverseTelescope :: DeclarationUniverseTelescope
 emptyDeclarationUniverseTelescope = DeclarationUniverseTelescope 0 False
 
 newtype Assumptions = Assumptions [(Level, Level)]
-  deriving stock (Eq, Show, Data)
+  deriving stock (Eq, Ord, Show, Data)
 
 data SolveResult
   = Proved
@@ -1136,11 +1179,12 @@ solveLevelConstraintsFor targets constraints0 = do
   let lowerOnlyContradictions =
         [ constraint
         | constraint <- constraints
+        , let assumptions = inferenceAssumptions constraint
         , let lhsMetas = Set.fromList (levelMetas (lcLhs constraint))
               rhsMetas = levelMetas (lcRhs constraint)
               assumptionMetas =
                 [ meta
-                | (lower, upper) <- assumptionsList (lcAssumptions constraint)
+                | (lower, upper) <- assumptionsList assumptions
                 , meta <- levelMetas lower ++ levelMetas upper
                 ]
         , not (Set.null (Set.intersection targets lhsMetas))
@@ -1151,14 +1195,14 @@ solveLevelConstraintsFor targets constraints0 = do
                 normalizeLevel
                   (foldr (\meta -> substituteLevelMeta meta LZero) (lcLhs constraint)
                     (Set.toList targets))
-        , proveLevelLeq (lcAssumptions constraint) leastLhs (lcRhs constraint) == Disproved
+        , proveLevelLeq assumptions leastLhs (lcRhs constraint) == Disproved
         ]
       lowerEntries =
         [ (meta, lower, constraint)
         | constraint <- constraints
         , meta <- levelMetas (lcRhs constraint)
         , meta `Set.member` targets
-        , proveLevelLeq (lcAssumptions constraint) (lcLhs constraint) (lcRhs constraint) /= Proved
+        , proveLevelLeq (inferenceAssumptions constraint) (lcLhs constraint) (lcRhs constraint) /= Proved
         , Just lower <- [principalLowerBound meta constraint]
         ]
       directOccurs =
@@ -1326,7 +1370,23 @@ solveLevelConstraintsFor targets constraints0 = do
           | rhsMeta == meta -> principalSelfLowerBound meta lower
         (lower, rhs) ->
           closedEmbeddedLeast meta lower rhs
-            <|> rigidMaxLeast (lcAssumptions constraint) meta lower rhs
+            <|> rigidMaxLeast (inferenceAssumptions constraint) meta lower rhs
+
+    -- A generated cumulative-coercion certificate records the exact
+    -- residual judgment it authenticates in its evidence dependencies.  That
+    -- dependency is valid for replay, but it cannot prove itself while the
+    -- declaration boundary is choosing the occurrence metavariable: doing so
+    -- erases the real lower bound and incorrectly selects zero.  Preserve all
+    -- other lexical assumptions and remove only the judgment being solved.
+    inferenceAssumptions constraint =
+      foldr
+        (uncurry insertAssumption)
+        emptyAssumptions
+        [ (lower, upper)
+        | (lower, upper) <- assumptionsList (lcAssumptions constraint)
+        , (normalizeLevel lower, normalizeLevel upper)
+            /= (normalizeLevel (lcLhs constraint), normalizeLevel (lcRhs constraint))
+        ]
 
     -- The portable symbolic max rule does not require a closed ordinal.
     -- If the selected meta occurs only as max arms, erase those arms to ask
@@ -1544,15 +1604,51 @@ inferPrincipalLevelsFor targets constraints =
         , meta <- members
         , meta `Set.member` targets
         ]
-    forcedAssignments = Map.union forcedZeroAssignments forcedAliasAssignments
+    forcedRigidAssignments =
+      Map.mapMaybe singletonRepresentative rigidCandidatesByMeta
+      where
+        singletonRepresentative candidates = case Set.toList candidates of
+          [representative] -> Just representative
+          _ -> Nothing
+    rigidCandidatesByMeta =
+      Map.fromListWith Set.union
+        [ (meta, Set.singleton rigid)
+        | (assumptions, LMeta meta, rigid) <- Set.toAscList constraintEdges
+        , meta `Set.member` targets
+        , null (levelMetas rigid)
+        , assumptionsConsistent assumptions
+        , Set.member (assumptions, rigid, LMeta meta) constraintEdges
+        ]
+    constraintEdges =
+      Set.fromList
+        [ ( lcAssumptions constraint
+          , normalizeLevel (lcLhs constraint)
+          , normalizeLevel (lcRhs constraint)
+          )
+        | constraint <- constraints
+        ]
+    forcedAssignments =
+      Map.unions
+        [ forcedZeroAssignments
+        , forcedRigidAssignments
+        , forcedAliasAssignments
+        ]
     remainingTargets = Set.difference targets (Map.keysSet forcedAssignments)
     preparedConstraints = map (zonkConstraint forcedAssignments) constraints
 
     -- An unconditional atomic equality between a selected occurrence meta and
-    -- an unselected declaration meta fixes the occurrence to that rigid
-    -- identity. Other lower bounds then become selected-free declaration
-    -- obligations after substitution; they are retained for generated proof
-    -- binders instead of being joined into a different occurrence value.
+    -- an unselected declaration meta fixes the occurrence to that identity.
+    -- A reciprocal pair under one identical, consistent assumption set may
+    -- likewise fix the occurrence to a meta-free rigid level expression. The
+    -- latter is deliberately direct rather than transitively composed across
+    -- assumption sets: identities established in distinct lexical contexts
+    -- cannot justify one unconditional substitution. Multiple structurally
+    -- distinct rigid representatives remain unsolved and therefore fail
+    -- closed during the complete-system recheck below.
+    --
+    -- Other lower bounds become selected-free declaration obligations after
+    -- substitution; they are retained for generated proof binders instead of
+    -- being joined into a different occurrence value.
     equalityEdges =
       [ (lower, upper)
       | constraint <- constraints

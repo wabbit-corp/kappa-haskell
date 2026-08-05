@@ -260,6 +260,7 @@ import Kappa.Level
   , SolveResult (..)
   , assumptionsConsistent
   , emptyAssumptions
+  , equivalentLevelMetaAssignments
   , finiteLevel
   , emptyLevelAssignmentGraphBudget
   , extendLevelAssignmentGraph
@@ -779,6 +780,16 @@ checkedPreludeArtifactDomain = do
         , gdCoreBody definition
         , gdReducible definition
         )
+      instanceShape entry =
+        ( ieTrait entry
+        , ieTraitUniverses entry
+        , ieUniverses entry
+        , ieTeleLen entry
+        , iePremises entry
+        , ieHead entry
+        , ieDict entry
+        )
+      instanceIndexShape = Map.map (map instanceShape)
       quotedValues state =
         let context = EvalCtx (Globals (csGlobals state)) (csMetas state) False (csFacts state)
          in Map.map (fmap (quote context 0) . gdValue) (csGlobals state)
@@ -798,6 +809,9 @@ checkedPreludeArtifactDomain = do
         , ("constructor identities agree", Map.keysSet (csCtors cached) == Map.keysSet (csCtors source))
         , ("trait identities agree", Map.keysSet (csTraits cached) == Map.keysSet (csTraits source))
         , ("instance count agrees", length (csInstances cached) == length (csInstances source))
+        , ("instance trait index agrees", instanceIndexShape (csInstancesByTrait cached) == instanceIndexShape (csInstancesByTrait source))
+        , ("instance interface index agrees", csInstanceUniverseInterfaces cached == csInstanceUniverseInterfaces source)
+        , ("cached instance index is complete", sum (map length (Map.elems (csInstancesByTrait cached))) == length (csInstances cached))
         , ("cached current-unit body map is empty", Map.null (csCoreBodies cached))
         , ("cached imported implementations are linked", not (Map.null (csImportedCoreBodies cached)))
         , ("source generator captured implementations", not (Map.null (csCoreBodies source)))
@@ -1798,6 +1812,15 @@ universeLevelDomain = do
           , constraint (LMeta 44) neutralV
           ]
           == SolvedPrincipal (Map.singleton 43 neutralP)
+      selfCertifiedOccurrenceRetainsPrincipalLowerBound =
+        let target = LMeta 42
+            lower = levelMax (LParam 2) (LParam 3)
+            assumptions =
+              insertAssumption lower target
+                (insertAssumption lower (LParam 0) emptyAssumptions)
+            authenticated = LevelConstraint 0 lower target origin assumptions
+         in inferPrincipalLevelsFor (Set.singleton 42) [authenticated]
+              == SolvedPrincipal (Map.singleton 42 lower)
       selectedChainSolvedTogether =
         inferPrincipalLevelsFor
           (Set.fromList [45, 46])
@@ -1810,6 +1833,24 @@ universeLevelDomain = do
           , constraint (LMeta 48) (LMeta 47)
           ]
           == SolvedPrincipal (Map.fromList [(47, LZero), (48, LZero)])
+      selectedEqualityPreservesRigidIdentity =
+        let ambient = insertAssumption (LParam 3) (LParam 0) emptyAssumptions
+            exact lower upper = LevelConstraint 0 lower upper origin ambient
+         in inferPrincipalLevelsFor
+              (Set.singleton 57)
+              [ exact (LMeta 57) (LParam 3)
+              , exact (LParam 3) (LMeta 57)
+              ]
+              == SolvedPrincipal (Map.singleton 57 (LParam 3))
+      equivalenceQuotientPrefersProtectedIdentity =
+        equivalentLevelMetaAssignments
+          (Set.singleton 58)
+          Set.empty
+          (Set.singleton 59)
+          [ constraint (LMeta 58) (LMeta 59)
+          , constraint (LMeta 59) (LMeta 58)
+          ]
+          == Map.singleton 59 (LMeta 58)
       selectedDependencyRetainsUnselectedMeta =
         inferPrincipalLevelsFor
           (Set.singleton 49)
@@ -2071,8 +2112,11 @@ universeLevelDomain = do
         , ("unconstrained selected meta has checked zero principal", unconstrainedMetaHasCheckedZeroPrincipal)
         , ("upper-only selected meta has checked zero principal", upperOnlyMetaHasCheckedZeroPrincipal)
         , ("selected inference preserves unrelated rigid proof obligations", selectedInferencePreservesUnselectedProofObligations)
+        , ("a coercion certificate cannot erase its own principal lower bound", selfCertifiedOccurrenceRetainsPrincipalLowerBound)
         , ("selected-meta chains are solved as one principal system", selectedChainSolvedTogether)
         , ("selected-meta equality SCCs have the pointwise-zero principal solution", selectedEqualitySccSolvedTogether)
+        , ("selected-meta equality preserves a rigid declaration identity", selectedEqualityPreservesRigidIdentity)
+        , ("occurrence equivalence prefers a protected declaration identity", equivalenceQuotientPrefersProtectedIdentity)
         , ("selected inference retains an unselected meta dependency", selectedDependencyRetainsUnselectedMeta)
         , ("selected equality preserves the resulting rigid proof obligation", selectedEqualityLeavesRigidProofObligation)
         , ("solving metas rewrites authenticated constraint assumptions", solvedMetasRewriteConstraintAssumptions)

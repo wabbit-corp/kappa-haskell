@@ -200,6 +200,7 @@ module Kappa.Check.Support
   , linkedCoreBodies
   , metaObservationMode
   , nominalHiddenProjectionInfo
+  , numericLiteralCarrierIn
   , recursiveSchemaEdgeRecorded
   , scriptUnsafeConfig
   , selectedUniverseEvidenceRecorded
@@ -3428,6 +3429,28 @@ traitSemanticSpineIn st trait arguments = do
       guard (length semanticArguments == semanticCount)
       pure semanticArguments
 
+-- | Recognize an overloaded numeric-literal goal by selected trait identity
+-- and return its source-semantic carrier. Universe-aware and finalized Core
+-- values may differ in whether generated declaration-proof arguments are
+-- physically present, so both forms use 'traitSemanticSpineIn' rather than
+-- inspecting a raw argument position.
+numericLiteralCarrierIn
+  :: CheckState
+  -> Value
+  -> Maybe (GName, Value)
+numericLiteralCarrierIn state = \case
+  VGlobN trait arguments -> semanticCarrier trait arguments
+  VGlobI trait _ arguments -> semanticCarrier trait arguments
+  _ -> Nothing
+  where
+    semanticCarrier trait arguments = do
+      guard
+        ( trait == gPrel traitFromInteger
+            || trait == gPrel traitFromFloat
+        )
+      [(_, carrier)] <- traitSemanticSpineIn state trait arguments
+      pure (trait, carrier)
+
 equalityExplicitEndpoints :: Term -> Maybe (Term, Term)
 equalityExplicitEndpoints term =
   case spineOfTerm (stripIdentityWrappers term) of
@@ -3644,26 +3667,39 @@ principalizeLevelOccurrence
   -> CheckM (Maybe (Map LevelMeta Level, Term))
 principalizeLevelOccurrence depth baseline selected candidate = do
   zonked <- zonkTermM depth candidate
-  if Set.null selected
+  current <- get
+  let baselineIdentities =
+        Set.fromList (map lcIdentity (csLevelConstraints baseline))
+      localConstraints =
+        [ constraint
+        | constraint <- zonkedPendingLevelConstraints (csLevelAssignments current) current
+        , lcIdentity constraint `Set.notMember` baselineIdentities
+        ]
+      -- Matching an instance or another transactional occurrence may allocate
+      -- classifier levels that do not survive syntactically in the returned
+      -- Core term. They still belong to the occurrence closeout, but ordinary
+      -- fresh metas created while checking the goal are caller-owned rigid
+      -- inputs. Use the explicit instantiation provenance rather than a numeric
+      -- allocation cutoff so those ambient metas cannot make a valid candidate
+      -- appear non-principal.
+      localInstantiationMetas =
+        Set.difference
+          (csLevelInstantiationMetas current)
+          (csLevelInstantiationMetas baseline)
+      transactionTargets = Set.union selected localInstantiationMetas
+  if Set.null transactionTargets
     then pure (Just (Map.empty, zonked))
     else do
-      current <- get
-      let baselineIdentities =
-            Set.fromList (map lcIdentity (csLevelConstraints baseline))
-          localConstraints =
-            [ constraint
-            | constraint <- zonkedPendingLevelConstraints (csLevelAssignments current) current
-            , lcIdentity constraint `Set.notMember` baselineIdentities
-            ]
+      let
           principal =
             principalLevelAssignmentsWithin
               (csLevelAssignments current)
-              selected
+              transactionTargets
               localConstraints
       case principal of
         Nothing -> pure Nothing
         Just assignments -> do
-          let localAssignments = Map.restrictKeys assignments selected
+          let localAssignments = Map.restrictKeys assignments transactionTargets
               specialized =
                 zonkTermWith
                   (\_ _ -> Nothing)
@@ -3675,7 +3711,7 @@ principalizeLevelOccurrence depth baseline selected candidate = do
             ( if
                 Set.null
                   ( Set.intersection
-                      selected
+                      transactionTargets
                       (Set.fromList (levelMetasOfTerm closed))
                   )
                 then Just (localAssignments, closed)

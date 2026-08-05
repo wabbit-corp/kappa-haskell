@@ -41,6 +41,7 @@ anon-workspace/
 /tmp-*.kp
 /dist-prof/
 /dist-newstyle-codex-universe/
+/dist-split/
 /runtime/build-bench-s4-rc/
 /runtime/build-poison-rc/
 /runtime/build-tsan-rc/
