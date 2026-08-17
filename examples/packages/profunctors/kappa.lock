@@ -1,3 +1,2 @@
 # kappa.lock v1 (generated) — entry kinds: path/git/registry/url/host-binding; digest: fnv1a-64 (length-prefixed, sorted; §36.6A change-detection identity)
-path caab298b2aac956f ../bifunctors
-path 66e4856f1f6d25bd ../either
+path 3772706a7a158a26 ../bifunctors

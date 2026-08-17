@@ -1,0 +1,38 @@
+--! mode check
+--! assertNoErrors
+--! assertType moved VecRecord Int 1
+--! assertEval movedCached 9
+
+-- §10.2/§17.1.2/§31.1: path induction must transport an entire structural
+-- record when one field's type mentions the equality index. This exercises
+-- equality refinement through a type alias and record reconstruction boundary,
+-- rather than merely returning the equality constructor itself.
+module main
+
+data Path (@0 A : Type) (x : A) (y : A) : Type =
+    Same : Path x x
+
+data Vec (a : Type) (n : Nat) : Type =
+    VNil  : Vec a 0
+    VCons : a -> Vec a n -> Vec a (n + 1)
+
+type VecRecord (a : Type) (n : Nat) : Type =
+    (elems : Vec a n, cached : Nat)
+
+reindex :
+    forall (a : Type) (n m : Nat).
+    Path n m -> VecRecord a n -> VecRecord a m
+let reindex equality record =
+    match equality
+      case Same -> record
+
+one : VecRecord Int 1
+let one = (elems = VCons 42 VNil, cached = 9)
+
+moved : VecRecord Int 1
+let moved = reindex Same one
+
+movedCached : Nat
+let movedCached = moved.cached
+
+-- STATUS(8c3c7747): PASS — path induction transports the indexed record alias and preserves its cached runtime field.

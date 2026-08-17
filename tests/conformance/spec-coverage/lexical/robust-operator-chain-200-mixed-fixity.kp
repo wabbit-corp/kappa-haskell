@@ -1,0 +1,22 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertEval chain 0
+
+-- Robustness: a single 200-term infix chain mixing precedence levels
+-- (+/- at one level, * binding tighter; Spec §5.5.2-§5.5.3 fixity-driven
+-- operator parsing) must parse with correct association and evaluate to
+-- the standard-math result. The assertEval pins associativity/precedence
+-- at scale, not just completion.
+--
+-- Perf note (a0497523): operator-chain checking is super-linear in chain
+-- length — mixed-precedence chains of 800/1600/3200 terms check in
+-- 0.94s/4.41s/19.71s (~4.5x per doubling, i.e. quadratic); single-operator
+-- chains are also quadratic with a smaller constant (0.30s/0.75s/2.73s).
+-- At 200 terms this file completes quickly and doubles as a canary.
+module main
+
+chain : Int
+let chain = 1 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3 * 4 + 5 * 6 - 7 * 1 + 2 * 3 - 4 * 5 + 6 * 7 - 1 * 2 + 3 * 4 - 5 * 6 + 7 * 1 - 2 * 3 + 4 * 5 - 6 * 7 + 1 * 2 - 3
+-- STATUS(8c3c7747): FAIL — promoted conformance timeout after 60 seconds while checking a
+-- spec-valid 200-term mixed-fixity chain; expected result remains `chain = 0`.

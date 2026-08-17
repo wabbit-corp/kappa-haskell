@@ -107,6 +107,7 @@ import Kappa.CoreOps
   ( authenticatedLevelAssumptionWith
   , coreToNeutralLevelTerm
   , declarationUniverseConstraints
+  , finalizedSemanticSpineAfterGeneratedConstraints
   , levelMetasOfTerm
   , metaIdsOf
   , levelParamsOfTerm
@@ -832,13 +833,17 @@ validateObservationModeFlows st =
                 ( do
                     info <- Map.lookup trait (csTraits st)
                     guard (field `elem` tiMembers info)
+                    semanticSpine <-
+                      traitSemanticSpine globals (csTraits st) ctx trait spine
                     case receiver of
                       CRecordV _ ->
                         traitMemberStorageType globals ctx depth
-                          (tiParamCount info) trait universes field (map snd spine) receiver
+                          (tiParamCount info) trait universes field
+                          (map snd semanticSpine) receiver
                       _ ->
                         traitMemberType globals ctx depth []
-                          (tiParamCount info) trait universes field (map snd spine) receiver
+                          (tiParamCount info) trait universes field
+                          (map snd semanticSpine) receiver
                   )
                   <|> (snd <$> nominalHiddenProjectionInfo st ctx depth receiver receiverType field)
               _ ->
@@ -908,7 +913,9 @@ validateObservationModeFlows st =
               [promotionWithDependencies owner "global result" unjustified]
         _ -> []
 
-    checkTerm owner depth scopes modes expected term =
+    checkTerm = checkTermWithConstructorCoverage False
+
+    checkTermWithConstructorCoverage constructorDependenciesCovered owner depth scopes modes expected term =
       localChecks ++ case term of
         CLamM actualMode ic _ _ body ->
           case expected >>= piSite depth of
@@ -932,7 +939,7 @@ validateObservationModeFlows st =
         CArithmeticProof _ -> []
         CCtorI g universes annotation arguments ->
           maybe [] (checkTerm owner depth scopes modes Nothing) annotation
-            ++ constructorChecks owner depth scopes modes g universes annotation True
+            ++ constructorChecks constructorDependenciesCovered owner depth scopes modes g universes annotation True
               (zip [0 :: Int ..] arguments)
         CMatch scrut ann _resultAnn alts ->
           let scrutineeType =
@@ -1154,7 +1161,7 @@ validateObservationModeFlows st =
         Just reduced -> checkTerm owner depth scopes modes _expected reduced
         Nothing -> case coreEtaCtorApp depth app of
           Just (constructor, universes, annotation, _arity, arguments) ->
-            constructorChecks owner depth scopes modes constructor universes annotation False arguments
+            constructorChecks False owner depth scopes modes constructor universes annotation False arguments
           Nothing ->
             let (headTerm, args) = spineOfTerm app
              in case headTerm of
@@ -1226,14 +1233,21 @@ validateObservationModeFlows st =
         ]
       Just (VGlobI traitG universes spine)
         | Just trait <- Map.lookup traitG (csTraits st) ->
-            let dictionaryTerm = CRecordV fields
-                arguments = map snd spine
-                traitArguments = take (tiParamCount trait) spine
-                permitted =
-                  traitParametricDependencies scopes modes depth traitG universes traitArguments
-             in concatMap
-                  (traitFieldCheck traitG universes dictionaryTerm arguments permitted trait)
-                  fields
+            case traitSemanticSpine globals (csTraits st) ctx traitG spine of
+              Nothing ->
+                [ modeViolation owner "E_BACKENDIR_OBSERVATION_ANALYSIS"
+                    ( "trait dictionary record has a malformed generated-evidence/source-parameter spine for "
+                        <> T.pack (show traitG)
+                    )
+                ]
+              Just semanticSpine ->
+                let dictionaryTerm = CRecordV fields
+                    arguments = map snd semanticSpine
+                    permitted =
+                      traitParametricDependencies scopes modes depth traitG universes semanticSpine
+                 in concatMap
+                      (traitFieldCheck traitG universes dictionaryTerm arguments permitted trait)
+                      fields
       _ -> []
       where
         traitFieldCheck traitG universes dictionaryTerm arguments permitted trait (name, value)
@@ -1266,14 +1280,19 @@ validateObservationModeFlows st =
         Just (VGlobI traitG universes spine)
           | Just trait <- Map.lookup traitG (csTraits st) ->
               let dictionaryTerm = CRecordV fields
-                  arguments = map snd spine
-               in concat
-                    [ let memberExpected =
-                            traitMemberStorageType globals ctx depth
-                              (tiParamCount trait) traitG universes name arguments dictionaryTerm
-                       in checkTerm owner depth scopes modes memberExpected value
-                    | (name, value) <- fields
-                    ]
+                  checkWithoutExpected =
+                    concatMap (checkTerm owner depth scopes modes Nothing . snd) fields
+               in case traitSemanticSpine globals (csTraits st) ctx traitG spine of
+                    Nothing -> checkWithoutExpected
+                    Just semanticSpine ->
+                      let arguments = map snd semanticSpine
+                       in concat
+                            [ let memberExpected =
+                                    traitMemberStorageType globals ctx depth
+                                      (tiParamCount trait) traitG universes name arguments dictionaryTerm
+                               in checkTerm owner depth scopes modes memberExpected value
+                            | (name, value) <- fields
+                            ]
         _ -> concatMap (checkTerm owner depth scopes modes Nothing . snd) fields
 
     -- §14.3.1A makes a trait dictionary relative to its checked head:
@@ -1311,7 +1330,7 @@ validateObservationModeFlows st =
     -- arguments.  Flattening domains up front leaves later dependent domains
     -- filled with rigid placeholders (for example @tail : List a@), which is
     -- neither valid typing authority nor stable under erased arguments.
-    constructorChecks owner depth scopes modes g universes annotation requireComplete indexedArguments =
+    constructorChecks dependenciesCovered owner depth scopes modes g universes annotation requireComplete indexedArguments =
       case specializedConstructorType g universes
         <|> intrinsicEffectConstructorType ctx depth g annotation (map snd indexedArguments) of
         Nothing ->
@@ -1342,8 +1361,15 @@ validateObservationModeFlows st =
                           mode
                           domain
                           (termDependencies scopes modes (Just domain) argumentTerm)
-                        argumentChecks = checkTerm owner depth scopes modes (Just domain) argumentTerm
-                     in sinkChecks
+                        coveredSinkChecks
+                          | dependenciesCovered && mode == Ordinary = []
+                          | otherwise = sinkChecks
+                        argumentChecks
+                          | mode == Ordinary =
+                              checkTermWithConstructorCoverage True owner depth scopes modes (Just domain) argumentTerm
+                          | otherwise =
+                              checkTerm owner depth scopes modes (Just domain) argumentTerm
+                     in coveredSinkChecks
                           ++ argumentChecks
                           ++ if termScopedAt depth argumentTerm
                             then
@@ -4633,9 +4659,13 @@ proofTermIsRuntimeErased globals traits instances ctx depth scopes runtimeErased
     evidenceEntailsIsSet seen carrier evidenceType =
       case force ctx evidenceType of
         VGlobI trait _ spine ->
-          traitApplicationEntailsIsSet seen carrier trait (map snd spine)
+          maybe False
+            (traitApplicationEntailsIsSet seen carrier trait . map snd)
+            (traitSemanticSpine globals traits ctx trait spine)
         VGlobN trait spine ->
-          traitApplicationEntailsIsSet seen carrier trait (map snd spine)
+          maybe False
+            (traitApplicationEntailsIsSet seen carrier trait . map snd)
+            (traitSemanticSpine globals traits ctx trait spine)
         _ -> False
 
     traitApplicationEntailsIsSet seen carrier trait arguments
@@ -4644,9 +4674,7 @@ proofTermIsRuntimeErased globals traits instances ctx depth scopes runtimeErased
           case Map.lookup trait traits of
             Nothing -> False
             Just info ->
-              let semanticCount = tiParamCount info
-                  semanticArguments =
-                    drop (max 0 (length arguments - semanticCount)) arguments
+              let semanticArguments = arguments
                   direct =
                     trait == prelIsSet
                       && case semanticArguments of
@@ -4661,7 +4689,7 @@ proofTermIsRuntimeErased globals traits instances ctx depth scopes runtimeErased
                           . snd
                       )
                       (tiSupers info)
-               in length semanticArguments == semanticCount
+               in length semanticArguments == tiParamCount info
                     && (direct || inherited)
 
     closedIsSetInstance carrier entry
@@ -5051,8 +5079,10 @@ projectionFieldType globals traits ctx depth scopes recvTerm field recvTy =
     VRecordT fs -> lookup field fs
     VSigT _ inner -> projectionFieldType globals traits ctx depth scopes recvTerm field inner
     VGlobI traitG universes spine
-      | Just ti <- Map.lookup traitG traits ->
-          traitProjectionType globals traits ctx depth scopes traitG universes (map snd spine) recvTerm field ti
+      | Just ti <- Map.lookup traitG traits -> do
+          semanticSpine <- traitSemanticSpine globals traits ctx traitG spine
+          traitProjectionType globals traits ctx depth scopes traitG universes
+            (map snd semanticSpine) recvTerm field ti
     _ -> Nothing
 
 traitProjectionType :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> GName -> [Level] -> [Value] -> Term -> Text -> TraitInfo -> Maybe Value
@@ -5178,9 +5208,31 @@ recordFieldExpectedType globals traits ctx depth dictionaryTerm fieldName expect
     VGlobI traitG universes spine -> do
       trait <- Map.lookup traitG traits
       guard (fieldName `elem` tiMembers trait || isJust (lookup fieldName (tiSupers trait)))
+      semanticSpine <- traitSemanticSpine globals traits ctx traitG spine
       traitMemberStorageType globals ctx depth
-        (tiParamCount trait) traitG universes fieldName (map snd spine) dictionaryTerm
+        (tiParamCount trait) traitG universes fieldName
+        (map snd semanticSpine) dictionaryTerm
     _ -> Nothing
+
+-- | Recover a trait's source parameters from finalized Core. The backend is
+-- a trust boundary: generated declaration proofs must be physically present
+-- with the exact prefix authorized by the checked declaration telescope.
+-- Source implicit arguments are never classified by spelling or shape.
+traitSemanticSpine
+  :: Map GName GlobalDef
+  -> Map GName TraitInfo
+  -> EvalCtx
+  -> GName
+  -> [(Icit, argument)]
+  -> Maybe [(Icit, argument)]
+traitSemanticSpine globals traits ctx trait arguments = do
+  definition <- Map.lookup trait globals
+  info <- Map.lookup trait traits
+  finalizedSemanticSpineAfterGeneratedConstraints
+    (dutParameterCount (gdUniverses definition))
+    (tiParamCount info)
+    (quote ctx 0 (gdType definition))
+    arguments
 
 recordFieldErasureProvenanceOfType :: EvalCtx -> Int -> Text -> Value -> Maybe ErasureProvenance
 recordFieldErasureProvenanceOfType ctx depth fieldName ty = do
@@ -5488,40 +5540,58 @@ lowerPatShape depth expected = \case
   CPVarM _ n -> pure (BPVar n, [True])
   CPLit l -> pure (BPLit l, [])
   CPCtorM existentialModes bridges hidden g _ ps -> do
-    (runtimeArity, fieldFacts) <- ctorExplicitRuntimePatternFacts g (length ps)
-    forM_ (zip [0 :: Int ..] fieldFacts) $ \(index, (runtime, _, _, provenance)) ->
-      unless runtime $ do
-        erasureMeta <- metaAt
-        recordErasureAt depth erasureMeta ErasedPatternSlotSite Expl
-          ("constructor-field" <> T.pack (show index)) (fromMaybe ErasedByQuantity provenance)
-    lowered <- forM (zip ps (map (\(_, _, ty, _) -> ty) fieldFacts ++ repeat Nothing)) $ \(p, fieldTy) ->
-      lowerPatShape depth fieldTy p
-    let placements = map (\(runtime, physicalIndex, _, _) -> (runtime, physicalIndex)) fieldFacts
-          ++ [(True, Just index) | index <- [runtimeArity ..]]
-        fields = zip3 placements (map fst lowered) (map snd lowered)
-        pats' = [(physicalIndex, p') | ((True, Just physicalIndex), p', _) <- fields]
-        explicitSlots =
-          [ if keep then patSlots else map (const False) patSlots
-          | ((keep, _), _, patSlots) <- fields
-          ]
-    sourceSlots <-
-      case interleaveConstructorSourceBinders hidden explicitSlots of
-        Just source ->
-          pure
-            ( concatMap
-                (either (const [False]) id)
-                source
-            )
+    source <-
+      case interleaveConstructorSourceBinders hidden ps of
+        Just aligned -> pure aligned
         Nothing -> do
           violationMeta <- metaAt
           recordLoweringViolation
             violationMeta
             "E_BACKENDIR_CONSTRUCTOR_PATTERN_ALIGNMENT"
             "constructor pattern hidden-field positions do not form a valid source telescope"
-          pure
-            ( replicate (length hidden) False
-                ++ concatMap (map (const False)) explicitSlots
-            )
+          pure (map Left hidden ++ map Right ps)
+    (runtimeArity, fieldFacts) <-
+      ctorSourceRuntimePatternFacts g (length source)
+    lowered <-
+      forM (zip3 [0 :: Int ..] source fieldFacts) $
+        \(sourceIndex, sourceField, (runtime, physicalIndex, fieldType, provenance)) -> do
+          let icit = either (const Impl) (const Expl) sourceField
+          unless runtime $ do
+            erasureMeta <- metaAt
+            recordErasureAt depth erasureMeta ErasedPatternSlotSite icit
+              ("constructor-field" <> T.pack (show sourceIndex))
+              (fromMaybe ErasedByQuantity provenance)
+          case sourceField of
+            Left _ ->
+              pure
+                ( case (runtime, physicalIndex) of
+                    (True, Just index) -> [(index, BPVar "__ctor_implicit")]
+                    _ -> []
+                , [runtime]
+                )
+            Right pattern' -> do
+              (pattern'', patternSlots) <- lowerPatShape depth fieldType pattern'
+              pure
+                ( case (runtime, physicalIndex) of
+                    (True, Just index) -> [(index, pattern'')]
+                    _ -> []
+                , if runtime
+                    then patternSlots
+                    else map (const False) patternSlots
+                )
+    let pats' = concatMap fst lowered
+        sourceSlots = concatMap snd lowered
+        -- A complete fact stream is required for physical extraction. The
+        -- helper returns exactly one fact per authenticated source slot; any
+        -- future metadata drift remains a hard lowering violation rather than
+        -- silently assigning a different field to a branch binder.
+        factsComplete = length fieldFacts == length source
+    unless factsComplete $ do
+      violationMeta <- metaAt
+      recordLoweringViolation
+        violationMeta
+        "E_BACKENDIR_CONSTRUCTOR_PATTERN_ALIGNMENT"
+        "constructor source-field runtime placements do not match the checked pattern telescope"
     let slots =
           replicate
             (length existentialModes + constructorBridgeBinderCount bridges)
@@ -5589,21 +5659,21 @@ lowerPatShape depth expected = \case
     let runtimePerms = adjustRuntimePerms (map snd lowered) perms
     pure (BPOr (map fst lowered) runtimePerms, maybe [] snd (listToMaybe lowered))
 
-ctorExplicitRuntimePatternFacts :: GName -> Int -> Lower (Int, [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)])
-ctorExplicitRuntimePatternFacts g patCount = do
+ctorSourceRuntimePatternFacts :: GName -> Int -> Lower (Int, [(Bool, Maybe Int, Maybe Value, Maybe ErasureProvenance)])
+ctorSourceRuntimePatternFacts g sourceCount = do
   ctors <- asks lsCtors
   ctx <- asks lsCtx
   pure $
     case Map.lookup g ctors of
       Nothing ->
-        (patCount, [(True, Just index, Nothing, Nothing) | index <- [0 .. patCount - 1]])
+        (sourceCount, [(True, Just index, Nothing, Nothing) | index <- [0 .. sourceCount - 1]])
       Just ci ->
         let constructorType = eval ctx [] (ciType ci)
             runtimeArity =
               length [() | (runtime, _, _) <- coreCtorPayloadRuntimeFacts ctx constructorType, runtime]
             facts =
-              take patCount $
-                explicitCtorFieldRuntimePlacements ctx (length (ciFields ci)) constructorType
+              take sourceCount $
+                sourceCtorFieldRuntimePlacements ctx (length (ciSourceFields ci)) constructorType
                   ++ [(True, Just index, Nothing, Nothing) | index <- [runtimeArity ..]]
          in (runtimeArity, facts)
 

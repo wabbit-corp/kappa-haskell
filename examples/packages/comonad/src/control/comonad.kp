@@ -1,0 +1,28 @@
+module control.comonad
+
+-- The core abstraction from Edward Kmett's `comonad`. Instances provide both
+-- presentations so callers can use either `duplicate` or `extend` directly.
+-- Lawful instances satisfy `duplicate = extend (\value -> value)` and
+-- `extend function = map function . duplicate`.
+trait Functor w => Comonad w =
+    extract : forall a. w a -> a
+    duplicate : forall a. w a -> w (w a)
+    extend : forall a b. (w a -> b) -> w a -> w b
+
+liftW :
+    forall w a b.
+    (@_ : Comonad w) -> (a -> b) -> w a -> w b
+let liftW function value = map function value
+
+coKleisliCompose :
+    forall w a b c.
+    (@_ : Comonad w) -> (w a -> b) -> (w b -> c) -> w a -> c
+let coKleisliCompose first second value = second (extend first value)
+
+extendFlipped :
+    forall w a b.
+    (@_ : Comonad w) -> w a -> (w a -> b) -> w b
+let extendFlipped value function = extend function value
+
+data Cokleisli w a b =
+    Cokleisli (runCokleisli : w a -> b)

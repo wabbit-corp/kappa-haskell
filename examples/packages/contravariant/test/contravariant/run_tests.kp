@@ -1,6 +1,5 @@
 module contravariant.run_tests
 
-import data.either.*
 import data.functor.contravariant.*
 import data.functor.contravariant.divisible.*
 import data.functor.contravariant.decidable.*

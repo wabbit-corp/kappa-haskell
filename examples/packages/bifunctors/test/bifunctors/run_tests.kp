@@ -3,27 +3,26 @@ module bifunctors.run_tests
 import data.bifunctor.*
 import data.bifoldable.*
 import data.bitraversable.*
-import data.either.*
 import std.unicode.(graphemeCount)
 
 pairMapped : Bool
 let pairMapped =
-    match bimap (\x -> addInt x 1) graphemeCount (Pair 41 "four")
-    case Pair n len -> eqInt n 42 && eqInt (natToInt len) 4
+    match bimap (\x -> addInt x 1) graphemeCount (PairF 41 "four")
+    case PairF n len -> eqInt n 42 && eqInt (natToInt len) 4
 
 folded : Bool
 let folded =
-    eqInt (bifoldr addInt addInt 0 (Pair 20 22)) 42
+    eqInt (bifoldr addInt addInt 0 (PairF 20 22)) 42
 
 traversed : Bool
 let traversed =
     match (bitraverse (\x -> Some (addInt x 1))
                       (\x -> Some (addInt x 2))
-                      (Pair 19 21))
+                      (PairF 19 21))
     case None -> False
     case Some pair ->
         match pair
-        case Pair a b -> eqInt a 20 && eqInt b 23
+        case PairF a b -> eqInt a 20 && eqInt b 23
 
 eitherMapped : Bool
 let eitherMapped =

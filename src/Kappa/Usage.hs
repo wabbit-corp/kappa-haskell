@@ -3565,20 +3565,8 @@ walkE env expression
 
 walkERaw :: Env -> Expr -> Analysis WalkResult
 walkERaw env e0 = case e0 of
-  EVar n -> case Map.lookup (nameText n) (eVars env) of
-    Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
-    Just vi | zeroQuantity (vQ vi) && vStaticKind vi -> pure rNone
-    Just vi | vBorrowed vi ->
-      pure
-        ( WalkResult
-            (placeBorrow vi [] (nameSpan n))
-            (vEscape vi (nameSpan n))
-            (vLatent vi)
-        )
-    Just vi -> do
-      u <- movePlace env vi [] (nameSpan n)
-      pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
-    Nothing -> pure rNone
+  EVar n -> walkVar n
+  EContextualImpossible n _ -> walkVar n
   EQuantityBorrowMarker {} -> pure rNone
   EHole {} -> pure rNone
   EIntLit {} -> pure rNone
@@ -3756,6 +3744,20 @@ walkERaw env e0 = case e0 of
     taintLatent env u t sp
   EOpChain {} -> bailOut >> pure rNone -- resolver output should not contain chains
   where
+    walkVar n = case Map.lookup (nameText n) (eVars env) of
+      Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
+      Just vi | zeroQuantity (vQ vi) && vStaticKind vi -> pure rNone
+      Just vi | vBorrowed vi ->
+        pure
+          ( WalkResult
+              (placeBorrow vi [] (nameSpan n))
+              (vEscape vi (nameSpan n))
+              (vLatent vi)
+          )
+      Just vi -> do
+        u <- movePlace env vi [] (nameSpan n)
+        pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
+      Nothing -> pure rNone
     mutableRead vi path sp = rPlain <$> currentReadUsage env vi path sp
     walks es = do
       rs <- mapM (walkE env) es
@@ -5526,6 +5528,7 @@ multishotOpsInExecutedExpr env = go
       YieldPair k v -> go k ++ go v
     go = \case
       EVar {} -> []
+      EContextualImpossible {} -> []
       EQuantityBorrowMarker {} -> []
       ERefFacet {} -> []
       EVarRead {} -> []

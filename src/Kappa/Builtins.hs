@@ -102,6 +102,7 @@ module Kappa.Builtins
   , prelInterrupt
   , prelDefect
   , prelDefectInfo
+  , prelUnhandledChildFailure
   , prelOtherDefect
   , prelBoth
   , prelThen
@@ -415,11 +416,12 @@ prelFailure = gPrel "Failure"
 -- @DefectInfo@ (carrying a 'DefectTag' + an @Option String@ message), and
 -- 'prelOtherDefect' is the catch-all 'DefectTag' the interpreter tags an
 -- otherwise-unclassified host failure with.
-prelFail, prelInterrupt, prelDefect, prelDefectInfo, prelOtherDefect :: GName
+prelFail, prelInterrupt, prelDefect, prelDefectInfo, prelUnhandledChildFailure, prelOtherDefect :: GName
 prelFail = gPrel "Fail"
 prelInterrupt = gPrel "Interrupt"
 prelDefect = gPrel "Defect"
 prelDefectInfo = gPrel "DefectInfo"
+prelUnhandledChildFailure = gPrel "UnhandledChildFailure"
 prelOtherDefect = gPrel "OtherDefect"
 
 -- | The §18.1 binary @Cause@ combinators the runtime builds (parallel/

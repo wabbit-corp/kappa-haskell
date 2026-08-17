@@ -624,8 +624,8 @@ collectFunEdges funMap src =
           reducible <- reducibleApplicationHead headTerm
           pure
             ( reducible
-                && ( containsIncompleteSccClosure d ho esc headTerm
-                       || any (containsIncompleteSccClosure d ho esc . snd) arguments
+                && ( containsSccReference d ho esc headTerm
+                       || any (containsSccReference d ho esc . snd) arguments
                    )
             )
 
@@ -643,26 +643,15 @@ collectFunEdges funMap src =
       CSealE _ term -> reducibleApplicationHead term
       _ -> pure False
 
-    containsSccReference :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
-    containsSccReference = containsSccReferenceWith AnySccReference
-
-    containsIncompleteSccClosure :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
-    containsIncompleteSccClosure = containsSccReferenceWith IncompleteSccClosure
-
-    containsSccReferenceWith
-      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> Term -> Bool
-    containsSccReferenceWith mode d ho esc term =
+    containsSccReference
+      :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    containsSccReference d ho esc term =
       case term of
         CGlobI g _ -> Set.member g sccNames
         CVar i -> Map.member (d - 1 - i) ho || Set.member (d - 1 - i) esc
         CLam _ _ _ b -> at (d + 1) b
         CPi _ _ _ _ a b -> here a || at (d + 1) b
-        CApp _ f a
-          | mode == IncompleteSccClosure
-          , Just call <- partialCallOf d ho term
-          , partialCallComplete call ->
-              any (here . snd) (pcArgs call)
-          | otherwise -> here f || here a
+        CApp _ f a -> here f || here a
         CCtor _ _ as -> any here as
         CMatch s _ _ alts ->
           here s
@@ -687,7 +676,7 @@ collectFunEdges funMap src =
            in any (here . clrdType) definitions
                 || any (at depth' . clrdRhs) definitions
                 || at depth' body
-        CDo _ items -> containsSccReferenceItemsWith mode d ho esc items
+        CDo _ items -> containsSccReferenceItems d ho esc items
         CSealE _ e -> here e
         CSigT _ e -> here e
         CUniverseLift _ _ _ e -> here e
@@ -699,19 +688,19 @@ collectFunEdges funMap src =
         CQuote _ slots -> any here slots
         _ -> False
       where
-        here = containsSccReferenceWith mode d ho esc
-        at depth = containsSccReferenceWith mode depth ho esc
+        here = containsSccReference d ho esc
+        at depth = containsSccReference depth ho esc
 
-    containsSccReferenceItemsWith
-      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> [KItem] -> Bool
-    containsSccReferenceItemsWith _ _ _ _ [] = False
-    containsSccReferenceItemsWith mode d ho esc (item : rest) =
-      containsSccReferenceKWith mode d ho esc item
-        || containsSccReferenceItemsWith mode (advanceKItemDepth d item) ho esc rest
+    containsSccReferenceItems
+      :: Int -> Map Int PartialCall -> Set Int -> [KItem] -> Bool
+    containsSccReferenceItems _ _ _ [] = False
+    containsSccReferenceItems d ho esc (item : rest) =
+      containsSccReferenceK d ho esc item
+        || containsSccReferenceItems (advanceKItemDepth d item) ho esc rest
 
-    containsSccReferenceKWith
-      :: SccReferenceMode -> Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
-    containsSccReferenceKWith mode d ho esc = \case
+    containsSccReferenceK
+      :: Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
+    containsSccReferenceK d ho esc = \case
       KBind _ _ t _ -> here t
       KLet _ _ t -> here t
       KLetQ _ t m ->
@@ -719,7 +708,7 @@ collectFunEdges funMap src =
           || maybe
             False
             (\(rejectionPattern, rejection) ->
-               containsSccReferenceWith mode
+               containsSccReference
                  (d + patBindersC rejectionPattern)
                  ho
                  esc
@@ -745,8 +734,8 @@ collectFunEdges funMap src =
       KSubDo _ b -> items d b
       _ -> False
       where
-        here = containsSccReferenceWith mode d ho esc
-        items depth = containsSccReferenceItemsWith mode depth ho esc
+        here = containsSccReference d ho esc
+        items depth = containsSccReferenceItems depth ho esc
 
     partialCallOf :: Int -> Map Int PartialCall -> Term -> Maybe PartialCall
     partialCallOf d ho t = case spineOfTerm t of

@@ -119,6 +119,7 @@ import Kappa.Check.UniverseConstraints
   , constraintIdsForOwnersAndOccurrences
   , rewriteSelectedConstraints
   )
+import Kappa.Check.Support (generatedConstraintBinders)
 import Kappa.MonotoneWorklist
   ( WorklistResult (..)
   , stabilizeWorklist
@@ -164,6 +165,10 @@ import Kappa.Core
   )
 import Kappa.CoreOps
   ( CorePatternDecision (..)
+  , checkerSemanticSpine
+  , declarationUniverseConstraints
+  , generatedDeclarationUniverseConstraints
+  , finalizedSemanticSpineAfterGeneratedConstraints
   , foldTerm
   , globalsOfTerm
   , instantiateEtaConstructor
@@ -174,6 +179,7 @@ import Kappa.CoreOps
   , matchCorePattern
   , shiftTerm
   , spineOfTerm
+  , specializeTraitMemberProjectionType
   , substTerm
   , substTopTermAt
   , termScopedAt
@@ -397,6 +403,7 @@ main = do
   monotoneWorklistOk <- monotoneWorklistDomain
   universeLawSchemaOk <- universeLawSchemasPrincipalDomain
   generatedInstanceSchemaOk <- generatedInstanceUniversePrincipalizationDomain
+  sourceEvidenceOriginOk <- sourceWrittenUniverseEvidenceDomain
   nominalInterfaceAuthorityOk <- nominalInterfaceAuthorityDomain
   associatedStaticMemberOk <- associatedStaticMemberUniverseDomain
   universeCapabilityOk <- universeCapabilityBoundary
@@ -459,6 +466,7 @@ main = do
         , ("monotoneWorklistDomain", monotoneWorklistOk)
         , ("universeLawSchemasPrincipalDomain", universeLawSchemaOk)
         , ("generatedInstanceUniversePrincipalizationDomain", generatedInstanceSchemaOk)
+        , ("sourceWrittenUniverseEvidenceDomain", sourceEvidenceOriginOk)
         , ("nominalInterfaceAuthorityDomain", nominalInterfaceAuthorityOk)
         , ("associatedStaticMemberUniverseDomain", associatedStaticMemberOk)
         , ("universeCapabilityBoundary", universeCapabilityOk)
@@ -1343,6 +1351,70 @@ generatedInstanceUniversePrincipalizationDomain = do
                ++ "; expected " ++ show expected
            ))
       failures
+  pure ok
+
+-- | A source-written erased level proof is part of the declaration's semantic
+-- telescope. It may have the same proposition as a generated schema
+-- obligation, but only 'BinderGenerated' authorizes declaration-level
+-- preservation or removal.
+sourceWrittenUniverseEvidenceDomain :: IO Bool
+sourceWrittenUniverseEvidenceDomain = do
+  let result = CSort LZero
+      dictionaryBinder =
+        CPiEvidenceM Ordinary FormationOrdinary Impl QW False "dictionary"
+          Nothing BinderSourceWritten (CSort LZero) result
+      sourceProofBinder =
+        CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "proof"
+          (Just (LParam 0, LParam 1)) BinderSourceWritten (CSort LZero)
+          dictionaryBinder
+      generatedProofBinder =
+        CPiEvidenceM Ordinary FormationOrdinary Impl Q0 False "proof"
+          (Just (LParam 0, LParam 1)) BinderGenerated (CSort LZero)
+          dictionaryBinder
+      specialized =
+        specializeTraitMemberProjectionType
+          0
+          1
+          [CSort LZero]
+          (CSort LZero)
+          sourceProofBinder
+      semanticArgument = (Expl, CLit (LitInt 1))
+      generatedArgument = (Impl, CLit (LitInt 0))
+      finalizedSpine = [generatedArgument, semanticArgument]
+      checks =
+        [ ( "source proof participates in declaration constraint identity"
+          , length (declarationUniverseConstraints 2 sourceProofBinder) == 1
+          )
+        , ( "generated proof is a declaration constraint"
+          , length (declarationUniverseConstraints 2 generatedProofBinder) == 1
+          )
+        , ( "source proof is not a generated physical prefix"
+          , null (generatedDeclarationUniverseConstraints 2 sourceProofBinder)
+              && null (generatedConstraintBinders sourceProofBinder)
+          )
+        , ( "source proof is specialized as a semantic trait parameter"
+          , specialized == Just result
+          )
+        , ( "checker decoder accepts only the semantic phase shape"
+          , checkerSemanticSpine 1 [semanticArgument] == Just [semanticArgument]
+              && checkerSemanticSpine 1 finalizedSpine == Nothing
+          )
+        , ( "finalized decoder requires the generated proof prefix"
+          , finalizedSemanticSpineAfterGeneratedConstraints
+              2 1 generatedProofBinder [generatedArgument]
+              == Nothing
+          )
+        , ( "finalized decoder returns only semantic arguments"
+          , finalizedSemanticSpineAfterGeneratedConstraints
+              2 1 generatedProofBinder finalizedSpine
+              == Just [semanticArgument]
+          )
+        ]
+      failures = [label | (label, False) <- checks]
+      ok = null failures
+  unless ok $ do
+    putStrLn "sourceWrittenUniverseEvidenceDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
   pure ok
 
 -- | §30.2.0A trust-boundary regression: a nominal record interface and its

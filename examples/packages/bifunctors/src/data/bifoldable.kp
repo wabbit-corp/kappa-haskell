@@ -1,7 +1,6 @@
 module data.bifoldable
 
 import data.bifunctor.*
-import data.either.*
 
 trait Bifoldable p =
     bifoldr : forall a b c.
@@ -17,7 +16,7 @@ let bifoldMap f g value =
 instance Bifoldable PairF =
     let bifoldr f g z value =
         match value
-        case Pair a b -> f a (g b z)
+        case PairF a b -> f a (g b z)
 
 instance Bifoldable Either =
     let bifoldr f g z value =

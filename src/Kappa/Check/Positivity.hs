@@ -10,7 +10,6 @@
 module Kappa.Check.Positivity
   ( backendIntrinsicSatisfies
   , classifyRecursiveSchemaOccurrences
-  , coreUsesVar0
   , declarationUniverseName
   , extendSourceDeclarationTeleCtx
   , extendTeleCtx
@@ -34,8 +33,10 @@ module Kappa.Check.Positivity
   , provisionalSourceDeclarationParam
   , recordAudit
   , recordDefinitionInoutParams
+  , recordDefinitionReceiverParams
   , recordInoutParams
   , recordSignatureInoutParams
+  , recordSignatureReceiverParams
   , rejectAllInoutBinders
   , rejectInoutBinderContext
   , relationCanonicalKey
@@ -759,65 +760,6 @@ installTraitNominalSummary family sourceSchema closure site = do
 superFieldName :: Int -> Text
 superFieldName i = "__super" <> T.pack (show i)
 
--- | Does a Pi/Lam closure body reference its own bound variable
--- (de Bruijn index 0, relative to the body)? Used to detect
--- non-dependent function arrows: when the codomain does not mention the
--- argument, elaborating an application slot need not evaluate the
--- argument value and unify it into the result type (the fresh
--- placeholder meta never appears in the codomain), which collapses the
--- per-slot cost of a deep application/operator chain from O(size) to
--- O(1) — restoring linear scaling for the (overwhelmingly common)
--- non-dependent case while leaving dependent elaboration unchanged.
---
--- Conservative: returns 'True' for the few constructs whose binder
--- structure is not traversed here ('CDo', 'CQuote'), so a body that
--- might reference index 0 is never mis-reported as independent.
-coreUsesVar0 :: Term -> Bool
-coreUsesVar0 = go 0
-  where
-    -- @d@ counts binders crossed; the body's index 0 appears as @CVar d@.
-    go d = \case
-      CVar i -> i == d
-      CUniverseLift _ _ _ inner -> go d inner
-      CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
-        any (go d) sourceArguments || any (go d) targetArguments || go d inner
-      CArithmeticProof certificate ->
-        any (go d) (foldMapArithmeticCertificate (: []) certificate)
-      CGlob _ -> False
-      CLam _ _ _ b -> go (d + 1) b
-      CPi _ _ _ _ a b -> go d a || go (d + 1) b
-      CApp _ f a -> go d f || go d a
-      CSort _ -> False
-      CLevel _ -> False
-      CLit _ -> False
-      CCtor _ _ as -> any (go d) as
-      CMatch s _ _ alts ->
-        go d s || any (\(CaseAlt p gd b) -> let d' = d + patBindersC p in maybe False (go d') gd || go d' b) alts
-      CRecordT fs -> any (go d . snd) fs
-      CRecordV fs -> any (go d . snd) fs
-      CProj e _ -> go d e
-      CProjAt e _ _ -> go d e
-      CVariantT ms -> any (go d) ms
-      CInject _ e -> go d e
-      CLet _ _ a b c -> go d a || go d b || go (d + 1) c
-      CLetRec _ _ a b c -> go d a || go (d + 1) b || go (d + 1) c
-      CLetPolyM _ _ _ _ a b c -> go d a || go d b || go (d + 1) c
-      CLetRecPolyM _ _ _ _ a b c -> go d a || go (d + 1) b || go (d + 1) c
-      CLetRecGroupM _ definitions body ->
-        let count = length definitions
-         in any (\definition -> go d (clrdType definition) || go (d + count) (clrdRhs definition)) definitions
-              || go (d + count) body
-      CMeta _ -> False
-      CDo _ _ -> True
-      CSealE _ e -> go d e
-      CSigT _ e -> go d e
-      CThunkE e suspensionType -> go d e || maybe False (go d) suspensionType
-      CLazyE e suspensionType -> go d e || maybe False (go d) suspensionType
-      CForceE e resultType -> go d e || maybe False (go d) resultType
-      CIf a b c -> go d a || go d b || go d c
-      CQuote _ _ -> True
-      CLocal i _ -> i == d
-
 -- | §34.5/§9.4: decide whether a backend intrinsic of the selected profile
 -- satisfies the expectation @g@ with declared type @tyV@. An intrinsic is
 -- keyed by its Kappa spelling ('csBackendIntrinsics', empty unless a native
@@ -1434,6 +1376,30 @@ recordSignatureInoutParams g tyE =
 recordDefinitionInoutParams :: GName -> [Binder] -> CheckM ()
 recordDefinitionInoutParams g binders =
   recordInoutParams g (inoutParamsFromBinders binders)
+
+receiverParamsFromBinders :: [Binder] -> [Int]
+receiverParamsFromBinders binders =
+  [ index
+  | (index, binder) <- zip [0 ..] (filter (not . bImplicit) binders)
+  , bReceiver binder /= NoReceiver
+  ]
+
+recordReceiverParams :: GName -> [Int] -> CheckM ()
+recordReceiverParams global positions =
+  unless (null positions) $
+    modify' $ \state ->
+      state {csReceivers = Map.insert global positions (csReceivers state)}
+
+-- A governing signature defines the callable receiver ABI (§7.4, §9.1).
+-- Recording only non-empty metadata lets an unmarked definition preserve that
+-- ABI while still allowing a signature-less marked definition to provide it.
+recordSignatureReceiverParams :: GName -> Expr -> CheckM ()
+recordSignatureReceiverParams global signature =
+  recordReceiverParams global (receiverParamsFromBinders (signatureBinders signature))
+
+recordDefinitionReceiverParams :: GName -> [Binder] -> CheckM ()
+recordDefinitionReceiverParams global binders =
+  recordReceiverParams global (receiverParamsFromBinders binders)
 
 withRecursiveSchemaOccurrenceRecording :: CheckM a -> CheckM a
 withRecursiveSchemaOccurrenceRecording action = do

@@ -1,0 +1,16 @@
+module main
+
+-- Spec §11.3 elaborates every `forall` constructor parameter as implicit and
+-- quantity 0. An explicit positional field in a pattern therefore
+-- overapplies this constructor. Recovery must report the portable arity
+-- diagnostic without evaluating an ill-scoped recovered annotation.
+data Equal (@0 A : Type) (x : A) (y : A) : Type =
+    Refl : forall (u : A). Equal u u
+
+bad : forall (A : Type) (x y : A). Equal x y -> A
+let bad proof =
+    match proof
+      case Refl u -> u
+
+--! mode check
+--! assertDiagnosticCodes E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH

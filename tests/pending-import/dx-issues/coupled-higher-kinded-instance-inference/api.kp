@@ -1,0 +1,29 @@
+module api
+
+trait Functor f => Recursive t f =
+    project : t -> f t
+
+trait Functor f => Corecursive t f =
+    embed : f t -> t
+
+data ListF a r =
+    NilF
+    ConsF a r
+
+instance Functor (ListF a) =
+    let map function layer =
+        match layer
+        case NilF -> NilF
+        case ConsF head tail -> ConsF head (function tail)
+
+instance Recursive (List a) (ListF a) =
+    let project values =
+        match values
+        case Nil -> NilF
+        case head :: tail -> ConsF head tail
+
+instance Corecursive (List a) (ListF a) =
+    let embed layer =
+        match layer
+        case NilF -> Nil
+        case ConsF head tail -> (::) head tail

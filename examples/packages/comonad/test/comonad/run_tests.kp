@@ -1,0 +1,55 @@
+module comonad.run_tests
+
+import control.comonad.*
+import control.comonad.identity.*
+import control.comonad.env.*
+import control.comonad.store.*
+import control.comonad.traced.*
+import std.unicode.(graphemeCount)
+
+identityWorks : Bool
+let identityWorks =
+    let original = Identity 41
+    let extended = extend (\whole -> addInt (extract whole) 1) original
+    eqInt (extract extended) 42 && eqInt (extract (extract (duplicate original))) 41
+
+envWorks : Bool
+let envWorks =
+    let original = Env "context" 40
+    let extended = extend (\whole -> addInt (extract whole) (natToInt (graphemeCount (ask whole)))) original
+    eqInt (extract extended) 47 && ask (local (\text -> stringAppend text "!") original) == "context!"
+
+storeWorks : Bool
+let storeWorks =
+    let store = Store (\n -> mulInt n n) 4
+    let neighborhood = extend (\whole -> addInt (peek 3 whole) (peek 5 whole)) store
+    eqInt (extract store) 16 && eqInt (extract neighborhood) 34 &&
+        eqInt (extract (seek 6 store)) 36
+
+tracedWorks : Bool
+let tracedWorks =
+    let traced = Traced (\suffix -> stringAppend "hello" suffix)
+    traceAt " world" traced == "hello world" && extract traced == "hello"
+
+coKleisliWorks : Bool
+let coKleisliWorks =
+    let result = (coKleisliCompose
+                  (\whole -> addInt (extract whole) 1)
+                  (\whole -> mulInt (extract whole) 2)
+                  (Identity 20))
+    eqInt result 42
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    printlnString (line "comonad.identity" identityWorks)
+    printlnString (line "comonad.env" envWorks)
+    printlnString (line "comonad.store" storeWorks)
+    printlnString (line "comonad.traced" tracedWorks)
+    printlnString (line "comonad.cokleisli" coKleisliWorks)
+    if identityWorks && envWorks && storeWorks && tracedWorks && coKleisliWorks then
+        printlnString "COMONAD TESTS: ALL PASS"
+    else
+        printlnString "COMONAD TESTS: FAIL"

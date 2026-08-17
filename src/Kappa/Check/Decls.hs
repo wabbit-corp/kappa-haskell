@@ -1882,31 +1882,8 @@ predeclarePassRaw = \case
           st {csTransparentValueAliases = Map.insert g rhs (csTransparentValueAliases st)}
   DData _ declaration@(DataDecl n params _ _) sp -> do
     g <- ownName n
-    exists <- gets (Map.member g . csGlobals)
-    unless exists $ do
-      paramTele <- forM params $ \binder -> do
-        domain <- freshMeta
-        let mode = fromMaybe Parametric (bpObservation (bPrefix binder))
-            quantity = maybe (if mode == Parametric then Q0 else headerBinderQ binder)
-              (qOf . Just) (bpQuantity (bPrefix binder))
-        pure TelescopeEntry
-          { teIcit = if bImplicit binder then Impl else Expl
-          , teMode = mode
-          , teFormation = if mode == Parametric then FormationParametric else FormationOrdinary
-          , teQ = quantity
-          , teBorrow = isJust (bpBorrow (bPrefix binder))
-          , teName = maybe "_" nameText (bName binder)
-          , teDomain = domain
-          , teLevelAssumption = Nothing
-          }
-      resultLevel <- freshLevelMeta
-      let tyTm = foldr telePi (CSort resultLevel) paramTele
-      tyV <- evalIn emptyCtx tyTm
-      addGlobal g
-        ( globalDefWithObservationMode
-            Ordinary
-            (GlobalDef tyV Nothing False)
-        )
+    resultLevel <- freshLevelMeta
+    predeclareNominalHeader g params resultLevel
     modify' $ \st ->
       st
         { csTopLevelDataHeaders =
@@ -1916,7 +1893,42 @@ predeclarePassRaw = \case
               (PendingTopLevelDataHeader declaration sp)
               (csTopLevelDataHeaders st)
         }
+  DTrait _ trait _ -> do
+    g <- ownName (trName trait)
+    predeclareNominalHeader g (trParams trait) LZero
   _ -> pure ()
+
+-- | Publish a provisional nominal head before any header body is elaborated.
+-- Module declaration groups have no semantic source order (§9.5), so data and
+-- trait headers must both be able to refer to later nominal heads. The real
+-- header pass replaces every meta domain with the checked source telescope.
+predeclareNominalHeader :: GName -> [Binder] -> Level -> CheckM ()
+predeclareNominalHeader global parameters resultLevel = do
+  exists <- gets (Map.member global . csGlobals)
+  unless exists $ do
+    telescope <- forM parameters $ \binder -> do
+      domain <- freshMeta
+      let mode = fromMaybe Parametric (bpObservation (bPrefix binder))
+          quantity =
+            maybe
+              (if mode == Parametric then Q0 else headerBinderQ binder)
+              (qOf . Just)
+              (bpQuantity (bPrefix binder))
+      pure
+        TelescopeEntry
+          { teIcit = if bImplicit binder then Impl else Expl
+          , teMode = mode
+          , teFormation =
+              if mode == Parametric then FormationParametric else FormationOrdinary
+          , teQ = quantity
+          , teBorrow = isJust (bpBorrow (bPrefix binder))
+          , teName = maybe "_" nameText (bName binder)
+          , teDomain = domain
+          , teLevelAssumption = Nothing
+          }
+    ty <- evalIn emptyCtx (foldr telePi (CSort resultLevel) telescope)
+    addGlobal global
+      (globalDefWithObservationMode Ordinary (GlobalDef ty Nothing False))
 
 signatureDeclarationName :: Decl -> Maybe Name
 signatureDeclarationName = \case

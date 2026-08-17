@@ -277,7 +277,7 @@ generalizeLocalDeclarationMetas firstMeta ctx diagnosticSpan declarations ty0 rh
       validateRigidGeneralization diagnosticSpan declarations ctx binders rhs' ty'
       pure (ty', rhs')
   where
-    pendingGoal (_, goal, _, _, _) = goal
+    pendingGoal = peeGoal
 
     selectBinders _ _ selected [] = pure selected
     selectBinders st ordinaryMetas selected remaining =

@@ -2,18 +2,14 @@
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_EXISTENTIAL_WITNESS_ESCAPE
 
--- §13.2.11 unpacking: "No opened witness may appear free in the
--- externally visible type ... returned value ... produced by body";
--- "if the body type is inferred, the inferred type is checked for the
--- same non-escape condition before the open expression is accepted."
--- Here the open body is a MATCH whose branches rebuild the payload, so
--- its inferred type is `Option a` with `a` the opened witness. The
--- package is a dead LOCAL binding, so the type cannot be re-rendered
--- as a stable package projection — the witness escapes and the open
--- must be rejected. (The check DOES fire when the body's type is an
--- arrow `a -> a` — see conformance
--- diagnostics-coverage/e_existential_witness_escape — so a
--- constructor-applied result type must not slip through.)
+-- This probe lands on a current §13.2.11 ambiguity. The `open` rule says
+-- that no opened witness may remain in a stored value or inferred result
+-- type, which would reject the inferred `Option a` below. The projection
+-- rules separately permit hidden witness selections in local elaboration
+-- while the owning package path remains available; here `p` is still in
+-- scope, so an implementation could re-render the type as `Option p.<wit>`.
+-- KNOWN_SPEC_ISSUES.md tracks whether that re-rendering discharges the
+-- strict end-of-open non-escape check.
 module main
 
 useIt : Int
@@ -26,4 +22,4 @@ let useIt =
             case Option.Some y -> Option.Some y
     in 0
 
--- STATUS(74742dfd): FAIL — expected 1 errors, got 0; error codes are [], expected [E_EXISTENTIAL_WITNESS_ESCAPE]; no diagnostic error[E_EXISTENTIAL_WITNESS_ESCAPE] on line 23 (no diagnostics)
+-- STATUS: SPEC-ISSUE — decide whether a result mentioning the opened witness may be re-rendered through the still-available package path, or whether the strict `open` non-escape rule always rejects it.

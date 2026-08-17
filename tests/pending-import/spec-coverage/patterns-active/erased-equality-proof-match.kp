@@ -7,9 +7,10 @@
 --! mode check
 --! assertNoErrors
 
--- Proof-only result: erased symmetry. The branch result is itself an
--- erased proof obligation (accepted per §17.1.3, second bullet).
-sym0 : forall (@0 a : Type) (@0 x : a) (@0 y : a). (0 p : (=) x y) -> (=) y x
+-- Proof-only result: erased symmetry. IsSet a makes both the scrutinee and
+-- result equality proofs RuntimeErased, so this does not assume erasure for
+-- proof-relevant higher paths (accepted per §17.1.3, second bullet).
+sym0 : forall (@0 a : Type) (@0 x : a) (@0 y : a) (@_ : IsSet a). (0 p : (=) x y) -> (=) y x
 let sym0 p =
     match p
     case refl -> refl
@@ -28,8 +29,4 @@ let cast0 p v =
     match p
     case refl -> v
 
--- STATUS(a51e1bf): FAIL — forcedRefl is accepted, but sym0 and cast0 get
--- E_TYPE_EQUALITY_MISMATCH: matching `refl` performs no equality-induction
--- refinement in this compiler, so the erased proof-only/type-refining
--- matches that §17.1.3 accepts are rejected.
--- STATUS(74742dfd): FAIL — expected 0 errors, got 2; first error: E_TYPE_EQUALITY_MISMATCH "type mismatch" at line 15
+-- STATUS(ab0a1126): FAIL — SPEC-CORRECT — all three allowed erased equality-induction shapes are rejected with E_QTT_ERASED_RUNTIME_USE at their proof scrutinees: RuntimeErased symmetry, definitionally forced refl, and a type-refining cast that returns its runtime payload unchanged (§17.1.3).

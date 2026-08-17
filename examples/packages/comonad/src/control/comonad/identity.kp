@@ -1,0 +1,18 @@
+module control.comonad.identity
+
+import control.comonad.*
+
+data Identity a =
+    Identity (runIdentity : a)
+
+instance Functor Identity =
+    let map function value =
+        match value
+        case Identity inner -> Identity (function inner)
+
+instance Comonad Identity =
+    let extract value =
+        match value
+        case Identity inner -> inner
+    let duplicate value = Identity value
+    let extend function value = Identity (function value)

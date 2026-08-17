@@ -1585,7 +1585,15 @@ pData = do
   constructors <- manyWhile (Just (TWord "constructor") ==) $ do
     keyword "constructor"
     ctor <- pGlobalRef
-    ctorUniverses <- pUniverseTelescope
+    writtenCtorUniverses <- pUniverseTelescope
+    -- An omitted constructor telescope shares the owning family's universe
+    -- prefix. Materialize that shorthand at the parser boundary so every
+    -- verifier and canonical printer sees one explicit, authenticated shape;
+    -- a written telescope remains authoritative and is validated below.
+    let ctorUniverses =
+          if null writtenCtorUniverses
+            then map fst universes
+            else writtenCtorUniverses
     symbol ":"
     ty <- pTerm
     fields <- pConstructorFieldBlock
@@ -3219,6 +3227,15 @@ verifyKCoreTextWithExternal externalTypes externalModes externalBodies externalR
     externalCertificateContext
     externalNominalFamilies
     externalSchemaCertificates
+  -- Reject a locally forged role claim before declaration-body diagnostics
+  -- can obscure the certificate failure. This pass grants no authority: it
+  -- is a conservative structural replay over the collected nominal closure.
+  -- The same certificates are replayed again after every local term verifies,
+  -- which remains the trust-establishing check used by imported artifacts.
+  verifySchemaCertificates
+    (Map.keysSet localNominalFamilies)
+    nominalFamilies
+    schemaCertificates
   mapM_
     ( verifyModule
         globalArities
@@ -7949,8 +7966,8 @@ inferSimpleScoped context universes assumptions env = \case
     recordType <- inferSimple context universes assumptions env record
     case
         recordType >>= \ty ->
-          projectRecordField field record (recordInterfaceHead context ty)
-            <|> projectNominalField context field record ty of
+          projectNominalField context field record ty
+            <|> projectRecordField field record (recordInterfaceHead context ty) of
       Just projectedType -> pure (Just projectedType)
       Nothing ->
         let normalized = unfoldTypeHeadWithLocals context env projected

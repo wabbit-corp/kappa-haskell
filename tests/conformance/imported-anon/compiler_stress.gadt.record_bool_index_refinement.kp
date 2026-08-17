@@ -1,0 +1,47 @@
+--! mode check
+--! assertNoErrors
+--! assertType trueValue Int
+--! assertType falseValue String
+--! assertEval trueValue 7
+--! assertEval falseValue "off"
+
+-- §10.2/§17.1.2: matching equality evidence for an earlier record field must
+-- refine a later field indexed by that value. This is deliberately Boolean
+-- indexed, so the test does not depend on Nat arithmetic normalization.
+module main
+
+data Payload (flag : Bool) : Type =
+    Disabled : String -> Payload False
+    Enabled  : Int -> Payload True
+
+type Box : Type = (flag : Bool, payload : Payload flag)
+
+trueBox : Box
+let trueBox = (flag = True, payload = Enabled 7)
+
+falseBox : Box
+let falseBox = (flag = False, payload = Disabled "off")
+
+readEnabled : (box : Box) -> box.flag = True -> Int
+let readEnabled box equality =
+    match equality
+      case refl ->
+        match box.payload
+          case Enabled n -> n
+          case Disabled _ -> impossible
+
+readDisabled : (box : Box) -> box.flag = False -> String
+let readDisabled box equality =
+    match equality
+      case refl ->
+        match box.payload
+          case Disabled text -> text
+          case Enabled _ -> impossible
+
+trueValue : Int
+let trueValue = readEnabled trueBox refl
+
+falseValue : String
+let falseValue = readDisabled falseBox refl
+
+-- STATUS(8c3c7747): FAIL — promoted conformance regression: after matching `box.flag = True/False`, the contradictory Payload constructor remains reachable in both functions (E_IMPOSSIBLE_REACHABLE).

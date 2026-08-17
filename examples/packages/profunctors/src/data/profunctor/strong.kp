@@ -13,13 +13,13 @@ instance Strong Fn =
         case MkFn function ->
             MkFn (\pair ->
                 match pair
-                case Pair a c -> Pair (function a) c)
+                case PairF a c -> PairF (function a) c)
     let secondP value =
         match value
         case MkFn function ->
             MkFn (\pair ->
                 match pair
-                case Pair c a -> Pair c (function a))
+                case PairF c a -> PairF c (function a))
 
 instance Functor f => Strong (Star f) =
     let firstP value =
@@ -27,10 +27,10 @@ instance Functor f => Strong (Star f) =
         case MkStar function ->
             MkStar (\pair ->
                 match pair
-                case Pair a c -> map (\b -> Pair b c) (function a))
+                case PairF a c -> map (\b -> PairF b c) (function a))
     let secondP value =
         match value
         case MkStar function ->
             MkStar (\pair ->
                 match pair
-                case Pair c a -> map (\b -> Pair c b) (function a))
+                case PairF c a -> map (\b -> PairF c b) (function a))

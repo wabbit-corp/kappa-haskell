@@ -20600,6 +20600,9 @@ trait headers is acyclic after normalization of transparent aliases available at
 
 If a cycle is found, the checker rejects the whole strongly connected component as one graph-level error.
 
+The portable diagnostic family is `kappa.trait.refinement-cycle`, with
+compatibility alias `E_TRAIT_REFINEMENT_CYCLE`.
+
 The diagnostic MUST identify:
 
 * every trait application in the cycle;
@@ -56891,7 +56894,7 @@ This appendix amends §18.2.
 `std.prelude` provides:
 
 ```kappa
-trait Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) =
+trait Functor f => Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) =
     pure    : a -> f a
     liftA2  : (a -> b -> c) -> f a -> f b -> f c
 

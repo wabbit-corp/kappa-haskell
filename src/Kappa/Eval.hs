@@ -29,7 +29,9 @@ module Kappa.Eval
   , MetaState
   , emptyMetas
   , EvalCtx (..)
+  , RefinementSubject (..)
   , RigidFact (..)
+  , refinementSubject
   , eval
   , evalApp
   , force
@@ -240,9 +242,17 @@ type MetaState = Map MetaId (Maybe Value)
 emptyMetas :: MetaState
 emptyMetas = Map.empty
 
--- | Branch-local fact about a rigid variable, established by the
--- enclosing match case (§7.4.1 flow refinement at conversion level):
--- either solved to a constructor value, or known to lack constructors.
+-- | Stable subject of a branch-local definitional refinement.  Projection
+-- paths are rooted in a rigid binder identity; arbitrary computations and
+-- source spellings are deliberately not representable.
+data RefinementSubject
+  = RefinementRigid !Int
+  | RefinementProjection !RefinementSubject !Text
+  deriving stock (Eq, Ord, Show)
+
+-- | Branch-local fact established by an enclosing match case (§7.4.1 flow
+-- refinement at conversion level): either solved to a value, or known to lack
+-- constructors.
 data RigidFact = FactIs !Value | FactNot ![GName]
 
 -- | Evaluation context: globals plus current meta solutions.
@@ -253,10 +263,21 @@ data EvalCtx = EvalCtx
   -- ^ Runtime evaluation (§32.1): every global with a value unfolds,
   -- with a deep fuel budget. Conversion-time forcing (False) unfolds
   -- only conversion-reducible definitions and stays tightly bounded.
-  , ecFacts :: !(Map Int RigidFact)
-  -- ^ Branch-local facts about rigid levels (dependent-match
-  -- normalization; see Check.checkMatchPlain).
+  , ecFacts :: !(Map RefinementSubject RigidFact)
+  -- ^ Branch-local facts about rigid identities and authenticated projection
+  -- paths (dependent-match normalization; see Check.checkMatchPlain).
   }
+
+-- | Recover the stable identity of a value that may safely be refined by a
+-- branch-local constructor equation.  Identity-preserving lift wrappers are
+-- transparent; applications and other computed eliminations fail closed.
+refinementSubject :: Value -> Maybe RefinementSubject
+refinementSubject = \case
+  VRigid level [] -> Just (RefinementRigid level)
+  VProjN _ receiver field ->
+    RefinementProjection <$> refinementSubject receiver <*> pure field
+  VUniverseLift _ _ _ value -> refinementSubject value
+  _ -> Nothing
 
 lookupGlobal :: EvalCtx -> GName -> Maybe GlobalDef
 lookupGlobal ctx g = Map.lookup g (globalsMap (ecGlobals ctx))
@@ -359,7 +380,8 @@ eval ctx env = \case
   -- cannot turn a polymorphic constructor occurrence into a monomorphic one.
   CCtorI g universes _ arguments ->
     VCtorI g (map (evalLevel ctx env) universes)
-      [ ConstructorValueArg (caIcit argument) (caPayload argument) (caName argument)
+      [ ConstructorValueArg ConstructorValueTyped
+          (caIcit argument) (caPayload argument) (caName argument)
           (eval ctx env (caTerm argument))
       | argument <- arguments
       ]
@@ -423,7 +445,15 @@ vapp ctx fv ic av = case fv of
     | ic == Impl -> VCtorI g universes arguments
     | otherwise ->
         VCtorI g universes
-          (arguments ++ [ConstructorValueArg Expl True Nothing av])
+          ( arguments
+              ++ [ ConstructorValueArg
+                     ( if all ((== ConstructorValueSyntheticPayload) . cvaOrigin) arguments
+                         then ConstructorValueSyntheticPayload
+                         else ConstructorValueTyped
+                     )
+                     Expl True Nothing av
+                 ]
+          )
   VPrim p args
     | ic == Impl -> VPrim p args
     | otherwise ->
@@ -559,7 +589,7 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
       -- dependent-function application) even though the constructor-result
       -- certificate established the head equation.
       VRigid l sp
-        | Just (FactIs sol) <- Map.lookup l (ecFacts ctx) ->
+        | Just (FactIs sol) <- Map.lookup (RefinementRigid l) (ecFacts ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
       VGlobI g universes sp
         | Just gd <- lookupGlobal ctx g
@@ -580,15 +610,19 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
             go (fuel - 1) (vapp ctx f' ic a)
       VPrim p sp
         | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
-      VProjN mode inner fld ->
-        -- §13.2.10: a projection re-fires through seal layers unless
-        -- the member is opaque (always computes at runtime)
-        let unseal x = case x of
-              VSealV ls r | ecRuntime ctx || fld `notElem` ls -> unseal (go (fuel - 1) r)
-              _ -> x
-         in case unseal (go (fuel - 1) inner) of
-              VRecordV fs | Just x <- lookup fld fs -> go (fuel - 1) x
-              inner' -> VProjN mode inner' fld
+      projection@(VProjN mode inner fld)
+        | Just subject <- refinementSubject projection
+        , Just (FactIs solution) <- Map.lookup subject (ecFacts ctx) ->
+            go (fuel - 1) solution
+        | otherwise ->
+            -- §13.2.10: a projection re-fires through seal layers unless
+            -- the member is opaque (always computes at runtime)
+            let unseal x = case x of
+                  VSealV ls r | ecRuntime ctx || fld `notElem` ls -> unseal (go (fuel - 1) r)
+                  _ -> x
+             in case unseal (go (fuel - 1) inner) of
+                  VRecordV fs | Just x <- lookup fld fs -> go (fuel - 1) x
+                  inner' -> VProjN mode inner' fld
       VIfN c t f -> case go (fuel - 1) c of
         VCtor g [] | g == prelTrue -> go (fuel - 1) (closRun t)
         VCtor g [] | g == prelFalse -> go (fuel - 1) (closRun f)
@@ -718,16 +752,9 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
     definitelyNoMatch pat v0 = case (pat, force ctx v0) of
       -- a rigid known to lack the constructor cannot match it (§7.4.1)
       (CPCtor g _ _, VRigid l _)
-        | Just (FactNot gs) <- Map.lookup l (ecFacts ctx) -> g `elem` gs
-      (CPCtor g _ ps, VCtor g' args) ->
-        g /= g'
-          || ( length ps <= length args
-                 && or
-                   [ definitelyNoMatch p a
-                   | (p, a) <- zip ps (drop (length args - length ps) args)
-                   ]
-             )
-      (CPCtorM _ _ hidden g _ ps, VCtorI g' _ arguments) ->
+        | Just (FactNot gs) <- Map.lookup (RefinementRigid l) (ecFacts ctx) -> g `elem` gs
+      (CPCtorM _ _ hidden g _ ps, VCtorI g' _ arguments)
+        | not (syntheticPayloadConstructor arguments) ->
         g /= g'
           || case typedConstructorSource hidden ps arguments of
                Nothing -> False
@@ -736,6 +763,16 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
                    [ definitelyNoMatch pattern' (cvaValue argument)
                    | (Right pattern', argument) <- source
                    ]
+      (CPCtor g _ ps, VCtorI g' _ arguments)
+        | syntheticPayloadConstructor arguments
+        , let args = syntheticPayloadValues arguments ->
+        g /= g'
+          || ( length ps <= length args
+                 && or
+                   [ definitelyNoMatch p a
+                   | (p, a) <- zip ps (drop (length args - length ps) args)
+                   ]
+             )
       (CPCtor g _ _, VLit (LitInt n))
         | g == prelNatZero -> n /= 0
         | g == prelNatSucc -> n <= 0
@@ -771,6 +808,13 @@ typedConstructorSource hidden explicit arguments = do
     )
   pure (zip source sourceArguments)
 
+syntheticPayloadConstructor :: [ConstructorValueArg] -> Bool
+syntheticPayloadConstructor =
+  all ((== ConstructorValueSyntheticPayload) . cvaOrigin)
+
+syntheticPayloadValues :: [ConstructorValueArg] -> [Value]
+syntheticPayloadValues = map cvaValue . filter cvaPayload
+
 -- | First-order pattern matching on values. 'Nothing' means "did not
 -- match or could not decide" — callers must distinguish via
 -- 'definitelyNoMatch' for soundness during conversion.
@@ -795,22 +839,26 @@ matchPat ctx pat v0 =
                 hidden
                 ps
                 [VLit (LitInt (n - 1))]
-        (CPCtorM existentialModes bridges hidden g _ ps, VCtor g' args)
-          | g == g', length ps <= length args ->
-              constructorBindings
-                existentialModes
-                bridges
-                hidden
-                ps
-                (drop (length args - length ps) args)
         (CPCtorM existentialModes bridges hidden g _ ps, VCtorI g' _ arguments)
-          | g == g' ->
+          | not (syntheticPayloadConstructor arguments)
+          , g == g' ->
               typedConstructorBindings
                 existentialModes
                 bridges
                 hidden
                 ps
                 arguments
+        (CPCtorM existentialModes bridges hidden g _ ps, VCtorI g' _ arguments)
+          | syntheticPayloadConstructor arguments
+          , let args = syntheticPayloadValues arguments
+          , g == g'
+          , length ps <= length args ->
+              constructorBindings
+                existentialModes
+                bridges
+                hidden
+                ps
+                (drop (length args - length ps) args)
         (CPTuple ps, VRecordV fs)
           | length ps == length fs ->
               concatM [matchPat ctx p a | (p, (_, a)) <- zip ps fs]
@@ -1052,6 +1100,7 @@ convertible ctx = go (200 :: Int)
             ( zipWith
                 (\left right ->
                    cvaIcit left == cvaIcit right
+                     && cvaOrigin left == cvaOrigin right
                      && cvaPayload left == cvaPayload right
                      && go (fuel - 1) lvl (cvaValue left) (cvaValue right))
                 arguments1

@@ -243,7 +243,7 @@ closeFinalEvidenceUniverses = do
   let pending = csPending stateBefore
       constraints = csLevelConstraints stateBefore
       pendingIds =
-        Set.fromList [meta | (meta, _, _, _, _) <- pending]
+        Set.fromList (map peeMeta pending)
       orphanedLevelEvidence =
         Set.difference
           (Map.keysSet (csPendingLevelEvidence stateBefore))
@@ -278,7 +278,7 @@ closeFinalEvidenceUniverses = do
                 else closeFinalEvidenceUniverses
   where
     finalEvidenceProgressKey state =
-      ( Set.fromList [meta | (meta, _, _, _, _) <- csPending state]
+      ( Set.fromList (map peeMeta (csPending state))
       , Map.keysSet (csPendingLevelEvidence state)
       , csLevelConstraintIndex state
       , csLevelAssignments state
@@ -411,13 +411,31 @@ inferExactExplicitArg ctx mode q borrowed runtimeErasure expression expected = d
   before <- get
   let preexistingMetaLimit = csNextMeta before
   diagnosticsBefore <- gets (length . csDiags)
+  let evidenceErased = case runtimeErasure of
+        RuntimeErased _ -> True
+        RuntimeRelevant -> False
+      effectiveQ = if evidenceErased then Q0 else q
   let ctx' =
-        if q == Q0
+        if effectiveQ == Q0
           then withVarReadBlock VarReadStaticPosition ctx
           else ctx
       inferArgument =
         withArgIndexRetag
-          (withDemand (demandOfQ q) (infer ctx' expression))
+          (withDemand (demandOfQ effectiveQ) (inferT ctx' expression))
+      checkInTypePosition = do
+        (term, actual) <- inferArgument
+        expectType ctx (exprSpan expression) actual expected
+        expected' <- forceM expected
+        finishExplicitArgument
+          ctx
+          mode
+          q
+          borrowed
+          evidenceErased
+          expression
+          term
+          expected'
+        pure term
   (_term, actual) <- inferArgument
   compatible <- unifyDefinitional ctx actual expected
   diagnosticsAfter <- gets (length . csDiags)
@@ -433,7 +451,7 @@ inferExactExplicitArg ctx mode q borrowed runtimeErasure expression expected = d
       put before
       checked <-
         withDefinitionalEqualityOnly
-          (checkExplicitArg ctx mode q borrowed runtimeErasure expression expected)
+          checkInTypePosition
       expectedClassifierLevels <- unresolvedExpectedClassifierLevels ctx expected
       pure (checked, Set.union sourceClassifierLevels expectedClassifierLevels)
     else do
@@ -1340,6 +1358,7 @@ checkModule st0 m =
                  _ -> pure ())
           expectDecls
         mapM_ (headerPassIn siglessLets) remainingOrdinaryDecls
+        rejectedTraitSccs <- validateTraitRefinementCycles (modDecls m)
         -- §10.4: once every data type's constructor types are
         -- elaborated, check strict positivity over the whole module's
         -- data group by fixed-point iteration and record each accepted
@@ -1601,7 +1620,7 @@ checkModule st0 m =
         -- that rely on an opaque definition unfolding) are checked, seal
         -- the module's 'opaque' definitions against δ-unfolding downstream.
         opaqueSealPass
-        finalizeTraitDictionaryInterfaces
+        finalizeTraitDictionaryInterfaces rejectedTraitSccs
       (_, st1) =
         runState
           passes
@@ -1740,6 +1759,7 @@ headerPassInRaw siglessLets = \case
         }
     precertifyLevelOperatorAlias g
     recordSignatureInoutParams g tyE
+    recordSignatureReceiverParams g tyE
     -- §9.1: the signature awaits its same-file definition (an expected
     -- name is governed by §9.4 satisfaction instead)
     diagCount1 <- gets (length . csDiags)
@@ -2592,6 +2612,7 @@ headerTrait (TraitDecl supers n params members) sp = do
             (csNominalSummaryRequests st)
       , csDirtyNominalSummaries = Set.insert g (csDirtyNominalSummaries st)
       }
+
   let supTms = [(fn, foldr (\entry acc -> CLamM (teMode entry) (teIcit entry) (teQ entry) (teName entry) acc) sTm paramTele) | (fn, sTm) <- supPairs]
   modify' $ \st ->
     invalidateSemanticCaches
@@ -2712,6 +2733,85 @@ headerTrait (TraitDecl supers n params members) sp = do
             g
             (csTraits state)
       }
+
+-- | Validate the resolved supertrait graph after the complete module header
+-- pass. Forward references are ordinary declaration-group dependencies, so
+-- this check runs only after every trait head has replaced its provisional
+-- predeclaration. Each cyclic SCC is one graph-level diagnostic (§14.1.5).
+validateTraitRefinementCycles :: [Decl] -> CheckM (Set GName)
+validateTraitRefinementCycles declarations = do
+  state <- get
+  let localTraits =
+        [ (GName (csModule state) (nameText (trName trait)), trait, site)
+        | DTrait _ trait site <- declarations
+        ]
+      localNames = Set.fromList [global | (global, _, _) <- localTraits]
+      nodeFor (global, trait, site) =
+        let resolvedEdges =
+              case Map.lookup global (csTraits state) of
+                Nothing -> []
+                Just info ->
+                  [ (target, origin)
+                  | ((_, superTerm), origin) <-
+                      zip (tiSupers info) (supertraitOrigins trait)
+                  , Just target <- [supertraitHead superTerm]
+                  , target `Set.member` localNames
+                  ]
+         in ((global, site, resolvedEdges), global, map fst resolvedEdges)
+      components = stronglyConnComp (map nodeFor localTraits)
+      cyclicComponents = [members | CyclicSCC members <- components]
+  mapM_ reportTraitCycle cyclicComponents
+  pure
+    ( Set.fromList
+        [ global
+        | members <- cyclicComponents
+        , (global, _, _) <- members
+        ]
+    )
+  where
+    supertraitOrigins trait =
+      concatMap
+        (\item -> case stiType item of
+            ETuple expressions _ -> map exprSpan expressions
+            expression -> [exprSpan expression]
+        )
+        (trSupers trait)
+
+    supertraitHead = go
+      where
+        go (CLamM _ _ _ _ body) = go body
+        go term =
+          case spineOfTerm term of
+            (CGlob global, _) -> Just global
+            _ -> Nothing
+
+    reportTraitCycle [] = pure ()
+    reportTraitCycle members@((_, primary, _) : _) = do
+      let memberNames = Set.fromList [global | (global, _, _) <- members]
+          edges =
+            [ (source, target, origin)
+            | (source, _, outgoing) <- members
+            , (target, origin) <- outgoing
+            , target `Set.member` memberNames
+            ]
+          renderGlobal = gnameText
+          cycleText = T.intercalate " -> " (map (renderGlobal . firstOf3) members)
+          relatedEdges =
+            [ related RoleDeclarationSite origin
+                (renderGlobal source <> " refines " <> renderGlobal target)
+            | (source, target, origin) <- edges
+            ]
+          payload =
+            withPayloadField "cycle" cycleText
+              (payloadKind "trait-refinement-cycle")
+      report $
+        withPayload payload $
+          withRelateds relatedEdges $
+            diag SevError StageElaborate "E_TRAIT_REFINEMENT_CYCLE"
+              (Just "kappa.trait.refinement-cycle") primary
+              ("trait refinement cycle: " <> cycleText <> " (§14.1.5)")
+
+    firstOf3 (value, _, _) = value
 
 -- | Validate the declaration-owned authority for fresh trait-evidence
 -- construction (§14.1.1A).  Conventional certificates use a compact checked
@@ -2884,6 +2984,7 @@ headerExpect preexisting form sp = case form of
     tyV <- evalIn emptyCtx tyTm
     unless alreadyDef $ addGlobal g (GlobalDef tyV Nothing False)
     recordSignatureInoutParams g tyE
+    recordSignatureReceiverParams g tyE
     -- Portable foundation constants are authenticated by resolved identity
     -- and an independently seeded Core schema.  They are neither ordinary
     -- source companions nor spelling-based backend intrinsics.
@@ -3091,6 +3192,7 @@ elaborateTraitDefaults trait declarationSite = do
                         superValues <-
                           forM superterms $ \(field, term) ->
                             (field,) <$> evalIn memberCtx term
+                        errorsBefore <- gets (length . filter isError . csDiags)
                         checked <-
                           withTraitSupers superValues $ do
                             pendingBefore <-
@@ -3111,63 +3213,70 @@ elaborateTraitDefaults trait declarationSite = do
                               (Set.difference pendingAfter pendingBefore)
                             flushDeferredTypeEqualities False
                             pure result
-                        let closed =
-                              wrapTraitMemberPrefix
-                                prefixBinders
-                                (substThisTm dictionary checked)
-                        principalized <-
-                          principalizeBodyUniverseInstantiations
-                            accessor
-                            (gdType checkedInterface)
-                            closed
-                        zonked <- zonkTermM 0 principalized
-                        current <- get
-                        let finalizedTemplate =
-                              zonkTermWith
-                                (\_ _ -> Nothing)
-                                (resolveFinalizedOwnerLevel current accessor)
-                                0
-                                zonked
-                            finalized =
-                              termScopedAt 0 finalizedTemplate
-                                && null (unsolvedMetasOf current finalizedTemplate)
-                                && null (levelMetasOfTerm finalizedTemplate)
-                        if not finalized
-                          then
-                            errAt defaultSite "E_UNSOLVED_METAVARIABLE"
-                              (Just "kappa.type.unsolved-metavariable")
-                              ( "ordinary default member '" <> member
-                                  <> "' did not close to source-free checked Core"
-                              )
-                          else
-                            modify' $ \current ->
-                              let prototype =
-                                    checkedInterface
-                                      { gdNominalSummary = Nothing
-                                      , gdRecordInterface = Nothing
-                                      , gdReducible = True
-                                      }
-                                  installed =
-                                    globalDefWithCanonicalCoreBody current finalizedTemplate prototype
-                                  traits' =
-                                    Map.adjust
-                                      (\traitInfo' ->
-                                         traitInfo'
-                                           { tiDefaults =
-                                               Map.insert member defaultGlobal (tiDefaults traitInfo')
-                                           })
-                                      traitGlobal
-                                      (csTraits current)
-                               in invalidateSemanticCaches
-                                    current
-                                      { csGlobals =
-                                          Map.insert defaultGlobal installed (csGlobals current)
-                                      , csCoreBodies =
-                                          Map.insert defaultGlobal finalizedTemplate (csCoreBodies current)
-                                      , csFinalizedUniverseInterfaces =
-                                          Set.insert defaultGlobal (csFinalizedUniverseInterfaces current)
-                                      , csTraits = traits'
-                                      }
+                        errorsAfter <- gets (length . filter isError . csDiags)
+                        let sourceRejected =
+                              not
+                                ( null
+                                    (quantityBorrowMarkerSpans (ldBody definition))
+                                )
+                        unless (sourceRejected || errorsAfter > errorsBefore) $ do
+                          let closed =
+                                wrapTraitMemberPrefix
+                                  prefixBinders
+                                  (substThisTm dictionary checked)
+                          principalized <-
+                            principalizeBodyUniverseInstantiations
+                              accessor
+                              (gdType checkedInterface)
+                              closed
+                          zonked <- zonkTermM 0 principalized
+                          current <- get
+                          let finalizedTemplate =
+                                zonkTermWith
+                                  (\_ _ -> Nothing)
+                                  (resolveFinalizedOwnerLevel current accessor)
+                                  0
+                                  zonked
+                              finalized =
+                                termScopedAt 0 finalizedTemplate
+                                  && null (unsolvedMetasOf current finalizedTemplate)
+                                  && null (levelMetasOfTerm finalizedTemplate)
+                          if not finalized
+                            then
+                              errAt defaultSite "E_UNSOLVED_METAVARIABLE"
+                                (Just "kappa.type.unsolved-metavariable")
+                                ( "ordinary default member '" <> member
+                                    <> "' did not close to source-free checked Core"
+                                )
+                            else
+                              modify' $ \current ->
+                                let prototype =
+                                      checkedInterface
+                                        { gdNominalSummary = Nothing
+                                        , gdRecordInterface = Nothing
+                                        , gdReducible = True
+                                        }
+                                    installed =
+                                      globalDefWithCanonicalCoreBody current finalizedTemplate prototype
+                                    traits' =
+                                      Map.adjust
+                                        (\traitInfo' ->
+                                           traitInfo'
+                                             { tiDefaults =
+                                                 Map.insert member defaultGlobal (tiDefaults traitInfo')
+                                             })
+                                        traitGlobal
+                                        (csTraits current)
+                                 in invalidateSemanticCaches
+                                      current
+                                        { csGlobals =
+                                            Map.insert defaultGlobal installed (csGlobals current)
+                                        , csCoreBodies =
+                                            Map.insert defaultGlobal finalizedTemplate (csCoreBodies current)
+                                        , csFinalizedUniverseInterfaces =
+                                            Set.insert defaultGlobal (csFinalizedUniverseInterfaces current)
+                                        , csTraits = traits'
+                                        }
         _ -> pure ()
     _ ->
       errAt declarationSite "E_TRAIT_MEMBER_TELESCOPE_MISMATCH" (Just "kappa.internal.compiler")
@@ -3505,6 +3614,7 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ prefix binders mResTy mdec body) s
   g <- ownName n
   noteDefinition g sp
   recordDefinitionInoutParams g binders
+  recordDefinitionReceiverParams g binders
   mOpAlias <- if null binders then operationValueInfoOfExpr emptyCtx body else pure Nothing
   -- §8.5.2: an 'opaque' term definition keeps its equation available for
   -- definitional equality inside this module, but it is sealed
@@ -3512,15 +3622,6 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ prefix binders mResTy mdec body) s
   -- opaque constant at its declared type.
   when (dmOpaque mods) $
     modify' $ \stM -> stM {csOpaqueDefs = Map.insert g () (csOpaqueDefs stM)}
-  -- §7.4: record receiver-marked explicit binder positions (method
-  -- sugar inserts the receiver at the unique such binder)
-  let recvIdxs =
-        [ i
-        | (i, rb) <- zip [(0 :: Int) ..] [rb | rb <- binders, not (bImplicit rb)]
-        , bReceiver rb /= NoReceiver
-        ]
-  unless (null recvIdxs) $
-    modify' $ \stM -> stM {csReceivers = Map.insert g recvIdxs (csReceivers stM)}
   st <- get
   let msig = Map.lookup g (csGlobals st)
       definitionSchemaArity = maybe 0 (length . usParameters) (nameUniverseSchema n)
@@ -5234,10 +5335,12 @@ registerInstanceHeadAs dictG premises hd sp = do
       -- types (so type constructors are valid arguments of
       -- higher-kinded traits, §14.1.2)
       traitDefinition <- gets (Map.lookup g . csGlobals)
-      (traitHead, traitUniverses, checkedArguments) <- case traitDefinition of
+      (traitHead, traitUniverses, checkedArguments, headArityValid) <- case traitDefinition of
         Just definition -> do
-          (headTerm, traitTy, universes) <- case explicitUniverseArguments of
-            Nothing -> instantiateGlobal g definition
+          (headTerm, traitTy, universes, universeArityValid) <- case explicitUniverseArguments of
+            Nothing -> do
+              (term, ty, levels) <- instantiateGlobal g definition
+              pure (term, ty, levels, True)
             Just levelExpressions -> do
               supplied <- mapM (fmap snd . elabLevelExpr emptyCtx) levelExpressions
               let expected = dutParameterCount (gdUniverses definition)
@@ -5249,28 +5352,39 @@ registerInstanceHeadAs dictG premises hd sp = do
                   )
               let actual = take expected (supplied ++ repeat LZero)
               (term, ty) <- specializeGlobalAt emptyCtx g definition actual
-              pure (term, ty, actual)
-          checkedArguments <- instCheckHeadArgs ctxP' traitTy argEs
-          pure (headTerm, universes, checkedArguments)
+              pure (term, ty, actual, expected == found)
+          (traitApplication, checkedArguments, arityValid) <-
+            instCheckHeadArgs ctxP' sp headTerm traitTy argEs
+          pure (traitApplication, universes, checkedArguments, universeArityValid && arityValid)
         Nothing -> do
           checkedArguments <-
             forM argEs $ \argument -> do
               (term, _level) <- inferType ctxP' argument
               pure (term, Set.empty)
-          pure (CGlob g, [], checkedArguments)
+          pure
+            ( foldl (\function (argument, _) -> CApp Expl function argument)
+                (CGlob g)
+                checkedArguments
+            , []
+            , checkedArguments
+            , False
+            )
       fvTele <- finalizeGeneratedTelescope emptyCtx fvTele0
       let headClassifierLevels = Set.unions (map snd checkedArguments)
       let teleLen = length fvTele + length premises
           argTms = map fst checkedArguments
-      register
-        g
-        traitHead
-        traitUniverses
-        fvTele
-        premTms
-        argTms
-        headClassifierLevels
-        teleLen
+      if headArityValid
+        then
+          register
+            g
+            traitHead
+            traitUniverses
+            fvTele
+            premTms
+            argTms
+            headClassifierLevels
+            teleLen
+        else pure Nothing
       where
         bindHeadVariable context entry = do
           domain <- evalIn context (teDomain entry)
@@ -5285,10 +5399,10 @@ registerInstanceHeadAs dictG premises hd sp = do
                 domain
                 withBound
             )
-    register g traitHead traitUniverses fvTele premTms argTms headClassifierLevels teleLen = do
+    register g traitApplication traitUniverses fvTele premTms argTms headClassifierLevels teleLen = do
       -- register the instance before checking members so member bodies
       -- can use the instance being defined (recursive instances, §14.3)
-      (dictTyTerm0, _) <- instDictTy fvTele premTms traitHead argTms
+      (dictTyTerm0, _) <- instDictTy fvTele premTms traitApplication
       instantiationLevels <- gets csLevelInstantiationMetas
       let binderSourceLevels =
             Set.fromList
@@ -5367,29 +5481,61 @@ registerInstanceHeadAs dictG premises hd sp = do
 -- authenticated source-owned classifier levels. Generated dictionary
 -- principalization may preserve those identities, but never fresh occurrence
 -- metas allocated by the observational inference probe.
-instCheckHeadArgs :: Ctx -> Value -> [Expr] -> CheckM [(Term, Set LevelMeta)]
-instCheckHeadArgs _ _ [] = pure []
-instCheckHeadArgs ctx ty (e : es) = do
-  t <- forceM ty
-  case t of
-    VPiRuntimeM mode _ Expl q borrowed _ _ _ runtimeErasure dom clo -> do
-      -- Trait heads are type-position syntax (§14.3.1A). A parametric type
-      -- witness may therefore instantiate a universe-classified trait
-      -- parameter even when the dictionary's parameter quantity is not Q0;
-      -- this does not expose the witness as an ordinary term value.
-      domF <- forceM dom
-      (tm, classifierLevels) <- case domF of
-        VPiEvidenceM {} -> inferExactExplicitArg ctx mode q borrowed runtimeErasure e dom
+instCheckHeadArgs
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> [Expr]
+  -> CheckM (Term, [(Term, Set LevelMeta)], Bool)
+instCheckHeadArgs ctx site headTerm headType arguments = do
+  (activeCtx, saturatedHead, saturatedType) <-
+    insertAllImplicitsIn ctx site headTerm headType
+  go activeCtx saturatedHead saturatedType arguments
+  where
+    go _activeCtx term ty [] = do
+      residual <- forceM ty
+      case residual of
+        VPiRuntimeM _ _ Expl _ _ _ _ _ _ _ _ -> do
+          errAt site "E_INSTANCE_HEAD" (Just "kappa-hs.trait.bad-instance-head")
+            "instance head does not supply every explicit trait parameter"
+          pure (term, [], False)
+        _ -> pure (term, [], True)
+    go activeCtx term ty (e : es) = do
+      t <- forceM ty
+      case t of
+        VPiRuntimeM mode _ Expl q borrowed _ _ _ runtimeErasure dom clo -> do
+          -- Trait heads are type-position syntax (§14.3.1A). A parametric type
+          -- witness may therefore instantiate a universe-classified trait
+          -- parameter even when the dictionary's parameter quantity is not Q0;
+          -- this does not expose the witness as an ordinary term value.
+          domF <- forceM dom
+          higherKindDomain <- case domF of
+            VPi {} -> isKindLike (ctxLen activeCtx) domF
+            _ -> pure False
+          diagnosticsBefore <- gets (length . csDiags)
+          (tm, classifierLevels) <-
+            if higherKindDomain
+              then inferExactExplicitArg activeCtx mode q borrowed runtimeErasure e dom
+              else do
+                checked <- checkExplicitArg activeCtx mode q borrowed runtimeErasure e dom
+                pure (checked, Set.empty)
+          diagnosticsAfter <- gets (length . csDiags)
+          let argumentValid = diagnosticsAfter == diagnosticsBefore
+          v <- evalIn activeCtx tm
+          resultType <- clApp clo v
+          (nextCtx, nextHead, nextType) <-
+            insertAllImplicitsIn
+              activeCtx
+              site
+              (CApp Expl term tm)
+              resultType
+          (application, rest, valid) <- go nextCtx nextHead nextType es
+          pure (application, (tm, classifierLevels) : rest, argumentValid && valid)
         _ -> do
-          checked <- checkExplicitArg ctx mode q borrowed runtimeErasure e dom
-          pure (checked, Set.empty)
-      v <- evalIn ctx tm
-      rest <- clApp clo v >>= \cod -> instCheckHeadArgs ctx cod es
-      pure ((tm, classifierLevels) : rest)
-    _ -> do
-      (tm, _classifierLevel) <- inferType ctx e
-      rest <- instCheckHeadArgs ctx t es
-      pure ((tm, Set.empty) : rest)
+          errAt site "E_INSTANCE_HEAD" (Just "kappa-hs.trait.bad-instance-head")
+            "instance head supplies more arguments than the trait declares"
+          pure (term, [], False)
 
 elabInstance :: InstanceDecl -> Span -> CheckM ()
 elabInstance (InstanceDecl _ premises hd completion) sp = do

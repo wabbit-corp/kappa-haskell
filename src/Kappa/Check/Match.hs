@@ -26,10 +26,11 @@ module Kappa.Check.Match
   , lookupActivePattern
   , lowerActiveMatch
   , noRigidSkolemForced
-  , orientRigidRefinement
+  , orientRefinement
   , peekCtor
   , reflexiveSelfFiber
   , residualCatchAllPatterns
+  , uncoveredFinitePatternSkeletons
   , rewriteActiveLetQ
   , rigidLevelThroughUniverseLift
   , rootConstructorForcedRefinements
@@ -958,14 +959,26 @@ residualCatchAllPatterns
   -> Span
   -> Maybe [Pattern]
 residualCatchAllPatterns state scrutineeType preceding site = do
+  residuals <- uncoveredFinitePatternSkeletons state scrutineeType preceding
+  mapM (skeletonSourcePattern state site) residuals
+
+-- | Enumerate the bounded, structurally complete residual space without
+-- interpreting dependency between product fields. Callers may subsequently
+-- discharge an individual skeleton only through the typed empty-fiber
+-- judgment; this helper alone is never an exhaustiveness proof.
+uncoveredFinitePatternSkeletons
+  :: CheckState
+  -> Value
+  -> [(CorePat, Maybe Term)]
+  -> Maybe [CorePat]
+uncoveredFinitePatternSkeletons state scrutineeType preceding = do
   candidates <- finitePatternSkeletons state 64 scrutineeType
   let covered = [pattern' | (pattern', Nothing) <- preceding]
-      residuals =
-        [ candidate
-        | candidate <- candidates
-        , not (any (`corePatternCovers` candidate) covered)
-        ]
-  mapM (skeletonSourcePattern state site) residuals
+  pure
+    [ candidate
+    | candidate <- candidates
+    , not (any (`corePatternCovers` candidate) covered)
+    ]
 
 finitePatternSkeletons :: CheckState -> Int -> Value -> Maybe [CorePat]
 finitePatternSkeletons state budget = go budget . force (ecOf state)
@@ -1190,39 +1203,53 @@ syntheticConstructorPatternLayout
       pure Nothing
 
 -- | Orient a residual definitional equation toward an acyclic branch-local
--- rigid substitution. Either source direction may expose the rigid.
-orientRigidRefinement
+-- stable-subject substitution. Either source direction may expose the subject.
+orientRefinement
   :: Ctx
   -> Value
   -> Value
-  -> CheckM (Maybe (Int, Value))
-orientRigidRefinement ctx left0 right0 = do
+  -> CheckM (Maybe (RefinementSubject, Value))
+orientRefinement ctx left0 right0 = do
   left <- forceM left0
   right <- forceM right0
-  rightToLeft <- directedRigidRefinement ctx right left
+  rightToLeft <- directedRefinement ctx right left
   case rightToLeft of
     Just refinement -> pure (Just refinement)
-    Nothing -> directedRigidRefinement ctx left right
+    Nothing -> directedRefinement ctx left right
 
-directedRigidRefinement
+directedRefinement
   :: Ctx
   -> Value
   -> Value
-  -> CheckM (Maybe (Int, Value))
-directedRigidRefinement ctx candidate0 replacement0 = do
+  -> CheckM (Maybe (RefinementSubject, Value))
+directedRefinement ctx candidate0 replacement0 = do
   candidate <- forceM candidate0
   replacement <- forceM replacement0
   ec <- ec_
   pure (orient ec candidate replacement)
   where
-    orient ec (VRigid rigid []) replacement
-      | rigid < ctxLen ctx
-      , not (rigidOccurs ec rigid replacement) =
-          Just (rigid, replacement)
+    orient ec candidate replacement
+      | Just subject <- refinementSubject candidate
+      , refinementSubjectInScope subject
+      , not (subjectOccurs ec subject replacement) =
+          Just (subject, replacement)
     orient _ _ _ = Nothing
 
-    rigidOccurs ec rigid value =
+    refinementSubjectInScope subject =
+      subjectRoot subject >= 0 && subjectRoot subject < ctxLen ctx
+
+    subjectRoot = \case
+      RefinementRigid rigid -> rigid
+      RefinementProjection parent _ -> subjectRoot parent
+
+    -- Reject every replacement mentioning the subject's root binder. This is
+    -- deliberately more conservative than path-sensitive occurs checking:
+    -- it cannot admit a cyclic projection equation, and independent sibling
+    -- projection equations remain a future widening rather than an unsound
+    -- conversion rule.
+    subjectOccurs ec subject value =
       let depth = ctxLen ctx
+          rigid = subjectRoot subject
           index = depth - rigid - 1
        in index >= 0 && mentionsVar index (quote ec depth value)
 
@@ -1233,7 +1260,7 @@ directedRigidRefinement ctx candidate0 replacement0 = do
 rootConstructorForcedRefinements
   :: Ctx
   -> CorePat
-  -> CheckM (Map Int RigidFact)
+  -> CheckM (Map RefinementSubject RigidFact)
 rootConstructorForcedRefinements ctx = \case
   CPCtorM _ bridges _ _ _ _ ->
     foldM addBridge Map.empty bridges
@@ -1243,8 +1270,8 @@ rootConstructorForcedRefinements ctx = \case
       ConstructorForcedEquality leftTerm rightTerm -> do
         left <- evalIn ctx leftTerm
         right <- evalIn ctx rightTerm
-        directedRigidRefinement ctx left right >>= \case
+        orientRefinement ctx left right >>= \case
           Nothing -> pure refinements
-          Just (rigid, replacement) ->
-            pure (Map.insert rigid (FactIs replacement) refinements)
+          Just (subject, replacement) ->
+            pure (Map.insert subject (FactIs replacement) refinements)
       ConstructorPropositionalBridge {} -> pure refinements

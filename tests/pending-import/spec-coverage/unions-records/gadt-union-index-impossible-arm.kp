@@ -1,20 +1,16 @@
 --! mode check
 --! assertNoErrors
 
--- §13.1.8 (Spec.md L16377-L16382): "Exhaustiveness and reachability are
--- determined by family-argument unification exactly as in §17.1.1" for
--- union-typed GADT indices, and §13.1.1 (L16260-L16263) makes VarRow
--- equality modulo permutation. viaPermuted pins the working half: the
--- permuted index spelling (| String | Integer |) is definitionally the
--- SmallShape index. classify pins the broken half: BigShape's index
--- (| Integer | String | Bool |) cannot unify with the two-member
--- scrutinee index, so the single-arm match MUST be exhaustive.
+-- §13.1.8 delegates exhaustiveness to §17.1.1. viaPermuted is a positive
+-- control: union rows are definitionally equal modulo permutation. classify
+-- states the desired complementary rule: two closed normalized VarRows that
+-- differ by a member should be structurally incompatible, so BigShape's
+-- three-member union index is refuted at the two-member demanded index.
 --
--- Currently classify is rejected with E_PATTERN_NON_EXHAUSTIVE "missing
--- cases: BigShape": the coverage checker never refutes constructors by
--- Type-valued index unification (the same failure occurs with scalar type
--- indices, e.g. IntRep/BoolRep at Rep Integer), although it does refute
--- by term-level constructor indices such as Nat's Z/S.
+-- The current Spec does not clearly say whether this structural VarRow
+-- inequality supplies a checked §30.2.7 no-confusion proof or merely leaves
+-- UnknownCompatibility. This is intentionally staged as a SPEC-ISSUE until
+-- that choice is made; the preferred behavior exercised here is acceptance.
 module main
 
 data Shape (u : Type) : Type =
@@ -29,4 +25,4 @@ let classify s =
     match s
     case SmallShape -> 1
 
--- STATUS(74742dfd): FAIL — expected 0 errors, got 1; first error: E_PATTERN_NON_EXHAUSTIVE "match is not exhaustive" at line 29
+-- STATUS: SPEC-ISSUE — decide whether distinct closed normalized VarRows provide structural no-confusion for Type-valued GADT indices; preferred behavior is to refute BigShape and accept this exhaustive match.

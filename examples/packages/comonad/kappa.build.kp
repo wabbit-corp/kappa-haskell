@@ -1,0 +1,26 @@
+let buildConfig : BuildConfig = package
+    { name = "comonad"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = []
+    , targets =
+        [ library
+            { name = "comonad"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , modules = modulesUnder "control.comonad"
+            , dependencies = []
+            }
+        , executable
+            { name = "comonad-tests"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags []
+            , main = module "comonad.run_tests"
+            , modules = modulesUnder "control.comonad"
+            , dependencies = []
+            , hostBindings = []
+            }
+        ]
+    }

@@ -529,6 +529,7 @@ rExpr env = go
       ESpliceInQuote e sp -> ESpliceInQuote <$> go e <*> pure sp
       e@EQuoteHole {} -> pure e
       EDerive goal sp -> EDerive <$> mapM go goal <*> pure sp
+      e@EContextualImpossible {} -> pure e
       e@EImpossible {} -> pure e
       e@EKindQualified {} -> pure e
       e@EModuleSig {} -> pure e

@@ -1,0 +1,30 @@
+module control.comonad.traced
+
+import control.comonad.*
+
+-- The traced comonad records a monoidal offset before producing a value.
+data Traced m a =
+    Traced (runTraced : m -> a)
+
+instance Functor (Traced m) =
+    let map function wrapped =
+        match wrapped
+        case Traced trace -> Traced (\offset -> function (trace offset))
+
+instance Monoid m => Comonad (Traced m) =
+    let extract wrapped =
+        match wrapped
+        case Traced trace -> trace empty
+    let duplicate wrapped =
+        match wrapped
+        case Traced trace ->
+            Traced (\first -> Traced (\second -> trace (append first second)))
+    let extend function wrapped =
+        match wrapped
+        case Traced trace ->
+            Traced (\first -> function (Traced (\second -> trace (append first second))))
+
+traceAt : forall m a. m -> Traced m a -> a
+let traceAt offset wrapped =
+    match wrapped
+    case Traced trace -> trace offset

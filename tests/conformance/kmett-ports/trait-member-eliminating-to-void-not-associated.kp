@@ -1,12 +1,9 @@
 --! mode check
 --! assertNoErrors
 
--- Compiler bug found while porting `Decidable.lose`. A polymorphic associated
--- member whose argument eliminates its input to the prelude `Void` is not
--- retained as an associated member. The instance method is then parsed as an
--- unexpectedly indented duplicate top-level declaration. Replacing `Void`
--- with `Bool` makes the same trait and instance compile, so this is not an
--- ordinary trait layout or higher-kinded inference failure.
+-- Regression found while porting `Decidable.lose`. This pins a polymorphic
+-- associated member whose argument eliminates its input to the prelude
+-- `Void`, alongside another polymorphic member in the same trait layout.
 
 module main
 
@@ -28,4 +25,3 @@ instance Select Predicate =
                     match branch input
                     case Err first -> testLeft first
                     case Ok second -> testRight second)
--- STATUS(8c3c7747): FAIL — the checker loses the Void-eliminating term member, then reports an indentation/duplicate/missing-member cascade.

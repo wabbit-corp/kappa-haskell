@@ -4,9 +4,9 @@
 -- §16.1.8 runtime relevance restriction (L16767-16781): for a runtime-
 -- relevant expression, automatic transport may use a proof only if it is
 -- RuntimeErased, or the transport is checked under ambient demand 0, or
--- the transport is backend-lowerable. An erased (@0) proof and a
--- demand-0 target are therefore fine; a runtime-relevant (ω) proof at a
--- runtime-relevant target must not be silently inserted — the call is
+-- the transport is backend-lowerable. A proof whose equality type is
+-- RuntimeErased and a demand-0 target are therefore fine; a proof-relevant
+-- equality at a runtime-relevant target must not be silently inserted — the call is
 -- rejected (kappa.type.transport-failed or, if only lowering remains,
 -- E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE; failing as usual otherwise).
 module main
@@ -14,27 +14,37 @@ module main
 data FlagBox (b : Bool) : Type =
     MakeFlagBox
 
-needsSame : (b : Bool) -> FlagBox b -> Unit
-let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+needsSame : (@0 b : Bool) -> FlagBox b -> Unit
+let needsSame @b (x : FlagBox b) : Unit = ()
 
--- POSITIVE: erased proof, runtime-relevant transported expression.
-erasedOk : forall (x : Bool) (y : Bool). (@0 p : x = y) -> FlagBox x -> Unit
-let erasedOk (@0 x : Bool) (@0 y : Bool) (@0 p : x = y) (box : FlagBox x) : Unit =
-    needsSame y box
+-- POSITIVE: Bool equality is RuntimeErased, while the transported expression
+-- remains runtime-relevant.
+erasedOk : forall (@0 x : Bool) (@0 y : Bool). (@0 p : x = y) -> FlagBox x -> Unit
+let erasedOk @x @y @p (box : FlagBox x) : Unit =
+    needsSame @y box
 
-dropErased : (b : Bool) -> (@0 g : FlagBox b) -> Unit
-let dropErased (b : Bool) (@0 g : FlagBox b) : Unit = ()
+-- Keep this carrier abstract: unlike Bool, arbitrary `a` has no ambient
+-- IsSet evidence, so x = y is not known RuntimeErased. This lets the next
+-- two probes isolate ambient demand 0 from proof erasure.
+data GenericBox (parametric 0 a : Type) (parametric 0 x : a) : Type =
+    MakeGenericBox (payload : Int)
 
--- POSITIVE: relevant proof, but the transported argument is checked
--- under demand 0 (an erased binder position).
-demandZeroOk : forall (x : Bool) (y : Bool). (ω p : x = y) -> FlagBox x -> Unit
-let demandZeroOk (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : Unit =
-    dropErased y box
+dropGenericErased : forall (@0 a : Type) (@0 y : a). (@0 g : GenericBox a y) -> Unit
+let dropGenericErased @a @y @g : Unit = ()
 
--- NEGATIVE: relevant proof at a runtime-relevant target with no
--- lowerable transport: silent insertion is forbidden.
-relevantBad : forall (x : Bool) (y : Bool). (ω p : x = y) -> FlagBox x -> Unit
-let relevantBad (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : Unit =
-    needsSame y box --!! kappa.application.argument-mismatch
+-- POSITIVE: genuinely proof-relevant equality, but the transported argument
+-- is checked under demand 0 (an erased binder position).
+demandZeroOk : forall (@0 a : Type) (@0 x : a) (@0 y : a). (ω p : x = y) -> GenericBox a x -> Unit
+let demandZeroOk @a @x @y (ω p : x = y) (box : GenericBox a x) : Unit =
+    dropGenericErased @a @y @box
 
--- STATUS(74742dfd): FAIL — expected 1 errors, got 3; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)" at line 23
+needsGeneric : forall (@0 a : Type) (@0 y : a). GenericBox a y -> Unit
+let needsGeneric @a @y (box : GenericBox a y) : Unit = ()
+
+-- NEGATIVE: a genuinely proof-relevant equality at a runtime-relevant
+-- target has no lowerable transport, so silent insertion is forbidden.
+relevantBad : forall (@0 a : Type) (@0 x : a) (@0 y : a). (ω p : x = y) -> GenericBox a x -> Unit
+let relevantBad @a @x @y (ω p : x = y) (box : GenericBox a x) : Unit =
+    needsGeneric @a @y box --!! kappa.application.argument-mismatch
+
+-- STATUS(ab0a1126): FAIL — SPEC-CORRECT — expected only relevantBad's rejection, but the compiler also rejects erasedOk and demandZeroOk: it does not use either RuntimeErased Bool equality or ambient demand 0 to license the required §16.1.8 transport.

@@ -766,6 +766,8 @@ registry =
       "Several observable inhabitants remain and no checked coherence fact permits the derivation engine to select one (§16.3.2A)."
   , ent "E_DERIVE_CYCLE" (Just "kappa.derive")
       "The derivation obligation graph contains an unproductive cycle; no incomplete evidence value may be used to close it (§14.3.4A, §16.3.2A)."
+  , ent "E_TRAIT_REFINEMENT_CYCLE" (Just "kappa.trait.refinement-cycle")
+      "The resolved trait-refinement graph contains a cyclic strongly connected component; the component is rejected as one graph-level error (§14.1.5)."
   , ent "E_DERIVE_BUDGET_EXHAUSTED" (Just "kappa.derive")
       "Derivation exhausted its deterministic logical-cost budget before producing a checked proof (§14.5.10-§14.5.11)."
   , ent "E_DERIVE_PROVIDER_INVALID" (Just "kappa.derive")

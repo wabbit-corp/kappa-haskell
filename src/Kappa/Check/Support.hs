@@ -77,6 +77,7 @@ module Kappa.Check.Support
   , generatedConstraintBinders
   , generatedConstraintsNotIn
   , globalCoreType
+  , globalCoreTypeInState
   , globalDefWithCanonicalCoreBody
   , globalUniverseInterfaceTerms
   , globalValueIsUniverseInterface
@@ -278,6 +279,8 @@ import Kappa.CoreOps
   , levelMetasOfTerm
   , levelParamsOfTerm
   , roleLevelParamsOfTerm
+  , checkerSemanticSpine
+  , finalizedSemanticSpineAfterGeneratedConstraints
   , maxFreeIndexTerm
   , metaIdsOf
   , metaOccursInTermShallow
@@ -1260,7 +1263,7 @@ generatedConstraintBinderNames = map fst . generatedConstraintBinders
 generatedConstraintBinders :: Term -> [(Text, UniverseConstraint)]
 generatedConstraintBinders = go
   where
-    go (CPiEvidenceM Ordinary FormationOrdinary Impl Q0 _ name (Just (lower, upper)) _ _ codomain)
+    go (CPiEvidenceM Ordinary FormationOrdinary Impl Q0 _ name (Just (lower, upper)) BinderGenerated _ codomain)
       | schemaLevel lower
       , schemaLevel upper =
           (name, UniverseConstraint (normalizeLevel lower) (normalizeLevel upper)) : go codomain
@@ -1413,7 +1416,7 @@ materializePendingUniverseProofsRaw g = do
           , csCoreBodies = coreBodiesWithTarget
           , csPendingUniverseProofs = Map.delete g (csPendingUniverseProofs st)
           , csPending =
-              filter (\(meta, _, _, _, _) -> meta `Set.notMember` resolvedEvidence) (csPending st)
+              filter ((`Set.notMember` resolvedEvidence) . peeMeta) (csPending st)
           , csPendingLevelEvidence =
               Map.withoutKeys (csPendingLevelEvidence st) resolvedEvidence
           }
@@ -2672,13 +2675,16 @@ reportUnsolvedHoleAt depth holeName sp tyT = do
           ("hole " <> holeName <> " : " <> expectedR)
 
 pendingEntryMeta :: PendingEvidenceEntry -> MetaId
-pendingEntryMeta (meta, _, _, _, _) = meta
+pendingEntryMeta = peeMeta
 
 pendingEntryCtx :: PendingEvidenceEntry -> Ctx
-pendingEntryCtx (_, _, _, pendingCtx, _) = pendingCtx
+pendingEntryCtx = peeCtx
 
 refreshPendingEntry :: PendingEvidenceEntry -> CheckM Value
-refreshPendingEntry (_, goal, _, pendingCtx, _) =
+refreshPendingEntry entry =
+  let goal = peeGoal entry
+      pendingCtx = peeCtx entry
+   in
   quoteIn pendingCtx goal
     >>= zonkTermM (ctxLen pendingCtx)
     >>= evalIn pendingCtx
@@ -3212,7 +3218,9 @@ buildPendingEvidenceGraph = do
                     )
                 )
             )
-          | entry@(_, goal, _, pendingCtx, _) <- entries
+          | entry <- entries
+          , let goal = peeGoal entry
+                pendingCtx = peeCtx entry
           ]
       reverseIndex =
         Map.fromListWith Set.union
@@ -3390,13 +3398,11 @@ isTraitGoal v =
             Nothing -> False
     _ -> pure False
 
--- | Remove the physically present declaration-universe proof prefix from a
--- resolved trait application.  Instance heads, supertrait closures, and
--- member telescopes are defined over the trait's semantic source parameters;
--- generated/user level proofs are ordinary implicit Core arguments but are
--- not additional trait parameters.  The exact resolved global type is the
--- authority, so an ordinary implicit parameter can never be dropped merely
--- because its source shape resembles evidence.
+-- | Recover a resolved trait application's source-semantic spine. The
+-- declaration publication set is the phase authority: checker-owned
+-- provisional values contain only semantic arguments, while finalized values
+-- must carry the complete generated proof prefix. Argument count never selects
+-- a phase.
 traitSemanticSpineIn
   :: CheckState
   -> GName
@@ -3405,35 +3411,20 @@ traitSemanticSpineIn
 traitSemanticSpineIn st trait arguments = do
   definition <- Map.lookup trait (csGlobals st)
   info <- Map.lookup trait (csTraits st)
-  let semanticCount = tiParamCount info
-      parameterCount = dutParameterCount (gdUniverses definition)
-      proofCount =
-        length
-          ( declarationUniverseConstraints
-              parameterCount
-              (globalCoreType (ecOf st) definition)
-          )
-      (proofArguments, semanticArguments) = splitAt proofCount arguments
-  if length arguments == semanticCount
+  if trait `Set.member` csFinalizedUniverseInterfaces st
     then
-      -- Checker-owned semantic goals are built by 'globalValueM': the hidden
-      -- universe instance is explicit in 'VGlobal', while generated
-      -- declaration-constraint proofs are not materialized in the value spine.
-      -- Exact source arity authenticates this representation.
-      pure arguments
-    else do
-      -- Values evaluated from finalized Core carry the physical erased proof
-      -- prefix. Validate that complete prefix before exposing source arguments.
-      guard (length proofArguments == proofCount)
-      guard (all ((== Impl) . fst) proofArguments)
-      guard (length semanticArguments == semanticCount)
-      pure semanticArguments
+      finalizedSemanticSpineAfterGeneratedConstraints
+        (dutParameterCount (gdUniverses definition))
+        (tiParamCount info)
+        (globalCoreType (ecOf st) definition)
+        arguments
+    else checkerSemanticSpine (tiParamCount info) arguments
 
 -- | Recognize an overloaded numeric-literal goal by selected trait identity
 -- and return its source-semantic carrier. Universe-aware and finalized Core
--- values may differ in whether generated declaration-proof arguments are
--- physically present, so both forms use 'traitSemanticSpineIn' rather than
--- inspecting a raw argument position.
+-- values are decoded according to their tracked publication phase, so both
+-- forms use 'traitSemanticSpineIn' rather than inspecting a raw argument
+-- position.
 numericLiteralCarrierIn
   :: CheckState
   -> Value
@@ -4151,13 +4142,14 @@ canonicalizeTermsUnderBranchFactsWith
   mapM (normalizeOne reductionFuel) terms
 
 -- | Quote the positive constructor/index refinements established by the
--- current checked patterns.  The map key is a rigid level, not a source name;
--- negative constructor exclusions are intentionally not substitutions.
+-- current checked patterns. Only root rigid subjects enter arithmetic Core
+-- substitution; projection refinements remain conversion facts and negative
+-- constructor exclusions are intentionally not substitutions.
 checkedRigidFactTerms :: Ctx -> CheckM (Map Int Term)
 checkedRigidFactTerms ctx = do
   facts <- gets csFacts
   fmap Map.fromList . fmap catMaybes . forM (Map.toList facts) $ \case
-    (level, FactIs replacement)
+    (RefinementRigid level, FactIs replacement)
       | level >= 0
       , level < ctxLen ctx -> do
           term <- quoteIn ctx replacement >>= zonkTermM (ctxLen ctx)
@@ -4774,7 +4766,7 @@ surfPatVars = \case
 -- repair retained uses.
 globalUniverseInterfaceTerms :: CheckState -> GName -> GlobalDef -> [Term]
 globalUniverseInterfaceTerms st global definition =
-  globalCoreType ec definition
+  globalCoreTypeInState st global definition
     : manifestTerms ++ effectTerms ++ instanceTerms
   where
     ec = ecOf st
@@ -4795,6 +4787,19 @@ globalUniverseInterfaceTerms st global definition =
 globalCoreType :: EvalCtx -> GlobalDef -> Term
 globalCoreType ec definition =
   fromMaybe (quote ec 0 (gdType definition)) (gdCoreType definition)
+
+-- | The authoritative Core interface while checking a module. A source
+-- signature is retained verbatim until its declaration SCC is generalized;
+-- re-quoting the semantic value during that interval can delta-expand a
+-- transparent alias DAG into an exponentially larger tree. Finalized and
+-- generated declarations have no pending source signature and use their
+-- canonical retained Core type (or semantic quotation as the last resort).
+globalCoreTypeInState :: CheckState -> GName -> GlobalDef -> Term
+globalCoreTypeInState st global definition =
+  Map.findWithDefault
+    (globalCoreType (ecOf st) definition)
+    global
+    (csCoreSignatures st)
 
 instanceUniverseInterfaceTerms :: CheckState -> GName -> [Term]
 instanceUniverseInterfaceTerms st global =

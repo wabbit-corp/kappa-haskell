@@ -4,8 +4,7 @@ let buildConfig : BuildConfig = package
     , sourceRoots = [sourceRoot "src", sourceRoot "test"]
     , fragmentAxes = []
     , dependencies =
-        [ pathDependency { name = "either", path = "../either" }
-        , pathDependency { name = "bifunctors", path = "../bifunctors" }
+        [ pathDependency { name = "bifunctors", path = "../bifunctors" }
         ]
     , hostBindings = []
     , targets =
@@ -14,7 +13,7 @@ let buildConfig : BuildConfig = package
             , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags []
             , modules = modulesUnder "data.profunctor"
-            , dependencies = ["either", "bifunctors"]
+            , dependencies = ["bifunctors"]
             }
         , executable
             { name = "profunctors-tests"
@@ -22,7 +21,7 @@ let buildConfig : BuildConfig = package
             , fragments = tags []
             , main = module "profunctors.run_tests"
             , modules = modulesUnder "data.profunctor"
-            , dependencies = ["either", "bifunctors"]
+            , dependencies = ["bifunctors"]
             , hostBindings = []
             }
         ]

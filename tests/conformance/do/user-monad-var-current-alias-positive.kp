@@ -9,6 +9,11 @@ module main
 data Wrap (0 a : Type) : Type =
     MkWrap (runWrap : UIO a)
 
+instance Functor Wrap =
+    let map f ma =
+        match ma
+        case MkWrap ioa -> MkWrap (bindIO ioa (\a -> pureIO (f a)))
+
 instance Applicative Wrap =
     let pure x = MkWrap (pureIO x)
     let liftA2 f ma mb =

@@ -1,0 +1,41 @@
+module control.comonad.store
+
+import control.comonad.*
+
+-- A store is a position paired with a function that can inspect any position.
+data Store s a =
+    Store (peekStore : s -> a) (storePosition : s)
+
+instance Functor (Store s) =
+    let map function wrapped =
+        match wrapped
+        case Store peek position -> Store (\next -> function (peek next)) position
+
+instance Comonad (Store s) =
+    let extract wrapped =
+        match wrapped
+        case Store peek position -> peek position
+    let duplicate wrapped =
+        match wrapped
+        case Store peek position -> Store (\next -> Store peek next) position
+    let extend function wrapped =
+        match wrapped
+        case Store peek position -> Store (\next -> function (Store peek next)) position
+
+position : forall s a. Store s a -> s
+let position wrapped =
+    match wrapped
+    case Store peek current -> current
+
+peek : forall s a. s -> Store s a -> a
+let peek next wrapped =
+    match wrapped
+    case Store inspect current -> inspect next
+
+seek : forall s a. s -> Store s a -> Store s a
+let seek next wrapped =
+    match wrapped
+    case Store inspect current -> Store inspect next
+
+seeks : forall s a. (s -> s) -> Store s a -> Store s a
+let seeks function wrapped = seek (function (position wrapped)) wrapped

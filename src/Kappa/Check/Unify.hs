@@ -310,21 +310,25 @@ generatedProofEnvironment proofScope body callerConstraintBinders rigidWitness =
     { gpeAvailableCallerConstraints = availableCallerConstraints
     , gpeCallerAssumptions =
         foldl'
-          (\assumptions (_, constraint) ->
+          (\assumptions constraint ->
              insertAssumption (ucLower constraint) (ucUpper constraint) assumptions)
           emptyAssumptions
-          availableCallerConstraints
+          assumptionConstraints
     , gpeRigidWitness = rigidWitness
     }
   where
     bodyProofNames = case proofScope of
       GeneratedProofLambdas -> generatedProofPrefix body
       GeneratedProofTelescope -> map fst callerConstraintBinders
+      GeneratedProofMetadata -> []
     availableCallerConstraints =
       [ (index, constraint)
       | (index, name) <- zip [0 ..] bodyProofNames
       , Just constraint <- [lookup name callerConstraintBinders]
       ]
+    assumptionConstraints = case proofScope of
+      GeneratedProofMetadata -> map snd callerConstraintBinders
+      _ -> map snd availableCallerConstraints
 
 generatedProofFor
   :: GeneratedProofEnvironment
@@ -585,22 +589,41 @@ repairFinalizedGeneratedConstraintEvidence = do
         Map.map
           (map snd . generatedConstraintBinders . globalCoreType context)
           (csGlobals state)
+      globalTargets =
+        Map.map
+          (\definition ->
+             let coreType = globalCoreType context definition
+              in (map snd (generatedConstraintBinders coreType), corePiIcities coreType))
+          (csGlobals state)
       constructorConstraints =
         Map.map
           (map snd . generatedConstraintBinders . ciType)
           (csCtors state)
+      constructorTargets =
+        Map.map
+          (\info ->
+             (map snd (generatedConstraintBinders (ciType info)), corePiIcities (ciType info)))
+          (csCtors state)
+      reconcile scope callerConstraints term =
+        repairGeneratedConstraintEvidenceArguments
+          scope
+          globalConstraints
+          constructorConstraints
+          callerConstraints
+          rigidWitness
+          ( replayPublishedGeneratedConstraintCallSpines
+              scope
+              globalTargets
+              constructorTargets
+              callerConstraints
+              rigidWitness
+              term
+          )
       repairType global definition
         | not (gnameInModule global currentModule) = definition
         | otherwise =
             let coreType = globalCoreType context definition
-                repaired =
-                  repairGeneratedConstraintEvidenceArguments
-                    GeneratedProofTelescope
-                    globalConstraints
-                    constructorConstraints
-                    (generatedConstraintBinders coreType)
-                    rigidWitness
-                    coreType
+                repaired = reconcile GeneratedProofTelescope (generatedConstraintBinders coreType) coreType
              in definition {gdCoreType = Just repaired}
       globalsWithCoreTypes = Map.mapWithKey repairType (csGlobals state)
       repairedContext = context {ecGlobals = Globals globalsWithCoreTypes}
@@ -620,12 +643,9 @@ repairFinalizedGeneratedConstraintEvidence = do
         | otherwise =
             info
               { ciType =
-                  repairGeneratedConstraintEvidenceArguments
+                  reconcile
                     GeneratedProofTelescope
-                    globalConstraints
-                    constructorConstraints
                     (generatedConstraintBinders (ciType info))
-                    rigidWitness
                     (ciType info)
               }
       constructors' = Map.mapWithKey repairConstructor (csCtors state)
@@ -637,19 +657,32 @@ repairFinalizedGeneratedConstraintEvidence = do
                     []
                     (generatedConstraintBinders . globalCoreType repairedContext)
                     (Map.lookup global globalsWithTypes)
-             in repairGeneratedConstraintEvidenceArguments
-                  GeneratedProofLambdas
-                  globalConstraints
-                  constructorConstraints
-                  callerConstraints
-                  rigidWitness
-                  body
+             in reconcile GeneratedProofLambdas callerConstraints body
       bodies' = Map.mapWithKey repairBody (csCoreBodies state)
+      traits' =
+        Map.mapWithKey
+          (\global info ->
+             if not (gnameInModule global currentModule)
+               then info
+               else
+                 let callerConstraints =
+                       maybe
+                         []
+                         (generatedConstraintBinders . globalCoreType repairedContext)
+                         (Map.lookup global globalsWithTypes)
+                  in info
+                       { tiSupers =
+                           [ (field, reconcile GeneratedProofMetadata callerConstraints term)
+                           | (field, term) <- tiSupers info
+                           ]
+                       })
+          (csTraits state)
       stateWithArtifacts =
         state
           { csGlobals = globalsWithTypes
           , csCtors = constructors'
           , csCoreBodies = bodies'
+          , csTraits = traits'
           }
       globals' =
         Map.mapWithKey
@@ -1179,8 +1212,10 @@ repairConstructorPatternUniverseSpines evaluation constructors = goTerm 0
       let scrutinee' = goTerm currentDepth scrutinee
           annotation' = goTerm currentDepth <$> annotation
           resultAnnotation' = goTerm currentDepth <$> resultAnnotation
-          expected =
-            eval evaluation (rigidEnvironment currentDepth) <$> annotation'
+          expected = do
+            checked <- annotation'
+            guard (termScopedAt currentDepth checked)
+            pure (eval evaluation (rigidEnvironment currentDepth) checked)
           alternatives' = map (repairAlternative currentDepth expected) alternatives
        in Just (CMatch scrutinee' annotation' resultAnnotation' alternatives')
     rewriteTerm _ _ _ = Nothing

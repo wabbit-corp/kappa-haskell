@@ -3,6 +3,11 @@ module lib.shadow
 data IO (0 a : Type) : Type =
     MkIO (runShadowIO : UIO a)
 
+instance Functor IO =
+    let map f ma =
+        match ma
+        case MkIO ioa -> MkIO (bindIO ioa (\a -> pureIO (f a)))
+
 instance Applicative IO =
     let pure x = MkIO (pureIO x)
     let liftA2 f ma mb =

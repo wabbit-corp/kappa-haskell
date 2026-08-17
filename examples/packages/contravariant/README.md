@@ -6,10 +6,8 @@ includes `Contravariant`, `Divisible`, and `Decidable`; the `phantom` helper;
 and the representative `Predicate`, `Equivalence`, `Comparison`, and `Op`
 carriers.
 
-The public `lose` operation is currently derived from the equivalent
-`loseEmpty : f Void` member. This keeps the usual API usable while the compiler
-bug for associated members of type `(a -> Void) -> f a` remains pinned under
-`tests/pending-import/kmett-ports/`.
+The port uses the upstream-shaped `lose : (a -> Void) -> f a` member and the
+prelude's branch-symmetric `Either` coproduct directly.
 
 ```sh
 cabal run -v0 kappa -- build --manifest examples/packages/contravariant \

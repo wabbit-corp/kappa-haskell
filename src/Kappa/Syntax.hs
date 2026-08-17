@@ -367,6 +367,9 @@ data Expr
   | EDerive !(Maybe Expr) !Span
   -- ^ Unified derivation request (§16.3.2A): bare @derive@ is
   -- expected-type directed; @derive (G)@ stores the explicit goal @G@.
+  | EContextualImpossible !Name !Span
+  -- ^ Parsed soft-keyword occurrence. Elaboration resolves an ordinary
+  -- binding first; only an unbound occurrence denotes §17.1.4 @impossible@.
   | EImpossible !Span
   | EKindQualified !KindSelector !Name !Span -- ^ @type T@, @trait C@, ... (§7.1.1)
   | EModuleSig !Name !Span -- ^ @moduleSig M@ (§7.5)
@@ -920,6 +923,7 @@ exprSpan = \case
   ESpliceInQuote _ sp -> sp
   EQuoteHole _ sp -> sp
   EDerive _ sp -> sp
+  EContextualImpossible _ sp -> sp
   EImpossible sp -> sp
   EKindQualified _ _ sp -> sp
   EModuleSig _ sp -> sp

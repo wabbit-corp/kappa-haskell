@@ -236,9 +236,20 @@ import Kappa.Usage (tailResumptiveClause)
 postponeEqualityEvidence :: Ctx -> Span -> Value -> CheckM Term
 postponeEqualityEvidence ctx site goal = do
   (meta, placeholder) <- freshMetaForWithId ctx goal
-  facts <- gets csBoolFacts
+  boolFacts <- gets csBoolFacts
+  rigidFacts <- gets csFacts
   modify' $ \state ->
-    state {csPending = (meta, goal, site, ctx, facts) : csPending state}
+    state
+      { csPending =
+          PendingEvidenceEntry
+            meta
+            goal
+            site
+            ctx
+            boolFacts
+            rigidFacts
+            : csPending state
+      }
   pure placeholder
 
 -- | Whether a bare derivation request has the rigid expected goal required by

@@ -40,6 +40,9 @@ module Kappa.CoreOps
   , itemPatternLevels
   , declarationUniverseConstraints
   , declarationUniverseConstraintBinder
+  , generatedDeclarationUniverseConstraints
+  , checkerSemanticSpine
+  , finalizedSemanticSpineAfterGeneratedConstraints
   , authenticatedLevelAssumption
   , authenticatedLevelAssumptionWith
   , dedupeUniverseConstraints
@@ -48,6 +51,7 @@ module Kappa.CoreOps
   , specializeTraitMemberStorageType
   , metaOccursInTermShallow
   , metaOccursInTermShallowFuel
+  , coreUsesVar0
   , termClosed
   , globalsOfTerm
   , spineOfTerm
@@ -91,6 +95,81 @@ import Kappa.Level
   )
 import Kappa.Source (ModuleName (..))
 
+-- | Does a Pi/Lam closure body reference its own bound variable (de Bruijn
+-- index 0, relative to the body)? This shared, checker-independent query is
+-- the authority for safely avoiding argument evaluation under a syntactically
+-- non-dependent closure.
+--
+-- The result is conservative for Core forms whose internal binder structure
+-- is intentionally opaque here: they report a dependency rather than permit
+-- an invalid optimization.
+coreUsesVar0 :: Term -> Bool
+coreUsesVar0 = go 0
+  where
+    -- @depth@ counts binders crossed; the closure binder then appears as
+    -- @CVar depth@.
+    go depth = \case
+      CVar index -> index == depth
+      CUniverseLift _ _ _ inner -> go depth inner
+      CSchemaLift _ _ _ _ _ _ sourceArguments targetArguments inner ->
+        any (go depth) sourceArguments
+          || any (go depth) targetArguments
+          || go depth inner
+      CArithmeticProof certificate ->
+        any (go depth) (foldMapArithmeticCertificate (: []) certificate)
+      CGlob _ -> False
+      CLocal _ _ -> False
+      CLam _ _ _ body -> go (depth + 1) body
+      CPi _ _ _ _ domain codomain ->
+        go depth domain || go (depth + 1) codomain
+      CApp _ function argument -> go depth function || go depth argument
+      CSort _ -> False
+      CLevel _ -> False
+      CLit _ -> False
+      CCtor _ _ arguments -> any (go depth) arguments
+      CMatch scrutinee _ _ alternatives ->
+        go depth scrutinee
+          || any
+               (\(CaseAlt pattern' guard' body) ->
+                  let bodyDepth = depth + patBindersC pattern'
+                   in maybe False (go bodyDepth) guard' || go bodyDepth body)
+               alternatives
+      CRecordT fields -> any (go depth . snd) fields
+      CRecordV fields -> any (go depth . snd) fields
+      CProj receiver _ -> go depth receiver
+      CProjAt receiver _ _ -> go depth receiver
+      CVariantT members -> any (go depth) members
+      CInject _ value -> go depth value
+      CLet _ _ classifier rhs body ->
+        go depth classifier || go depth rhs || go (depth + 1) body
+      CLetRec _ _ classifier rhs body ->
+        go depth classifier || go (depth + 1) rhs || go (depth + 1) body
+      CLetPolyM _ _ _ _ classifier rhs body ->
+        go depth classifier || go depth rhs || go (depth + 1) body
+      CLetRecPolyM _ _ _ _ classifier rhs body ->
+        go depth classifier || go (depth + 1) rhs || go (depth + 1) body
+      CLetRecGroupM _ definitions body ->
+        let count = length definitions
+         in any
+              (\definition ->
+                 go depth (clrdType definition)
+                   || go (depth + count) (clrdRhs definition))
+              definitions
+              || go (depth + count) body
+      CMeta _ -> False
+      CDo _ _ -> True
+      CSealE _ value -> go depth value
+      CSigT _ value -> go depth value
+      CThunkE value suspensionType ->
+        go depth value || maybe False (go depth) suspensionType
+      CLazyE value suspensionType ->
+        go depth value || maybe False (go depth) suspensionType
+      CForceE value resultType ->
+        go depth value || maybe False (go depth) resultType
+      CIf condition yes no ->
+        go depth condition || go depth yes || go depth no
+      CQuote _ _ -> True
+
 -- | Recover the declaration-level universe obligations represented by erased
 -- implicit proof binders in a finalized Core type.  This is the single
 -- structural authority used by checking, interchange, and backend validation;
@@ -99,7 +178,7 @@ declarationUniverseConstraints :: Int -> Term -> [UniverseConstraint]
 declarationUniverseConstraints parameterCount = dedupeUniverseConstraints . go
   where
     go term@(CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) =
-      case declarationUniverseConstraintBinder parameterCount term of
+      case anyDeclarationUniverseConstraintBinder parameterCount term of
         Just constraint -> constraint : go codomain
         Nothing -> []
     go _ = []
@@ -110,7 +189,7 @@ declarationUniverseConstraints parameterCount = dedupeUniverseConstraints . go
 -- term telescope without reconstructing the proof shape independently.
 declarationUniverseConstraintBinder :: Int -> Term -> Maybe UniverseConstraint
 declarationUniverseConstraintBinder parameterCount = \case
-  CPiEvidenceM Ordinary FormationOrdinary Impl Q0 _ _ (Just (lower, upper)) _ _ _
+  CPiEvidenceM Ordinary FormationOrdinary Impl Q0 _ _ (Just (lower, upper)) BinderGenerated _ _
     | schemaLevel lower
     , schemaLevel upper ->
         Just (UniverseConstraint (normalizeLevel lower) (normalizeLevel upper))
@@ -121,6 +200,74 @@ declarationUniverseConstraintBinder parameterCount = \case
         && null (levelVars level)
         && null (levelFields level)
         && all (\parameter -> parameter >= 0 && parameter < parameterCount) (levelParams level)
+
+-- | Recover only the compiler-generated leading constraint prefix. This is
+-- the physical-spine authority: source-written proof binders remain ordinary
+-- semantic arguments even when they represent an equivalent proposition.
+generatedDeclarationUniverseConstraints :: Int -> Term -> [UniverseConstraint]
+generatedDeclarationUniverseConstraints parameterCount = dedupeUniverseConstraints . go
+  where
+    go term@(CPiEvidenceM _ _ _ _ _ _ _ _ _ codomain) =
+      case declarationUniverseConstraintBinder parameterCount term of
+        Just constraint -> constraint : go codomain
+        Nothing -> []
+    go _ = []
+
+anyDeclarationUniverseConstraintBinder :: Int -> Term -> Maybe UniverseConstraint
+anyDeclarationUniverseConstraintBinder parameterCount = \case
+  CPiEvidenceM Ordinary FormationOrdinary Impl Q0 _ _ (Just (lower, upper)) origin _ _
+    | origin == BinderGenerated || origin == BinderSourceWritten
+    , schemaLevel lower
+    , schemaLevel upper ->
+        Just (UniverseConstraint (normalizeLevel lower) (normalizeLevel upper))
+  _ -> Nothing
+  where
+    schemaLevel level =
+      null (levelMetas level)
+        && null (levelVars level)
+        && null (levelFields level)
+        && all (\parameter -> parameter >= 0 && parameter < parameterCount) (levelParams level)
+
+-- | Validate a checker-owned semantic application spine. Generated
+-- declaration evidence is not physical before interface finalization, so this
+-- phase accepts exactly the source-semantic arity and never guesses that an
+-- argument prefix belongs to another representation.
+checkerSemanticSpine
+  :: Int
+  -> [(Icit, argument)]
+  -> Maybe [(Icit, argument)]
+checkerSemanticSpine semanticParameterCount arguments
+  | length arguments == semanticParameterCount = Just arguments
+  | otherwise = Nothing
+
+-- | Recover the source-semantic suffix from a finalized Core application.
+-- Unlike 'checkerSemanticSpine', this trust-boundary
+-- decoder never accepts the checker-only form with an omitted generated
+-- prefix.  Backend consumers must use this function so a malformed physical
+-- spine cannot masquerade as a well-formed semantic spine by arity alone.
+finalizedSemanticSpineAfterGeneratedConstraints
+  :: Int
+  -> Int
+  -> Term
+  -> [(Icit, argument)]
+  -> Maybe [(Icit, argument)]
+finalizedSemanticSpineAfterGeneratedConstraints
+  universeParameterCount
+  semanticParameterCount
+  declarationType
+  arguments =
+    let proofCount =
+          length
+            ( generatedDeclarationUniverseConstraints
+                universeParameterCount
+                declarationType
+            )
+        (proofArguments, semanticArguments) = splitAt proofCount arguments
+     in if length proofArguments == proofCount
+          && all ((== Impl) . fst) proofArguments
+          && length semanticArguments == semanticParameterCount
+          then Just semanticArguments
+          else Nothing
 
 -- | Recheck that proof-interface metadata denotes exactly the comparison in
 -- its checked canonical domain. This function is intentionally pure and uses
@@ -257,15 +404,16 @@ specializeTraitMemberProjectionType outerDepth parameterCount arguments dictiona
   | otherwise = preserveEvidence 0 memberType
   where
     preserveEvidence evidenceDepth = \case
-      CPiRuntimeM mode formation Impl q borrowed name assumption@(Just _) origin runtimeErasure domain codomain ->
-        CPiRuntimeM mode formation Impl q borrowed name assumption origin runtimeErasure domain
+      CPiRuntimeM mode formation Impl q borrowed name assumption@(Just _) BinderGenerated runtimeErasure domain codomain ->
+        CPiRuntimeM mode formation Impl q borrowed name assumption BinderGenerated runtimeErasure domain
           <$> preserveEvidence (evidenceDepth + 1) codomain
       residual ->
         specializePrefix evidenceDepth (arguments ++ [dictionary]) residual
 
     specializePrefix _ [] residual = Just residual
     specializePrefix evidenceDepth (argument : rest) residual = case residual of
-      CPiEvidenceM _ _ Impl _ _ _ Nothing _ _ codomain ->
+      CPiEvidenceM _ _ Impl _ _ _ assumption origin _ codomain
+        | origin == BinderSourceWritten || assumption == Nothing ->
         specializePrefix
           evidenceDepth
           rest
@@ -289,20 +437,20 @@ specializeTraitMemberStorageType
   -> Maybe Term
 specializeTraitMemberStorageType outerDepth parameterCount arguments dictionary memberType
   | length arguments /= parameterCount = Nothing
-  | otherwise = discardEvidence memberType >>= specializePrefix (arguments ++ [dictionary])
+  | otherwise =
+      specializeTraitMemberProjectionType
+        outerDepth
+        parameterCount
+        arguments
+        dictionary
+        memberType
+        >>= discardEvidence
   where
     discardEvidence = \case
-      CPiEvidenceM _ _ Impl Q0 False _ (Just _) _ _ codomain
+      CPiEvidenceM _ _ Impl Q0 False _ (Just _) BinderGenerated _ codomain
         | not (mentionsTopBinder codomain) ->
             discardEvidence (shiftTerm (-1) 0 codomain)
       residual -> Just residual
-
-    specializePrefix [] residual = Just residual
-    specializePrefix (argument : rest) residual = case residual of
-      CPiEvidenceM _ _ Impl _ _ _ Nothing _ _ codomain ->
-        specializePrefix rest
-          (substTopTermAt outerDepth argument codomain)
-      _ -> Nothing
 
     mentionsTopBinder = getAny . foldTermWithDepth occurrence 0
       where

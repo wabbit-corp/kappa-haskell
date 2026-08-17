@@ -55,8 +55,17 @@ import Kappa.Builtins
   , prelTrue
   )
 import Kappa.Core
-import Kappa.CoreOps (foldTermWithDepth, globalsOfTerm, itemPatternLevels, shiftTerm, spineOfTerm, substTopTermAt, termNodeLevels, termScopedAt)
-import Kappa.Eval (EvalCtx (..), convertible, eval, evalApp, force, quote)
+import Kappa.CoreOps (coreUsesVar0, foldTermWithDepth, globalsOfTerm, itemPatternLevels, shiftTerm, spineOfTerm, substTopTermAt, termNodeLevels, termScopedAt)
+import Kappa.Eval
+  ( EvalCtx (..)
+  , RefinementSubject (..)
+  , convertible
+  , eval
+  , evalApp
+  , force
+  , quote
+  , refinementSubject
+  )
 import Kappa.Source (ModuleName (..))
 
 -- | Stable within one canonical Core tree.  Local paths are structural child
@@ -382,8 +391,12 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           , force ctx (substituteValue substitution actualValue)
           )
         of
-        (VRigid level [], actual) -> bind level actual substitution
-        (patternForced, VRigid level []) -> bind level patternForced substitution
+        (patternForced, actualForced)
+          | Just subject <- refinementSubject patternForced ->
+              bind subject actualForced substitution
+        (patternForced, actualForced)
+          | Just subject <- refinementSubject actualForced ->
+              bind subject patternForced substitution
         (VRigid level patternSpine, VRigid actualLevel actualSpine)
           | level == actualLevel -> alignSpines substitution patternSpine actualSpine
         (VFlex meta patternSpine, VFlex actualMeta actualSpine)
@@ -462,30 +475,34 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
             Just (global, levels, spine ++ suffix)
           _ -> Nothing
 
-    bind level actual substitution =
+    bind subject actual substitution =
       let actual' = substituteValue substitution actual
        in case actual' of
-            VRigid actualLevel [] | actualLevel == level -> Just substitution
+            _ | refinementSubject actual' == Just subject -> Just substitution
             _
-              | rigidOccurs substitution level actual' -> Nothing
-              | otherwise -> case Map.lookup level substitution of
-                  Nothing -> Just (Map.insert level actual' substitution)
+              | subjectOccurs substitution subject actual' -> Nothing
+              | otherwise -> case Map.lookup subject substitution of
+                  Nothing -> Just (Map.insert subject actual' substitution)
                   Just previous -> align substitution previous actual'
 
-    -- The branch equations form a first-order rigid unifier. Reject recursive
-    -- equations rather than manufacturing an infinite classifier (for example
-    -- @i ~ F i@). Closures are inspected through their captured environments;
-    -- object-language binders in the closure body cannot refer directly to an
-    -- outer semantic level except through that environment.
-    rigidOccurs substitution needle = go Set.empty
+    -- The branch equations form a first-order stable-subject unifier. Reject
+    -- every replacement that mentions the subject's root binder rather than
+    -- manufacturing an infinite classifier. This conservative occurs check
+    -- also keeps sibling-projection equations out of the trusted fragment.
+    subjectOccurs substitution needle = go Set.empty
       where
+        root = subjectRoot needle
+        subjectRoot = \case
+          RefinementRigid level -> level
+          RefinementProjection parent _ -> subjectRoot parent
         go seen value = case value of
           VRigid level spine ->
-            level == needle
+            level == root
               || any (go seen . snd) spine
-              || case Map.lookup level substitution of
+              || case Map.lookup (RefinementRigid level) substitution of
                    Just replacement
-                     | Set.notMember level seen -> go (Set.insert level seen) replacement
+                     | Set.notMember (RefinementRigid level) seen ->
+                         go (Set.insert (RefinementRigid level) seen) replacement
                    _ -> False
           VFlex _ spine -> any (go seen . snd) spine
           VGlobal _ _ spine -> any (go seen . snd) spine
@@ -536,10 +553,11 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
         go resolving value = case value of
           VRigid level spine ->
             let spine' = [(icit, go resolving argument) | (icit, argument) <- spine]
-             in case Map.lookup level substitution of
+                subject = RefinementRigid level
+             in case Map.lookup subject substitution of
                   Just base
-                    | Set.notMember level resolving ->
-                        evalApp ctx (go (Set.insert level resolving) base) spine'
+                    | Set.notMember subject resolving ->
+                        evalApp ctx (go (Set.insert subject resolving) base) spine'
                   Nothing -> VRigid level spine'
                   _ -> VRigid level spine'
           VFlex meta spine -> VFlex meta [(icit, go resolving argument) | (icit, argument) <- spine]
@@ -568,7 +586,14 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
               (go resolving <$> resultAnnotation)
               alternatives
               (map (go resolving) environment)
-          VProjN mode receiver field -> VProjN mode (go resolving receiver) field
+          VProjN mode receiver field ->
+            let projected = VProjN mode (go resolving receiver) field
+             in case refinementSubject projected >>= (`Map.lookup` substitution) of
+                  Just replacement
+                    | Just subject <- refinementSubject projected
+                    , Set.notMember subject resolving ->
+                        go (Set.insert subject resolving) replacement
+                  _ -> projected
           VAppN icit function argument -> VAppN icit (go resolving function) (go resolving argument)
           VSealV labels inner -> VSealV labels (go resolving inner)
           VSigT labels inner -> VSigT labels (go resolving inner)
@@ -1029,7 +1054,8 @@ observationDependencies oracle bindings expected = go [] bindings expected
     applicationDependencies path env wanted application =
       let (headTerm, arguments) = spineOfTerm application
           headType = observationCallableType ctx (length env) <$> inferAt env headTerm
-          rawDependencies = case betaApply (length env) headTerm arguments of
+          rawDependencies = fromMaybe
+            (case betaApply (length env) headTerm arguments of
             -- Eta-expanded constructor values are a definitional presentation
             -- detail.  Analyze the saturated constructor application itself so
             -- its checked telescope supplies every argument domain.  This is
@@ -1123,12 +1149,40 @@ observationDependencies oracle bindings expected = go [] bindings expected
                           (disableBindingDefinition index env)
                           headType body arguments 0
                       _ -> applicationDependenciesRaw path env application
-              _ -> applicationDependenciesRaw path env application
+              _ -> applicationDependenciesRaw path env application)
+            (ordinaryNondependentApplicationResult path env headTerm headType arguments)
        in maybe rawDependencies
             (\callable ->
               evidenceRelativeCallableDependencies
                 ctx (length env) callable rawDependencies)
             headType
+
+    -- SS30.2.0 gives ordinary binders the propagation equation
+    -- @propagate(ordinary, x, B, Da) = {}@. Therefore a dependency-free head
+    -- applied only through ordinary, syntactically non-dependent binders has
+    -- an empty result dependency set without traversing any operand. Each
+    -- operand's admissibility is checked at its own application occurrence;
+    -- this lemma computes only the enclosing application's result set.
+    --
+    -- Keeping this in the shared calculus makes elaboration and finalized
+    -- KCore replay use the same proof, and prevents left-associated ordinary
+    -- application chains from repeatedly walking every checked prefix.
+    ordinaryNondependentApplicationResult path env headTerm headType arguments = do
+      functionType <- headType
+      guard
+        ( Set.null
+            (go (child path 0) env (Just functionType) headTerm)
+        )
+      walk functionType arguments
+      where
+        walk _ [] = Just Set.empty
+        walk functionType ((actualIcit, _) : rest) =
+          case force ctx functionType of
+            VPiM Ordinary expectedIcit _ _ _ _ (Closure closureEnv codomain)
+              | actualIcit == expectedIcit
+              , not (coreUsesVar0 codomain) ->
+                  walk (eval ctx (VSort LZero : closureEnv) codomain) rest
+            _ -> Nothing
 
     literalRecordProjection = \case
       CProjM _ CRecordV {} _ -> True
@@ -1306,15 +1360,21 @@ observationDependencies oracle bindings expected = go [] bindings expected
             | otherwise -> Just barriers
         walkPrimitive functionType ((actualIcit, argument) : rest) offset barriers =
           case force ctx functionType of
-            VPiM _ expectedIcit _ _ _ _ (Closure closureEnv codomain)
+            VPiM mode expectedIcit _ _ _ _ (Closure closureEnv codomain)
               | actualIcit == expectedIcit
-              , termScopedAt (length env) argument ->
-                  let argumentDeps =
-                        go (child path (offset + 1)) env Nothing argument
-                      argumentValue = eval ctx (rigidEnv (length env)) argument
+              , let codomainDepends = coreUsesVar0 codomain
+              , not codomainDepends || termScopedAt (length env) argument ->
+                  let argumentBarriers
+                        | mode == Parametric =
+                            preserveBarriers
+                              (go (child path (offset + 1)) env Nothing argument)
+                        | otherwise = Set.empty
+                      argumentValue
+                        | codomainDepends = eval ctx (rigidEnv (length env)) argument
+                        | otherwise = VSort LZero
                       resultType = eval ctx (argumentValue : closureEnv) codomain
                    in walkPrimitive resultType rest (offset + 1)
-                        (barriers `Set.union` preserveBarriers argumentDeps)
+                        (barriers `Set.union` argumentBarriers)
             _ -> Nothing
 
     listAt index values = case drop index values of
@@ -1360,9 +1420,12 @@ observationDependencies oracle bindings expected = go [] bindings expected
                     | parametricCodomainPropagates ctx (length env) mode (Closure closureEnv codomain) = argumentDeps
                     | otherwise = preserveBarriers argumentDeps
                   accumulated' = accumulated `Set.union` propagated
-               in if termScopedAt (length env) argument
+                  codomainDepends = coreUsesVar0 codomain
+               in if not codomainDepends || termScopedAt (length env) argument
                     then
-                      let argumentValue = eval ctx (rigidEnv (length env)) argument
+                      let argumentValue
+                            | codomainDepends = eval ctx (rigidEnv (length env)) argument
+                            | otherwise = VSort LZero
                           resultType = eval ctx (argumentValue : closureEnv) codomain
                           -- Each application result is interpreted relative to
                           -- its own checked classifier before the next spine
@@ -1376,9 +1439,14 @@ observationDependencies oracle bindings expected = go [] bindings expected
                        in walkArguments path env unavailableHead resultDependencies (Just resultType) rest (offset + 1)
                     else
                       -- A recovery term outside the supplied local telescope
-                      -- cannot safely specialize a dependent codomain. Retain
-                      -- the dependencies already proved and analyze every
-                      -- remaining argument conservatively.
+                      -- cannot safely specialize a dependent codomain. A
+                      -- non-dependent codomain never reaches this branch: its
+                      -- syntactic dependency proof permits an inert closure
+                      -- argument and avoids traversing an already-checked
+                      -- application prefix merely to recover an unchanged
+                      -- result classifier. Retain the dependencies already
+                      -- proved and analyze every remaining argument
+                      -- conservatively.
                       walkArguments path env unavailableHead accumulated' Nothing rest (offset + 1)
         _ ->
           walkArguments path env unavailableHead accumulated Nothing

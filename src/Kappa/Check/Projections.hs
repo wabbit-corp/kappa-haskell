@@ -317,14 +317,14 @@ withApplicationEvidenceScope action = do
   let freshCount = max 0 (length diags - diagCount0)
       structurallyInvalid = any applicationShapeFailure (take freshCount diags)
   when structurallyInvalid $ do
-    let preexisting = Set.fromList [mid | (mid, _, _, _, _) <- pending0]
+    let preexisting = Set.fromList (map peeMeta pending0)
     modify' $ \st ->
       let retainedPending =
             filter
-              (\(mid, _, _, _, _) -> Set.member mid preexisting)
+              ((`Set.member` preexisting) . peeMeta)
               (csPending st)
           retainedIds =
-            Set.fromList [mid | (mid, _, _, _, _) <- retainedPending]
+            Set.fromList (map peeMeta retainedPending)
        in st
             { csPending = retainedPending
             , csPendingLevelEvidence =
@@ -397,7 +397,9 @@ pendingEntryHasRigidSemanticArgument entry =
 pendingEntryUsesAssociatedEvidenceProjection
   :: PendingEvidenceEntry
   -> CheckM Bool
-pendingEntryUsesAssociatedEvidenceProjection (_, goal, _, pendingCtx, _) = do
+pendingEntryUsesAssociatedEvidenceProjection entry = do
+  let goal = peeGoal entry
+      pendingCtx = peeCtx entry
   goalTerm <-
     quoteIn pendingCtx goal >>= zonkTermM (ctxLen pendingCtx)
   state <- get
@@ -443,9 +445,37 @@ applicationShapeFailure diagnostic =
 -- partial calls, and every other carrier are preserved verbatim.
 canonicalizeSelectedNatOperation :: Ctx -> Term -> CheckM Term
 canonicalizeSelectedNatOperation ctx application = do
-  finalized <- zonkTermM (ctxLen ctx) application
+  finalized <- zonkSelectedOperationShellM (ctxLen ctx) application
   instances <- gets csInstances
-  pure (fromMaybe application (canonicalStandardBinaryOperation instances finalized))
+  pure
+    ( case canonicalStandardBinaryOperation instances finalized of
+        Nothing -> application
+        Just lowered -> canonicalizeStandardArithmeticOperations instances lowered
+    )
+
+-- | Finalize exactly the evidence-bearing shell inspected by
+-- 'canonicalStandardBinaryOperation'. Its explicit operands are already
+-- checked terms and are deliberately left opaque: recursively zonking a
+-- growing left-associated operand at every application makes an operator
+-- chain quadratic without contributing any operation-selection evidence.
+-- Later Core finalization still zonks the complete result once.
+zonkSelectedOperationShellM :: Int -> Term -> CheckM Term
+zonkSelectedOperationShellM depth application = do
+  let (headTerm, arguments) = spineOfTerm application
+  headTerm' <- zonkTermM depth headTerm
+  arguments' <- forM arguments $ \case
+    (Impl, argument)
+      | null (metaIdsOf argument)
+          && null (levelMetasOfTerm argument) ->
+          pure (Impl, argument)
+      | otherwise -> (Impl,) <$> zonkTermM depth argument
+    explicit -> pure explicit
+  pure
+    ( List.foldl'
+        (\function (icity, argument) -> CApp icity function argument)
+        headTerm'
+        arguments'
+    )
 
 -- | Canonicalize only the two explicit endpoints of a checked equality goal.
 -- The bounded transparent reducer deliberately does not descend through

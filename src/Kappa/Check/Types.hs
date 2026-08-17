@@ -31,7 +31,7 @@ module Kappa.Check.Types
   , AppResultPreparation (..)
   , AppSlot (..)
   , ArithmeticCertificateGoalEndpoints (..)
-  , ArithmeticIndexTransportResult (..)
+  , NominalIndexTransportResult (..)
   , AuditRecord (..)
   , AuthenticatedLevelProofPolicy (..)
   , CAnn (..)
@@ -101,7 +101,7 @@ module Kappa.Check.Types
   , PendingEvidenceAttempt
   , PendingEvidenceDependency (..)
   , PendingEvidenceDependencyVersion (..)
-  , PendingEvidenceEntry
+  , PendingEvidenceEntry (..)
   , PendingEvidenceGraph (..)
   , PendingLevelEvidence (..)
   , PendingNominalSummary (..)
@@ -125,7 +125,6 @@ module Kappa.Check.Types
   , RelationFlavor (..)
   , RelationSpec (..)
   , RootsSupply (..)
-  , SccReferenceMode (..)
   , ScopedBoolFact (..)
   , SelectedUniverseEvidence (..)
   , SrcInfo (..)
@@ -194,8 +193,9 @@ data CtorInfo = CtorInfo
   , ciFields :: ![(Maybe Text, Maybe Expr)] -- ^ explicit fields: name, default (§10.1.1; elaborated at the application site)
   , ciSourceFields :: ![(Icit, Maybe Text)]
   -- ^ Every source constructor field, including erased implicit proof fields.
-  -- Family parameters, generated universe evidence, and trait premises are
-  -- intentionally absent: they are constructor-interface binders, not fields.
+  -- Source-written trait premises are hidden fields because their dictionaries
+  -- may be runtime payloads. Family parameters and generated universe evidence
+  -- remain absent: they are constructor-interface binders, not source fields.
   }
 
 -- | Whether arbitrary complete evidence values of a trait application may be
@@ -262,10 +262,10 @@ data ProviderLawRole
   | ProviderRightIdentity
   | ProviderCommutative
 
-data ArithmeticIndexTransportResult
-  = ArithmeticIndexTransportApplied !Term
-  | ArithmeticIndexTransportBlocked !(Set MetaId)
-  | ArithmeticIndexTransportNotApplicable
+data NominalIndexTransportResult
+  = NominalIndexTransportApplied !Term
+  | NominalIndexTransportBlocked !(Set MetaId)
+  | NominalIndexTransportNotApplicable
 
 data InstanceEntry = InstanceEntry
   { ieTrait :: !GName
@@ -816,7 +816,7 @@ data CheckState = CheckState
   , csModuleAliases :: !(Map Text ModuleName)
   , csModuleExports :: !(Map ModuleName [Text])
   , csFresh :: !Int
-  , csPending :: ![(MetaId, Value, Span, Ctx, [ScopedBoolFact])]
+  , csPending :: ![PendingEvidenceEntry]
   , csPendingEvidenceAttempts :: !(Map MetaId PendingEvidenceAttempt)
   -- ^ Last failed semantic attempt for each postponed evidence identity.
   -- Declaration closeout retries an entry only after one of this snapshot's
@@ -874,9 +874,9 @@ data CheckState = CheckState
   -- static-object identity is preserved through them
   , csActive :: !(Map GName APInfo)
   -- ^ §17.3 active-pattern definitions and their result classification
-  , csFacts :: !(Map Int RigidFact)
-  -- ^ Branch-local dependent-match facts about rigid levels (§7.4.1),
-  -- consulted by conversion-time match reduction
+  , csFacts :: !(Map RefinementSubject RigidFact)
+  -- ^ Branch-local dependent-match facts about rigid identities and stable
+  -- projection paths (§7.4.1), consulted by conversion-time reduction.
   , csProjections :: !(Map GName ProjInfo)
   -- ^ §9.1.1 projection definitions: binder structure for the
   -- projection facet at application sites
@@ -1497,6 +1497,7 @@ data EffectOpValueInfo = EffectOpValueInfo
 data GeneratedProofScope
   = GeneratedProofLambdas
   | GeneratedProofTelescope
+  | GeneratedProofMetadata
 
 data GeneratedProofEnvironment = GeneratedProofEnvironment
   { gpeAvailableCallerConstraints :: ![(Int, UniverseConstraint)]
@@ -1520,7 +1521,18 @@ data PrincipalBoundaryFailure
   | PrincipalBoundaryNoPointwiseLeast !PrincipalNonLeastWitness
   | PrincipalBoundaryOutsidePortableFragment
 
-type PendingEvidenceEntry = (MetaId, Value, Span, Ctx, [ScopedBoolFact])
+-- | One postponed implicit/proof obligation together with the exact lexical
+-- proof authority in scope when it was raised. Constructor refinements and
+-- Boolean facts are equally branch-local: retrying outside that branch must
+-- replay both transactionally, and neither may enter a global evidence cache.
+data PendingEvidenceEntry = PendingEvidenceEntry
+  { peeMeta :: !MetaId
+  , peeGoal :: !Value
+  , peeSite :: !Span
+  , peeCtx :: !Ctx
+  , peeBoolFacts :: ![ScopedBoolFact]
+  , peeRigidFacts :: !(Map RefinementSubject RigidFact)
+  }
 
 data PendingEvidenceGraph = PendingEvidenceGraph
   { pegPendingIds :: !(Set MetaId)
@@ -1568,13 +1580,11 @@ data AppSlot
   | SlotInfer ObservationMode Term Value
   | SlotEvid ObservationMode Q Value Term Value
   | SlotImpl ObservationMode Q Bool (RuntimeErasure Value) Expr Value MetaId Value
-  | -- | An explicit argument slot, carrying the placeholder meta's id
-    -- and value plus a 'Bool' that records whether the function's
-    -- codomain actually depends on this argument. When 'False' (a
-    -- non-dependent arrow), the placeholder meta is solved directly
-    -- (O(1)) instead of unified (O(size)), since it never reaches the
-    -- result type — see 'step'.
-    SlotExpl ObservationMode Q Bool (RuntimeErasure Value) Bool Expr Value MetaId Value Bool
+  | -- | An explicit argument slot. Dependent binders carry the private
+    -- placeholder substituted into the codomain; non-dependent binders carry
+    -- 'Nothing' and therefore never evaluate an already-checked operand merely
+    -- to solve an occurrence that cannot reach the result type.
+    SlotExpl ObservationMode Q Bool (RuntimeErasure Value) Bool Expr Value (Maybe (MetaId, Value))
   | SlotReady Icit (RuntimeErasure Term) Term
 
 data AppResultPreparation
@@ -1608,11 +1618,12 @@ data PatKey = KCtor !GName | KTup !Int | KLit !Literal
   deriving stock (Eq)
 
 -- | Branch-local conversion facts established while elaborating a pattern.
--- The map uses rigid de Bruijn levels, so it remains valid while the pattern
--- continuation extends the context with its binders. It is deliberately
--- opaque outside this module: callers can only install it with
+-- Subjects use rigid de Bruijn levels plus authenticated projection paths, so
+-- they remain valid while the pattern continuation extends the context with
+-- its binders. The map is deliberately opaque outside this module: callers
+-- can only install it with
 -- 'withPatternRefinements', which enforces lexical save/restore.
-newtype PatternRefinements = PatternRefinements (Map Int RigidFact)
+newtype PatternRefinements = PatternRefinements (Map RefinementSubject RigidFact)
 
 data ExplicitRefOp = ExplicitRefRead | ExplicitRefWrite
   deriving (Eq)
@@ -1829,11 +1840,6 @@ data PartialCall = PartialCall
   , pcArgs :: ![(Icit, Term)]
   }
   deriving stock (Show)
-
-data SccReferenceMode
-  = AnySccReference
-  | IncompleteSccClosure
-  deriving stock (Eq)
 
 data MeasureCall = MeasureCall
   { mcDepth :: !Int

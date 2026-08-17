@@ -1,0 +1,11 @@
+module main
+
+import api.*
+
+-- DX issue found after the cross-module higher-kinded trait bug was fixed.
+-- `project` and `embed` share the same inferred base functor, and the imported
+-- module supplies exactly one Recursive/Corecursive pair for List. A reader
+-- should not have to name `ListF Int (List Int)` between these inverse
+-- operations merely to guide implicit search.
+roundTrip : List Int -> List Int
+let roundTrip values = embed (project values)

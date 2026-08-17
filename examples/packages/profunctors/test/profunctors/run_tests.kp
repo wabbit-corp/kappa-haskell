@@ -1,7 +1,6 @@
 module profunctors.run_tests
 
 import data.bifunctor.*
-import data.either.*
 import data.profunctor.core.*
 import data.profunctor.strong.*
 import data.profunctor.choice.*
@@ -19,8 +18,8 @@ let dimapped =
 
 strongMapped : Bool
 let strongMapped =
-    match run (firstP (MkFn (\n -> addInt n 1))) (Pair 41 "kept")
-    case Pair n text -> eqInt n 42 && text == "kept"
+    match run (firstP (MkFn (\n -> addInt n 1))) (PairF 41 "kept")
+    case PairF n text -> eqInt n 42 && text == "kept"
 
 choiceMapped : Bool
 let choiceMapped =

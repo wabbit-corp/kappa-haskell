@@ -1,6 +1,7 @@
 module recursion_schemes.run_tests
 
 import data.functor.foldable.*
+import data.functor.foldable.list.*
 
 sumLayer : ListF Int Int -> Int
 let sumLayer layer =
@@ -21,7 +22,9 @@ paramorphismWorks : Bool
 let paramorphismWorks = eqInt (para sumParaLayer [1, 2, 3, 4]) 10
 
 projectEmbedWorks : Bool
-let projectEmbedWorks = eqInt (cata sumLayer (embed (project [10, 20, 12]))) 42
+let projectEmbedWorks =
+    let layer : ListF Int (List Int) = project [10, 20, 12]
+    eqInt (cata sumLayer (embed layer)) 42
 
 line : String -> Bool -> String
 let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")

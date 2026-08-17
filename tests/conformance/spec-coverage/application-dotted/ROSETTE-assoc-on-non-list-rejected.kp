@@ -29,12 +29,13 @@ let ok = assocInt 1 [(1, "one"), (2, "two")]
 badSwap : Option String
 let badSwap = assocInt [(1, "one")] 1               --!! kappa.application.argument-mismatch kappa.type.literal-domain-mismatch
 
--- NEGATIVE: table contains the wrong inner type; the literal element
--- (1, 2) cannot check against (Int, String).
+-- NEGATIVE: table contains the wrong inner type. Both independent tuple
+-- payloads fail to check against String; §3.1.10 does not suppress one root
+-- merely because the adjacent element has the same error.
 badEntries : Option String
 let badEntries = assocInt 1 [(1, 2), (2, 3)]
 
 --! assertDiagnosticFamily error kappa.application.argument-mismatch
---! assertErrorCount 3
+--! assertErrorCount 4
 
 -- STATUS(a0497523): PASS

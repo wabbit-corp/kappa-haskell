@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 proof sources (L20242-20253): "Eq.eqSound applied to an
+-- available proof of (x == y) = True" is an enumerated transport proof
+-- source; branch-local (x == y) = True arises in the then-branch
+-- (L20247). §14.1.2 (L17664): eqSound turns that into x = y. Transport
+-- steps also carry a direction (L20191-20197), and one proof p : v = u
+-- suffices (L20225), so a backward proof y = x licenses FlagBox x ->
+-- FlagBox y just as x = y does.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsSame : (@0 b : Bool) -> FlagBox b -> Unit
+let needsSame @b (x : FlagBox b) : Unit = ()
+
+-- POSITIVE: then-branch evidence (x == y) = True + Eq.eqSound gives
+-- x = y, transporting FlagBox x to the demanded FlagBox y.
+viaEqSound : (x : Bool) -> (y : Bool) -> FlagBox x -> Unit
+let viaEqSound (x : Bool) (y : Bool) (box : FlagBox x) : Unit =
+    if x == y then needsSame @y box else ()
+
+-- POSITIVE: a backward-direction explicit proof y = x licenses the same
+-- single-replacement transport as the forward spelling.
+viaBackward : forall (@0 x : Bool) (@0 y : Bool). (@0 p : y = x) -> FlagBox x -> Unit
+let viaBackward @x @y @p (box : FlagBox x) : Unit =
+    needsSame @y box
+
+-- STATUS(ab0a1126): FAIL — SPEC-CORRECT — both the Eq.eqSound bridge in viaEqSound and the backward explicit proof in viaBackward are required §16.1.8 proof sources, but both calls report E_APPLICATION_ARGUMENT_MISMATCH.

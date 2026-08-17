@@ -559,6 +559,7 @@ recognizedMultishotInExpr ops = go
       ChainOp {} -> False
     go = \case
       EVar {} -> False
+      EContextualImpossible {} -> False
       ERefFacet {} -> False
       EVarRead {} -> False
       EHole {} -> False

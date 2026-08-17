@@ -1,0 +1,42 @@
+-- Source issues: GHC#289, GHC#301
+-- Spec: data_types.gadts
+-- A GADT constructor can carry a trait obligation (Show a => ...).
+-- When that constructor is matched, the carried evidence must be automatically
+-- available in the match branch body — no explicit annotation required.
+
+module main
+
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "(7, True)\n"
+--! assertExitCode 0
+
+-- A user-defined trait keeps the runtime observation independent of any
+-- implementation shortcut for the prelude's `Show` dictionaries.
+trait Render (a : Type) =
+  render : a -> String
+
+instance Render Int =
+  let render n = showInt n
+
+instance Render Bool =
+  let render b = if b then "True" else "False"
+
+data Expr (a : Type) : Type =
+  Lit  : Render a => a -> Expr a
+  Pair : Expr a -> Expr b -> Expr (a, b)
+
+-- Accepted: Render evidence is in scope from the Lit constructor's carried constraint.
+showExpr : Expr a -> String
+let showExpr e =
+  match e
+    case (Lit x)    -> render x
+    case (Pair l r) -> "(" ++ showExpr l ++ ", " ++ showExpr r ++ ")"
+
+main : UIO Unit
+let main = printlnString (showExpr (Pair (Lit 7) (Lit True)))
+
+-- STATUS(8c3c7747): FAIL — promoted conformance regression: the carried Render evidence is available during
+-- checking, but execution leaves `().render` unreduced and fails at the
+-- printlnString primitive instead of producing "(7, True)".

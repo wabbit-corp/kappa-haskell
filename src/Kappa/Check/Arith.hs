@@ -49,6 +49,7 @@ module Kappa.Check.Arith
   , selectedNatRangeMembershipOperands
   , selectedStandardOrderFact
   , standardPreludeDictionary
+  , standardBinaryOperationApplicationHead
   , stripIdentityWrappers
   , substituteLevelAssumptions
   , termCacheUniverseScoped
@@ -1086,11 +1087,63 @@ canonicalizeStandardArithmeticOperations instances = fixedPoint
 canonicalStandardArithmeticOperation :: [InstanceEntry] -> Term -> Maybe Term
 canonicalStandardArithmeticOperation instances term =
   canonicalTrustedNaturalLiteralBridge term
+    <|> canonicalTrustedClosedArithmetic term
     <|> canonicalTrustedIntegerPrimitive term
     <|> canonicalStandardBooleanOperation term
     <|> canonicalStandardFromIntegerOperation instances term
     <|> canonicalStandardBinaryOperation instances term
     <|> canonicalStandardComparisonOperation instances term
+
+-- | Evaluate the exact closed-literal fragment of the trusted arithmetic
+-- primitives.  This is the §15.8.1 closed-literal normalization step, not a
+-- source-level constant folder: the global head must resolve to one of the
+-- compiler/runtime primitives, and partial operations remain applications
+-- when their runtime precondition is false.
+canonicalTrustedClosedArithmetic :: Term -> Maybe Term
+canonicalTrustedClosedArithmetic application =
+  case spineOfTerm (stripIdentityWrappers application) of
+    (headTerm, arguments)
+      | Just global <- termHeadGlob (stripIdentityWrappers headTerm) ->
+          foldGlobal global [argument | (Expl, argument) <- arguments]
+    _ -> Nothing
+  where
+    foldGlobal global arguments
+      | global == prelNatAdd = naturalBinary (+) arguments
+      | global == prelNatMultiply = naturalBinary (*) arguments
+      | otherwise =
+          case intArithPrim global of
+            Just PrimAddInt -> integerBinary (+) arguments
+            Just PrimSubInt -> integerBinary (-) arguments
+            Just PrimMulInt -> integerBinary (*) arguments
+            Just PrimDivInt -> integerPartialBinary (\left right -> left `quot` right) (/= 0) arguments
+            Just PrimModInt -> integerPartialBinary (\left right -> left `rem` right) (/= 0) arguments
+            Just PrimNegInt -> integerUnary negate arguments
+            Just PrimNatToInt -> naturalUnary id arguments
+            Just PrimNatOfInt -> naturalUnary id arguments
+            Just PrimIntToNat -> naturalUnary id arguments
+            Nothing -> Nothing
+
+    integerUnary operation [CLit (LitInt value)] =
+      Just (CLit (LitInt (operation value)))
+    integerUnary _ _ = Nothing
+
+    naturalUnary operation [CLit (LitInt value)]
+      | value >= 0 = Just (CLit (LitInt (operation value)))
+    naturalUnary _ _ = Nothing
+
+    integerBinary operation [CLit (LitInt left), CLit (LitInt right)] =
+      Just (CLit (LitInt (operation left right)))
+    integerBinary _ _ = Nothing
+
+    naturalBinary operation [CLit (LitInt left), CLit (LitInt right)]
+      | left >= 0
+      , right >= 0 =
+          Just (CLit (LitInt (operation left right)))
+    naturalBinary _ _ = Nothing
+
+    integerPartialBinary operation precondition [CLit (LitInt left), CLit (LitInt right)]
+      | precondition right = Just (CLit (LitInt (operation left right)))
+    integerPartialBinary _ _ _ = Nothing
 
 -- | Compute the exact closed Nat-to-Integer bridge used by the standard Nat
 -- arithmetic dictionaries. Nat literals and Integer literals share the exact
@@ -1220,7 +1273,7 @@ canonicalStandardBinaryOperation instances application =
 
     globalOperation headTerm arguments = do
       operation <- termHeadGlob (stripIdentityWrappers headTerm)
-      (operationKind, trait) <- operationDescriptor operation
+      (operationKind, trait) <- standardOperationDescriptor operation
       carrier : dictionary : proofArguments <-
         pure [argument | (Impl, argument) <- arguments]
       domain <- arithmeticDomainForCarrier carrier
@@ -1278,19 +1331,6 @@ canonicalStandardBinaryOperation instances application =
                 proof
             )
         )
-
-    operationDescriptor operation
-      | operation `elem` [prelAddOp, prelAddMethod, memberGlobal prelAdd "add"] =
-          Just (ArithmeticAdd, prelAdd)
-      | operation `elem` [gPrel "*", gPrel "multiply", memberGlobal (gPrel "Mul") "multiply"] =
-          Just (ArithmeticMultiply, gPrel "Mul")
-      | operation `elem` [gPrel "-", gPrel "subtract", memberGlobal (gPrel "CheckedSub") "subtract"] =
-          Just (ArithmeticSubtract, gPrel "CheckedSub")
-      | operation `elem` [gPrel "/", gPrel "divide", memberGlobal (gPrel "CheckedDiv") "divide"] =
-          Just (ArithmeticDivide, gPrel "CheckedDiv")
-      | operation `elem` [gPrel "%", gPrel "modulo", memberGlobal (gPrel "CheckedMod") "modulo"] =
-          Just (ArithmeticModulo, gPrel "CheckedMod")
-      | otherwise = Nothing
 
     projectedDescriptor member
       | member == "add" = Just (ArithmeticAdd, prelAdd)
@@ -1352,6 +1392,36 @@ canonicalStandardBinaryOperation instances application =
             (unary (CGlob prelNatToInt) left)
             (unary (CGlob prelNatToInt) right)
         )
+
+-- | Is the completed application headed by one exact standard arithmetic
+-- operation identity?  This intentionally says nothing about whether the
+-- carrier, dictionary, or partial-operation proof is ready: callers use it
+-- only to scope pending-evidence propagation before the full recognizer
+-- checks those obligations.
+standardBinaryOperationApplicationHead :: Term -> Bool
+standardBinaryOperationApplicationHead application =
+  case spineOfTerm (stripIdentityWrappers application) of
+    (headTerm, _) ->
+      isJust
+        ( termHeadGlob (stripIdentityWrappers headTerm)
+            >>= standardOperationDescriptor
+        )
+
+standardOperationDescriptor
+  :: GName
+  -> Maybe (StandardArithmeticOperation, GName)
+standardOperationDescriptor operation
+  | operation `elem` [prelAddOp, prelAddMethod, memberGlobal prelAdd "add"] =
+      Just (ArithmeticAdd, prelAdd)
+  | operation `elem` [gPrel "*", gPrel "multiply", memberGlobal (gPrel "Mul") "multiply"] =
+      Just (ArithmeticMultiply, gPrel "Mul")
+  | operation `elem` [gPrel "-", gPrel "subtract", memberGlobal (gPrel "CheckedSub") "subtract"] =
+      Just (ArithmeticSubtract, gPrel "CheckedSub")
+  | operation `elem` [gPrel "/", gPrel "divide", memberGlobal (gPrel "CheckedDiv") "divide"] =
+      Just (ArithmeticDivide, gPrel "CheckedDiv")
+  | operation `elem` [gPrel "%", gPrel "modulo", memberGlobal (gPrel "CheckedMod") "modulo"] =
+      Just (ArithmeticModulo, gPrel "CheckedMod")
+  | otherwise = Nothing
 
 -- | Canonicalize the public standard equality and order combinators while
 -- their selected dictionary is still explicit. KCore arithmetic certificates

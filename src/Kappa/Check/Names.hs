@@ -8,8 +8,7 @@
 -- "Kappa.Check.Types" for the shared data dictionary and docs\/CONCEPTS.md
 -- for the vocabulary these assume.
 module Kappa.Check.Names
-  ( alignNominalOccurrenceUniverses
-  , applyLocalNominalCaptures
+  ( applyLocalNominalCaptures
   , badLiteralSuffix
   , canonicalEqualityCorePayload
   , closeSpellings
@@ -1219,44 +1218,6 @@ nominalArgumentDomain ctx definitions global universes arguments target =
                     go (index + 1) result rest
         _ -> pure Nothing
 
--- | Reconcile only hidden-universe metas authenticated as fresh declaration
--- occurrence specializations.  These metas are elaboration choices rather
--- than source universe parameters, so aliasing a bare occurrence meta to the
--- corresponding level of the same nominal family is principal.  Complex
--- equations and every source/generalizable meta remain rigid here; the
--- ordinary universe solver owns those cases.
-alignNominalOccurrenceUniverses :: [Level] -> [Level] -> CheckM Bool
-alignNominalOccurrenceUniverses actual expected = do
-  state <- get
-  let installed = csLevelAssignments state
-      occurrenceMetas = csLevelInstantiationMetas state
-      normalizeWith aliases =
-        normalizeLevel
-          . substituteLevelMetas (Map.union aliases installed)
-      derive aliases [] = Just aliases
-      derive aliases ((actualLevel0, expectedLevel0) : rest) =
-        let actualLevel = normalizeWith aliases actualLevel0
-            expectedLevel = normalizeWith aliases expectedLevel0
-         in if actualLevel == expectedLevel
-              then derive aliases rest
-              else
-                assign aliases actualLevel expectedLevel >>= \aliases' ->
-                  derive aliases' rest
-      assign aliases (LMeta actualMeta) expectedLevel
-        | actualMeta `Set.member` occurrenceMetas
-        , actualMeta `notElem` levelMetas expectedLevel =
-            Just (Map.insert actualMeta expectedLevel aliases)
-      assign aliases actualLevel (LMeta expectedMeta)
-        | expectedMeta `Set.member` occurrenceMetas
-        , expectedMeta `notElem` levelMetas actualLevel =
-            Just (Map.insert expectedMeta actualLevel aliases)
-      assign _ _ _ = Nothing
-  case derive Map.empty (zip actual expected) of
-    Nothing -> pure False
-    Just aliases -> do
-      unless (Map.null aliases) (installLevelAssignments aliases)
-      pure True
-
 -- | Decompose only a checked declaration with nominal identity. This shared
 -- recognizer is intentionally exact: a source spelling, constructor name, or
 -- structurally similar application cannot enter nominal result planning or
@@ -1352,10 +1313,10 @@ pendingComponentTypeKey depth metas state =
     ]
 
 pendingEntrySite :: PendingEvidenceEntry -> Span
-pendingEntrySite (_, _, site, _, _) = site
+pendingEntrySite = peeSite
 
 pendingEntryFacts :: PendingEvidenceEntry -> [ScopedBoolFact]
-pendingEntryFacts (_, _, _, _, facts) = facts
+pendingEntryFacts = peeBoolFacts
 
 pendingEntryIsUnsolved :: PendingEvidenceEntry -> CheckM Bool
 pendingEntryIsUnsolved entry =

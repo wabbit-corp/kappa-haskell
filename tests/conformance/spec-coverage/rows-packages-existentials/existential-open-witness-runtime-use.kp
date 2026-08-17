@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- §13.2.11: "The binders a1 ... an are introduced in body as ordinary
+-- rigid quantity-0 local bindings" — a witness "may be used in types,
+-- erased positions, compile-time obligations, and other
+-- ambient-demand-0 positions, but not in runtime-relevant computation
+-- unless a separate runtime carrier is present in the payload" (§12.2).
+-- Returning the opened Nat witness as a runtime Nat must be rejected.
+module main
+
+pkgN : exists (n : Nat). Option Int
+let pkgN = seal exists (n = 3). Some 1 as exists (n : Nat). Option Int
+
+bad : Nat
+let bad = open pkgN as exists (n). x in n
+
+-- STATUS(ab0a1126): FAIL — SPEC-CORRECT — expected one kappa.quantity.unsatisfied error, got no diagnostics; the quantity-0 witness is incorrectly accepted as a runtime Nat.

@@ -70,6 +70,7 @@ module Kappa.Check.Implicits
   , typeLevelCertificateProviders
   , valueArithmeticCertificateProviders
   , withCapturedBoolFacts
+  , withCapturedBranchFacts
   ) where
 
 import Control.Applicative ((<|>))
@@ -434,13 +435,13 @@ pendingEvidenceRetryIds forceAll = do
   state <- get
   pure $
     Set.fromList
-      [ meta
-      | (meta, _, _, _, _) <- csPending state
+      [ peeMeta entry
+      | entry <- csPending state
       , forceAll
           || maybe
                True
                (not . dependencySnapshotIsCurrent (pendingEvidenceDependencyVersion state))
-               (Map.lookup meta (csPendingEvidenceAttempts state))
+               (Map.lookup (peeMeta entry) (csPendingEvidenceAttempts state))
       ]
 
 recordPendingEvidenceAttempt
@@ -529,8 +530,7 @@ prunePendingEvidenceAttempts :: CheckM ()
 prunePendingEvidenceAttempts =
   modify' $ \state ->
     let live =
-          Set.fromList
-            [meta | (meta, _, _, _, _) <- csPending state]
+          Set.fromList (map peeMeta (csPending state))
      in state
           { csPendingEvidenceAttempts =
               Map.restrictKeys (csPendingEvidenceAttempts state) live
@@ -669,6 +669,30 @@ withCapturedBoolFacts captured action = do
     state {csBoolFacts = surrounding}
   pure result
 
+-- | Replay all exact branch-local proof authority captured by a postponed
+-- obligation. Rigid constructor refinements and Boolean facts have the same
+-- lexical lifetime, so retry must install and restore them as one scope.
+withCapturedBranchFacts
+  :: [ScopedBoolFact]
+  -> Map RefinementSubject RigidFact
+  -> CheckM a
+  -> CheckM a
+withCapturedBranchFacts capturedBool capturedRigid action = do
+  surroundingBool <- gets csBoolFacts
+  surroundingRigid <- gets csFacts
+  modify' $ \state ->
+    state
+      { csBoolFacts = capturedBool ++ surroundingBool
+      , csFacts = Map.union capturedRigid surroundingRigid
+      }
+  result <- action
+  modify' $ \state ->
+    state
+      { csBoolFacts = surroundingBool
+      , csFacts = surroundingRigid
+      }
+  pure result
+
 -- | Compute the observable meta dependencies used only by the pending-goal
 -- flexibility guard. Equality itself is opaque, so normalize its two checked
 -- endpoints under the captured facts and retain every dependency outside those
@@ -679,9 +703,10 @@ withCapturedBoolFacts captured action = do
 pendingProofRelevantMetas
   :: Ctx
   -> [ScopedBoolFact]
+  -> Map RefinementSubject RigidFact
   -> Term
   -> CheckM ([MetaId], [LevelMeta])
-pendingProofRelevantMetas ctx captured goal = do
+pendingProofRelevantMetas ctx capturedBool capturedRigid goal = do
   stateBefore <- get
   let allOrdinary =
         Set.fromList (unsolvedMetasOf stateBefore goal)
@@ -691,7 +716,7 @@ pendingProofRelevantMetas ctx captured goal = do
     Nothing -> pure (Set.toAscList allOrdinary, Set.toAscList allLevels)
     Just (left, right) -> do
       normalized <-
-        withCapturedBoolFacts captured $
+        withCapturedBranchFacts capturedBool capturedRigid $
           canonicalizeTermsUnderCheckedBranchFacts ctx [left, right]
       case normalized of
         [left', right'] -> do
@@ -962,8 +987,9 @@ equalityFromCheckedBranchFacts
   -> Value
   -> CheckM Bool
 equalityFromCheckedBranchFacts ctx sourceGoal lhs rhs = do
-  facts <- gets csBoolFacts
-  if null facts
+  booleanFacts <- gets csBoolFacts
+  rigidFacts <- gets csFacts
+  if null booleanFacts && Map.null rigidFacts
     then pure False
     else do
       let depth = ctxLen ctx
@@ -1080,7 +1106,7 @@ arithmeticRigidFactsForDomain ctx domain variables = do
   fmap catMaybes . forM variables $ \(level, kind) ->
     if arithmeticVariableBelongsToDomain domain kind
       then
-        case Map.lookup level facts of
+        case Map.lookup (RefinementRigid level) facts of
           Just (FactIs replacement) -> do
             replacementTerm <- quoteIn ctx replacement >>= zonkTermM depth
             normalized <-

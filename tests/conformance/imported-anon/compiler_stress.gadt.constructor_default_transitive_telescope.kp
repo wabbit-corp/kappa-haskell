@@ -1,0 +1,47 @@
+--! mode check
+--! assertNoErrors
+--! assertType emptyTwin TwinVec Int
+--! assertType oneTwin TwinVec Int
+--! assertEval emptyIndexSum 0
+--! assertEval oneIndexSum 2
+
+-- §10.1/§10.2: defaults in a named constructor telescope are substituted
+-- left-to-right through later defaults and field types. Here `m` defaults to
+-- the earlier `n`, while the two Vec fields depend on the two resulting
+-- indices. Named fields are deliberately supplied out of source order.
+module main
+
+data Vec (a : Type) (n : Nat) : Type =
+    VNil  : Vec a 0
+    VCons : a -> Vec a n -> Vec a (n + 1)
+
+data TwinVec (a : Type) : Type =
+    TwinVec {
+        n     : Nat = Nat.Zero,
+        m     : Nat = n,
+        left  : Vec a n,
+        right : Vec a m
+    }
+
+emptyTwin : TwinVec Int
+let emptyTwin = TwinVec { right = VNil, left = VNil }
+
+oneTwin : TwinVec Int
+let oneTwin = TwinVec {
+    right = VCons 2 VNil,
+    left = VCons 1 VNil,
+    n = 1
+}
+
+indexSum : forall (a : Type). TwinVec a -> Nat
+let indexSum twin =
+    match twin
+      case TwinVec n m _ _ -> n + m
+
+emptyIndexSum : Nat
+let emptyIndexSum = indexSum @Int emptyTwin
+
+oneIndexSum : Nat
+let oneIndexSum = indexSum @Int oneTwin
+
+-- STATUS(8c3c7747): FAIL — promoted conformance regression: both omitted-default constructions report E_TYPE_EQUALITY_MISMATCH instead of substituting `n`, then `m = n`, through the dependent field telescope.

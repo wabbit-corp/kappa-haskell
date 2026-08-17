@@ -1,12 +1,10 @@
 --! mode check
 --! assertNoErrors
 
--- Compiler bug found while adding Either's Bitraversable instance. The
+-- Regression found while adding Either's Bitraversable instance. The
 -- associated member receives `Applicative f`, whose declared superclass is
--- `Functor f`, but a direct `map` call cannot resolve that superclass evidence.
--- Replacing map with liftA2 hides the bug and adds a needless dummy Unit
--- effect. Supertrait projection should work inside polymorphic instance methods
--- just as it does in ordinary functions.
+-- `Functor f`; the direct `map` call pins superclass projection inside a
+-- polymorphic instance method.
 
 module main
 
@@ -20,4 +18,3 @@ instance TraverseOne Box =
     let traverseOne function box =
         match box
         case MkBox value -> map (\result -> MkBox result) (function value)
--- STATUS(8c3c7747): FAIL — E_UNSOLVED_IMPLICIT: Functor evidence is not projected from the local Applicative evidence.

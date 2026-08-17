@@ -3,7 +3,6 @@ module data.profunctor.choice
 import data.profunctor.core.*
 
 import data.bifunctor.*
-import data.either.*
 
 trait Profunctor p => Choice p =
     leftP : forall a b c.
@@ -27,7 +26,7 @@ instance Choice Fn =
                 case Left c -> Left c
                 case Right a -> Right (function a))
 
-instance (Functor f, Applicative f) => Choice (Star f) =
+instance Applicative f => Choice (Star f) =
     let leftP value =
         match value
         case MkStar function ->

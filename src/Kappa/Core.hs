@@ -46,6 +46,7 @@ module Kappa.Core
   , ErasureJustification (..)
   , RecordField (..)
   , ConstructorArg (..)
+  , ConstructorValueOrigin (..)
   , ConstructorValueArg (..)
   , CoreLocalRecDef (..)
   , Level (..)
@@ -467,8 +468,14 @@ data ConstructorArg = ConstructorArg
 -- spine in the value domain makes normalization-by-evaluation lossless for
 -- hidden constructor universes and erased arguments; the 'VCtor' compatibility
 -- view below exposes only the historical evaluator payload.
+data ConstructorValueOrigin
+  = ConstructorValueTyped
+  | ConstructorValueSyntheticPayload
+  deriving stock (Eq, Ord, Show, Data)
+
 data ConstructorValueArg = ConstructorValueArg
-  { cvaIcit :: !Icit
+  { cvaOrigin :: !ConstructorValueOrigin
+  , cvaIcit :: !Icit
   , cvaPayload :: !Bool
   , cvaName :: !(Maybe Text)
   , cvaValue :: !Value
@@ -1188,7 +1195,9 @@ pattern VCtor constructor payload <-
   where
     VCtor constructor payload =
       VCtorI constructor []
-        [ConstructorValueArg Expl True Nothing argument | argument <- payload]
+        [ ConstructorValueArg ConstructorValueSyntheticPayload Expl True Nothing argument
+        | argument <- payload
+        ]
 
 constructorPayloadValues :: [ConstructorValueArg] -> [Value]
 constructorPayloadValues arguments =

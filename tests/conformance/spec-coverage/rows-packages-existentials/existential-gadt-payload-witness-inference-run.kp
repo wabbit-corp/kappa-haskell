@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n"
+
+-- §13.2.11 (direct payload introduction) x §10.2 (GADT-style
+-- constructors) x §17.1: sealing a GADT value at an existential that
+-- hides its INDEX solves the witness metavariable from the payload
+-- checking problem (Cons 5 Nil : Vec (S Z) Int, so n := S Z), and the
+-- opened package's payload is pattern-matchable like any runtime value.
+-- The index witness is quantity-0 static metadata (§31.2) — matching
+-- discriminates only the runtime constructor tag. The Cons arm also returns
+-- its runtime field, merging the erased-index/runtime-payload coverage of the
+-- former existential-gadt-erased-index-pattern.kp fixture.
+module main
+
+data MyNat : Type =
+    Z
+    S MyNat
+
+data Vec (n : MyNat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (0 m : MyNat). (x : a) -> (xs : Vec m a) -> Vec (S m) a
+
+pkg : exists (n : MyNat). Vec n Int
+let pkg = seal (Cons 5 Nil) as exists (n : MyNat). Vec n Int
+
+headOrZero : Int
+let headOrZero =
+    open pkg as exists (n). v in
+        match v
+        case Nil -> 0
+        case Cons x _ -> x
+
+main : UIO Unit
+let main = do
+    printlnString (showInt headOrZero)
+
+-- STATUS(ab0a1126): PASS — the merged fixture infers the hidden index, opens and matches the existential GADT payload with an explicitly erased constructor index, and prints its runtime field as 5.

@@ -1007,39 +1007,40 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                   then []
                   else
                     let resolvedCtorAliases = usageLocalCtorAliases byName st1 usageModule
-                     in
-                    usageDiagnostics
-                      (csExpansions st1)
-                      (csUsageExpressionTypes st1)
-                      (csMutableBindingFields st1)
-                      (csDiscardedResultTypes st1)
-                      (csStaticKindBinders st1)
-                      (csErasedArgumentSpans st1)
-                      (csBorrowedArgumentDemands st1)
-                      (csErasedExpressionSpans st1)
-                      (csImplicitExpressionDemands st1)
-                      (usageImportedParams byName st1 ie)
-                      (usageImportedInoutResults byName st1 ie)
-                      (usageImportedResultTypes byName st1 ie)
-                      (usageImportedValueResultTypes byName st1 ie)
-                      (usageImportedRecordAliases byName st1 ie)
-                      (usageImportedRecordShapes byName st1 ie)
-                      (usageImportedRecordDeps byName st1 ie)
-                      (resolvedCtorAliases `Map.union` usageImportedCtors byName st1 ie)
-                      (usageRecognizedRefOps st1)
-                      (usageRecognizedMultishotOps st1)
-                      (usageHandlerOpQuantities st1)
-                      (usagePatternBinderQuantities st1)
-                      (csPatternBinderBorrows st1)
-                      (csConstructorPatternLetSpans st1)
-                      (usageImportedBorrowViewHeads st1 ie)
-                      (usageImportedNames st1 ie)
-                      (usageVisibleMonadicResultHeads st1 ie usageModule)
-                      (usageImportedProjections byName st1 ie)
-                      (usageImportedDuplicableStorageHeads byName st1 ie)
-                      (usageImportedUnaryStorageHeads st1 ie)
-                      (usageImportedBinaryStorageHeads st1 ie)
-                      usageModule
+                        diagnostics =
+                          usageDiagnostics
+                            (csExpansions st1)
+                            (csUsageExpressionTypes st1)
+                            (csMutableBindingFields st1)
+                            (csDiscardedResultTypes st1)
+                            (csStaticKindBinders st1)
+                            (csErasedArgumentSpans st1)
+                            (csBorrowedArgumentDemands st1)
+                            (csErasedExpressionSpans st1)
+                            (csImplicitExpressionDemands st1)
+                            (usageImportedParams byName st1 ie)
+                            (usageImportedInoutResults byName st1 ie)
+                            (usageImportedResultTypes byName st1 ie)
+                            (usageImportedValueResultTypes byName st1 ie)
+                            (usageImportedRecordAliases byName st1 ie)
+                            (usageImportedRecordShapes byName st1 ie)
+                            (usageImportedRecordDeps byName st1 ie)
+                            (resolvedCtorAliases `Map.union` usageImportedCtors byName st1 ie)
+                            (usageRecognizedRefOps st1)
+                            (usageRecognizedMultishotOps st1)
+                            (usageHandlerOpQuantities st1)
+                            (usagePatternBinderQuantities st1)
+                            (csPatternBinderBorrows st1)
+                            (csConstructorPatternLetSpans st1)
+                            (usageImportedBorrowViewHeads st1 ie)
+                            (usageImportedNames st1 ie)
+                            (usageVisibleMonadicResultHeads st1 ie usageModule)
+                            (usageImportedProjections byName st1 ie)
+                            (usageImportedDuplicableStorageHeads byName st1 ie)
+                            (usageImportedUnaryStorageHeads st1 ie)
+                            (usageImportedBinaryStorageHeads st1 ie)
+                            usageModule
+                     in diagnostics
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
               -- §8.4 re-exports: record where each aliased/selected

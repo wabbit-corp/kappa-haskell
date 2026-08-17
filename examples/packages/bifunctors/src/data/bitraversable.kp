@@ -2,7 +2,6 @@ module data.bitraversable
 
 import data.bifunctor.*
 import data.bifoldable.*
-import data.either.*
 
 trait (Bifunctor p, Bifoldable p) => Bitraversable p =
     bitraverse :
@@ -13,16 +12,16 @@ trait (Bifunctor p, Bifoldable p) => Bitraversable p =
 instance Bitraversable PairF =
     let bitraverse f g value =
         match value
-        case Pair a b -> liftA2 (\c -> \d -> Pair c d) (f a) (g b)
+        case PairF a b -> liftA2 (\c -> \d -> PairF c d) (f a) (g b)
 
 instance Bitraversable Either =
     let bitraverse f g value =
         match value
-        case Left a -> liftA2 (\c -> \u -> Left c) (f a) (pure Unit)
-        case Right b -> liftA2 (\d -> \u -> Right d) (g b) (pure Unit)
+        case Left a -> map (\c -> Left c) (f a)
+        case Right b -> map (\d -> Right d) (g b)
 
 instance Bitraversable Result =
     let bitraverse f g value =
         match value
-        case Err e -> liftA2 (\c -> \u -> Err c) (f e) (pure Unit)
-        case Ok a -> liftA2 (\d -> \u -> Ok d) (g a) (pure Unit)
+        case Err e -> map (\c -> Err c) (f e)
+        case Ok a -> map (\d -> Ok d) (g a)

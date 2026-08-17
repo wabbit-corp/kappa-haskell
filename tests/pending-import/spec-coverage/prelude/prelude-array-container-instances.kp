@@ -2,7 +2,7 @@
 --! assertNoErrors
 --! assertEval folded 6
 --! assertEval keptSum 5
---! assertEval fmSum 6
+--! assertEval fmSum 8
 --! assertEval travSum 6
 
 -- §28.2 "Container and traversal" (Spec L35022-35025) requires the portable
@@ -46,4 +46,3 @@ let travSum =
     match traverse (\x -> Some x) arr
       case Some ys -> sumList (arrayToList ys)
       case None -> 0 - 1
--- STATUS(74742dfd): FAIL — expected 0 errors, got 5; first error: E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type Functor Array" at line 29; assertEval: 'folded' evaluates to _.foldr Integer Integer (\ordinary x -> \ordinary acc -> + Integer #generated.instance-dictionary.std.prelude.Add@<std.prelude>:459:1 @1 @0) 0 (:: 1 (:: 2 (:: 3 Nil))), expected 6; assertEval: 'keptSum' evaluates to match _.filter Integer (\ordinary x -> < Integer #generated.instance-dictionary.std.prelude.Ord@<std.prelude>:453:1 (natToInt 1) @0) (:: 1 (:: 2 (:: 3 Nil))) ..., expected 5; assertEval: 'fmSum' evaluates to match _.filterMap Integer Integer (\ordinary x -> if eqInt @0 2 then None else Some (* Integer #generated.instance-dictionary.std.prelude.Mul@<std.prelude>:462:1 @0 2)) (:: 1 (:: 2 (:: 3 Nil))) ..., expected 6; assertEval: 'travSum' evaluates to match traverse <arithmetic-proof:ArithmeticTypeLevel> <arithmetic-proof:ArithmeticTypeLevel> <arithmetic-proof:ArithmeticTypeLevel> <arithmetic-proof:ArithmeticTypeLevel> Array _ Option Integer Integer #generated.instance-dictionary.std.prelude.Applicative@<std.prelude>:245:1 (\ordinary x -> Some @0) arr ..., expected 6

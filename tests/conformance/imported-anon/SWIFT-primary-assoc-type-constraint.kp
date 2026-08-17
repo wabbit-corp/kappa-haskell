@@ -2,8 +2,8 @@
 --   SE-0352 (implicitly opened existentials), SE-0309 (existentials for all protocols).
 --   A constrained existential or generic constraint specifying that a primary
 --   associated type must equal a concrete type enforces a same-type requirement.
---   Passing a value whose primary associated type does not match produces
---   kappa.type.mismatch.
+--   Passing a value whose primary associated type does not match the callable
+--   domain produces kappa.application.argument-mismatch (§3.2.3).
 -- Spec: traits.instances §14.3,
 --       traits.instances.associated_static_member_instance_checking §14.3.4,
 --       types.quantification §11.3
@@ -45,10 +45,11 @@ let strListJoin = joinElements refl (StrList ["a", "b"])
 
 -- NEGATIVE: passing a StrList to sumElements — Element StrList = String ≠ Nat.
 badSum : Nat
-let badSum = sumElements refl (StrList ["x", "y"])    --!! kappa.type.mismatch
+let badSum = sumElements refl (StrList ["x", "y"])    --!! kappa.application.argument-mismatch
 
 -- NEGATIVE: passing an IntList to joinElements — Element IntList = Nat ≠ String.
 badJoin : String
-let badJoin = joinElements refl (IntList [1, 2])    --!! kappa.type.mismatch
+let badJoin = joinElements refl (IntList [1, 2])    --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

@@ -22,7 +22,7 @@ module Kappa.Interp
   ) where
 
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo, yield)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar, tryReadMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, readMVar, tryPutMVar, tryReadMVar, withMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
@@ -53,10 +53,9 @@ instance Show KappaError where
   show (KappaError v) = "error: " ++ T.unpack (renderValueShallow v)
 instance Exception KappaError
 
--- | §18.1.13: a transaction attempt that must suspend until a TVar it read
+-- | §18.1.13: a transaction attempt that must suspend until shared STM state
 -- changes (`retry`/`check False`/`stmAbort`/STM `empty`). Caught by the
--- 'stmAtomically' driver, which parks (via GHC STM) until the global STM
--- write-version advances, then re-runs the transaction.
+-- 'stmAtomically' driver, which discards the attempt journal before parking.
 data RetrySignal = RetrySignal
 instance Show RetrySignal where show _ = "STM retry"
 instance Exception RetrySignal
@@ -581,6 +580,8 @@ spawnExit rt action = do
   snap <- Map.findWithDefault Map.empty parentTid <$> atomicReadIORef' fiberLocals
   inheritedMask <- currentMaskState
   mv <- newEmptyMVar
+  acknowledged <- newIORef False
+  atomicModifyIORef_' (rtFiberObservations rt) ((mv, acknowledged) :)
   ready <- newEmptyMVar
   -- §32.2.5 interp fix: the child runs FULLY MASKED (uninterruptibleMask_), so GHC
   -- never auto-delivers a throwTo at any point — least of all at a masked region's
@@ -593,6 +594,7 @@ spawnExit rt action = do
       try
         ( CE.uninterruptibleMask_ $ do
             childTid <- myThreadId
+            atomicModifyIORef_' (rtFiberLabels rt) (Map.delete childTid)
             atomicModifyIORef_' fiberLocals (Map.insert childTid snap)
             atomicModifyIORef_' fiberUnmask (Map.insert childTid (Unmask unmask))
             registerChildMask childTid inheritedMask
@@ -619,6 +621,7 @@ spawnExit rt action = do
                             atomicModifyIORef_' fiberUnmask (Map.delete childTid)
                             unregisterFiberMask childTid
                             atomicModifyIORef_' pendingInterrupt (Map.delete childTid)
+                            atomicModifyIORef_' (rtFiberLabels rt) (Map.delete childTid)
                             _ <- tryPutMVar mv terminalExit
                             pure ()
                         ) ::
@@ -656,16 +659,51 @@ interruptWait tid mv cause = do
   _ <- readMVar mv
   pure ()
 
--- | §18.1.8 shut a supervision scope down: interrupt every still-live attached
--- fiber with tag @ScopeShutdown@ and wait until each has terminated. Idempotent
--- — the registry is emptied first, so a repeat shutdown finds nothing.
-shutdownScopeReg :: IORef [Value] -> IO ()
-shutdownScopeReg reg = do
+-- | Mark a terminal fiber observation as acknowledged (§32.2.4). The result
+-- MVar is the stable interpreter identity shared by Fiber and Monitor handles.
+acknowledgeFiber :: RT -> MVar Value -> IO ()
+acknowledgeFiber rt mv = do
+  observations <- atomicReadIORef' (rtFiberObservations rt)
+  mapM_ (`writeIORef` True) [ack | (cell, ack) <- observations, cell == mv]
+
+-- | §18.1.8 / §32.2.4 shut a supervision scope down. Attached fibers are
+-- drained in creation order. Unacknowledged typed failures and defects become
+-- UnhandledChildFailure defects; mandatory ScopeShutdown interruptions do not.
+shutdownScopeReg :: RT -> IORef [Value] -> IO ()
+shutdownScopeReg rt reg = do
   fibers <- atomicModifyIORef' reg $ \fibers0 -> ([], fibers0)
-  mapM_ interruptAndWait fibers
+  causes <- mapM finishFiber (reverse fibers)
+  case foldr combine Nothing causes of
+    Nothing -> pure ()
+    Just cause -> throwIO (CauseReraise cause)
   where
-    interruptAndWait (VFiber tid mv) = interruptWait tid mv (interruptCause "ScopeShutdown")
-    interruptAndWait _ = pure ()
+    combine Nothing rest = rest
+    combine (Just cause) Nothing = Just cause
+    combine (Just cause) (Just rest) = Just (VCtor prelBoth [cause, rest])
+
+    finishFiber (VFiber tid mv) = do
+      completed <- tryReadMVar mv
+      terminal <- case completed of
+        Just exit -> pure exit
+        Nothing -> interruptWait tid mv (interruptCause "ScopeShutdown") >> readMVar mv
+      acknowledged <- fiberAcknowledged mv
+      pure $ if acknowledged then Nothing else unhandledCause terminal
+    finishFiber _ = pure Nothing
+
+    fiberAcknowledged mv = do
+      observations <- atomicReadIORef' (rtFiberObservations rt)
+      or <$> mapM readIORef [ack | (cell, ack) <- observations, cell == mv]
+
+    unhandledCause (VCtor exitG [VCtor causeG [_]])
+      | exitG == prelFailure
+      , causeG == prelFail || causeG == prelDefect =
+          Just $ VCtor prelDefect
+            [ VCtor prelDefectInfo
+                [ VCtor prelUnhandledChildFailure []
+                , VCtor prelSome [VLit (LitStr "attached child exit was not acknowledged")]
+                ]
+            ]
+    unhandledCause _ = Nothing
 
 -- | The signed nanosecond magnitude of a (forced) Duration/Instant value
 -- (§18.1.6 — both are monotonic nanosecond integers at runtime).
@@ -691,13 +729,19 @@ exitTimedOut ec v = case force ec v of
     _ -> False
   _ -> False
 
--- | §18.1.13 cooperative STM wake signal: a monotonic counter bumped by every
--- 'writeTVar'. A retrying transaction blocks (GHC STM 'retry', which the RTS
--- suspends the fiber on) until this advances — so another fiber writing a
--- TVar wakes the parked transaction (weak fairness via the GHC scheduler).
-{-# NOINLINE globalStmVersion #-}
-globalStmVersion :: STM.TVar Int
-globalStmVersion = unsafePerformIO (STM.newTVarIO 0)
+data StmJournal = StmJournal
+  { sjWrites :: ![(STM.TVar Value, Value)]
+  }
+
+emptyStmJournal :: StmJournal
+emptyStmJournal = StmJournal []
+
+journalLookup :: STM.TVar Value -> StmJournal -> Maybe Value
+journalLookup tv journal = lookup tv (sjWrites journal)
+
+journalWrite :: STM.TVar Value -> Value -> StmJournal -> StmJournal
+journalWrite tv value journal =
+  journal {sjWrites = (tv, value) : filter ((/= tv) . fst) (sjWrites journal)}
 
 -- | §18.8.2: a fiber's terminal Exit from its run result — Success on normal
 -- completion, Failure (Fail e) for a raised Kappa error (isolated from the
@@ -706,22 +750,34 @@ exitOf :: Either SomeException Value -> Value
 exitOf (Right v) = VCtor prelSuccess [v]
 exitOf (Left e) = VCtor prelFailure [causeOf e]
 
--- | §18.1.13 'atomically' on the single agent: run the transaction; if it
--- signals retry, park until the STM write-version advances, then re-run.
+-- | §18.1.13 interpreter transaction driver. Each attempt runs against a
+-- private write journal while holding the per-run serialization lock. Success
+-- publishes the complete journal in one GHC STM commit; retry discards it and
+-- parks until another committed transaction advances the version.
 stmAtomically :: RT -> Value -> IO Value
 stmAtomically rt action = loop
   where
     loop = do
-      v0 <- STM.readTVarIO globalStmVersion
-      r <- try (runIOValue rt action)
-      case r of
+      attempt <- withMVar (rtStmLock rt) $ \_ -> do
+        v0 <- STM.readTVarIO (rtStmVersion rt)
+        journal <- newIORef emptyStmJournal
+        r <- try (runIOValue (rt {rtStmJournal = Just journal}) action)
+        case r of
+          Right val -> do
+            writes <- sjWrites <$> readIORef journal
+            unless (null writes) . STM.atomically $ do
+              mapM_ (uncurry STM.writeTVar) (reverse writes)
+              STM.modifyTVar' (rtStmVersion rt) (+ 1)
+            pure (Right val)
+          Left RetrySignal -> pure (Left v0)
+      case attempt of
         Right val -> pure val
-        Left RetrySignal -> do
+        Left v0 -> do
           -- §32.2.5 STM-retry park is an interruption point: block on the STM
           -- write-version advancing, but deliver a pending interrupt (when
           -- unmasked) / re-park (when masked) via interruptPoint.
           _ <- interruptPoint
-                 (STM.atomically (do v <- STM.readTVar globalStmVersion; STM.check (v /= v0)) >> pure unitV)
+                 (STM.atomically (do v <- STM.readTVar (rtStmVersion rt); STM.check (v /= v0)) >> pure unitV)
           loop
 
 data Completion
@@ -734,7 +790,28 @@ data Completion
 data RT = RT
   { rtEC :: !EvalCtx
   , rtEmit :: !(Text -> IO ())
+  , rtStmLock :: !(MVar ())
+  , rtStmVersion :: !(STM.TVar Int)
+  , rtStmJournal :: !(Maybe (IORef StmJournal))
+  , rtFiberLabels :: !(IORef (Map.Map ThreadId Value))
+  , rtFiberObservations :: !(IORef [(MVar Value, IORef Bool)])
   }
+
+newRT :: EvalCtx -> (Text -> IO ()) -> IO RT
+newRT ec emit = do
+  stmLock <- newMVar ()
+  stmVersion <- STM.newTVarIO 0
+  labels <- newIORef Map.empty
+  observations <- newIORef []
+  pure RT
+    { rtEC = ec
+    , rtEmit = emit
+    , rtStmLock = stmLock
+    , rtStmVersion = stmVersion
+    , rtStmJournal = Nothing
+    , rtFiberLabels = labels
+    , rtFiberObservations = observations
+    }
 
 unitV :: Value
 unitV = VCtor prelUnit []
@@ -742,7 +819,7 @@ unitV = VCtor prelUnit []
 -- | Run @main@ (an IO computation) writing to real stdout.
 runMain :: Globals -> MetaState -> GName -> IO RunResult
 runMain globals metas mainG = do
-  let rt = RT (EvalCtx globals metas True mempty) (\t -> TIO.putStr t >> hFlush stdout)
+  rt <- newRT (EvalCtx globals metas True mempty) (\t -> TIO.putStr t >> hFlush stdout)
   fst <$> runMainRT rt mainG
 
 -- | Run @main@ capturing everything written via printString\/printlnString
@@ -758,7 +835,7 @@ runMainCaptured globals metas mainG = do
 runMainCapturedValue :: Globals -> MetaState -> GName -> IO (RunResult, Maybe Value, Text)
 runMainCapturedValue globals metas mainG = do
   buf <- newIORef []
-  let rt = RT (EvalCtx globals metas True mempty) (\t -> atomicModifyIORef_' buf (t :))
+  rt <- newRT (EvalCtx globals metas True mempty) (\t -> atomicModifyIORef_' buf (t :))
   (r, mv) <- runMainRT rt mainG
   out <- T.concat . reverse <$> atomicReadIORef' buf
   pure (r, mv, out)
@@ -1088,7 +1165,10 @@ runPrimIO' rt p args = case (p, args) of
   ("__forkDaemon", [action]) -> forkFiber rt action
   -- await PARKS the current fiber on the result MVar until the child
   -- terminates (the RTS runs other runnable fibers meanwhile).
-  ("__awaitFiber", [VFiber _ mv]) -> interruptPoint (readMVar mv)
+  ("__awaitFiber", [VFiber _ mv]) -> do
+    terminal <- interruptPoint (readMVar mv)
+    acknowledgeFiber rt mv
+    pure terminal
   -- §18.1.4 interruption: deliver a structured InterruptCause to the target
   -- fiber by throwTo. The waiting form blocks until the target has terminated
   -- and all its finalizers have run (readMVar on its result cell); the fork
@@ -1189,12 +1269,17 @@ runPrimIO' rt p args = case (p, args) of
     fib <- forkFiber rt action
     atomicModifyIORef_' reg (fib :)
     pure fib
-  ("shutdownScope", [VScope reg]) -> shutdownScopeReg reg >> pure unitV
+  ("shutdownScope", [VScope reg]) -> shutdownScopeReg rt reg >> pure unitV
   ("withScope", [useFn]) -> do
     reg <- newIORef []
-    r <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
-    withMaskFrame Masked (shutdownScopeReg reg)
-    either throwIO pure r
+    body <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
+    cleanup <- try (withMaskFrame Masked (shutdownScopeReg rt reg)) :: IO (Either SomeException ())
+    case (body, cleanup) of
+      (Right value, Right ()) -> pure value
+      (Left primary, Right ()) -> throwIO primary
+      (Right _, Left finalizer) -> throwIO finalizer
+      (Left primary, Left finalizer) ->
+        throwIO (CauseReraise (VCtor prelThen [causeOf primary, causeOf finalizer]))
   -- §18.1.12 interruption masking. The host thread remains physically masked;
   -- these semantic frames decide where explicit interruption points deliver.
   ("uninterruptible", [body]) ->
@@ -1233,7 +1318,10 @@ runPrimIO' rt p args = case (p, args) of
   -- (the result cell is read, not consumed, so monitoring is independent of
   -- awaiting). demonitor drops the observation.
   ("monitor", [VFiber _ mv]) -> pure (VMVar mv)
-  ("awaitMonitor", [VMVar mv]) -> interruptPoint (readMVar mv)
+  ("awaitMonitor", [VMVar mv]) -> do
+    terminal <- interruptPoint (readMVar mv)
+    acknowledgeFiber rt mv
+    pure terminal
   ("demonitor", [_]) -> pure unitV
   -- §18.1.7 fiber-local state.
   ("newFiberRef", [v]) -> do
@@ -1258,15 +1346,17 @@ runPrimIO' rt p args = case (p, args) of
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
     withMaskFrame Masked (setFiberLocal rid old)
     either throwIO pure r
-  -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
-  -- transaction directly (no concurrent agent ⇒ trivially serializable);
-  -- `retry`/`check False`/`stmAbort` abort the transaction.
+  -- §18.1.13 STM: TVar reads and writes inside an attempt consult its private
+  -- journal. The outer atomically driver commits or discards the whole journal.
   ("newTVar", [v]) -> VTVar <$> STM.newTVarIO v
-  ("readTVar", [VTVar tv]) -> STM.readTVarIO tv
-  -- a write commits and advances the wake-version so any parked (retrying)
-  -- transaction is resumed by the GHC STM scheduler.
-  ("writeTVar", [VTVar tv, v]) ->
-    STM.atomically (STM.writeTVar tv v >> STM.modifyTVar' globalStmVersion (+ 1)) >> pure unitV
+  ("readTVar", [VTVar tv]) -> case rtStmJournal rt of
+    Just journalRef -> do
+      journal <- readIORef journalRef
+      maybe (STM.readTVarIO tv) pure (journalLookup tv journal)
+    Nothing -> throwIO . KappaError . VLit . LitStr $ "readTVar escaped atomically"
+  ("writeTVar", [VTVar tv, v]) -> case rtStmJournal rt of
+    Just journalRef -> atomicModifyIORef_' journalRef (journalWrite tv v) >> pure unitV
+    Nothing -> throwIO . KappaError . VLit . LitStr $ "writeTVar escaped atomically"
   ("atomically", [action]) -> stmAtomically rt action
   ("check", [VCtor g []]) | g == prelTrue -> pure unitV
   ("check", [VCtor g []]) | g == prelFalse -> throwIO RetrySignal
@@ -1312,6 +1402,22 @@ runPrimIO' rt p args = case (p, args) of
   -- currentFiberId reports the running fiber's id; fiberId reports a target's.
   ("__currentFiberId", _) -> (VLit . LitInt) <$> (myThreadId >>= fiberIdOf)
   ("__fiberId", [VFiber tid _]) -> (VLit . LitInt) <$> fiberIdOf tid
+  ("__getFiberLabel", _) -> do
+    tid <- myThreadId
+    Map.findWithDefault (VCtor prelNone []) tid <$> atomicReadIORef' (rtFiberLabels rt)
+  ("__setFiberLabel", [label]) -> do
+    tid <- myThreadId
+    atomicModifyIORef_' (rtFiberLabels rt) (Map.insert tid label)
+    pure unitV
+  ("__locallyFiberLabel", [label, body]) -> do
+    tid <- myThreadId
+    labels <- atomicReadIORef' (rtFiberLabels rt)
+    let old = Map.lookup tid labels
+    atomicModifyIORef_' (rtFiberLabels rt) (Map.insert tid label)
+    result <- try (runIOValue rt body) :: IO (Either SomeException Value)
+    withMaskFrame Masked . atomicModifyIORef_' (rtFiberLabels rt) $
+      maybe (Map.delete tid) (Map.insert tid) old
+    either throwIO pure result
   -- §18.1.6 sleep parks ONLY the current fiber (interruptible threadDelay on
   -- a non-threaded RTS yields to other runnable fibers — it does not block the
   -- agent; a throwTo wakes it as an interruption point). Nonpositive returns now.
@@ -1388,8 +1494,14 @@ runPrimIO' rt p args = case (p, args) of
     runIOValue rt (vapp ec k Expl a)
   ("stmPure", [v]) -> pure v
   ("stmOrElse", [left, right]) -> do
-    first <- try (runIOValue rt left) :: IO (Either RetrySignal Value)
-    either (const (runIOValue rt right)) pure first
+    case rtStmJournal rt of
+      Nothing -> throwIO . KappaError . VLit . LitStr $ "stmOrElse escaped atomically"
+      Just journalRef -> do
+        snapshot <- readIORef journalRef
+        first <- try (runIOValue rt left) :: IO (Either RetrySignal Value)
+        case first of
+          Right value -> pure value
+          Left RetrySignal -> writeIORef journalRef snapshot >> runIOValue rt right
   _ ->
     throwIO . KappaError . VLit . LitStr $
       "unhandled IO primitive: " <> p <> "/" <> T.pack (show (length args))

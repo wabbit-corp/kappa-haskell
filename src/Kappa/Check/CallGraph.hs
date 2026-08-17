@@ -1142,14 +1142,14 @@ instBindPremises ctx0 = go (0 :: Int) ctx0
       pv <- evalIn c (shiftTerm i 0 p)
       go (i + 1) (bindCtx ("__prem" <> T.pack (show i)) True pv c) rest
 
-instDictTy :: Telescope -> [Term] -> Term -> [Term] -> CheckM (Term, Value)
-instDictTy fvTele premTms traitHead argTms = do
+instDictTy :: Telescope -> [Term] -> Term -> CheckM (Term, Value)
+instDictTy fvTele premTms dictHead = do
   -- premises were elaborated under the fv binders only; the k-th
   -- premise domain sits under k earlier premise binders, so shift by
   -- k. The head ('argTms') was elaborated under fvs + all premises
-  -- and is already correctly indexed.
-  let dictHead = foldl (\f a -> CApp Expl f a) traitHead argTms
-      withPrems = go (0 :: Int) premTms
+  -- and is already correctly indexed. The fully applied dictionary head also
+  -- retains every generated hidden argument inserted between source slots.
+  let withPrems = go (0 :: Int) premTms
       go _ [] = dictHead
       go k (p : ps) = CPiFormedM Ordinary FormationOrdinary Impl QW False "__p" (shiftTerm k 0 p) (go (k + 1) ps)
   let coreType = foldr telePi withPrems fvTele

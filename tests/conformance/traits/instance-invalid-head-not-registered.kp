@@ -1,0 +1,18 @@
+module main
+
+trait Marker (0 carrier : Type)
+
+-- A saturated head whose argument fails its checked classifier is invalid as
+-- a whole. Recovery may continue checking its body, but must not publish the
+-- fabricated dictionary as evidence for later declarations.
+instance Marker 1 --!! kappa.application.argument-mismatch
+
+requiresMarker : Marker Bool => Bool -> Bool
+let requiresMarker value = value
+
+result : Bool
+let result = requiresMarker True --!! kappa.implicit.unsolved
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertDiagnosticFamily error kappa.implicit.unsolved

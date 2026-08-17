@@ -1980,10 +1980,6 @@ pOpenExpr = do
       "force" -> pSuspExpr EForce "force"
       "seal" -> pSealExpr
       "open" -> pOpenExistsExpr
-      "impossible" -> do
-        sp <- currentSpan
-        pKeyword "impossible"
-        pure (EImpossible sp)
       _ -> labeledForm
     _ -> parseFail "expected expression"
   where
@@ -2549,6 +2545,9 @@ pAtom = do
             Just <$> inBrackets (pParenExpr parenStart)
           _ -> pure Nothing
       EDerive goal <$> spanFrom start
+    TokIdent "impossible" -> do
+      name <- pIdent
+      EContextualImpossible name <$> spanFrom start
     TokIdent "ref" -> refFacet start <|> (EVar <$> pIdent)
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent

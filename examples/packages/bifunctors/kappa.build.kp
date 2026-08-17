@@ -3,9 +3,7 @@ let buildConfig : BuildConfig = package
     , version = semver "0.1.0"
     , sourceRoots = [sourceRoot "src", sourceRoot "test"]
     , fragmentAxes = []
-    , dependencies =
-        [ pathDependency { name = "either", path = "../either" }
-        ]
+    , dependencies = []
     , hostBindings = []
     , targets =
         [ library
@@ -13,7 +11,7 @@ let buildConfig : BuildConfig = package
             , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags []
             , modules = modulesUnder "data"
-            , dependencies = ["either"]
+            , dependencies = []
             }
         , executable
             { name = "bifunctors-tests"
@@ -21,7 +19,7 @@ let buildConfig : BuildConfig = package
             , fragments = tags []
             , main = module "bifunctors.run_tests"
             , modules = modulesUnder "data"
-            , dependencies = ["either"]
+            , dependencies = []
             , hostBindings = []
             }
         ]

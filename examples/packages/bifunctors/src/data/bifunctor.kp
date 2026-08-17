@@ -1,7 +1,5 @@
 module data.bifunctor
 
-import data.either.*
-
 -- A Kappa port of the core abstraction from Edward Kmett's `bifunctors`.
 -- The two arguments are parametric: an implementation may transform them, but
 -- cannot inspect a type merely because it is passed to `bimap`.
@@ -22,12 +20,12 @@ let second f value = bimap (\x -> x) f value
 -- A concrete product makes the abstraction useful without relying on tuple
 -- syntax and is the Kappa counterpart of Data.Bifunctor.Product's base case.
 data PairF a b =
-    Pair (left : a) (right : b)
+    PairF (left : a) (right : b)
 
 instance Bifunctor PairF =
     let bimap f g value =
         match value
-        case Pair a b -> Pair (f a) (g b)
+        case PairF a b -> PairF (f a) (g b)
 
 instance Bifunctor Either =
     let bimap f g value =

@@ -8,7 +8,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
-import Kappa.Check.Artifact (snapshotCheckedPrelude)
+import Kappa.Check.Artifact (restoreCheckedPrelude, snapshotCheckedPrelude)
 import Kappa.Diagnostic
   ( Diagnostic (dCode, dMessage, dSeverity)
   , Severity (SevError)
@@ -32,7 +32,15 @@ main = do
   checkStages destination state stages
   where
     checkStages destination state [] = do
-      let payload = encodeStructuralBinary (snapshotCheckedPrelude preludeSourceFingerprint state)
+      let artifact = snapshotCheckedPrelude preludeSourceFingerprint state
+      case restoreCheckedPrelude preludeSourceFingerprint artifact of
+        Left message ->
+          die
+            ( "cannot generate an unrestorable checked prelude artifact: "
+                <> T.unpack message
+            )
+        Right _ -> pure ()
+      let payload = encodeStructuralBinary artifact
           rendered = renderModule preludeSourceFingerprint (sha256BytesHex payload) payload
           temporary = destination <> ".tmp"
       hPutStrLn stderr "gen-kappa-prelude: encoding checked artifact"

@@ -1,0 +1,18 @@
+--! assertNoErrors
+--! assertEval use 2
+
+module main
+
+-- A Pi-shaped trait parameter is an ordinary function when its codomain is
+-- not a universe. Instance-head checking must therefore retain term-position
+-- lookup instead of selecting a same-spelled type facet.
+trait Applies (f : Int -> Int) =
+    apply : Int -> Int
+
+let increment x = addInt x 1
+
+instance Applies increment =
+    let apply x = increment x
+
+use : Int
+let use = apply @increment 1

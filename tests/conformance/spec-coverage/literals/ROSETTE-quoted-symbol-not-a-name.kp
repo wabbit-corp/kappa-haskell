@@ -35,11 +35,13 @@ let ok2 = "x"
 badArg : Int
 let badArg = twice "x"                              --!! kappa.application.argument-mismatch
 
--- NEGATIVE: a List String passed to a function expecting List Int.
+-- NEGATIVE: a List String passed to a function expecting List Int. Each
+-- string element is an independent invalid Int argument (§3.1.10), so both
+-- roots remain visible.
 badList : Int
 let badList = sumList ["x", "1"]                    --!! kappa.application.argument-mismatch
 
 --! assertDiagnosticFamily error kappa.application.argument-mismatch
---! assertErrorCount 2
+--! assertErrorCount 3
 
 -- STATUS(a0497523): PASS

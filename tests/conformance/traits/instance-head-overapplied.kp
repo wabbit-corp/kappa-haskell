@@ -1,0 +1,10 @@
+module main
+
+trait Marker (0 carrier : Type)
+
+-- A trait evidence type is formed only by a fully applied trait constructor
+-- (§14.1.2, §14.3). A surplus head argument is malformed at the source
+-- boundary rather than ignored by dictionary construction.
+instance Marker Int Bool --!! E_INSTANCE_HEAD
+
+--! assertDiagnostic error E_INSTANCE_HEAD

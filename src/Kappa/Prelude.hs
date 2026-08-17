@@ -1210,6 +1210,16 @@ builtinState =
       , prim "__fiberId"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType
             (CApp Expl (CApp Expl (tcon "Fiber") (CVar 1)) (CVar 0) ~> io (tcon "Void") tInt))))
+      , -- §18.1.10 fiber diagnostic labels. Labels are Option String values;
+        -- the runtime keeps them per fiber and does not inherit them at fork.
+        prim "__getFiberLabel" (tyV (io (tcon "Void") (CApp Expl (tcon "Option") tStr)))
+      , prim "__setFiberLabel"
+          (tyV (CApp Expl (tcon "Option") tStr ~> io (tcon "Void") tUnit))
+      , prim "__locallyFiberLabel"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (CApp Expl (tcon "Option") tStr
+              ~> io (CVar 2) (CVar 1)
+              ~> io (CVar 3) (CVar 2)))))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime
@@ -1955,7 +1965,10 @@ preludeSource =
     , "        (forall (A : Type). G (F A)) ->"
     , "        G (forall (A : Type). F A)"
     , ""
-    , "trait Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) ="
+    , "trait Functor (parametric 0 f : (parametric 0 A : Type) -> Type) =" -- §28.2.2 containers
+    , "    map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b"
+    , ""
+    , "trait Functor f => Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) ="
     , "    pure : forall (a : Type). a -> f a"
     , "    liftA2 : forall (a : Type) (b : Type) (c : Type). (a -> b -> c) -> f a -> f b -> f c"
     , "    let (<*>) : forall (a : Type) (b : Type). f (a -> b) -> f a -> f b ="
@@ -1964,6 +1977,12 @@ preludeSource =
     , -- §14.1.4 (Spec 13923): in std.prelude Monad refines Applicative.
       "trait Applicative m => Monad (parametric 0 m : (parametric 0 A : Type) -> Type) =" -- §28.2.2 (operational subset)
     , "    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b"
+    , ""
+    , "instance Functor Option ="
+    , "    let map f o ="
+    , "        match o"
+    , "        case Some x -> Some (f x)"
+    , "        case None -> None"
     , ""
     , "instance Applicative Option ="
     , "    let pure x = Some x"
@@ -2003,9 +2022,6 @@ preludeSource =
     , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
     , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
     , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
-    , ""
-    , "trait Functor (parametric 0 f : (parametric 0 A : Type) -> Type) =" -- §28.2.2 containers
-    , "    map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b"
     , ""
     , "trait Foldable (parametric 0 t : (parametric 0 A : Type) -> Type) ="
     , "    foldr : forall (a : Type) (b : Type). (a -> b -> b) -> b -> t a -> b"
@@ -2857,6 +2873,12 @@ preludeSource =
     , "let currentFiberId = ioBind __currentFiberId (\\n -> ioPure (MkFiberId n))"
     , "fiberId : forall (e : Type) (a : Type). Fiber e a -> UIO FiberId"
     , "let fiberId fib = ioBind (__fiberId fib) (\\n -> ioPure (MkFiberId n))"
+    , "getFiberLabel : UIO (Option String)"
+    , "let getFiberLabel = __getFiberLabel"
+    , "setFiberLabel : Option String -> UIO Unit"
+    , "let setFiberLabel label = __setFiberLabel label"
+    , "locallyFiberLabel : forall (e : Type) (a : Type). Option String -> IO e a -> IO e a"
+    , "let locallyFiberLabel label body = __locallyFiberLabel label body"
     , ""
     , -- §18.1.4 join: await a fiber and project its outcome into the caller —
       -- success returns the value, typed failure re-fails, and any non-typed
@@ -3389,12 +3411,6 @@ preludeSource =
     , "instance Monad List ="
     , "    let (>>=) xs f = concatMap f xs"
     , ""
-    , "instance Functor Option ="
-    , "    let map f o ="
-    , "        match o"
-    , "        case Some x -> Some (f x)"
-    , "        case None -> None"
-    , ""
     , "instance Foldable List ="
     , "    let foldr f z xs ="
     , "        match xs"
@@ -3449,6 +3465,27 @@ preludeSource =
     , "        match o"
     , "        case None -> pure None"
     , "        case Some x -> liftA2 (\\v -> \\u -> Some v) (f x) (pure True)"
+    , ""
+    , -- §28.2 mandates the same coherent container surface for Array as List.
+      -- Array's portable sequence model is its list view (§20.10.11), so these
+      -- dictionaries preserve encounter order and rebuild through the ordinary
+      -- public conversion rather than depending on a backend representation.
+      "instance Functor Array ="
+    , "    let map f xs = arrayFromList (map f (arrayToList xs))"
+    , ""
+    , "instance Foldable Array ="
+    , "    let foldr f z xs = foldr f z (arrayToList xs)"
+    , "    let foldl f z xs = foldl f z (arrayToList xs)"
+    , "    let foldMap f xs = foldMap f (arrayToList xs)"
+    , ""
+    , "instance Filterable Array ="
+    , "    let filter predicate xs = arrayFromList (filter predicate (arrayToList xs))"
+    , ""
+    , "instance FilterMap Array ="
+    , "    let filterMap f xs = arrayFromList (filterMap f (arrayToList xs))"
+    , ""
+    , "instance Traversable Array ="
+    , "    let traverse f xs = map arrayFromList (traverse f (arrayToList xs))"
     , ""
     , "(++) : forall (a : Type). (@_ : Monoid a) -> a -> a -> a"
     , "let (++) x y = append x y"
@@ -3684,7 +3721,13 @@ preludeSource =
     , ""
     , -- §28.2.2: Result is the standard error-short-circuiting monad over
       -- a fixed error type; an Err halts the computation.
-      "instance Applicative (Result e) ="
+      "instance Functor (Result e) ="
+    , "    let map f r ="
+    , "        match r"
+    , "        case Err e -> Err e"
+    , "        case Ok x -> Ok (f x)"
+    , ""
+    , "instance Applicative (Result e) ="
     , "    let pure x = Ok x"
     , "    let liftA2 f ra rb ="
     , "        match ra"
