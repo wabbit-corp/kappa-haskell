@@ -90,7 +90,7 @@ runtime_tsan_supported() {
 }
 
 echo "== building the kappa CLI =="
-timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
+timeout 1200 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
 cleanup_generated_for_source() {
   local src="$1"

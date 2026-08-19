@@ -48,7 +48,7 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-ghc-9.14.1-cabal-
 
@@ -90,9 +90,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.14.1-native-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.14.1-native-
+            ${{ runner.os }}-ghc-9.14.1-cabal-
 
       - name: Run native gate suite
         shell: bash
@@ -162,9 +162,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.14.1-package-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.14.1-package-
+            ${{ runner.os }}-ghc-9.14.1-cabal-
 
       - name: Build release executable
         shell: bash
@@ -317,6 +317,16 @@ jobs:
         with:
           ghc-version: "9.14.1"
           cabal-version: "3.10.3.0"
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-9.14.1-cabal-
 
       - name: Install Kappa compiler for Delve (Windows)
         if: runner.os == 'Windows'
@@ -543,7 +553,67 @@ jobs:
           fi
           repo="${GITHUB_REPOSITORY}"
 
+          resolve_tag_commit() {
+            local tag_name="$1"
+            local object_record object_type object_sha
+            local depth=0
+
+            if ! object_record="$(
+              gh api "repos/$repo/git/ref/tags/$tag_name" \
+                --jq '.object | [.type, .sha] | @tsv' 2>&1
+            )"; then
+              if [[ "$object_record" == *"HTTP 404"* ]]; then
+                return 2
+              fi
+              printf 'failed to resolve release tag %s: %s\n' "$tag_name" "$object_record" >&2
+              return 1
+            fi
+            IFS=$'\t' read -r object_type object_sha <<<"$object_record"
+
+            while [[ "$object_type" == "tag" ]]; do
+              depth=$((depth + 1))
+              if ((depth > 16)); then
+                printf 'release tag %s exceeds the annotated-tag peel limit\n' "$tag_name" >&2
+                return 1
+              fi
+              if ! object_record="$(
+                gh api "repos/$repo/git/tags/$object_sha" \
+                  --jq '.object | [.type, .sha] | @tsv' 2>&1
+              )"; then
+                printf 'failed to peel release tag %s: %s\n' "$tag_name" "$object_record" >&2
+                return 1
+              fi
+              IFS=$'\t' read -r object_type object_sha <<<"$object_record"
+            done
+
+            if [[ "$object_type" != "commit" || ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              printf 'release tag %s resolves to unsupported object %s (%s)\n' \
+                "$tag_name" "$object_type" "$object_sha" >&2
+              return 1
+            fi
+            printf '%s\n' "$object_sha"
+          }
+
+          tag_exists=false
+          if tagged_sha="$(resolve_tag_commit "$tag")"; then
+            tag_exists=true
+            if [[ "$tagged_sha" != "$GITHUB_SHA" ]]; then
+              printf 'release tag %s resolves to %s, but assets were built from %s\n' \
+                "$tag" "$tagged_sha" "$GITHUB_SHA" >&2
+              exit 1
+            fi
+          else
+            resolve_status=$?
+            if [[ "$resolve_status" -ne 2 ]]; then
+              exit "$resolve_status"
+            fi
+          fi
+
           if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            if [[ "$tag_exists" != true ]]; then
+              printf 'release %s exists without a resolvable tag\n' "$tag" >&2
+              exit 1
+            fi
             gh release upload "$tag" release-assets/* --repo "$repo" --clobber
           else
             gh release create "$tag" release-assets/* \
