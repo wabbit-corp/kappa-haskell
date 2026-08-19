@@ -191,7 +191,10 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      iterative drop-descent skeleton, and
      arity-guard reconcile. **S3.2-S3.4 landed for the C/runtime path:** `kdrop` now frees zero-count values in
      the conservative FREESET using an inline/scanned-overflow iterative worklist; S3.3 drops displaced runtime
-     cell values and failed-publication arguments (`Ref`/array/FiberRef/STM/promise/failed CAS); S3.4 makes native
+     cell values and failed-publication arguments (`Ref`/array/FiberRef/STM/promise/failed CAS). Selected
+     primitive forwarding retains authenticated dictionary identity through empty erased-application shells in
+     KBackendIR, while any retained argument fails closed to the generic call path; the native S3.3 ref-transfer
+     gate checks the resulting borrowed/owned conventions. S3.4 makes native
      RC validation/emission default-on with `KAPPA_PERCEUS_RC=0` reserved for explicit RC-off differential baselines
      that disable runtime RC effects as well as generated maintenance.
      LLVM and retained mutable/lazy/foreign/resource shapes remain Boehm-backed until their later stages; S4 below

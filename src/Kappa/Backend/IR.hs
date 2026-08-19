@@ -397,13 +397,15 @@ data BackendTerm
   deriving stock (Eq, Show)
 
 -- | Recover a global identity only when KBackendIR proves that no runtime
--- application arguments are attached. Quantity-0 and selected evidence
--- erasure has already happened before this phase, so any surviving 'BApp'
--- child is semantically relevant regardless of its source icity.
+-- application arguments are attached. Erasure may leave an empty application
+-- shell around an instantiated global; that shell carries occurrence metadata
+-- but no runtime call. Any retained argument is semantically relevant
+-- regardless of its source icity.
 runtimeArgumentFreeGlobal :: BackendTerm -> Maybe GName
 runtimeArgumentFreeGlobal = \case
   BGlob _ global -> Just global
   BSeal _ _ term -> runtimeArgumentFreeGlobal term
+  BApp _ term [] -> runtimeArgumentFreeGlobal term
   _ -> Nothing
 
 data BackendAlt = BackendAlt

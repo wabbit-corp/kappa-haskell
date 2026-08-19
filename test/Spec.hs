@@ -87,6 +87,7 @@ import Kappa.Builtins
   , prelInt
   , prelList
   , prelLevelLe
+  , prelMonadRef
   , prelNat
   , prelNatAdd
   , prelNatCompare
@@ -111,6 +112,7 @@ import Kappa.Check
   , InstanceEntry (..)
   , LevelOperatorIdentity (..)
   , TraitInfo (..)
+  , linkedCoreBodies
   , sourceRoleMetadataInvarianceChecks
   )
 import Kappa.DependencyFrontier
@@ -928,16 +930,19 @@ checkedPreludeArtifactDomain = do
 
 -- | §34.3.10: source icity is not runtime erasure evidence. Once KBackendIR
 -- retains an application argument, selected lowering must preserve it and use
--- the ordinary call path; only a bare (optionally sealed) global is eligible.
+-- the ordinary call path. An empty application shell left by checked erasure
+-- is runtime-argument-free and may retain the enclosed global identity.
 runtimeArgumentFreeGlobalDomain :: IO Bool
 runtimeArgumentFreeGlobalDomain = do
   let meta = BackendMeta (BackendNodeId 0) []
       global = GName (ModuleName ["test"]) "dictionary"
       bare = BGlob meta global
+      erasedApplication = BApp meta bare []
       retainedImplicit = BApp meta bare [(Impl, Nothing, BUnit meta)]
   pure
     ( runtimeArgumentFreeGlobal bare == Just global
         && runtimeArgumentFreeGlobal (BSeal meta [] bare) == Just global
+        && runtimeArgumentFreeGlobal erasedApplication == Just global
         && runtimeArgumentFreeGlobal retainedImplicit == Nothing
     )
 
@@ -968,10 +973,34 @@ dictionaryPrimitiveMemberDomain = do
           (Map.singleton dictionary (dictionaryBody quantity))
           dictionary
           "readRef"
-  pure
-    ( selected Q0 == Just (primitive, 1)
-        && selected QW == Nothing
-    )
+      preludeUnit =
+        compileSourceWithPrelude
+          "dictionary-primitive-member.kp"
+          "module dictionary_primitive_member\n"
+      preludeState' = cuState preludeUnit
+      preludeBodies = linkedCoreBodies preludeState'
+      preludeMembers =
+        [ ( ieDict entry
+          , dictionaryPrimitiveMember preludeBodies (ieDict entry) "readRef"
+          , dictionaryPrimitiveMember preludeBodies (ieDict entry) "writeRef"
+          )
+        | entry <- csInstances preludeState'
+        , ieTrait entry == prelMonadRef
+        ]
+      expectedIO =
+        ( Just (gPrel "__ioReadRef", 1)
+        , Just (gPrel "__ioWriteRef", 2)
+        )
+      ioMemberForwarding =
+        any (\(_, readMember, writeMember) -> (readMember, writeMember) == expectedIO) preludeMembers
+      ok =
+        selected Q0 == Just (primitive, 1)
+          && selected QW == Nothing
+          && ioMemberForwarding
+  unless ok $ do
+    putStrLn "dictionaryPrimitiveMemberDomain FAILED:"
+    putStrLn ("  prelude MonadRef members=" <> show preludeMembers)
+  pure ok
 
 -- | The checked-interface codec treats opaque byte strings as a primitive,
 -- not as an algebraic value. Length framing must round-trip exact bytes while
