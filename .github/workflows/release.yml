@@ -142,7 +142,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          path-type: prepend
+          path-type: minimal
           install: >-
             mingw-w64-x86_64-clang
             mingw-w64-x86_64-gc
@@ -304,7 +304,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          path-type: prepend
+          path-type: minimal
           install: >-
             mingw-w64-x86_64-clang
             mingw-w64-x86_64-gc
@@ -416,6 +416,8 @@ jobs:
           export KAPPA_CC="$cc_cmd"
 
           chcp.com 65001 >/dev/null || true
+          windows_dir="${WINDIR:-${SYSTEMROOT:?Windows directory is unavailable}}"
+          windows_system_dir="$(cygpath -u "$windows_dir/System32")"
 
           "$compiler_dir/bin/kappa.exe" build \
             --update \
@@ -460,6 +462,13 @@ jobs:
                   local copied="$destination/$(basename "$dependency")"
                   cp -f "$dependency" "$copied"
                   queue+=("$copied")
+                elif [[ -f "$windows_system_dir/$dll" ]]; then
+                  :
+                elif [[ "$key" == api-ms-win-*.dll || "$key" == ext-ms-win-*.dll ]]; then
+                  :
+                else
+                  printf 'unresolved non-system DLL import %s from %s\n' "$dll" "$binary" >&2
+                  return 1
                 fi
               done < <("$objdump_bin" -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')
             done
@@ -481,10 +490,9 @@ jobs:
           trap 'rm -rf "$extract_dir"' EXIT
           tar -xzf "$archive" -C "$extract_dir"
           packaged_dir="$extract_dir/delve-${{ matrix.platform }}"
-          system_path="$(cygpath -u "$WINDIR/System32")"
           test_output="$({
             cd "$packaged_dir"
-            PATH="$system_path" "./delve-tests${{ matrix.exe-ext }}"
+            PATH="$windows_system_dir" "./delve-tests${{ matrix.exe-ext }}"
           })"
           test_output="${test_output//$'\r'/}"
           printf '%s\n' "$test_output"
