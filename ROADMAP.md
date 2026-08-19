@@ -1085,7 +1085,15 @@ members direct-lower only after retained Core proves an exact evidence wrapper
 and primitive eta-forwarder; registry arity and audited ownership conventions
 remain authoritative. `scripts/check_trivial_compile_budget.sh` now
 measures a 376 ms cold compile on the release workstation, below the one-second
-regression budget.
+regression budget, and the release workflow executes that same process-level
+gate. Compiler archives bundle the complete native runtime beside `bin/` and
+are extracted away from the checkout for a native compile/run smoke test.
+Delve archives retain their executable self-test; Windows packaging derives and
+bundles the recursive non-system MinGW DLL closure from PE imports, while Unix
+runtime prerequisites explicitly include libuv. Delve's interactive game loop
+uses the normative effectful `while` form rather than relying on uncertified
+user recursion, so the game target remains compatible with total-by-default
+checking.
 
 ## Track: Module-wide declaration SCCs / induction-recursion ([`MODULE-SCC-INDUCTION-RECURSION-PLAN.md`](docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md))
 

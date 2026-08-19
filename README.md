@@ -136,8 +136,8 @@ Requirements:
 - **GHC 9.14.1** and **Cabal 3.10+** (CI pins these; the code targets
   `base >= 4.17`, so recent GHCs work).
 - For the native backend only: a C compiler (`cc`/`clang`/`gcc`), `pkg-config`,
-  and the Boehm GC + GMP development headers (`libgc-dev`, `libgmp-dev` on
-  Debian/Ubuntu).
+  and the Boehm GC, GMP, and libuv development packages (`libgc-dev`,
+  `libgmp-dev`, and `libuv1-dev` on Debian/Ubuntu).
 
 Build and test:
 

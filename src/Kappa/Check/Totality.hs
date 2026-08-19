@@ -1560,10 +1560,7 @@ measureCallChange call = do
           then do
             oldM <- normalizeTermAt d oldM0
             newM <- normalizeTermAt d newM0
-            defaultMeasureCallChange src d facts aliases oldM newM >>= \case
-              Just VisibleMeasureStrict ->
-                pure (Just (MeasureStrict from target))
-              _ -> pure Nothing
+            classify <$> defaultMeasureCallChange src d facts aliases oldM newM
           else
             case expandStructuralAliases d aliases newM0 of
               Nothing -> pure Nothing

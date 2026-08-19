@@ -28,13 +28,12 @@ semantic model: the backend is a code generator over the existing IR.
 | -------------- | ------------------------------------------------------------------------ |
 | Native driver  | `zig cc` (bundles clang 21.x) when present; system `cc`/`gcc` otherwise. |
 | GC             | Boehm–Demers–Weiser conservative collector (`-lgc`, `gc.h`).             |
+| Scheduler I/O  | libuv (`-luv`, `uv.h`).                                                    |
 | FFI demo deps  | POSIX TCP sockets (libc, no extra dep) and `sqlite3` (`-lsqlite3`).      |
 
-> The demo uses blocking POSIX sockets (`sys/socket.h`) rather than
-> libuv: the requirement permits "libuv or sockets", and a blocking
-> accept loop keeps the demo a straightforward, unquestionably-real
-> native server with one fewer external dependency. The only FFI library
-> linked is sqlite3.
+> The demo uses blocking POSIX sockets (`sys/socket.h`) rather than adding a
+> second event-loop binding. The runtime itself still requires libuv for fiber
+> scheduling and timers; sqlite3 is the demo's only additional FFI library.
 
 `zig cc` is preferred because it is hermetic and trivially installable
 without root (a single tarball). The implementation auto-detects a
@@ -82,6 +81,12 @@ source ──front end──▶ KCore (Term, per global)
   `OUT` (default: the input basename without extension);
 * `--emit-c` stops after writing the C source (useful for tests and
   inspection) and does not invoke the driver.
+
+The driver resolves the runtime from an explicit `KAPPA_RUNTIME_DIR`, then
+from `runtime/` beside the installed `bin/` directory, then from a checkout
+ancestor. A candidate is accepted only when all runtime translation units and
+their required headers are present. Official compiler archives use the
+relocatable `bin/` + `runtime/` layout.
 
 The elaborated `Term` for each top-level definition is captured during
 elaboration (`CheckState.csCoreBodies`) — re-deriving it by `quote`-ing

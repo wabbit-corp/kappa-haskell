@@ -11,6 +11,18 @@ roomsStyle : Int -> Int
 let roomsStyle tries decreases tries by ltInt =
     if leInt tries 0 then 0 else roomsStyle (subInt tries 1)
 
+-- An identity-authenticated explicit Int relation participates in the same
+-- hidden-phase classification as the default relation: route -> descend is
+-- visibly nonincreasing, while descend -> route is visibly strict.
+route : Int -> Int
+descend : Int -> Int
+
+let route n decreases n by ltInt =
+    if leInt n 0 then 0 else descend n
+
+let descend n decreases n by ltInt =
+    if leInt n 0 then 0 else route (subInt n 1)
+
 lexStyle : Int -> Int -> Int
 let lexStyle fuel n decreases (fuel, n) =
     if leInt fuel 0 then 0

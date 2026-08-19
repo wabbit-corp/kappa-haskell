@@ -1610,18 +1610,21 @@ let updateMusic last want =
 runLoop : term.Terminal -> Size -> Int -> GameState -> IO GameError Unit
 let runLoop terminal mapSize lastMusic game =
     do
-        term.write terminal (render.renderGame game)
-        match game.mode
-        case Quit -> pure ()
-        case _ ->
-            do
-                let nextMusic <- updateMusic lastMusic (desiredMusic game)
+        var currentMusic = lastMusic
+        var currentGame = game
+        while True do
+            term.write terminal (render.renderGame currentGame)
+            if currentGame.mode == Quit then
+                break
+            else
+                let nextMusic <- updateMusic currentMusic (desiredMusic currentGame)
                 let key <- term.readKey terminal
-                let cmd = commandFor game key
-                let game2 <- stepIO mapSize cmd game
-                let musicAfterInput <- if game2.audioMuted && not game.audioMuted then updateMusic nextMusic musicNone else pure nextMusic
-                playEvents game cmd game2
-                runLoop terminal mapSize musicAfterInput game2
+                let cmd = commandFor currentGame key
+                let game2 <- stepIO mapSize cmd currentGame
+                let musicAfterInput <- if game2.audioMuted && not currentGame.audioMuted then updateMusic nextMusic musicNone else pure nextMusic
+                playEvents currentGame cmd game2
+                currentMusic = musicAfterInput
+                currentGame = game2
 
 main : IO GameError Unit
 let main =

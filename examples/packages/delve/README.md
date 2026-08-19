@@ -100,17 +100,27 @@ build.kp                           older schematic manifest kept for provenance
 Build the Linux target with:
 
 ```text
-kappa build --manifest examples/packages/delve --target delve-linux --update -o delve
+KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)" \
+  kappa build --manifest examples/packages/delve --target delve-linux --update -o delve
 ```
 
-Build the macOS arm64 target with Homebrew `bdw-gc`, `gmp`, and `pkg-config` installed:
+This requires the Boehm GC, GMP, libuv, and pkg-config development packages
+(`libgc-dev`, `libgmp-dev`, `libuv1-dev`, and `pkg-config` on Debian/Ubuntu).
+
+Build the macOS arm64 target with Homebrew `bdw-gc`, `gmp`, `libuv`, and
+`pkg-config` installed:
 
 ```text
-KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp)" \
+KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)" \
   kappa build --manifest examples/packages/delve --target delve-macos-arm64 --update -o delve
 ```
 
-The release archives currently contain dynamically linked executables. Linux systems need compatible `libgc` and `libgmp` runtime libraries installed. macOS systems need Homebrew `bdw-gc` and `gmp` runtime libraries unless the binaries are rebuilt with a static or bundled dependency strategy.
+Release archives include `delve-tests`, which runs the packaged data and native
+runtime smoke suite. Linux systems need compatible `libgc`, `libgmp`, and
+`libuv` runtime libraries installed. macOS systems need Homebrew `bdw-gc`,
+`gmp`, and `libuv` runtime libraries unless the binaries are rebuilt with a
+static or bundled dependency strategy. The Windows archive bundles the full
+non-system MinGW DLL closure beside the executables.
 
 The native boundary is still small. `terminal.game.kp` and `files.kp` declare backend-neutral facades with `expect`; selected `.native.*.kp` fragments satisfy them through the generated `host.native.delve_terminal.Raw` adapter surface. `kappa.build.kp` records the source roots, fragment axes, target-specific host bindings, headers, shims, and string-return classifications. Assets and saves remain explicit package-relative runtime paths.
 

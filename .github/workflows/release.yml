@@ -60,6 +60,9 @@ jobs:
       - name: Test
         run: cabal test all --test-show-details=direct
 
+      - name: Enforce trivial cold-compile budget
+        run: scripts/check_trivial_compile_budget.sh
+
   native-gates:
     name: Native backend and Delve gates
     runs-on: ubuntu-latest
@@ -122,6 +125,31 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libgc-dev libgmp-dev libuv1-dev pkg-config
+
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bdw-gc gmp libuv pkg-config
+
+      - name: Install native dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: prepend
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-gc
+            mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-libuv
+            mingw-w64-x86_64-pkgconf
+
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
@@ -145,7 +173,7 @@ jobs:
 
           cabal update
           out_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
-          mkdir -p "$out_dir/bin"
+          mkdir -p "$out_dir/bin" "$out_dir/runtime"
           exe_ext=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             exe_ext=".exe"
@@ -164,9 +192,59 @@ jobs:
           cp docs/Spec.md "$out_dir/Spec.md"
           cp TESTING.md "$out_dir/TESTING.md"
           cp SPEC_COMPLIANCE.md "$out_dir/SPEC_COMPLIANCE.md" || true
+          cp runtime/*.c runtime/*.h "$out_dir/runtime/"
 
           mkdir -p "$PWD/dist/assets"
           tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/kappa-haskell-${{ matrix.platform }}.tar.gz" "kappa-haskell-${{ matrix.platform }}"
+
+      - name: Test relocated compiler archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="$PWD/dist/assets/kappa-haskell-${{ matrix.platform }}.tar.gz"
+          extract_dir="$(mktemp -d)"
+          trap 'rm -rf "$extract_dir"' EXIT
+          tar -xzf "$archive" -C "$extract_dir"
+          package_dir="$extract_dir/kappa-haskell-${{ matrix.platform }}"
+          cp test/native/cases/arith.kp "$extract_dir/release-smoke.kp"
+          cc_cmd="clang $(pkg-config --cflags --libs bdw-gc gmp libuv)"
+
+          smoke_output="$({
+            cd "$extract_dir"
+            "$package_dir/bin/kappa" build release-smoke.kp \
+              -o release-smoke --cc "$cc_cmd" >/dev/null
+            ./release-smoke
+          })"
+          test "$smoke_output" = $'120\n5050\n4\n15'
+
+      - name: Test relocated compiler archive (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          archive="$PWD/dist/assets/kappa-haskell-${{ matrix.platform }}.tar.gz"
+          extract_dir="$(mktemp -d)"
+          trap 'rm -rf "$extract_dir"' EXIT
+          tar -xzf "$archive" -C "$extract_dir"
+          package_dir="$extract_dir/kappa-haskell-${{ matrix.platform }}"
+          cp test/native/cases/arith.kp "$extract_dir/release-smoke.kp"
+
+          pkgconf_bin="$(command -v pkgconf || command -v pkg-config)"
+          cc_bin="$(command -v clang || command -v gcc)"
+          "$pkgconf_bin" --exists bdw-gc gmp libuv
+          cc_exe="$(cygpath -w "$cc_bin")"
+          cc_cmd="$cc_exe $($pkgconf_bin --cflags --libs bdw-gc gmp libuv)"
+
+          smoke_output="$({
+            cd "$extract_dir"
+            "$package_dir/bin/kappa.exe" build release-smoke.kp \
+              -o release-smoke.exe --cc "$cc_cmd" >/dev/null
+            ./release-smoke.exe
+          } | tr -d '\r')"
+          test "$smoke_output" = $'120\n5050\n4\n15'
 
       - name: Upload compiler package
         uses: actions/upload-artifact@v4
@@ -211,7 +289,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev pkg-config
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libgc-dev libgmp-dev libuv1-dev pkg-config
 
       - name: Install native dependencies (macOS)
         if: runner.os == 'macOS'
@@ -228,7 +307,6 @@ jobs:
           path-type: prepend
           install: >-
             mingw-w64-x86_64-clang
-            mingw-w64-x86_64-gcc
             mingw-w64-x86_64-gc
             mingw-w64-x86_64-gmp
             mingw-w64-x86_64-libuv
@@ -270,19 +348,15 @@ jobs:
             --overwrite-policy=always
 
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
-          mkdir -p "$game_dir/bin"
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)"
-          else
-            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)"
-          fi
+          mkdir -p "$game_dir"
+          cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)"
           export KAPPA_CC="$cc_cmd"
 
           "$compiler_dir/bin/kappa" build \
             --update \
             --manifest examples/packages/delve \
             --target "${{ matrix.test-target }}" \
-            -o "$game_dir/bin/delve-tests${{ matrix.exe-ext }}" \
+            -o "$game_dir/delve-tests${{ matrix.exe-ext }}" \
             --cc "$cc_cmd"
 
           cp -R examples/packages/delve/assets "$game_dir/assets"
@@ -291,14 +365,6 @@ jobs:
           test -f "$game_dir/assets/delve/pack.json"
           test -f "$game_dir/assets/delve/items.json"
           test -f "$game_dir/assets/delve/systems.json"
-
-          test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
-          printf '%s\n' "$test_output"
-          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
-          rm -rf "$game_dir/bin"
-          rm -rf "$game_dir/saves"
-          mkdir -p "$game_dir/saves"
-          touch "$game_dir/saves/.gitkeep"
 
           "$compiler_dir/bin/kappa" build \
             --update \
@@ -312,7 +378,16 @@ jobs:
           cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
 
           mkdir -p "$PWD/dist/assets"
-          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz" "delve-${{ matrix.platform }}"
+          archive="$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz"
+          tar -C "$PWD/dist/release" -czf "$archive" "delve-${{ matrix.platform }}"
+
+          extract_dir="$(mktemp -d)"
+          trap 'rm -rf "$extract_dir"' EXIT
+          tar -xzf "$archive" -C "$extract_dir"
+          packaged_dir="$extract_dir/delve-${{ matrix.platform }}"
+          test_output="$(cd "$packaged_dir" && "./delve-tests${{ matrix.exe-ext }}")"
+          printf '%s\n' "$test_output"
+          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
 
       - name: Build compiler and Delve (Windows)
         if: runner.os == 'Windows'
@@ -322,19 +397,22 @@ jobs:
 
           compiler_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
-          mkdir -p "$game_dir/bin"
+          mkdir -p "$game_dir"
 
           pkgconf_bin="$(command -v pkgconf || command -v pkg-config || true)"
-          cc_bin="$(command -v gcc || command -v clang || true)"
-          if [[ -z "$pkgconf_bin" || -z "$cc_bin" ]]; then
+          cc_bin="$(command -v clang || command -v gcc || true)"
+          objdump_bin="$(command -v objdump || true)"
+          if [[ -z "$pkgconf_bin" || -z "$cc_bin" || -z "$objdump_bin" ]]; then
             printf 'Windows native tool lookup failed.\n' >&2
             printf 'pkgconf=%s\n' "$pkgconf_bin" >&2
             printf 'cc=%s\n' "$cc_bin" >&2
+            printf 'objdump=%s\n' "$objdump_bin" >&2
             printf 'PATH=%s\n' "$PATH" >&2
             exit 1
           fi
           "$pkgconf_bin" --exists bdw-gc gmp libuv
-          cc_cmd="$cc_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp libuv)"
+          cc_exe="$(cygpath -w "$cc_bin")"
+          cc_cmd="$cc_exe $("$pkgconf_bin" --cflags --libs bdw-gc gmp libuv)"
           export KAPPA_CC="$cc_cmd"
 
           chcp.com 65001 >/dev/null || true
@@ -343,7 +421,7 @@ jobs:
             --update \
             --manifest examples/packages/delve \
             --target "${{ matrix.test-target }}" \
-            -o "$game_dir/bin/delve-tests${{ matrix.exe-ext }}" \
+            -o "$game_dir/delve-tests${{ matrix.exe-ext }}" \
             --cc "$cc_cmd"
 
           cp -R examples/packages/delve/assets "$game_dir/assets"
@@ -353,14 +431,6 @@ jobs:
           test -f "$game_dir/assets/delve/items.json"
           test -f "$game_dir/assets/delve/systems.json"
 
-          test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
-          printf '%s\n' "$test_output"
-          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
-          rm -rf "$game_dir/bin"
-          rm -rf "$game_dir/saves"
-          mkdir -p "$game_dir/saves"
-          touch "$game_dir/saves/.gitkeep"
-
           "$compiler_dir/bin/kappa.exe" build \
             --update \
             --manifest examples/packages/delve \
@@ -368,14 +438,57 @@ jobs:
             -o "$game_dir/delve${{ matrix.exe-ext }}" \
             --cc "$cc_cmd"
 
-          cp /mingw64/bin/libgc-1.dll "$game_dir/"
-          cp /mingw64/bin/libgmp-10.dll "$game_dir/"
+          copy_mingw_dll_closure() {
+            local destination="$1"
+            shift
+            local -a queue=("$@")
+            local index=0
+            declare -A seen=()
+
+            while ((index < ${#queue[@]})); do
+              local binary="${queue[$index]}"
+              index=$((index + 1))
+              while IFS= read -r dll; do
+                [[ -n "$dll" ]] || continue
+                local key="${dll,,}"
+                [[ -z "${seen[$key]:-}" ]] || continue
+                seen[$key]=1
+
+                local dependency
+                dependency="$(find /mingw64/bin -maxdepth 1 -type f -iname "$dll" -print -quit)"
+                if [[ -n "$dependency" ]]; then
+                  local copied="$destination/$(basename "$dependency")"
+                  cp -f "$dependency" "$copied"
+                  queue+=("$copied")
+                fi
+              done < <("$objdump_bin" -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')
+            done
+          }
+
+          copy_mingw_dll_closure \
+            "$game_dir" \
+            "$game_dir/delve-tests${{ matrix.exe-ext }}" \
+            "$game_dir/delve${{ matrix.exe-ext }}"
           cp LICENSE "$game_dir/LICENSE"
           cp examples/packages/delve/README.md "$game_dir/README.md"
           cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
 
           mkdir -p "$PWD/dist/assets"
-          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz" "delve-${{ matrix.platform }}"
+          archive="$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz"
+          tar -C "$PWD/dist/release" -czf "$archive" "delve-${{ matrix.platform }}"
+
+          extract_dir="$(mktemp -d)"
+          trap 'rm -rf "$extract_dir"' EXIT
+          tar -xzf "$archive" -C "$extract_dir"
+          packaged_dir="$extract_dir/delve-${{ matrix.platform }}"
+          system_path="$(cygpath -u "$WINDIR/System32")"
+          test_output="$({
+            cd "$packaged_dir"
+            PATH="$system_path" "./delve-tests${{ matrix.exe-ext }}"
+          })"
+          test_output="${test_output//$'\r'/}"
+          printf '%s\n' "$test_output"
+          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
 
       - name: Upload Delve package
         uses: actions/upload-artifact@v4

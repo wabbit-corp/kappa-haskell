@@ -34,13 +34,14 @@ import Kappa.Core (GName)
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
 import System.Directory
-  ( createDirectoryIfMissing
+  ( canonicalizePath
+  , createDirectoryIfMissing
   , doesFileExist
   , findExecutable
   , getCurrentDirectory
   , makeAbsolute
   )
-import System.Environment (lookupEnv)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
@@ -260,8 +261,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
               -- integration cut; the proper pkg-config discovery + static /
               -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
               rtCFlags = ["-D_GNU_SOURCE", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
-              rtSources =
-                [runtimeDir </> f | f <- ["gc.c", "value.c", "bignum.c", "show.c", "unicode.c", "prims.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
+              rtSources = [runtimeDir </> f | f <- runtimeSourceFiles]
               -- -lm: the libm transcendental Double prims (§6.1.7 sqrt/sin/…).
               -- On macOS libm lives in libSystem (already linked), but -lm is
               -- required on Linux/glibc and harmless elsewhere — pin it for
@@ -400,25 +400,69 @@ splitCC s = case words s of
   [] -> Nothing
   (x : xs) -> Just (x, xs)
 
--- | Locate the @kappart@ runtime directory: @$KAPPA_RUNTIME_DIR@, then a
--- @runtime/@ holding @kappart.h@ found by walking up from the CWD.
+runtimeSourceFiles :: [FilePath]
+runtimeSourceFiles =
+  [ "gc.c"
+  , "value.c"
+  , "bignum.c"
+  , "show.c"
+  , "unicode.c"
+  , "prims.c"
+  , "rt.c"
+  , "reactor.c"
+  , "scope.c"
+  , "race.c"
+  , "stm.c"
+  , "atomic.c"
+  ]
+
+runtimeHeaderFiles :: [FilePath]
+runtimeHeaderFiles =
+  [ "kappart.h"
+  , "kappart2.h"
+  , "boxed.h"
+  , "internal.h"
+  , "kappa_ucd.h"
+  ]
+
+-- | Locate the complete @kappart@ runtime directory. An explicit
+-- @$KAPPA_RUNTIME_DIR@ is authoritative. Release archives place @runtime/@
+-- beside @bin/@; source builds retain the checkout-ancestor fallback.
 findRuntimeDir :: IO (Maybe FilePath)
 findRuntimeDir = do
   menv <- lookupEnv ("KAPPA" <> "_RUNTIME_DIR") -- assembled: see detectCC
   case menv of
-    Just d -> do
-      ok <- doesFileExist (d </> "kappart.h")
-      pure (if ok then Just d else Nothing)
+    Just d -> validateRuntimeDir d
     Nothing -> do
-      cwd <- getCurrentDirectory
-      walkUp cwd
+      executable <- canonicalizePath =<< getExecutablePath
+      let executableDir = takeDirectory executable
+          bundledCandidates =
+            [ takeDirectory executableDir </> "runtime"
+            , executableDir </> "runtime"
+            ]
+      bundled <- firstCompleteRuntime bundledCandidates
+      case bundled of
+        Just runtimeDir -> pure (Just runtimeDir)
+        Nothing -> do
+          cwd <- getCurrentDirectory
+          walkUp cwd
   where
+    validateRuntimeDir dir = do
+      absolute <- makeAbsolute dir
+      complete <- runtimeDirComplete absolute
+      pure (if complete then Just absolute else Nothing)
+    firstCompleteRuntime [] = pure Nothing
+    firstCompleteRuntime (candidate : rest) =
+      validateRuntimeDir candidate >>= \case
+        Just runtimeDir -> pure (Just runtimeDir)
+        Nothing -> firstCompleteRuntime rest
+    runtimeDirComplete dir =
+      and <$> mapM (doesFileExist . (dir </>)) (runtimeSourceFiles ++ runtimeHeaderFiles)
     walkUp dir = do
-      let cand = dir </> "runtime"
-      ok <- doesFileExist (cand </> "kappart.h")
-      if ok
-        then Just <$> makeAbsolute cand
-        else
+      candidate <- validateRuntimeDir (dir </> "runtime")
+      case candidate of
+        Just runtimeDir -> pure (Just runtimeDir)
+        Nothing ->
           let parent = takeDirectory dir
            in if parent == dir then pure Nothing else walkUp parent
 
@@ -482,7 +526,8 @@ toolDiag msg =
 noRuntimeMsg :: T.Text
 noRuntimeMsg =
   "could not locate the kappart runtime: set $KAPPA_RUNTIME_DIR to the \
-  \directory containing kappart.h, or run from a checkout containing runtime/ \
+  \complete runtime directory, use a release archive containing runtime/ beside \
+  \bin/, or run from a checkout containing runtime/ \
   \(Spec §27.7 backends are profile-scoped; see docs/NATIVE_BACKEND.md)"
 
 noCcMsg :: T.Text

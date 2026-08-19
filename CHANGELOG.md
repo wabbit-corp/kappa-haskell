@@ -14,6 +14,8 @@
   the trivial cold-compile gate now completes in under one second.
 * Make Delve's JSON parsers structurally total and restore its native package
   build and test gate.
+* Ship relocatable compiler archives with the native runtime, and validate
+  compiler and Delve archives by running their packaged native smoke tests.
 
 ## 0.1.0.0 -- 2026-06-21
 
