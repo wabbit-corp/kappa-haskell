@@ -58,9 +58,11 @@ module Kappa.Backend.Repr
   , runtimeConstructorField
   , runtimeConstructorPiField
   , valueDomainIsKind
+  , valueDomainIsCompileTimeOnly
   , erasedParamMask
   , erasedSpinePositions
   , erasedSpinePositionsForArgs
+  , erasedSpinePositionsForArgsMaybe
   , keptSpinePositions
 
     -- * Function rep/worker-plan selection (the single authority)
@@ -110,6 +112,7 @@ import Kappa.Cardinality (CardExpr, renderCardExpr)
 import Kappa.Builtins
   ( builtinCtorTagId
   , gPrel
+  , intrinsicCompileTimeCarrierGlobals
   , kctUserBase
   , prelDouble
   , prelEqType
@@ -139,10 +142,11 @@ import Kappa.Core
   , pattern CPi
   , pattern CRecordT
   , Value (..)
+  , pattern VGlobN
   , pattern VPi
   , gKey
   )
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, globalPrimitiveIdentity, quote)
 
 -- ── Runtime representation classes ───────────────────────────────────
 --
@@ -395,7 +399,7 @@ argConvSelectGlobal ctx g =
     Nothing -> Nothing
     Just gd ->
       let base = argConvSelect ctx (gdType gd)
-       in case primitiveIdentity g gd >>= primArgConvOverride of
+       in case globalPrimitiveIdentity g gd >>= primArgConvOverride of
             Nothing -> base
             Just convs -> do
               walked <- base
@@ -498,12 +502,6 @@ primitiveGlobalDef globals g@(GName m nm) =
       | m == primModule -> Map.lookup (gPrel nm) globals
       | otherwise -> Nothing
 
-primitiveIdentity :: GName -> GlobalDef -> Maybe Text
-primitiveIdentity (GName m nm) gd
-  | m == primModule = Just nm
-  | Just (VPrim p _) <- gdValue gd = Just p
-  | otherwise = Nothing
-
 -- | S2.3c audited primitive convention table.
 --
 -- 'ArgOwned' appears only at positions that publish the argument into a
@@ -576,7 +574,7 @@ argConv q borrowed
 runtimeErasedParam :: EvalCtx -> Int -> Q -> Value -> Bool
 runtimeErasedParam ctx lvl q dom =
   q == Q0
-    || valueDomainIsKind ctx lvl dom
+    || valueDomainIsCompileTimeOnly ctx lvl dom
     || (not (runtimeErasureNeedsErasedDemand ctx dom) && resultIsProofValue ctx lvl dom)
 
 -- | Whether classifier evidence alone is insufficient to erase a value at an
@@ -666,9 +664,17 @@ erasedSpinePositions globals ctx g =
 -- unalignable shapes fail conservatively by keeping all supplied arguments.
 erasedSpinePositionsForArgs :: Map GName GlobalDef -> EvalCtx -> GName -> [Icit] -> [Bool]
 erasedSpinePositionsForArgs globals ctx g actuals =
-  case Map.lookup g globals >>= \gd -> alignErasedArgs ctx (gdType gd) actuals of
+  case erasedSpinePositionsForArgsMaybe globals ctx g actuals of
     Just flags -> flags
     Nothing -> replicate (length actuals) False
+
+-- | Checked telescope erasure aligned to one concrete application spine.
+-- Unlike 'erasedSpinePositionsForArgs', this preserves alignment failure so
+-- KBackendIR can fall back to occurrence-selected evidence for generated
+-- arguments (for example the hidden region carried by a capture annotation).
+erasedSpinePositionsForArgsMaybe :: Map GName GlobalDef -> EvalCtx -> GName -> [Icit] -> Maybe [Bool]
+erasedSpinePositionsForArgsMaybe globals ctx g actuals =
+  Map.lookup g globals >>= \gd -> alignErasedArgs ctx (gdType gd) actuals
 
 -- | The dual of 'erasedSpinePositions': @True@ means the argument remains a
 -- runtime value after KCore→KBackendIR erasure.
@@ -756,6 +762,24 @@ valueDomainIsKind ctx lvl v =
     _ -> False
   where
     closApply l (Closure env body) = eval ctx (VRigid l [] : env) body
+
+-- | Exact §11.1.6.1 phase-erasure classifier. Intrinsic carriers such as
+-- 'Region' remain first-class in checked Core, but their inhabitants have no
+-- runtime representation. 'TypeLevel' is intentionally absent from the
+-- identity inventory in 'intrinsicCompileTimeCarrierGlobals'.
+valueDomainIsCompileTimeOnly :: EvalCtx -> Int -> Value -> Bool
+valueDomainIsCompileTimeOnly ctx lvl value =
+  case force ctx value of
+    VSort {} -> True
+    VPi _ _ _ _ _ closure ->
+      valueDomainIsCompileTimeOnly ctx (lvl + 1) (closApply lvl closure)
+    VUniverseLift _ _ _ inner ->
+      valueDomainIsCompileTimeOnly ctx lvl inner
+    VGlobN global _ -> global `elem` intrinsicCompileTimeCarrierGlobals
+    _ -> False
+  where
+    closApply level (Closure environment body) =
+      eval ctx (VRigid level [] : environment) body
 
 -- | The largest de-Bruijn INDEX a 'Term' references relative to its own top
 -- (a @CVar i@ contributes @i@; entering a binder subtracts one from the body's

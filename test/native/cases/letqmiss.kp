@@ -10,5 +10,7 @@ data W : Type = P (a : Int) | Q (a : Int) | R
 
 main : UIO Unit
 let main = do
-    let? P n = Q 99 else P r -> printlnString (stringAppend "else-bound=" (showInt r))
+    let? P n = Q 99 else P r -> do
+        printlnString (stringAppend "else-bound=" (showInt r))
+        return ()
     printlnString (stringAppend "n=" (showInt n))

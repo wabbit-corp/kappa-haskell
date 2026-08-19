@@ -66,7 +66,7 @@ import qualified Kappa.Builtins as Builtins
 import Kappa.Build.Types (FfiClass (..))
 import Kappa.Check (CheckState (..), linkedCoreBodies)
 import Kappa.Core
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), globalPrimitiveIdentity, quote)
 import Kappa.Representation (ExactNaturalRepresentationCertificate)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex)
@@ -4303,7 +4303,7 @@ compileGlob g@(GName m nm) = do
           globals <- gets gsGlobals
           hostSyms <- gets gsHostSyms
           case Map.lookup g globals of
-            Just gd | Just (VPrim pname _) <- gdValue gd -> compilePrimValue pname
+            Just gd | Just pname <- globalPrimitiveIdentity g gd -> compilePrimValue pname
             -- Milestone L (§27.1.1): a provided host-binding member is lowered like
             -- a PRIM over its codegen-emitted C wrapper — a CURRIED native closure
             -- ('knative' over 'wrapperCName', IO since native bindings are UIO).
@@ -5090,6 +5090,4 @@ globPrimName g@(GName m nm) = do
     then pure (known nm)
     else do
       globals <- gets gsGlobals
-      pure $ case Map.lookup g globals of
-        Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
-        _ -> Nothing
+      pure $ Map.lookup g globals >>= globalPrimitiveIdentity g >>= known

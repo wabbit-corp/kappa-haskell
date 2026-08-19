@@ -18,8 +18,8 @@ let val t =
     case A x | B x -> x
     case C -> 0
 
-diverge : Int -> Bool
-let diverge n = diverge (addInt n 1)
+trap : Bool
+let trap = eqInt (divInt 1 0) 0
 
 main : UIO Unit
 let main = do
@@ -31,5 +31,5 @@ let main = do
     let r = (x = 1, y = 2, z = 3)
     let rest = match r case (x = a, ..others) -> others
     printlnString (showInt (addInt rest.y rest.z))
-    printlnString (if (eqInt 1 0) && (diverge 0) then "no" else "short-and")
-    printlnString (if (eqInt 1 1) || (diverge 0) then "short-or" else "no")
+    printlnString (if (eqInt 1 0) && trap then "no" else "short-and")
+    printlnString (if (eqInt 1 1) || trap then "short-or" else "no")

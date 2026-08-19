@@ -12,14 +12,22 @@ data Box : Type = MkBox (w : W)
 main : UIO Unit
 let main = do
     -- second alternative (Q) matches
-    let? (P n | Q n) = Q 8 else _ -> printlnString "no-1"
+    let? (P n | Q n) = Q 8 else _ -> do
+        printlnString "no-1"
+        return ()
     printlnString (showInt n)
     -- first alternative (P) matches
-    let? (P m | Q m) = P 3 else _ -> printlnString "no-2"
+    let? (P m | Q m) = P 3 else _ -> do
+        printlnString "no-2"
+        return ()
     printlnString (showInt m)
     -- nested or inside an outer constructor
-    let? MkBox (P k | Q k) = MkBox (Q 11) else _ -> printlnString "no-3"
+    let? MkBox (P k | Q k) = MkBox (Q 11) else _ -> do
+        printlnString "no-3"
+        return ()
     printlnString (showInt k)
     -- neither alternative matches: the else block replaces the continuation
-    let? (P z | Q z) = R else _ -> printlnString "fell-through"
+    let? (P z | Q z) = R else _ -> do
+        printlnString "fell-through"
+        return ()
     printlnString (stringAppend "unreached=" (showInt z))

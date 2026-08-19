@@ -62,6 +62,9 @@ import Kappa.Builtins
   ( gPrel
   , preludeModule
   , prelFin
+  , prelEffLabel
+  , prelEffOp
+  , prelHandleEff
   , prelIO
   , prelInteger
   , prelIsSet
@@ -91,6 +94,7 @@ import Kappa.Builtins
   )
 import Kappa.Check
   ( CheckState (..)
+  , DataInfo (..)
   , CtorInfo (..)
   , InstanceEntry (..)
   , LevelOperatorIdentity (..)
@@ -256,6 +260,7 @@ data BackendParam = BackendParam
 -- code merely because both have no runtime slot.
 data ErasureProvenance
   = ErasedOrdinaryTypeCode
+  | ErasedIntrinsicCompileTimeValue
   | ErasedParametricTypeWitness !Level
   | ErasedParametricTypeFormer
   | ErasedProofOrTraitEvidence
@@ -281,6 +286,7 @@ data ErasureSite
   | ErasedRecordFieldSite
   | ErasedConstructorFieldSite
   | ErasedPatternSlotSite
+  | ErasedMatchScrutineeSite
   deriving stock (Eq, Ord, Show)
 
 data BackendMeta = BackendMeta
@@ -437,6 +443,7 @@ data BackendCond
 data LowerStatic = LowerStatic
   { lsOwner :: !GName
   , lsGlobals :: !(Map GName GlobalDef)
+  , lsDatas :: !(Map GName DataInfo)
   , lsCtors :: !(Map GName CtorInfo)
   , lsTraits :: !(Map GName TraitInfo)
   , lsInstances :: ![InstanceEntry]
@@ -503,7 +510,7 @@ lowerKBackendIRForCapabilities capabilities st =
           ]
       lowered =
         Map.mapWithKey
-          (lowerBody ctx globals (csCtors st) (csTraits st) (csInstances st) builtinIntegerLiteralDicts)
+          (lowerBody ctx globals (csDatas st) (csCtors st) (csTraits st) (csInstances st) builtinIntegerLiteralDicts)
           bodies
       exactNaturalCertificate =
         exactNaturalRepresentationForState
@@ -3820,8 +3827,8 @@ backendMeta = \case
   BForce meta _ -> meta
   BIf meta _ _ _ -> meta
 
-lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName CtorInfo -> Map GName TraitInfo -> [InstanceEntry] -> Set GName -> GName -> Term -> (BackendBody, [BackendIRViolation])
-lowerBody ctx globals ctors traits instances builtinIntegerLiteralDicts g body =
+lowerBody :: EvalCtx -> Map GName GlobalDef -> Map GName DataInfo -> Map GName CtorInfo -> Map GName TraitInfo -> [InstanceEntry] -> Set GName -> GName -> Term -> (BackendBody, [BackendIRViolation])
+lowerBody ctx globals datas ctors traits instances builtinIntegerLiteralDicts g body =
   let (body0, st') = runState (runReaderT go static) (LowerState 0 0 [] [])
       bodyWithErasures = body0 {bbErasures = bbErasures body0 ++ reverse (lstErasures st')}
       body' = annotateBackendBodyOwnership bodyWithErasures
@@ -3831,6 +3838,7 @@ lowerBody ctx globals ctors traits instances builtinIntegerLiteralDicts g body =
       LowerStatic
         { lsOwner = g
         , lsGlobals = globals
+        , lsDatas = datas
         , lsCtors = ctors
         , lsTraits = traits
         , lsInstances = instances
@@ -3859,20 +3867,20 @@ lowerBody ctx globals ctors traits instances builtinIntegerLiteralDicts g body =
 
     bodyRuntimeErased owner root =
       Repr.resultIsProofBodyGlobal globals ctx owner
-        || maybe False (globalResultIsKind ctx . gdType) (Map.lookup owner globals)
+        || maybe False (globalResultIsCompileTimeOnly ctx . gdType) (Map.lookup owner globals)
         || sourceArgErased globals ctx root
 
     bodyResultExpected paramCount =
       Map.lookup g globals >>= resultTypeAfterParams ctx paramCount . gdType
 
-globalResultIsKind :: EvalCtx -> Value -> Bool
-globalResultIsKind ctx = go 0
+globalResultIsCompileTimeOnly :: EvalCtx -> Value -> Bool
+globalResultIsCompileTimeOnly ctx = go 0
   where
     go lvl ty =
       case force ctx ty of
         VPi _ _ _ _ _ (Closure env cod) ->
           go (lvl + 1) (eval ctx (VRigid lvl [] : env) cod)
-        result -> Repr.valueDomainIsKind ctx lvl result
+        result -> Repr.valueDomainIsCompileTimeOnly ctx lvl result
 
 resultTypeAfterParams :: EvalCtx -> Int -> Value -> Maybe Value
 resultTypeAfterParams ctx count = go 0 count
@@ -3914,6 +3922,8 @@ erasureProvenanceForDomain ctx lvl mode q dom
       Parametric -> case force ctx dom of
         VSort rho -> Just (ErasedParametricTypeWitness rho)
         _ -> Just ErasedParametricTypeFormer
+  | Repr.valueDomainIsCompileTimeOnly ctx lvl dom =
+      Just ErasedIntrinsicCompileTimeValue
   | Repr.resultIsProofValue ctx lvl dom = Just ErasedProofOrTraitEvidence
   | otherwise = Nothing
 
@@ -4173,14 +4183,26 @@ lowerRuntimeTermExpected expected term depth scopes = case term of
       depth scopes
   CMatch s _ann _resultAnn alts -> do
     meta <- metaAt
+    datas <- asks lsDatas
     ctors <- asks lsCtors
     globals <- asks lsGlobals
     traits <- asks lsTraits
     ctx <- asks lsCtx
-    s' <- lowerTerm s depth scopes
     let scrutTy = termTypeAt globals traits ctx depth scopes s
-    alts' <- forM alts $ \a -> lowerAlt scrutTy a depth scopes
-    pure (BMatch meta s' alts' (concatMap (patLayouts ctx ctors . caPat) alts))
+    let scrutineeErased =
+          maybe False (Repr.runtimeErasedParam ctx depth QW) scrutTy
+            || erasedScopeVariable s scopes
+    case erasedSingletonAlternative ctx datas ctors scrutineeErased scrutTy alts of
+      Just alternative -> do
+        let reason =
+              fromMaybe ErasedProofOrTraitEvidence
+                (scrutTy >>= erasureProvenanceForDomain ctx depth Ordinary QW)
+        recordErasureAt depth meta ErasedMatchScrutineeSite Expl "match scrutinee" reason
+        lowerErasedSingletonAlt scrutTy alternative depth scopes
+      Nothing -> do
+        s' <- lowerTerm s depth scopes
+        alts' <- forM alts $ \a -> lowerAlt scrutTy a depth scopes
+        pure (BMatch meta s' alts' (concatMap (patLayouts ctx ctors . caPat) alts))
   CRecordV fs -> do
     meta <- metaAt
     globals <- asks lsGlobals
@@ -4424,14 +4446,21 @@ lowerApp expected term depth scopes = do
               _ ->
                 termTypeAt globals traits ctx depth scopes hd >>= \ty ->
                   Repr.argPlanSelectForArgsAt ctx depth ty actualIcs
+            checkedErasurePlan = case hd of
+              CGlob global ->
+                Repr.erasedSpinePositionsForArgsMaybe globals ctx global actualIcs
+              _ -> map fst <$> localPlan
             inferredFlags =
               applicationErasureFlags
                 globals traits ctx depth scopes hd args localPlan
             flags =
-              zipWith
-                (\selected inferred -> runtimeErasureSelected selected || inferred)
-                (selectedRuntimeErasures ++ repeat RuntimeRelevant)
-                (inferredFlags ++ repeat False)
+              case checkedErasurePlan of
+                Just checkedFlags -> checkedFlags
+                Nothing ->
+                  zipWith
+                    (\selected inferred -> runtimeErasureSelected selected || inferred)
+                    (selectedRuntimeErasures ++ repeat RuntimeRelevant)
+                    (inferredFlags ++ repeat False)
             convs = case hd of
               CGlob g -> fromMaybe (replicate k Nothing) (Repr.argConvSelectGlobalForArgs ctx g actualIcs)
               _ -> maybe (replicate k Nothing) (map snd) localPlan
@@ -4444,8 +4473,14 @@ lowerApp expected term depth scopes = do
             kept =
               [ (ic, conv, expectedArg, a)
               | (_, ic, erased, conv, expectedArg, a) <- aligned
-              , not erased
+              , not erased || isJust (runtimeReification a)
               ]
+            runtimeReification argument =
+              case hd of
+                CGlobal intrinsic _
+                  | intrinsic == prelHandleEff ->
+                      checkedEffectLabelRuntimeToken globals ctx argument
+                _ -> Nothing
             lowerGeneric = do
               forM_ aligned $ \(index, ic, erased, _, expectedSite, arg) ->
                 when erased $ do
@@ -4464,9 +4499,11 @@ lowerApp expected term depth scopes = do
               hd' <- lowerTerm hd depth scopes
               args' <-
                 forM kept $ \(ic, conv, expectedSite, a) -> do
-                  a' <- lowerTermExpected (snd <$> expectedSite) a depth scopes
+                  a' <- case runtimeReification a of
+                    Just token -> BLit <$> metaAt <*> pure (LitStr token)
+                    Nothing -> lowerTermExpected (snd <$> expectedSite) a depth scopes
                   pure (ic, conv, a')
-              pure (BApp meta hd' (filter (not . implicitErasedUnitArg) args'))
+              pure (BApp meta hd' args')
         case runtimeTransportApplication term of
           Nothing -> lowerGeneric
           Just transport ->
@@ -4514,9 +4551,6 @@ lowerApp expected term depth scopes = do
 
     selectedErasureProvenance (RuntimeErasedEvidence goal evidence classifier) =
       ErasedBySelectedEvidence goal evidence classifier
-
-    implicitErasedUnitArg (Impl, _, BUnit {}) = True
-    implicitErasedUnitArg _ = False
 
 selectedBuiltinIntegerLiteral :: Set GName -> Term -> Maybe Integer
 selectedBuiltinIntegerLiteral dictionaries term =
@@ -4730,7 +4764,26 @@ proofHeadIsRuntimeErased runtimeErasedHeads = \case
   proof ->
     maybe False (`Set.member` runtimeErasedHeads) (coreHeadGlobal proof)
 
+-- | Runtime effect nodes carry a token derived from a checked static effect
+-- label identity. The source value itself remains compile-time-only: only an
+-- exact global of type 'EffLabel' whose finalized Core body is the compiler-
+-- issued literal token can cross this intrinsic ABI boundary.
+checkedEffectLabelRuntimeToken :: Map GName GlobalDef -> EvalCtx -> Term -> Maybe Text
+checkedEffectLabelRuntimeToken globals ctx = \case
+  CGlobal label _ -> do
+    definition <- Map.lookup label globals
+    case force ctx (gdType definition) of
+      VGlobN classifier _ | classifier == prelEffLabel -> pure ()
+      _ -> Nothing
+    case gdCoreBody definition of
+      Just (CLit (LitStr token)) -> Just token
+      _ -> Nothing
+  _ -> Nothing
+
 lowerCtorTerm :: BackendMeta -> GName -> Maybe Term -> [Term] -> Int -> ScopeStack -> Lower BackendTerm
+lowerCtorTerm meta g ann args depth scopes
+  | g == prelEffOp =
+      lowerEffectOperation meta ann args depth scopes
 lowerCtorTerm meta g _ [] _ _
   | g == prelNatZero =
       pure (BLit meta (LitInt 0))
@@ -4787,6 +4840,65 @@ lowerCtorTerm meta g ann args depth scopes = do
     lowerTermExpected expectedField arg depth scopes
   pure (BCtor meta (BackendCtorLayout g info (length args')) args')
 
+-- | '__EffOp' is a compiler-owned runtime node. Its label field is a reified
+-- token derived from static identity, while every other field follows the
+-- occurrence-local checked constructor telescope. This keeps general
+-- 'EffLabel' values erased without changing the runtime's four-field node ABI.
+lowerEffectOperation :: BackendMeta -> Maybe Term -> [Term] -> Int -> ScopeStack -> Lower BackendTerm
+lowerEffectOperation meta annotation arguments depth scopes = do
+  globals <- asks lsGlobals
+  ctx <- asks lsCtx
+  let facts =
+        case annotation of
+          Just constructorType
+            | termScopedAt depth constructorType ->
+                coreCtorPayloadRuntimeFactsAt depth ctx (evalTypeAt ctx depth constructorType)
+          _ -> []
+      aligned =
+        zip3
+          [0 :: Int ..]
+          arguments
+          (facts ++ repeat (True, Nothing, Nothing))
+      labelTokens =
+        [ (index, token)
+        | (index, argument, _) <- aligned
+        , token <- maybeToList (checkedEffectLabelRuntimeToken globals ctx argument)
+        ]
+  if length arguments /= 4 || length labelTokens /= 1
+    then
+      loweringViolation
+        meta
+        "E_BACKENDIR_EFFECT_LABEL_REIFICATION"
+        "effect operation runtime node requires exactly one checked static label identity and four checked fields"
+    else do
+      lowered <- forM aligned $ \(index, argument, (_, expectedField, _)) ->
+        case lookup index labelTokens of
+          Just token -> do
+            erasureMeta <- metaAt
+            recordErasureAt
+              depth
+              erasureMeta
+              ErasedConstructorFieldSite
+              Expl
+              ("field" <> T.pack (show index))
+              ErasedIntrinsicCompileTimeValue
+            BLit <$> metaAt <*> pure (LitStr token)
+          Nothing -> lowerTermExpected expectedField argument depth scopes
+      let fieldRepresentations = replicate 4 Repr.RepBoxed
+          layoutInfo =
+            CtorLayoutInfo
+              { clArity = 4
+              , clLayoutClass = Repr.LayoutBoxed
+              , clBoxedFootprintBytes = Just (Repr.ctorBoxedFootprintBytes 4)
+              , clFieldReps = fieldRepresentations
+              }
+      pure
+        ( BCtor
+            meta
+            (BackendCtorLayout prelEffOp (Just layoutInfo) 4)
+            lowered
+        )
+
 selectCtorLayoutInfo :: Int -> Maybe CtorLayoutInfo -> Maybe CtorLayoutInfo -> Maybe CtorLayoutInfo
 selectCtorLayoutInfo runtimeFields annInfo ctorInfo =
   case annInfo of
@@ -4814,7 +4926,7 @@ sourceArgErased globals ctx = \case
   CApp _ f _ -> sourceArgErased globals ctx f
   CGlob g ->
     Repr.resultIsProofGlobal globals ctx g
-      || maybe False (typeKindValue ctx 0 . gdType) (Map.lookup g globals)
+      || maybe False (globalResultIsCompileTimeOnly ctx . gdType) (Map.lookup g globals)
   _ -> False
 
 -- | Runtime erasure for an application argument has two independent checked
@@ -4837,14 +4949,15 @@ applicationErasureFlags
   -> Maybe [(Bool, Maybe ArgConv)]
   -> [Bool]
 applicationErasureFlags globals traits ctx depth scopes headTerm arguments localPlan =
-  zipWith (||) telescopeFlags termFlags
+  case headTerm of
+    CGlob global
+      | Just flags <- Repr.erasedSpinePositionsForArgsMaybe globals ctx global actualIcs ->
+          flags
+    _
+      | Just plan <- localPlan -> map fst plan ++ repeat False
+      | otherwise -> termFlags
   where
     actualIcs = map fst arguments
-    telescopeFlags = case headTerm of
-      CGlob global ->
-        Repr.erasedSpinePositionsForArgs globals ctx global actualIcs
-          ++ repeat False
-      _ -> maybe (repeat False) ((++ repeat False) . map fst) localPlan
     termFlags =
       map
         (sourceTermErased globals traits ctx depth scopes . snd)
@@ -4959,7 +5072,7 @@ erasureProvenanceForTerm globals ctx = \case
 globalRuntimeErased :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
 globalRuntimeErased globals ctx g =
   Repr.resultIsProofGlobal globals ctx g
-    || maybe False (globalResultIsKind ctx . gdType) (Map.lookup g globals)
+    || maybe False (globalResultIsCompileTimeOnly ctx . gdType) (Map.lookup g globals)
 
 lambdaExpectedSite :: EvalCtx -> Int -> Icit -> Maybe Value -> Maybe (ObservationMode, Q, Bool, Bool, Maybe ErasureProvenance, Maybe Value, Maybe Value)
 lambdaExpectedSite ctx depth actualIc expected = do
@@ -4987,16 +5100,6 @@ recordFieldErased mRuntimeFields globals traits ctx depth scopes name value =
       name `Set.notMember` runtimeFields
         || sourceTermErased globals traits ctx depth scopes value
     Nothing -> sourceTermErased globals traits ctx depth scopes value
-
-typeKindValue :: EvalCtx -> Int -> Value -> Bool
-typeKindValue ctx lvl v =
-  case force ctx v of
-    VSort _ -> True
-    VPi _ _ _ _ _ clo ->
-      typeKindValue ctx (lvl + 1) (closApply lvl clo)
-    _ -> False
-  where
-    closApply l (Closure env body) = eval ctx (VRigid l [] : env) body
 
 termTypeAt :: Map GName GlobalDef -> Map GName TraitInfo -> EvalCtx -> Int -> ScopeStack -> Term -> Maybe Value
 termTypeAt globals traits ctx depth scopes = go
@@ -5406,6 +5509,78 @@ coreFuncBinders = go []
   where
     go !binders (CLam ic q _ b) = go ((ic, q) : binders) b
     go !binders t = (reverse binders, t)
+
+-- | A checked value erased by proposition evidence has no runtime object to
+-- inspect.  A match over it is nevertheless executable when the datatype and
+-- constructor interfaces prove that there is exactly one possible constructor
+-- and that constructor has no runtime payload.  This is a semantic reduction,
+-- not a representation guess: every other match follows ordinary lowering.
+erasedSingletonAlternative
+  :: EvalCtx
+  -> Map GName DataInfo
+  -> Map GName CtorInfo
+  -> Bool
+  -> Maybe Value
+  -> [CaseAlt]
+  -> Maybe CaseAlt
+erasedSingletonAlternative ctx datas ctors scrutineeErased scrutineeType alternatives = do
+  ty <- scrutineeType
+  guard scrutineeErased
+  family <- case force ctx ty of
+    VGlobN global _ -> Just global
+    _ -> Nothing
+  DataInfo [soleConstructor] _ _ <- Map.lookup family datas
+  constructorInfo <- Map.lookup soleConstructor ctors
+  guard (ciData constructorInfo == family)
+  guard
+    ( all
+        (not . firstOfThree)
+        (coreCtorPayloadRuntimeFacts ctx (eval ctx [] (ciType constructorInfo)))
+    )
+  alternative@(CaseAlt pattern' Nothing _) <- listToMaybe alternatives
+  guard (length alternatives == 1)
+  case pattern' of
+    CPCtorM _ _ _ constructor _ _ -> do
+      guard (constructor == soleConstructor)
+      pure alternative
+    -- Source @()@ is retained in checked Core as the structural zero-tuple
+    -- pattern. Its acceptance against this nominal scrutinee has already been
+    -- certified by pattern checking; the datatype proof above establishes
+    -- that the checked shape is irrefutable and binds no runtime slots.
+    CPTuple [] -> pure alternative
+    _ -> Nothing
+  where
+    firstOfThree (value, _, _) = value
+
+-- | Selected RuntimeErased evidence is attached to the checked Pi binder and
+-- consumed when its 'ScopeSlot' is created.  The absent backend binder is the
+-- occurrence-level authority for a direct local reference; reclassifying only
+-- its domain would discard that selected evidence.
+erasedScopeVariable :: Term -> ScopeStack -> Bool
+erasedScopeVariable (CVar index) scopes =
+  case indexMaybeLocal index scopes of
+    Just (ScopeSlotData Nothing _ _ Nothing) -> True
+    _ -> False
+erasedScopeVariable _ _ = False
+
+lowerErasedSingletonAlt :: Maybe Value -> CaseAlt -> Int -> ScopeStack -> Lower BackendTerm
+lowerErasedSingletonAlt expected (CaseAlt pattern' Nothing body) depth scopes = do
+  meta <- metaAt
+  (_, binders, patternScopes, totalSlots) <-
+    lowerPattern depth expected QW False "erased singleton match pattern" pattern'
+  if null binders
+    then lowerTerm body (depth + totalSlots) (patternScopes ++ scopes)
+    else
+      loweringViolation
+        meta
+        "E_BACKENDIR_ERASED_SINGLETON_PATTERN"
+        "erased singleton reduction produced a runtime pattern binder"
+lowerErasedSingletonAlt _ _ _ _ = do
+  meta <- metaAt
+  loweringViolation
+    meta
+    "E_BACKENDIR_ERASED_SINGLETON_PATTERN"
+    "erased singleton reduction requires one unguarded constructor alternative"
 
 lowerAlt :: Maybe Value -> CaseAlt -> Int -> ScopeStack -> Lower BackendAlt
 lowerAlt expected (CaseAlt pat guard body) depth scopes = do

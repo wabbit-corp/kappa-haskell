@@ -5,7 +5,7 @@
 module main
 
 countdown : Int -> UIO Unit
-let countdown n = do
+let countdown n decreases n = do
     defer printlnString (stringAppend "x" (showInt n))
     if leInt n 0 then printlnString "liftoff"
     else countdown (subInt n 1)

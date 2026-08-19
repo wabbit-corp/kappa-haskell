@@ -9,24 +9,27 @@ module main
 
 -- mixed kind: Double accumulator, Int counter (the scalar_doubleloop shape).
 sumD : Double -> Int -> Double
-let sumD acc n = if leInt n 0 then acc else sumD (addDouble acc (intToDouble n)) (subInt n 1)
+let sumD acc n decreases n = if leInt n 0 then acc else sumD (addDouble acc (intToDouble n)) (subInt n 1)
 
 -- two Double params + an Int counter: repeated multiply.
 scaleD : Double -> Double -> Int -> Double
-let scaleD acc x n = if leInt n 0 then acc else scaleD (mulDouble acc x) x (subInt n 1)
+let scaleD acc x n decreases n = if leInt n 0 then acc else scaleD (mulDouble acc x) x (subInt n 1)
 
 -- a Double comparison drives the loop (ltDouble), with a Double literal in the
 -- body (addDouble acc 1.0).
-clampGrow : Double -> Double -> Double
-let clampGrow acc lim = if ltDouble acc lim then clampGrow (addDouble acc 1.0) lim else acc
+clampGrow : Double -> Double -> Int -> Double
+let clampGrow acc lim fuel decreases fuel =
+    if leInt fuel 0 then acc
+    else if ltDouble acc lim then clampGrow (addDouble acc 1.0) lim (subInt fuel 1)
+    else acc
 
 -- all-Int worker alongside (the kwi_ path stays exactly as before).
 sumI : Int -> Int -> Int
-let sumI acc n = if leInt n 0 then acc else sumI (addInt acc n) (subInt n 1)
+let sumI acc n decreases n = if leInt n 0 then acc else sumI (addInt acc n) (subInt n 1)
 
 main : UIO Unit
 let main = do
   printlnString (showDouble (sumD 0.0 100))        -- 1+…+100 = 5050.0
   printlnString (showDouble (scaleD 1.0 2.0 10))   -- 2^10 = 1024.0
-  printlnString (showDouble (clampGrow 0.0 5.0))   -- 5.0
+  printlnString (showDouble (clampGrow 0.0 5.0 10)) -- 5.0
   printlnString (showInt (sumI 0 1000))            -- 500500

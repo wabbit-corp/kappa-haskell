@@ -7,8 +7,9 @@ module main
 describe : List Integer -> UIO Unit
 let describe xs = do
     let? x :: _ = xs
-    else _ ->
+    else _ -> do
         printlnString "empty"
+        return ()
     printlnString (stringAppend "head " (showInt x))
 
 firstHit : UIO Unit

@@ -91,7 +91,7 @@ import Kappa.Check (CheckState (..), CtorInfo (..), InstanceEntry (..), linkedCo
 import Kappa.Core
 import Kappa.CoreOps (spineOfTerm)
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, globalPrimitiveIdentity, quote)
 import Kappa.Ownership
   ( BinderOwn (..)
   , UseKind (..)
@@ -2957,9 +2957,7 @@ globPrimName g@(GName m nm) = do
     then pure (known nm)
     else do
       globals <- gets gsGlobals
-      pure $ case Map.lookup g globals of
-        Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
-        _ -> Nothing
+      pure $ Map.lookup g globals >>= globalPrimitiveIdentity g >>= known
 
 -- | §34.5.3: the complete builtin-primitive table — each primitive maps to
 -- its DIRECT C entry point (@kp_*@/@kpf_*@ in the runtime: pure builtins, and
@@ -3869,7 +3867,7 @@ compileGlob g@(GName m nm) = do
           case Map.lookup g globals of
             -- A prelude `prim` registration: its value is a bare VPrim, so it
             -- maps directly to the runtime primitive of the same name.
-            Just gd | Just (VPrim pname _) <- gdValue gd ->
+            Just gd | Just pname <- globalPrimitiveIdentity g gd ->
               emitPrim pname
             -- §27.1.1: a provided host-binding member (an abstract global of a
             -- manifest-selected `host.native.*` module) lowers to a curried

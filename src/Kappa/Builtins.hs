@@ -253,6 +253,8 @@ module Kappa.Builtins
   , BuiltinKind (..)
   , WiredIn (..)
   , wiredInPreludeNames
+  , HigherOrderTerminationContract (..)
+  , higherOrderTerminationContract
   ) where
 
 import Data.Text (Text)
@@ -719,6 +721,24 @@ data WiredIn = WiredIn
   , wiKind :: !BuiltinKind
   }
   deriving stock (Eq, Show)
+
+-- | Trusted traversal information for an opaque wired-in higher-order
+-- boundary (§15.6). Indices count explicit arguments from zero. A listed
+-- argument is not assumed terminating: the totality checker may inspect it
+-- and must still certify every recursive SCC edge exposed there.
+data HigherOrderTerminationContract = HigherOrderTerminationContract
+  { hotcVisibleExplicitArguments :: ![Int]
+  }
+  deriving stock (Eq, Show)
+
+-- | Contracts are attached to exact wired-in identities whose operational
+-- semantics the compiler implements. User functions, same-spelled globals,
+-- and arbitrary opaque callees have no contract and remain fail-closed.
+higherOrderTerminationContract :: GName -> Maybe HigherOrderTerminationContract
+higherOrderTerminationContract global
+  | global == prelEffBind =
+      Just (HigherOrderTerminationContract [1])
+  | otherwise = Nothing
 
 -- | Every prelude name the compiler depends on existing. Consumed by the
 -- pipeline's post-prelude validation pass; if any entry fails to resolve,

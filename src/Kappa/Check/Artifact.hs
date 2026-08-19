@@ -427,9 +427,14 @@ restoreCheckedPrelude expectedSourceHash artifact
       ]
     hasDuplicateKey keys = length keys /= Set.size (Set.fromList keys)
     encodedGlobals = Map.fromList (cprGlobals artifact)
-    globals = Map.map restoreGlobal encodedGlobals
+    globals = Map.mapWithKey restoreGlobal encodedGlobals
     context = EvalCtx (Globals globals) emptyMetas False Map.empty
-    restoreGlobal encoded =
+    primitiveRegistrationBodies =
+      Map.mapMaybeWithKey
+        (\global definition ->
+           CGlob . GName primModule <$> globalPrimitiveIdentity global definition)
+        (csGlobals builtinState)
+    restoreGlobal global encoded =
       GlobalDefData
         (cgaUniverses encoded)
         []
@@ -438,7 +443,9 @@ restoreCheckedPrelude expectedSourceHash artifact
         (eval context [] (cgaQuotedType encoded))
         (cgaCoreType encoded)
         (restoreValue encoded)
-        (cgaBody encoded)
+        (case cgaBody encoded of
+           Just body -> Just body
+           Nothing -> Map.lookup global primitiveRegistrationBodies)
         (cgaRecordInterface encoded)
         (cgaReducible encoded)
     restoreValue encoded = case cgaValue encoded of

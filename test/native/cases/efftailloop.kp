@@ -18,7 +18,7 @@ effect Counter =
 -- recursion IS the effect loop; every step is one perform/resume cycle through
 -- the deep tail-resumptive clause.
 loop : Int -> Int -> Eff <[Counter : Counter]> Int
-let loop n acc =
+let loop n acc decreases n =
     if leInt n 0 then
         pure acc
     else

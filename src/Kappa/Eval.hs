@@ -18,6 +18,7 @@
 module Kappa.Eval
   ( Globals (..)
   , GlobalDef (GlobalDefData, GlobalDef, gdUniverses, gdProvisionalUniverseProjection, gdObservationMode, gdNominalSummary, gdType, gdCoreType, gdValue, gdCoreBody, gdRecordInterface, gdReducible)
+  , globalPrimitiveIdentity
   , globalDefWithObservationMode
   , globalDefWithUniverses
   , globalDefWithCoreType
@@ -172,6 +173,20 @@ globalDefWithCoreBody body def = def {gdCoreBody = Just body}
 
 globalDefWithNominalSummary :: NominalCumulativitySummary -> GlobalDef -> GlobalDef
 globalDefWithNominalSummary summary def = def {gdNominalSummary = Just summary}
+
+-- | Recover the declared primitive behind a global from symbol-bearing Core.
+-- A primitive's normalized semantic value is not authoritative: nullary
+-- builders and decoders immediately reduce to evaluator-only states, while a
+-- user definition may legitimately evaluate to a partially applied primitive.
+-- The empty-'VPrim' arm is retained for old/in-memory primitive declarations
+-- that predate retained Core registration bodies.
+globalPrimitiveIdentity :: GName -> GlobalDef -> Maybe Text
+globalPrimitiveIdentity (GName moduleName name) definition
+  | moduleName == primModule = Just name
+  | Just (CGlobal (GName primitiveModule primitiveName) []) <- gdCoreBody definition
+  , primitiveModule == primModule = Just primitiveName
+  | Just (VPrim primitiveName []) <- gdValue definition = Just primitiveName
+  | otherwise = Nothing
 
 -- | Specialize the leading declaration-universe prefix selected by an
 -- enclosing nominal occurrence while leaving any declaration-local suffix

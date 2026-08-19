@@ -387,7 +387,14 @@ collectFunEdges funMap src =
         _ -> case spineOfTerm t of
           (f, args) -> do
             rf <- go d sub ho esc facts boolFacts f
-            rs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) args
+            let visibleArguments =
+                  higherOrderTerminationVisiblePositions f args
+            rs <-
+              joinManyEdges
+                <$> forM (zip [0 :: Int ..] args) (\(position, (_, argument)) ->
+                      if position `Set.member` visibleArguments
+                        then go d sub ho esc facts boolFacts argument
+                        else goArg d sub ho esc facts boolFacts argument)
             pure (joinEdges rf rs)
 
     -- Strict source subterms are still evaluated even when a transparent helper
@@ -553,25 +560,16 @@ collectFunEdges funMap src =
             (collectStrictSubtermEdgesItems d sub ho facts boolFacts)
             e
       KIf alts e -> do
-        ralts <- forM alts $ \(c, b) -> do
-          rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
-          c' <- normalizeTermAt d c
-          trueFacts <- assumeBoolM d True c'
-          rb <-
-            collectStrictSubtermEdgesItems
-              d
-              sub
-              ho
-              (trueFacts ++ facts)
-              ((c', True) : boolFacts)
-              b
-          pure (joinEdges rc rb)
-        relse <-
-          maybe
-            (pure (Just []))
-            (collectStrictSubtermEdgesItems d sub ho facts boolFacts)
-            e
-        pure (joinManyEdges (ralts ++ [relse]))
+        collectKIfBranches
+          d
+          facts
+          boolFacts
+          alts
+          e
+          (\branchFacts branchBoolFacts ->
+             collectStrictSubtermEdges d sub ho branchFacts branchBoolFacts)
+          (\branchFacts branchBoolFacts ->
+             collectStrictSubtermEdgesItems d sub ho branchFacts branchBoolFacts)
       KDefer _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KUsing _ a r -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges d sub ho facts boolFacts r
       KSubDo _ b -> collectStrictSubtermEdgesItems d sub ho facts boolFacts b
@@ -831,26 +829,16 @@ collectFunEdges funMap src =
             (goKItems d sub ho esc facts boolFacts)
             e
       KIf alts e -> do
-        ralts <- forM alts $ \(c, b) -> do
-          rc <- go d sub ho esc facts boolFacts c
-          c' <- normalizeTermAt d c
-          trueFacts <- assumeBoolM d True c'
-          rb <-
-            goKItems
-              d
-              sub
-              ho
-              esc
-              (trueFacts ++ facts)
-              ((c', True) : boolFacts)
-              b
-          pure (joinEdges rc rb)
-        relse <-
-          maybe
-            (pure (Just []))
-            (goKItems d sub ho esc facts boolFacts)
-            e
-        pure (joinManyEdges (ralts ++ [relse]))
+        collectKIfBranches
+          d
+          facts
+          boolFacts
+          alts
+          e
+          (\branchFacts branchBoolFacts ->
+             go d sub ho esc branchFacts branchBoolFacts)
+          (\branchFacts branchBoolFacts ->
+             goKItems d sub ho esc branchFacts branchBoolFacts)
       KDefer _ t -> goArg d sub ho esc facts boolFacts t
       KUsing _ a r -> joinEdges <$> goArg d sub ho esc facts boolFacts a <*> goArg d sub ho esc facts boolFacts r
       KSubDo _ b -> goKItems d sub ho esc facts boolFacts b
@@ -886,6 +874,44 @@ collectFunEdges funMap src =
 
     joinManyEdges :: [Maybe [CallEdge]] -> Maybe [CallEdge]
     joinManyEdges xs = concat <$> sequence xs
+
+    -- A statement-if is an ordered decision chain. Each later condition and
+    -- the final else branch execute only after every preceding condition was
+    -- false, so termination arithmetic must retain those negative facts.
+    collectKIfBranches
+      :: Int
+      -> [AFact]
+      -> [(Term, Bool)]
+      -> [(Term, [KItem])]
+      -> Maybe [KItem]
+      -> ([AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge]))
+      -> ([AFact] -> [(Term, Bool)] -> [KItem] -> CheckM (Maybe [CallEdge]))
+      -> CheckM (Maybe [CallEdge])
+    collectKIfBranches d initialFacts initialBoolFacts alternatives fallback visitTerm visitItems =
+      goAlternatives initialFacts initialBoolFacts alternatives
+      where
+        goAlternatives branchFacts branchBoolFacts = \case
+          [] ->
+            maybe
+              (pure (Just []))
+              (visitItems branchFacts branchBoolFacts)
+              fallback
+          (condition, body) : rest -> do
+            conditionEdges <- visitTerm branchFacts branchBoolFacts condition
+            normalizedCondition <- normalizeTermAt d condition
+            trueFacts <- assumeBoolM d True normalizedCondition
+            falseFacts <- assumeBoolM d False normalizedCondition
+            bodyEdges <-
+              visitItems
+                (trueFacts ++ branchFacts)
+                ((normalizedCondition, True) : branchBoolFacts)
+                body
+            restEdges <-
+              goAlternatives
+                (falseFacts ++ branchFacts)
+                ((normalizedCondition, False) : branchBoolFacts)
+                rest
+            pure (joinManyEdges [conditionEdges, bodyEdges, restEdges])
 
 -- | Bind structural provenance per pattern binder. A positional pattern over
 -- an explicit tuple/record scrutinee must follow each source field separately:
@@ -1000,6 +1026,31 @@ patternStructuralBinderOrigins depth context scrutinee =
     injectedPayload member term = case stripIdentityWrappers term of
       CInject actual payload | actual == member -> Just payload
       _ -> Nothing
+
+-- | Select recursive-call-visible callback positions from an exact wired-in
+-- identity. Missing or malformed positions select nothing, preserving the
+-- ordinary opaque higher-order rejection path.
+higherOrderTerminationVisiblePositions
+  :: Term
+  -> [(Icit, Term)]
+  -> Set Int
+higherOrderTerminationVisiblePositions function arguments =
+  case function of
+    CGlobal global _ ->
+      case higherOrderTerminationContract global of
+        Nothing -> Set.empty
+        Just contract ->
+          let explicitPositions =
+                [ position
+                | (position, (icit, _)) <- zip [0 :: Int ..] arguments
+                , icit == Expl
+                ]
+           in Set.fromList
+                [ position
+                | explicitIndex <- hotcVisibleExplicitArguments contract
+                , position <- maybeToList (listToMaybe (drop explicitIndex explicitPositions))
+                ]
+    _ -> Set.empty
 
 -- ── Structural size-change checking ──────────────────────────────────
 

@@ -12483,14 +12483,16 @@ selectBinderRuntimeErasure
 selectBinderRuntimeErasure ctx site quantity existing classifier = do
   evaluation <- ec_
   if quantity == Q0
-      || Repr.valueDomainIsKind evaluation (ctxLen ctx) classifier
+      || Repr.valueDomainIsCompileTimeOnly evaluation (ctxLen ctx) classifier
       || Repr.runtimeErasureNeedsErasedDemand evaluation classifier
     then pure RuntimeRelevant
     else case existing of
       RuntimeErased justification -> pure (RuntimeErased justification)
-      RuntimeRelevant ->
-        maybe RuntimeRelevant RuntimeErased
-          <$> argumentRuntimeErasedByEvidence ctx site classifier
+      RuntimeRelevant -> do
+        evidence <- equalityProofRuntimeErasure ctx site classifier >>= \case
+          Just exact -> pure (Just exact)
+          Nothing -> argumentRuntimeErasedByEvidence ctx site classifier
+        pure (maybe RuntimeRelevant RuntimeErased evidence)
 
 -- | Reduce an elaborated type-position @(term, inferred-type)@ pair to a
 -- @(term, universe-level)@ pair, or raise @E_NOT_A_TYPE@.  Shared by
@@ -13046,16 +13048,16 @@ argumentRuntimeErasedByEvidence ctx site classifier = do
       pure (Just (RuntimeErasedEvidence goal evidence goal))
 
 -- | Build the equality-specific §11.4.1 erasure certificate at the equality
--- carrier's already-selected universe. This is intentionally used only after
--- the primitive transport proof position has been authenticated: declaration
--- binder annotation remains an observational, conservative probe and must not
--- turn every standard-library equality binder into an eager instance search.
-exactTransportProofRuntimeErasure
+-- carrier's already-selected universe. The canonical equality application is
+-- typed authority for its homogeneous carrier, so this path also handles
+-- dependent equands whose neutral heads do not expose a recoverable result
+-- type to the generic proposition-closure solver.
+equalityProofRuntimeErasure
   :: Ctx
   -> Span
   -> Value
   -> CheckM (Maybe (ErasureJustification Term))
-exactTransportProofRuntimeErasure ctx site classifier = do
+equalityProofRuntimeErasure ctx site classifier = do
   evaluation <- ec_
   classifier' <- forceM classifier
   case canonicalEqualityPayload evaluation classifier' of
@@ -14516,7 +14518,7 @@ runtimeSafeApplicationArgumentErasureForPosition ctx site runtimeSafeProofPositi
             else do
               solvedClassifier <- forceM actualClassifier
               evidence <-
-                exactTransportProofRuntimeErasure ctx site solvedClassifier >>= \case
+                equalityProofRuntimeErasure ctx site solvedClassifier >>= \case
                   Just exact -> pure (Just exact)
                   Nothing -> argumentRuntimeErasedByEvidence ctx site solvedClassifier
               semanticEvidence <- traverse (traverse (evalIn ctx)) evidence
