@@ -73,7 +73,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libgc-dev libgmp-dev pkg-config sqlite3 libsqlite3-dev zlib1g-dev libuv1-dev curl
+            build-essential clang libgc-dev libgmp-dev pkg-config sqlite3 libsqlite3-dev zlib1g-dev libuv1-dev curl
 
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           cabal update
-          export KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          export KAPPA_CC="clang $(pkg-config --cflags --libs bdw-gc gmp)"
           test/native/run-native-tests.sh
 
   package-compiler:
