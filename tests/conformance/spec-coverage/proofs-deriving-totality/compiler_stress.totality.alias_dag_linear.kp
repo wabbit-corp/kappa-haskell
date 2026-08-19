@@ -54,5 +54,49 @@ let growReachable n decreases n =
     let a13 = subInt (addInt a12 a12) a12
     if leInt n 0 then a13 else growReachable a13
 
+-- Shared alias paths must remain a DAG during arithmetic replay. The final
+-- subtraction cancels two definitionally equal aliases, leaving n - 1; a
+-- recursive path expander duplicates Fibonacci paths exponentially here.
+growShared : Int -> Int
+let growShared n decreases n =
+    if leInt n 0 then 0 else
+        let a0 = subInt n 1
+        let a1 = a0
+        let a2 = addInt a1 a0
+        let a3 = addInt a2 a1
+        let a4 = addInt a3 a2
+        let a5 = addInt a4 a3
+        let a6 = addInt a5 a4
+        let a7 = addInt a6 a5
+        let a8 = addInt a7 a6
+        let a9 = addInt a8 a7
+        let a10 = addInt a9 a8
+        let a11 = addInt a10 a9
+        let a12 = addInt a11 a10
+        let a13 = addInt a12 a11
+        let a14 = addInt a13 a12
+        let a15 = addInt a14 a13
+        let a16 = addInt a15 a14
+        let a17 = addInt a16 a15
+        let a18 = addInt a17 a16
+        let a19 = addInt a18 a17
+        let a20 = addInt a19 a18
+        let a21 = addInt a20 a19
+        let a22 = addInt a21 a20
+        let a23 = addInt a22 a21
+        let a24 = addInt a23 a22
+        let a25 = addInt a24 a23
+        let a26 = addInt a25 a24
+        let a27 = addInt a26 a25
+        let a28 = addInt a27 a26
+        let a29 = addInt a28 a27
+        let a30 = addInt a29 a28
+        let a31 = addInt a30 a29
+        let a32 = addInt a31 a30
+        let a33 = addInt a32 a31
+        let b = a33
+        let z = addInt (subInt a33 b) a0
+        growShared z
+
 --! mode check
 --! assertNoErrors

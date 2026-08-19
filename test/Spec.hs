@@ -72,6 +72,7 @@ import Kappa.Backend.Repr
   , argConvSelectGlobalForArgs
   , argConvSelectGlobal
   , ctorLayoutOf
+  , dictionaryPrimitiveMember
   , erasedSpinePositionsForArgs
   , runtimeConstructorPiField
   , scalarRep
@@ -445,6 +446,7 @@ main = do
   preludeDemandLoadingOk <- preludeDemandLoadingDomain
   checkedPreludeArtifactOk <- checkedPreludeArtifactDomain
   runtimeArgumentFreeGlobalOk <- runtimeArgumentFreeGlobalDomain
+  dictionaryPrimitiveMemberOk <- dictionaryPrimitiveMemberDomain
   structuralBinaryOk <- structuralBinaryDomain
   kfrontIdentityOk <- kfrontOccurrenceIdentityDomain
   kfrontExpansionOk <- kfrontExpansionIdentityDomain
@@ -510,6 +512,7 @@ main = do
         , ("preludeDemandLoadingDomain", preludeDemandLoadingOk)
         , ("checkedPreludeArtifactDomain", checkedPreludeArtifactOk)
         , ("runtimeArgumentFreeGlobalDomain", runtimeArgumentFreeGlobalOk)
+        , ("dictionaryPrimitiveMemberDomain", dictionaryPrimitiveMemberOk)
         , ("structuralBinaryDomain", structuralBinaryOk)
         , ("kfrontOccurrenceIdentityDomain", kfrontIdentityOk)
         , ("kfrontExpansionIdentityDomain", kfrontExpansionOk)
@@ -867,6 +870,24 @@ checkedPreludeArtifactDomain = do
                    { gdValue = Just (eval cachedContext [] (CLit (LitInt 0)))
                    })
           )
+        , ( "coherently corrupted cached primitive body and value are rejected"
+          , stalePrimitiveRejected
+              (\definition ->
+                 let replacement = CLit (LitInt 0)
+                  in definition
+                       { gdCoreBody = Just replacement
+                       , gdValue = Just (eval cachedContext [] replacement)
+                       })
+          )
+        , ( "corrupted cached primitive type is rejected"
+          , stalePrimitiveRejected
+              (\definition ->
+                 let replacement = CSort LZero
+                  in definition
+                       { gdCoreType = Just replacement
+                       , gdType = eval cachedContext [] replacement
+                       })
+          )
         , ("data identities agree", Map.keysSet (csDatas cached) == Map.keysSet (csDatas source))
         , ("constructor identities agree", Map.keysSet (csCtors cached) == Map.keysSet (csCtors source))
         , ("trait identities agree", Map.keysSet (csTraits cached) == Map.keysSet (csTraits source))
@@ -899,6 +920,38 @@ runtimeArgumentFreeGlobalDomain = do
     ( runtimeArgumentFreeGlobal bare == Just global
         && runtimeArgumentFreeGlobal (BSeal meta [] bare) == Just global
         && runtimeArgumentFreeGlobal retainedImplicit == Nothing
+    )
+
+-- | Selected primitive lowering may forward captured dictionary parameters
+-- only when retained Core proves that every such parameter is erased. A QW
+-- capture must preserve the ordinary dictionary call even when the eta body is
+-- otherwise identical.
+dictionaryPrimitiveMemberDomain :: IO Bool
+dictionaryPrimitiveMemberDomain = do
+  let primitive = GName primModule "__ioReadRef"
+      dictionary = GName (ModuleName ["test"]) "dictionary"
+      dictionaryBody capturedQuantity =
+        CLamM Ordinary Impl Q0 "e" $
+          CLamM Ordinary Impl capturedQuantity "a" $
+            CRecordV
+              [ ( "readRef"
+                , CLamM Ordinary Expl QW "r" $
+                    CApp Expl
+                      ( CApp Impl
+                          (CApp Impl (CGlobal primitive []) (CVar 2))
+                          (CVar 1)
+                      )
+                      (CVar 0)
+                )
+              ]
+      selected quantity =
+        dictionaryPrimitiveMember
+          (Map.singleton dictionary (dictionaryBody quantity))
+          dictionary
+          "readRef"
+  pure
+    ( selected Q0 == Just (primitive, 1)
+        && selected QW == Nothing
     )
 
 -- | The checked-interface codec treats opaque byte strings as a primitive,
@@ -4166,6 +4219,43 @@ arithmeticReplayDomain = do
           Set.empty
           aliasAssumptions
           aliasGoal
+      fibonacciAliases = map AVar [30 .. 63]
+      fibonacciFirst = AVar 30
+      fibonacciLast = AVar 63
+      fibonacciExpressions =
+        ASub n (AConst 1)
+          : fibonacciFirst
+          : take 32
+              (zipWith AAdd (drop 1 fibonacciAliases) fibonacciAliases)
+      fibonacciDefinitions =
+        zipWith
+          (\alias expression -> AFact ACmpEq alias expression)
+          fibonacciAliases
+          fibonacciExpressions
+      fibonacciCopy = AVar 64
+      fibonacciAssumptions =
+        AFact ACmpLt (AConst 0) n
+          : fibonacciDefinitions
+          ++ [AFact ACmpEq fibonacciCopy fibonacciLast]
+      fibonacciGoal =
+        AFact
+          ACmpLt
+          ( AAdd
+              (ASub fibonacciLast fibonacciCopy)
+              fibonacciFirst
+          )
+          n
+      cyclicAliasAssumptions =
+        [ AFact ACmpEq (AVar 70) (AVar 71)
+        , AFact ACmpEq (AVar 71) (AVar 70)
+        ]
+      cyclicAliasGoal = AFact ACmpLt (AVar 70) (AVar 71)
+      fibonacciReplay =
+        deriveArithmeticReplay
+          ArithmeticIntegerSemantics
+          Set.empty
+          fibonacciAssumptions
+          fibonacciGoal
       checks =
         [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) polynomialReplay)
         , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [boundedAssumption]) strictReplay)
@@ -4176,6 +4266,19 @@ arithmeticReplayDomain = do
           , maybe False
               (verifyArithmeticReplay ArithmeticIntegerSemantics Set.empty aliasAssumptions)
               aliasReplay
+          )
+        , ( "shared affine alias DAGs replay without repeated path expansion"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticIntegerSemantics Set.empty fibonacciAssumptions)
+              fibonacciReplay
+          )
+        , ( "cyclic affine aliases remain inert"
+          , deriveArithmeticReplay
+              ArithmeticIntegerSemantics
+              Set.empty
+              cyclicAliasAssumptions
+              cyclicAliasGoal
+              == Nothing
           )
         , ("underconstrained order remains unknown", deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] strictGoal == Nothing)
         , ( "equality assumptions support cancellation"

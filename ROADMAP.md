@@ -1075,8 +1075,10 @@ eliminates repeated source elaboration during ordinary compiler startup.
 Compiler-seeded primitives retain symbol-bearing Core bodies in both fresh and
 cached Prelude states; schema-v9 restore requires bidirectional semantic
 agreement between primitive Core and cached values against compiler-seeded
-primitive authority, and never reconstructs authority from an artifact's own
-normalized primitive values. Selected dictionary
+primitive authority, exact agreement of the `__prim` key/type/body/value set,
+and restores those entries from `builtinState` rather than from artifact data.
+It never reconstructs authority from an artifact's own normalized primitive
+values. Selected dictionary
 members direct-lower only after retained Core proves an exact evidence wrapper
 and primitive eta-forwarder; registry arity and audited ownership conventions
 remain authoritative. `scripts/check_trivial_compile_budget.sh` now
@@ -1114,8 +1116,11 @@ non-recursive local aliases by binder identity through call-edge comparison.
 Aliases remain a level-keyed DAG during edge collection; reachable
 portable arithmetic aliases become authenticated equality facts for the shared
 proof-producing solver, so both dead and reachable duplicating DAGs stay linear
-rather than producing exponential Core trees. Unsupported custom-relation forms
-retain a bounded, fail-closed materialization fallback. Authenticated
+rather than producing exponential Core trees. Affine equality replay classifies
+cyclic substitution subjects as inert and memoizes every acyclic expanded form,
+so shared Fibonacci/diamond paths are processed by identity instead of path
+enumeration. Unsupported custom-relation forms retain a bounded, fail-closed
+materialization fallback. Authenticated
 primitive comparisons reduce transparent operand constants before arithmetic
 branch facts are decoded. Imported `max` bounds and equivalent local helper
 forms therefore prove the same strict decrease without making custom order

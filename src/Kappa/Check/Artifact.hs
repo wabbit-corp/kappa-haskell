@@ -14,6 +14,7 @@ module Kappa.Check.Artifact
   , restoreCheckedPrelude
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Data (Data)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -28,7 +29,6 @@ import Kappa.Core
 import Kappa.CoreOps (levelMetasOfTerm, metaIdsOf, termScopedAt)
 import Kappa.Eval
 import Kappa.NominalVariance (NominalCumulativitySummary)
-import Kappa.Observation (ObservationMode)
 import Kappa.Prelude (builtinState)
 import Kappa.Source (ModuleName)
 
@@ -39,7 +39,7 @@ data CheckedGlobalValueArtifact
   = CheckedNoValue
   | CheckedValueFromBody
   | CheckedClosedValue !Term
-  deriving stock (Data)
+  deriving stock (Eq, Data)
 
 data CheckedGlobalArtifact = CheckedGlobalArtifact
   { cgaUniverses :: !DeclarationUniverseTelescope
@@ -52,7 +52,7 @@ data CheckedGlobalArtifact = CheckedGlobalArtifact
   , cgaValue :: !CheckedGlobalValueArtifact
   , cgaReducible :: !Bool
   }
-  deriving stock (Data)
+  deriving stock (Eq, Data)
 
 data CheckedDataArtifact = CheckedDataArtifact
   { cdaConstructors :: ![GName]
@@ -177,7 +177,7 @@ snapshotCheckedPrelude sourceHash state =
   CheckedPreludeArtifact
     { cprVersion = checkedPreludeArtifactVersion
     , cprSourceHash = sourceHash
-    , cprGlobals = map (fmap snapshotGlobal) (Map.toAscList (csGlobals state))
+    , cprGlobals = map (fmap (snapshotGlobalArtifact context)) (Map.toAscList (csGlobals state))
     , cprDatas = map (fmap snapshotData) (Map.toAscList (csDatas state))
     , cprConstructors = map (fmap snapshotConstructor) (Map.toAscList (csCtors state))
     , cprTraits = map (fmap snapshotTrait) (Map.toAscList (csTraits state))
@@ -209,28 +209,6 @@ snapshotCheckedPrelude sourceHash state =
     }
   where
     context = EvalCtx (Globals (csGlobals state)) (csMetas state) False Map.empty
-    snapshotGlobal definition =
-      CheckedGlobalArtifact
-        { cgaUniverses = gdUniverses definition
-        , cgaObservationMode = gdObservationMode definition
-        , cgaNominalSummary = gdNominalSummary definition
-        , cgaQuotedType = maybe (quote context 0 (gdType definition)) id (gdCoreType definition)
-        , cgaCoreType = gdCoreType definition
-        , cgaBody = gdCoreBody definition
-        , cgaRecordInterface = gdRecordInterface definition
-        , cgaValue = snapshotValue definition
-        , cgaReducible = gdReducible definition
-        }
-    snapshotValue definition = case gdValue definition of
-      Nothing -> CheckedNoValue
-      Just value
-        | let term = quote context 0 value
-        , finalizedTerm 0 term -> CheckedClosedValue term
-        | otherwise -> CheckedValueFromBody
-    finalizedTerm depth term =
-      termScopedAt depth term
-        && null (metaIdsOf term)
-        && null (levelMetasOfTerm term)
     snapshotData info = CheckedDataArtifact (diCtors info) (diParamCount info) (diLevel info)
     snapshotConstructor info =
       CheckedConstructorArtifact
@@ -285,6 +263,34 @@ snapshotCheckedPrelude sourceHash state =
     snapshotEffectOperation info =
       CheckedEffectOperationArtifact (eoiName info) (eoiQ info) (eoiImplicits info) (eoiArgs info) (eoiResT info)
 
+snapshotGlobalArtifact :: EvalCtx -> GlobalDef -> CheckedGlobalArtifact
+snapshotGlobalArtifact context definition =
+  CheckedGlobalArtifact
+    { cgaUniverses = gdUniverses definition
+    , cgaObservationMode = gdObservationMode definition
+    , cgaNominalSummary = gdNominalSummary definition
+    , cgaQuotedType = maybe (quote context 0 (gdType definition)) id (gdCoreType definition)
+    , cgaCoreType = gdCoreType definition
+    , cgaBody = gdCoreBody definition
+    , cgaRecordInterface = gdRecordInterface definition
+    , cgaValue = snapshotGlobalValueArtifact context definition
+    , cgaReducible = gdReducible definition
+    }
+
+snapshotGlobalValueArtifact :: EvalCtx -> GlobalDef -> CheckedGlobalValueArtifact
+snapshotGlobalValueArtifact context definition = case gdValue definition of
+  Nothing -> CheckedNoValue
+  Just value
+    | let term = quote context 0 value
+    , finalizedArtifactTerm 0 term -> CheckedClosedValue term
+    | otherwise -> CheckedValueFromBody
+
+finalizedArtifactTerm :: Int -> Term -> Bool
+finalizedArtifactTerm depth term =
+  termScopedAt depth term
+    && null (metaIdsOf term)
+    && null (levelMetasOfTerm term)
+
 restoreCheckedPrelude
   :: Text
   -> CheckedPreludeArtifact
@@ -314,10 +320,7 @@ restoreCheckedPrelude expectedSourceHash artifact
       Left ("checked prelude artifact contains an open or unresolved Core term at " <> owner)
   | otherwise = Right restored
   where
-    finalizedTerm (depth, term) =
-      termScopedAt depth term
-        && null (metaIdsOf term)
-        && null (levelMetasOfTerm term)
+    finalizedTerm (depth, term) = finalizedArtifactTerm depth term
     instanceDepths =
       Map.fromList
         [ (ciaDictionary entry, ciaTelescopeLength entry)
@@ -339,9 +342,36 @@ restoreCheckedPrelude expectedSourceHash artifact
     primitiveIdentityMismatch =
       listToMaybe
         [ globalName
-        | (globalName, global) <- cprGlobals artifact
-        , primitiveValueAndBodyDisagree global
+        | globalName <- Set.toAscList primitiveKeys
+        , Map.lookup globalName encodedPrimitiveGlobals
+            /= Map.lookup globalName trustedPrimitiveArtifacts
         ]
+        <|> listToMaybe
+          [ globalName
+          | (globalName, global) <- cprGlobals artifact
+          , primitiveValueAndBodyDisagree global
+          ]
+    primitiveKeys =
+      Map.keysSet encodedPrimitiveGlobals
+        `Set.union` Map.keysSet trustedPrimitiveArtifacts
+    encodedPrimitiveGlobals =
+      Map.filterWithKey
+        (\(GName moduleName _) _ -> moduleName == primModule)
+        encodedGlobals
+    trustedPrimitiveArtifacts =
+      Map.map
+        (snapshotGlobalArtifact builtinContext)
+        trustedPrimitiveDefinitions
+    trustedPrimitiveDefinitions =
+      Map.filterWithKey
+        (\(GName moduleName _) _ -> moduleName == primModule)
+        (csGlobals builtinState)
+    builtinContext =
+      EvalCtx
+        (Globals (csGlobals builtinState))
+        emptyMetas
+        False
+        Map.empty
     primitiveValueAndBodyDisagree global =
       case (primitiveBodyTerm (cgaBody global), cgaValue global) of
         (Just _, CheckedNoValue) -> True
@@ -349,10 +379,10 @@ restoreCheckedPrelude expectedSourceHash artifact
         (Just bodyTerm, CheckedClosedValue valueTerm) ->
           not
             ( convertible
-                primitiveContext
+                context
                 0
-                (eval primitiveContext [] bodyTerm)
-                (eval primitiveContext [] valueTerm)
+                (eval context [] bodyTerm)
+                (eval context [] valueTerm)
             )
         (Nothing, valueArtifact) ->
           isJust (closedPrimitiveIdentity valueArtifact)
@@ -457,22 +487,9 @@ restoreCheckedPrelude expectedSourceHash artifact
       ]
     hasDuplicateKey keys = length keys /= Set.size (Set.fromList keys)
     encodedGlobals = Map.fromList (cprGlobals artifact)
-    globals = Map.map restoreGlobal encodedGlobals
+    artifactGlobals = Map.map restoreGlobal encodedGlobals
+    globals = Map.union trustedPrimitiveDefinitions artifactGlobals
     context = EvalCtx (Globals globals) emptyMetas False Map.empty
-    primitiveContext =
-      EvalCtx
-        ( Globals
-            ( Map.union
-                ( Map.filterWithKey
-                    (\(GName moduleName _) _ -> moduleName == primModule)
-                    (csGlobals builtinState)
-                )
-                globals
-            )
-        )
-        emptyMetas
-        False
-        Map.empty
     restoreGlobal encoded =
       GlobalDefData
         (cgaUniverses encoded)

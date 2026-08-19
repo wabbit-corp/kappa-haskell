@@ -39,7 +39,9 @@ module Kappa.Arithmetic
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM)
+import Control.Monad.State.Strict (State, evalState, get, modify')
 import Data.Data (Data)
+import Data.Graph (SCC (..), stronglyConnComp)
 import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -485,15 +487,16 @@ derivePrincipalAffineSubstitution semantics naturalVariables assignableVariables
 -- replacement must be affine, acyclic, and independent of every assignable
 -- variable.  Multiple facts for one subject retain the first admitted
 -- orientation; all are already checked assumptions, so either is sound.
--- Recursive expansion tracks the active path, making mutually recursive
--- equalities inert instead of risking nontermination.
+-- Cyclic substitution subjects remain inert. Acyclic replacements are expanded
+-- once and memoized by rigid identity, so shared alias DAGs remain linear in
+-- the number and affine width of their nodes rather than in their path count.
 applyPrincipalAffineSubstitutions
   :: Set Int
   -> [AFact]
   -> ALin
   -> ALin
-applyPrincipalAffineSubstitutions assignableVariables assumptions =
-  expandLinear Set.empty
+applyPrincipalAffineSubstitutions assignableVariables assumptions initial =
+  evalState (expandLinear initial) Map.empty
   where
     substitutions =
       foldl
@@ -526,21 +529,49 @@ applyPrincipalAffineSubstitutions assignableVariables assumptions =
             then Nothing
             else Just (variable, replacement)
 
-    expandLinear active (ALin constant coefficients) =
-      foldl
-        addLin
-        (ALin constant Map.empty)
-        [ scaleLin coefficient (expandVariable active variable)
-        | (variable, coefficient) <- Map.toAscList coefficients
+    substitutionVariables = Map.keysSet substitutions
+    cyclicVariables =
+      Set.fromList
+        [ variable
+        | CyclicSCC variables <- stronglyConnComp substitutionGraph
+        , variable <- variables
         ]
+    substitutionGraph =
+      [ (variable, variable, dependencies replacement)
+      | (variable, replacement) <- Map.toAscList substitutions
+      ]
+    dependencies replacement =
+      Set.toAscList
+        ( Map.keysSet (linearCoefficients replacement)
+            `Set.intersection` substitutionVariables
+        )
 
-    expandVariable active variable
-      | variable `Set.member` active =
-          ALin 0 (Map.singleton variable 1)
-      | Just replacement <- Map.lookup variable substitutions =
-          expandLinear (Set.insert variable active) replacement
-      | otherwise =
-          ALin 0 (Map.singleton variable 1)
+    expandLinear :: ALin -> State (Map Int ALin) ALin
+    expandLinear (ALin constant coefficients) =
+      foldM
+        (\acc (variable, coefficient) -> do
+           expanded <- expandVariable variable
+           pure (addLin acc (scaleLin coefficient expanded)))
+        (ALin constant Map.empty)
+        (Map.toAscList coefficients)
+
+    expandVariable :: Int -> State (Map Int ALin) ALin
+    expandVariable variable
+      | variable `Set.member` cyclicVariables =
+          pure (variableLinear variable)
+      | otherwise = do
+          cache <- get
+          case Map.lookup variable cache of
+            Just expanded -> pure expanded
+            Nothing ->
+              case Map.lookup variable substitutions of
+                Nothing -> pure (variableLinear variable)
+                Just replacement -> do
+                  expanded <- expandLinear replacement
+                  modify' (Map.insert variable expanded)
+                  pure expanded
+
+    variableLinear variable = ALin 0 (Map.singleton variable 1)
 
 -- | Prove a Boolean formula from atomic assumptions. The recursive shape is
 -- pure and deterministic; all arithmetic authority remains in
