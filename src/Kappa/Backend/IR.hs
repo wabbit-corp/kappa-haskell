@@ -37,6 +37,7 @@ module Kappa.Backend.IR
   , lowerKBackendIR
   , lowerKBackendIRForCapabilities
   , backendExactNaturalOperation
+  , runtimeArgumentFreeGlobal
   , kbackendRepresentationCertificates
   , validateCoreCapabilities
   , validateKBackendIR
@@ -394,6 +395,16 @@ data BackendTerm
   | BForce !BackendMeta !BackendTerm
   | BIf !BackendMeta !BackendTerm !BackendTerm !BackendTerm
   deriving stock (Eq, Show)
+
+-- | Recover a global identity only when KBackendIR proves that no runtime
+-- application arguments are attached. Quantity-0 and selected evidence
+-- erasure has already happened before this phase, so any surviving 'BApp'
+-- child is semantically relevant regardless of its source icity.
+runtimeArgumentFreeGlobal :: BackendTerm -> Maybe GName
+runtimeArgumentFreeGlobal = \case
+  BGlob _ global -> Just global
+  BSeal _ _ term -> runtimeArgumentFreeGlobal term
+  _ -> Nothing
 
 data BackendAlt = BackendAlt
   { baMeta :: !BackendMeta
@@ -4507,7 +4518,11 @@ lowerApp expected term depth scopes = do
         case runtimeTransportApplication term of
           Nothing -> lowerGeneric
           Just transport ->
-            let proofErased =
+            let selectedProofErasure =
+                  case drop (rtaProofIndex transport) selectedRuntimeErasures of
+                    RuntimeErased justification : _ -> Just justification
+                    _ -> Nothing
+                proofErased =
                   proofTermIsRuntimeErased
                     globals
                     traits
@@ -4517,11 +4532,22 @@ lowerApp expected term depth scopes = do
                     scopes
                     runtimeErasedProofHeads
                     (rtaProof transport)
+                    || isJust selectedProofErasure
                     || case [erased | (index, _, erased, _, _, _) <- aligned, index == rtaProofIndex transport] of
                       erased : _ -> erased
                       [] -> True
              in if proofErased
-                  then lowerTermExpected expected (rtaReduced transport) depth scopes
+                  then do
+                    forM_ selectedProofErasure $ \justification -> do
+                      erasureMeta <- metaAt
+                      recordErasureAt
+                        depth
+                        erasureMeta
+                        ErasedApplicationArgumentSite
+                        Expl
+                        ("argument" <> T.pack (show (rtaProofIndex transport)))
+                        (selectedErasureProvenance justification)
+                    lowerTermExpected expected (rtaReduced transport) depth scopes
                   else if proofIsDefinitionallyRefl ctx depth (rtaProof transport)
                     then lowerTermExpected expected (rtaReduced transport) depth scopes
                     else do
@@ -4624,7 +4650,8 @@ proofTermIsRuntimeErased globals traits instances ctx depth scopes runtimeErased
   go proof
   where
     go candidate =
-      proofHeadIsRuntimeErased runtimeErasedHeads candidate
+      erasedScopeVariable candidate scopes
+        || proofHeadIsRuntimeErased runtimeErasedHeads candidate
         || projectedTraitMemberIsRuntimeErased candidate
         || proofTypeIsRuntimeErased candidate
         || proofCombinatorHasOnlyErasedEvidence candidate

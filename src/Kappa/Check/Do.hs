@@ -298,13 +298,6 @@ resolvedEtaTermHead = \case
   CCtorI constructor _ _ _ -> Just constructor
   _ -> Nothing
 
-isIOCarrierValue :: Value -> CheckM Bool
-isIOCarrierValue mTy0 = do
-  mTy <- forceM mTy0
-  pure $ case mTy of
-    VGlobI g _ [(Expl, _)] -> g == prelIO
-    _ -> False
-
 isIOMonadRefInstance :: InstanceEntry -> Bool
 isIOMonadRefInstance ie =
   ieTrait ie == prelMonadRef
@@ -315,13 +308,11 @@ isIOMonadRefInstance ie =
       _ -> False
 
 builtinIOMonadRefLowering :: Ctx -> Value -> Term -> CheckM (Maybe RefLoweringWitness)
-builtinIOMonadRefLowering _ctx mTy dictTm = do
-  isIO <- isIOCarrierValue mTy
+builtinIOMonadRefLowering _ctx _mTy dictTm = do
   insts <- gets csInstances
   case termHeadGlob dictTm of
     Just dictG
-      | isIO
-      , any (\ie -> ieDict ie == dictG && isIOMonadRefInstance ie) insts -> do
+      | any (\ie -> ieDict ie == dictG && isIOMonadRefInstance ie) insts -> do
           Just . BuiltinIORefWitness <$> freshRefCellId
     _ -> pure Nothing
 

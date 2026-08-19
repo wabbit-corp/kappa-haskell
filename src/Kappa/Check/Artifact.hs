@@ -17,7 +17,7 @@ module Kappa.Check.Artifact
 import Data.Data (Data)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe, maybeToList)
+import Data.Maybe (isJust, listToMaybe, maybeToList)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -33,7 +33,7 @@ import Kappa.Prelude (builtinState)
 import Kappa.Source (ModuleName)
 
 checkedPreludeArtifactVersion :: Integer
-checkedPreludeArtifactVersion = 8
+checkedPreludeArtifactVersion = 9
 
 data CheckedGlobalValueArtifact
   = CheckedNoValue
@@ -308,6 +308,8 @@ restoreCheckedPrelude expectedSourceHash artifact
       Left "checked prelude artifact contains a duplicate semantic identity"
   | Just global <- valueWithoutBody =
       Left ("checked prelude artifact cannot reconstruct the value of " <> gKey global)
+  | Just global <- primitiveIdentityMismatch =
+      Left ("checked prelude artifact primitive value/Core-body identity mismatch at " <> gKey global)
   | Just owner <- firstUnfinalizedTerm =
       Left ("checked prelude artifact contains an open or unresolved Core term at " <> owner)
   | otherwise = Right restored
@@ -334,6 +336,34 @@ restoreCheckedPrelude expectedSourceHash artifact
         , CheckedValueFromBody <- [cgaValue global]
         , Nothing <- [cgaBody global]
         ]
+    primitiveIdentityMismatch =
+      listToMaybe
+        [ globalName
+        | (globalName, global) <- cprGlobals artifact
+        , primitiveValueAndBodyDisagree global
+        ]
+    primitiveValueAndBodyDisagree global =
+      case (primitiveBodyTerm (cgaBody global), cgaValue global) of
+        (Just _, CheckedNoValue) -> True
+        (Just _, CheckedValueFromBody) -> False
+        (Just bodyTerm, CheckedClosedValue valueTerm) ->
+          not
+            ( convertible
+                primitiveContext
+                0
+                (eval primitiveContext [] bodyTerm)
+                (eval primitiveContext [] valueTerm)
+            )
+        (Nothing, valueArtifact) ->
+          isJust (closedPrimitiveIdentity valueArtifact)
+    primitiveBodyTerm = \case
+      Just body@(CGlobal (GName moduleName _) [])
+        | moduleName == primModule -> Just body
+      _ -> Nothing
+    closedPrimitiveIdentity = \case
+      CheckedClosedValue (CGlobal (GName moduleName primitive) [])
+        | moduleName == primModule -> Just primitive
+      _ -> Nothing
     artifactTerms =
       concat
         [ concat
@@ -427,14 +457,23 @@ restoreCheckedPrelude expectedSourceHash artifact
       ]
     hasDuplicateKey keys = length keys /= Set.size (Set.fromList keys)
     encodedGlobals = Map.fromList (cprGlobals artifact)
-    globals = Map.mapWithKey restoreGlobal encodedGlobals
+    globals = Map.map restoreGlobal encodedGlobals
     context = EvalCtx (Globals globals) emptyMetas False Map.empty
-    primitiveRegistrationBodies =
-      Map.mapMaybeWithKey
-        (\global definition ->
-           CGlob . GName primModule <$> globalPrimitiveIdentity global definition)
-        (csGlobals builtinState)
-    restoreGlobal global encoded =
+    primitiveContext =
+      EvalCtx
+        ( Globals
+            ( Map.union
+                ( Map.filterWithKey
+                    (\(GName moduleName _) _ -> moduleName == primModule)
+                    (csGlobals builtinState)
+                )
+                globals
+            )
+        )
+        emptyMetas
+        False
+        Map.empty
+    restoreGlobal encoded =
       GlobalDefData
         (cgaUniverses encoded)
         []
@@ -443,9 +482,7 @@ restoreCheckedPrelude expectedSourceHash artifact
         (eval context [] (cgaQuotedType encoded))
         (cgaCoreType encoded)
         (restoreValue encoded)
-        (case cgaBody encoded of
-           Just body -> Just body
-           Nothing -> Map.lookup global primitiveRegistrationBodies)
+        (cgaBody encoded)
         (cgaRecordInterface encoded)
         (cgaReducible encoded)
     restoreValue encoded = case cgaValue encoded of

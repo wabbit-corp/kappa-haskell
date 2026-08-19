@@ -754,6 +754,10 @@ registry =
       "A KBackendIR runtime-erasure goal or selected dictionary still contains an unresolved term or universe metavariable. Native emission rejects provisional evidence rather than treating it as finalized representation authority."
   , ent "E_BACKENDIR_ERASURE_SCOPE" (Just "kappa-hs.backendir.erasure-evidence")
       "A KBackendIR runtime-erasure goal or selected dictionary refers outside the lexical scope recorded at its checked Core occurrence. Native emission rejects escaped evidence rather than accepting a stale binder reference."
+  , ent "E_BACKENDIR_EFFECT_LABEL_REIFICATION" (Just "kappa-hs.backendir.effect-label-reification")
+      "An effect operation reached KBackendIR without exactly one checked static effect-label identity in its four-field runtime node. Native emission rejects the node rather than deriving a runtime token from source spelling or an unauthenticated value."
+  , ent "E_BACKENDIR_ERASED_SINGLETON_PATTERN" (Just "kappa-hs.backendir.erased-singleton-pattern")
+      "An erased singleton match reached KBackendIR with a guarded, ambiguous, or runtime-binding pattern. Native emission rejects the match rather than inventing runtime data for an erased scrutinee."
   , ent "E_DERIVE_HEAD" (Just "kappa.derive")
       "A derive declaration does not name a supported derivable trait applied to exactly one target type (§14.5.1-§14.5.2)."
   , ent "E_DERIVE_UNSUPPORTED" (Just "kappa.derive")

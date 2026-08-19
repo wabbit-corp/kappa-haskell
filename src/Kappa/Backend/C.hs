@@ -74,6 +74,7 @@ import Kappa.Backend.IR
   , KBackendIR (..)
   , backendExactNaturalOperation
   , lowerKBackendIR
+  , runtimeArgumentFreeGlobal
   , validateCoreCapabilities
   , validateKBackendIR
   )
@@ -87,7 +88,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Build.Types (FfiClass (..))
 import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
-import Kappa.Check (CheckState (..), CtorInfo (..), InstanceEntry (..), linkedCoreBodies)
+import Kappa.Check (CheckState (..), CtorInfo (..), linkedCoreBodies)
 import Kappa.Core
 import Kappa.CoreOps (spineOfTerm)
 import Kappa.Diagnostic
@@ -207,7 +208,6 @@ data GenState = GenState
   , gsBackendBodies :: !(Map GName BackendBody)
   , gsExactNaturalCertificate :: !(Maybe ExactNaturalRepresentationCertificate)
   , gsBodies :: !(Map GName Term)
-  , gsIOMonadRefDicts :: !(Set GName)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
   , gsRcEnabled :: !Bool -- ^ Perceus RC maintenance gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so generated @kdup@/@kdrop@ maintenance has no runtime counting/freeing effect. S4 publish marking still emits because shared bits are synchronization metadata for Ref/Array storage. When enabled, non-erased runtime variables consume node-local KBackendIR 'BackendUse' metadata, and binders/drops consume 'BackendBinder'/'BackendMeta' metadata.
   , gsReuseEnabled :: !Bool -- ^ S5 FBIP reuse gate. This is intentionally separate from 'gsRcEnabled': @KAPPA_PERCEUS_REUSE=0@ leaves RC maintenance and validation active while disabling only drop-guided in-place reuse sites for reuse-on/off differentials.
@@ -1143,7 +1143,6 @@ generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
                   , gsBackendBodies = kbirBodies backendIr
                   , gsExactNaturalCertificate = kbirExactNaturalCertificate backendIr
                   , gsBodies = bodies
-                  , gsIOMonadRefDicts = ioMonadRefDicts (csInstances cs)
                   , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) bodies
                   , gsRcEnabled = rcEnabled
                   , gsReuseEnabled = rcEnabled && reuseEnabled
@@ -1179,26 +1178,6 @@ generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
            in case reverse (gsErrs final) ++ multishotErrs ++ rcErrs of
                 [] -> Right (assemble final, mRcFindings)
                 errs -> Left (errs, mRcFindings)
-
-ioMonadRefDicts :: [InstanceEntry] -> Set GName
-ioMonadRefDicts =
-  Set.fromList
-    . map ieDict
-    . filter isIOMonadRefInstance
-  where
-    isIOMonadRefInstance ie =
-      ieTrait ie == Builtins.prelMonadRef
-        && gnameModule (ieDict ie) == Builtins.preludeModule
-        && case ieHead ie of
-          [t] -> termHeadGlob t == Just Builtins.prelIO
-          _ -> False
-    gnameModule (GName m _) = m
-    termHeadGlob = \case
-      CApp _ f _ -> termHeadGlob f
-      CUniverseLift _ _ _ t -> termHeadGlob t
-      CGlob g -> Just g
-      CGlobal g _ -> Just g
-      _ -> Nothing
 
 rcFindingErrors :: Bool -> GName -> Span -> [Text] -> [BackendError]
 rcFindingErrors False _ _ _ = []
@@ -2751,102 +2730,99 @@ callArgNeedsOwnedForArgs = go
                     Nothing -> True
               (needsOwned :) <$> go rest
 
--- | A selected dictionary/member projection whose KNOWN dictionary body is just
--- an eta wrapper around a runtime primitive can be lowered as that primitive
--- call.  This is the principled version of the S2.3c/S3.3 "readRef/writeRef via
--- MonadRef evidence" fast path: the decision is keyed by the selected evidence
--- body's Core and the resolved primitive identity ('globPrimName'), never by the
--- projected field spelling alone.  Unknown/local evidence and non-primitive
--- member bodies stay on the ordinary curried 'kapp' path.
+-- | Lower an authenticated selected-evidence member whose retained dictionary
+-- field is an exact eta-forwarder to a runtime primitive. Both a direct
+-- dictionary projection and a public projection wrapper are accepted, but the
+-- latter must project its sole runtime evidence binder. Primitive identity,
+-- arity, IO behavior, and ownership all come from shared compiler authorities;
+-- unknown or richer evidence shapes remain on the ordinary curried path.
 compileSelectedProjectedPrimitiveApp :: BackendTerm -> Gen (Maybe Text)
-compileSelectedProjectedPrimitiveApp term =
-  case spineOf term of
-    (BProj _ dict field _, args)
-      | Just dictG <- backendEvidenceGlobal dict -> do
-      ioDicts <- gets gsIOMonadRefDicts
-      if dictG `Set.member` ioDicts
-        then do
-          mPrim <- selectedIOMonadRefMemberPrimitive dictG field
-          case mPrim of
-            Just ("__ioNewRef", "kpf_io_newRef", 1) ->
-              selectedNewRef [argTerm a | a <- args, argIcit a == Expl]
-            Just ("__ioReadRef", "kpf_io_readRef", 1) ->
-              selectedReadRef [argTerm a | a <- args, argIcit a == Expl]
-            Just ("__ioWriteRef", "kpf_io_writeRef", 2) ->
-              selectedWriteRef [argTerm a | a <- args, argIcit a == Expl]
-            _ -> pure Nothing
-        else pure Nothing
-    _ -> pure Nothing
-  where
-    selectedNewRef [v] =
-      Just <$> emitRefPrim "__ioNewRef" "kpf_io_newRef" 1 [(True, v)]
-    selectedNewRef _ = pure Nothing
-
-    selectedReadRef [r] =
-      Just <$> emitRefPrim "__ioReadRef" "kpf_io_readRef" 1 [(False, r)]
-    selectedReadRef _ = pure Nothing
-
-    selectedWriteRef [r, v] =
-      Just <$> emitRefPrim "__ioWriteRef" "kpf_io_writeRef" 2 [(False, r), (True, v)]
-    selectedWriteRef _ = pure Nothing
-
-    emitRefPrim :: Text -> Text -> Int -> [(Bool, BackendTerm)] -> Gen Text
-    emitRefPrim primName cfn arity args = do
-      markPrimUsed primName
-      aes <-
-        forM args $ \(needOwned, a) ->
-          compileCallArg needOwned a
-      arr <- freshN "na_"
-      emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-      pure ("knative_sat(" <> cfn <> ", " <> T.pack (show arity) <> ", " <> arr <> ", 1)")
-
-selectedIOMonadRefMemberPrimitive :: GName -> Text -> Gen (Maybe (Text, Text, Int))
-selectedIOMonadRefMemberPrimitive dictG field =
-  case field of
-    "newRef" -> member "__ioNewRef" "kpf_io_newRef" 1
-    "readRef" -> member "__ioReadRef" "kpf_io_readRef" 1
-    "writeRef" -> member "__ioWriteRef" "kpf_io_writeRef" 2
-    _ -> pure Nothing
-  where
-    member primName cfn arity = do
-      ok <- dictionaryMemberBodyIsPrimitive dictG field primName arity
-      pure $ if ok then Just (primName, cfn, arity) else Nothing
-
-dictionaryMemberBodyIsPrimitive :: GName -> Text -> Text -> Int -> Gen Bool
-dictionaryMemberBodyIsPrimitive dictG field primName expectedArity = do
+compileSelectedProjectedPrimitiveApp term = do
   bodies <- gets gsBodies
-  case Map.lookup dictG bodies >>= dictionaryFieldBody field of
-    Nothing -> pure False
-    Just memberBody -> primitiveEtaBody primName expectedArity memberBody
+  case selectedEvidenceProjection bodies term of
+    Nothing -> pure Nothing
+    Just (dictionary, field, memberArgs)
+      | all ((== Expl) . argIcit) memberArgs ->
+          case Repr.dictionaryPrimitiveMember bodies dictionary field of
+            Just (primitiveGlobal, coreArity) -> do
+              primitiveName <- globPrimName primitiveGlobal
+              case primitiveName of
+                Just name ->
+                  case (Map.lookup name primEntries, Repr.primitiveArgConventions name) of
+                    (Just entry@(PrimEntry _ registryArity _), Just conventions)
+                      | registryArity == coreArity
+                      , length memberArgs == registryArity
+                      , length conventions == registryArity ->
+                          Just
+                            <$> emitSaturatedPrimitive
+                              name
+                              entry
+                              [ (convention /= Repr.ArgBorrowed, argTerm argument)
+                              | (convention, argument) <- zip conventions memberArgs
+                              ]
+                    _ -> pure Nothing
+                Nothing -> pure Nothing
+            Nothing -> pure Nothing
+      | otherwise -> pure Nothing
 
-dictionaryFieldBody :: Text -> Term -> Maybe Term
-dictionaryFieldBody field body =
-  case stripTermLambdasAndSeals body of
-    CRecordV fs -> lookup field fs
+selectedEvidenceProjection :: Map GName Term -> BackendTerm -> Maybe (GName, Text, [BackendArg])
+selectedEvidenceProjection bodies term =
+  case spineOf term of
+    (BProj _ dictionary field _, memberArgs) -> do
+      dictionaryGlobal <- runtimeArgumentFreeGlobal dictionary
+      Just (dictionaryGlobal, field, memberArgs)
+    (BGlob _ wrapper, evidenceArgument : memberArgs) -> do
+      body <- Map.lookup wrapper bodies
+      Repr.EvidenceProjectionWrapper evidenceIcit field <-
+        Repr.evidenceProjectionWrapper body
+      guard (argIcit evidenceArgument == evidenceIcit)
+      dictionaryGlobal <- runtimeArgumentFreeGlobal (argTerm evidenceArgument)
+      Just (dictionaryGlobal, field, memberArgs)
     _ -> Nothing
 
-primitiveEtaBody :: Text -> Int -> Term -> Gen Bool
-primitiveEtaBody primName expectedArity body = do
-  let (hd, args) = spineOfTerm (stripTermLambdasAndSeals body)
-      explicitArity = length [() | (Expl, _) <- args]
-  headOK <- case hd of
-    CGlob g -> (== Just primName) <$> globPrimName g
-    _ -> pure False
-  pure (headOK && explicitArity == expectedArity)
+emitSaturatedPrimitive :: Text -> PrimEntry -> [(Bool, BackendTerm)] -> Gen Text
+emitSaturatedPrimitive primitiveName (PrimEntry cfn arity isIO) arguments
+  | length arguments /= arity =
+      unsupported
+        "primitive application"
+        ( "the selected primitive '"
+            <> primitiveName
+            <> "' has registry arity "
+            <> T.pack (show arity)
+            <> " but received "
+            <> T.pack (show (length arguments))
+            <> " runtime arguments"
+        )
+  | otherwise = do
+      markPrimUsed primitiveName
+      compiledArguments <-
+        forM arguments $ \(needOwned, argument) ->
+          compileCallArg needOwned argument
+      if isIO
+        then do
+          argumentArray <- emitPrimitiveArgumentArray "na_" compiledArguments
+          pure
+            ( "knative_sat("
+                <> cfn
+                <> ", "
+                <> T.pack (show arity)
+                <> ", "
+                <> argumentArray
+                <> ", 1)"
+            )
+        else case primDirect primitiveName of
+          Just (helper, helperArity) | helperArity == arity ->
+            pure (helper <> "(" <> T.intercalate ", " compiledArguments <> ")")
+          _ -> do
+            argumentArray <- emitPrimitiveArgumentArray "pa_" compiledArguments
+            pure (cfn <> "(" <> argumentArray <> ")")
 
-stripTermLambdasAndSeals :: Term -> Term
-stripTermLambdasAndSeals = \case
-  CLam _ _ _ body -> stripTermLambdasAndSeals body
-  CSealE _ body -> stripTermLambdasAndSeals body
-  term -> term
-
-backendEvidenceGlobal :: BackendTerm -> Maybe GName
-backendEvidenceGlobal = \case
-  BGlob _ g -> Just g
-  BSeal _ _ e -> backendEvidenceGlobal e
-  BApp _ f args
-    | all ((/= Expl) . argIcit) args -> backendEvidenceGlobal f
-  _ -> Nothing
+emitPrimitiveArgumentArray :: Text -> [Text] -> Gen Text
+emitPrimitiveArgumentArray _ [] = pure "((KValue **)0)"
+emitPrimitiveArgumentArray prefix arguments = do
+  array <- freshN prefix
+  emit ("KValue *" <> array <> "[] = {" <> T.intercalate ", " arguments <> "};")
+  pure array
 
 -- | A global that denotes a type or trait (so a reference to it in
 -- argument position is computationally erased): a declared data type or
@@ -3668,24 +3644,13 @@ compileAppGlob g sargs term = do
             -- saturated @knative_sat@ (the suspended action krun_io fires by
             -- calling the entry point). Partial / over-application falls
             -- through to the curried bare-reference path (emitPrim → knative).
-            Just (PrimEntry cfn ar isio) | length explIx == ar -> do
-              markPrimUsed pname
-              aes <-
-                mapM
-                  (\(j, a) -> compileCallArg (flagAt ownedFlags j) a)
-                  explIx
-              if isio
-                then do
-                  arr <- freshN "na_"
-                  emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-                  pure ("knative_sat(" <> cfn <> ", " <> T.pack (show ar) <> ", " <> arr <> ", 1)")
-                else case primDirect pname of
-                  Just (helper, har) | har == ar ->
-                    pure (helper <> "(" <> T.intercalate ", " aes <> ")")
-                  _ -> do
-                    arr <- freshN "pa_"
-                    emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-                    pure (cfn <> "(" <> arr <> ")")
+            Just entry@(PrimEntry _ ar _) | length explIx == ar ->
+              emitSaturatedPrimitive
+                pname
+                entry
+                [ (flagAt ownedFlags j, argument)
+                | (j, argument) <- explIx
+                ]
             _ -> compileAppDefault term -- partial / over-applied: curried path
         Just _ -> compileAppDefault term -- prim with no explicit args yet
         Nothing -> do

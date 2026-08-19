@@ -1,0 +1,9 @@
+-- §15.1/§15.7/§15.8.4: a transparent measure helper imported from
+-- another module reduces to the same authenticated piecewise-linear measure.
+module main
+
+import bounds.*
+
+countTo : Int -> Int
+let countTo x decreases max 0 (limit - x) =
+    if x >= limit then 0 else countTo (x + 1)

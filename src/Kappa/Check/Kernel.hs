@@ -1235,6 +1235,14 @@ unifyWith exact ctx =
         -- authenticated identity bridge above.
         (VFlex meta [], value) -> solveFlex (fuel - 1) lvl meta value
         (value, VFlex meta []) -> solveFlex (fuel - 1) lvl meta value
+        -- A universe lift changes only the classifier at which its payload is
+        -- used (§30.2.1A). Its evidence was checked when the Core node was
+        -- formed, so conversion compares the underlying value while retaining
+        -- the explicit lift in finalized Core for checkpoint verification.
+        (VUniverseLift _ _ _ inner, value) ->
+          goAt (fuel - 1) allowQSubsumption allowUniverseCumulativity lvl inner value
+        (value, VUniverseLift _ _ _ inner) ->
+          goAt (fuel - 1) allowQSubsumption allowUniverseCumulativity lvl value inner
         (VGlobI g1 universes1 spine1, VGlobI g2 universes2 spine2)
           | g1 == g2
           , length spine1 == length spine2 -> do
@@ -1291,6 +1299,10 @@ unifyWith exact ctx =
     go fuel allowQSubsumption allowUniverseCumulativity lvl a b = case (a, b) of
       (VFlex m [], t) -> solveFlex (fuel - 1) lvl m t
       (t, VFlex m []) -> solveFlex (fuel - 1) lvl m t
+      (VUniverseLift _ _ _ inner, value) ->
+        goAt (fuel - 1) allowQSubsumption allowUniverseCumulativity lvl inner value
+      (value, VUniverseLift _ _ _ inner) ->
+        goAt (fuel - 1) allowQSubsumption allowUniverseCumulativity lvl value inner
       -- applied metas: first-order decomposition (?m a̅ ≡ G b̅ pre a̅'
       -- solves ?m := G b̅ pre and unifies the argument tails pairwise) —
       -- the standard Miller-adjacent approximation for higher-kinded
@@ -12489,7 +12501,7 @@ selectBinderRuntimeErasure ctx site quantity existing classifier = do
     else case existing of
       RuntimeErased justification -> pure (RuntimeErased justification)
       RuntimeRelevant -> do
-        evidence <- equalityProofRuntimeErasure ctx site classifier >>= \case
+        evidence <- observationalEqualityProofRuntimeErasure ctx site classifier >>= \case
           Just exact -> pure (Just exact)
           Nothing -> argumentRuntimeErasedByEvidence ctx site classifier
         pure (maybe RuntimeRelevant RuntimeErased evidence)
@@ -13111,6 +13123,60 @@ equalityProofRuntimeErasure ctx site classifier = do
                                       else Nothing
                                   )
                 _ -> pure Nothing
+
+-- | Binder layout selection is an observational query. Equality-specific
+-- evidence construction can allocate instance and universe metas, so retain a
+-- certificate only when it closes entirely over identities that predate the
+-- probe, then restore the complete checker state on both success and failure.
+observationalEqualityProofRuntimeErasure
+  :: Ctx
+  -> Span
+  -> Value
+  -> CheckM (Maybe (ErasureJustification Term))
+observationalEqualityProofRuntimeErasure ctx site classifier = do
+  before <- get
+  selected <- equalityProofRuntimeErasure ctx site classifier
+  after <- get
+  finalized <-
+    if preexistingAssignmentsUnchanged before after
+      then case selected of
+        Just (RuntimeErasedEvidence goal evidence evidenceType) ->
+          closeObservationalEvidenceTerms
+            ctx
+            before
+            [goal, evidence, evidenceType]
+            >>= \case
+              Just [goal', evidence', evidenceType'] ->
+                pure
+                  ( Just
+                      ( RuntimeErasedEvidence
+                          goal'
+                          evidence'
+                          evidenceType'
+                      )
+                  )
+              _ -> pure Nothing
+        Nothing -> pure Nothing
+      else pure Nothing
+  put before
+  pure finalized
+
+closeObservationalEvidenceTerms
+  :: Ctx
+  -> CheckState
+  -> [Term]
+  -> CheckM (Maybe [Term])
+closeObservationalEvidenceTerms ctx before terms = do
+  zonked <- traverse (zonkTermM (ctxLen ctx)) terms
+  current <- get
+  pure
+    ( if all (null . unsolvedMetasOf current) zonked
+        && all
+          (all (< csNextMeta before) . levelMetasOfTerm)
+          zonked
+        then Just zonked
+        else Nothing
+    )
 
 runtimeErasureEvidenceAvailable :: Ctx -> Span -> Value -> CheckM (Maybe (Term, Term))
 runtimeErasureEvidenceAvailable ctx site classifier = do
@@ -20298,7 +20364,8 @@ elabMonadDo ctx me items0 sp
         if not (null pre)
           then directGo target c (pre ++ DoVar n mty rhs vsp : rest)
           else do
-            refDict <- requireMonadRef c (nameSpan n) mTy
+            pendingRefDict <- requireMonadRef c (nameSpan n) mTy
+            refDict <- settleTermEvidenceWithNumericDefaults c pendingRefDict
             (rhsTm, rhsTy) <- case mty of
               Just tyE -> do
                 (tyTm, _) <- inferType c tyE
@@ -24913,7 +24980,8 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                     "'var' requires a do-block carrier with MonadRef evidence; this pure/non-reference do carrier is not supported for mutable variables (§18.6.1)"
                   goItems loops c errT resT rest
                 Just mTy -> do
-                  refDict <- requireMonadRef c (nameSpan n) mTy
+                  pendingRefDict <- requireMonadRef c (nameSpan n) mTy
+                  refDict <- settleTermEvidenceWithNumericDefaults c pendingRefDict
                   (rhsTm1, rhsTy1) <- case mty of
                     Just tyE -> do
                       (tyTm, _) <- inferType c tyE

@@ -34,7 +34,7 @@ import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe, maybeToList)
-import Data.Monoid (Any (..))
+import Data.Monoid (Any (..), Sum (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -240,6 +240,7 @@ collectFunEdges funMap src =
               | level <- tfExplParams src
               ]
         , structuralShapes = Map.empty
+        , structuralAliases = Map.empty
         }
 
     go :: Int -> StructuralOrigins -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
@@ -1224,13 +1225,119 @@ structuralArgChanges selected depth origins term =
 insertStructuralAlias :: Int -> StructuralOrigins -> Term -> StructuralOrigins
 insertStructuralAlias level origins rhs =
   let aliases = termStructuralOrigins level origins rhs
+      withTerm =
+        origins
+          { structuralAliases =
+              Map.insert level rhs (structuralAliases origins)
+          }
    in if Set.null aliases
-        then origins
+        then withTerm
         else
-          origins
+          withTerm
             { structuralLocals =
                 Map.insertWith Set.union level aliases (structuralLocals origins)
             }
+
+-- | Bounded fallback for non-arithmetic/custom-relation measures. Portable
+-- arithmetic aliases use 'selectedArithmeticAliasFacts' and never enter this
+-- materialization path. A memoized size preflight keeps richer unsupported
+-- forms fail-closed instead of building an unbounded Core tree.
+expandStructuralAliases :: Int -> Map Int Term -> Term -> Maybe Term
+expandStructuralAliases depth aliases term = do
+  _ <- expandedAliasSize aliases Map.empty depth term
+  expanded <-
+    foldM
+      (materializeAlias aliases)
+      Map.empty
+      (Set.toAscList (aliasReferences depth aliases term))
+  pure (substituteStructuralAliases expanded depth term)
+
+aliasExpansionNodeBudget :: Int
+aliasExpansionNodeBudget = 65536
+
+expandedAliasSize
+  :: Map Int Term
+  -> Map Int Int
+  -> Int
+  -> Term
+  -> Maybe (Map Int Int, Int)
+expandedAliasSize aliases memo depth term =
+  guard (baseNodes <= aliasExpansionNodeBudget)
+    >> foldM addAlias (memo, baseNodes) referencedAliases
+  where
+    (Sum baseNodes, referencedAliases) =
+      foldTermWithDepth footprint depth term
+    footprint currentDepth = \case
+      CVar index
+        | let level = currentDepth - 1 - index
+        , Map.member level aliases ->
+            (Sum 1, [level])
+      _ -> (Sum 1, [])
+    addAlias (currentMemo, currentSize) level = do
+      (nextMemo, aliasSize) <- expandedAliasDefinitionSize aliases currentMemo level
+      nextSize <- boundedAliasSizeAdd currentSize (aliasSize - 1)
+      pure (nextMemo, nextSize)
+
+expandedAliasDefinitionSize
+  :: Map Int Term
+  -> Map Int Int
+  -> Int
+  -> Maybe (Map Int Int, Int)
+expandedAliasDefinitionSize aliases memo level =
+  case Map.lookup level memo of
+    Just size -> Just (memo, size)
+    Nothing -> do
+      rhs <- Map.lookup level aliases
+      guard (all (< level) (aliasReferences level aliases rhs))
+      (memo', size) <- expandedAliasSize aliases memo level rhs
+      pure (Map.insert level size memo', size)
+
+boundedAliasSizeAdd :: Int -> Int -> Maybe Int
+boundedAliasSizeAdd left right
+  | left < 0 || right < 0 = Nothing
+  | left > aliasExpansionNodeBudget - right = Nothing
+  | otherwise = Just (left + right)
+
+materializeAlias
+  :: Map Int Term
+  -> Map Int Term
+  -> Int
+  -> Maybe (Map Int Term)
+materializeAlias aliases expanded level
+  | Map.member level expanded = Just expanded
+  | otherwise = do
+      rhs <- Map.lookup level aliases
+      let dependencies = Set.toAscList (aliasReferences level aliases rhs)
+      guard (all (< level) dependencies)
+      expanded' <- foldM (materializeAlias aliases) expanded dependencies
+      pure
+        ( Map.insert
+            level
+            (substituteStructuralAliases expanded' level rhs)
+            expanded'
+        )
+
+aliasReferences :: Int -> Map Int Term -> Term -> Set Int
+aliasReferences depth aliases =
+  foldTermWithDepth reference depth
+  where
+    reference currentDepth = \case
+      CVar index
+        | let level = currentDepth - 1 - index
+        , Map.member level aliases -> Set.singleton level
+      _ -> Set.empty
+
+substituteStructuralAliases :: Map Int Term -> Int -> Term -> Term
+substituteStructuralAliases expanded =
+  mapTermWithDepth substitute
+  where
+    substitute currentDepth = \case
+      CVar index -> do
+        let level = currentDepth - 1 - index
+        rhs <- Map.lookup level expanded
+        guard (currentDepth >= level)
+        pure (shiftTerm (currentDepth - level) 0 rhs)
+      _ -> Nothing
 
 recordMatchedStructuralShape
   :: Set StructuralOrigin -> CorePat -> StructuralOrigins -> StructuralOrigins
@@ -1385,8 +1492,9 @@ measureCallOfEdge funMap edge = do
   srcSpec <- tfMeasure src
   tgtSpec <- tfMeasure tgt
   let tgtFormalLvls = map snd (tfParams tgt)
-      supplied = take (length tgtFormalLvls) (edgeArgs edge)
-      subst = Map.fromList (zip tgtFormalLvls (map snd supplied))
+      suppliedArguments =
+        take (length tgtFormalLvls) (edgeArgs edge)
+      subst = Map.fromList (zip tgtFormalLvls (map snd suppliedArguments))
   if edgeDepth edge < msDepth srcSpec
     then Nothing
     else do
@@ -1396,6 +1504,8 @@ measureCallOfEdge funMap edge = do
         MeasureCall
           { mcDepth = edgeDepth edge
           , mcFacts = edgeFacts edge
+          , mcStructuralAliases =
+              structuralAliases (edgeStructuralOrigins edge)
           , mcOldMeasure = oldHere
           , mcNewMeasure = newHere
           , mcRelation = msRelation srcSpec
@@ -1416,6 +1526,7 @@ measureCallChange :: MeasureCall -> CheckM (Maybe MeasureChange)
 measureCallChange call = do
   let d = mcDepth call
       facts = mcFacts call
+      aliases = mcStructuralAliases call
       oldM0 = mcOldMeasure call
       newM0 = mcNewMeasure call
       mRel = mcRelation call
@@ -1426,53 +1537,49 @@ measureCallChange call = do
       classify = fmap $ \case
         VisibleMeasureStrict -> MeasureStrict from target
         VisibleMeasureNonIncreasing -> MeasureNonIncreasing from target
-  oldM <- normalizeTermAt d oldM0
-  newM <- normalizeTermAt d newM0
   case (mRel, mProof) of
-    (Nothing, Nothing) -> classify <$> defaultMeasureCallChange src d facts oldM newM
+    (Nothing, Nothing) -> do
+      oldM <- normalizeTermAt d oldM0
+      newM <- normalizeTermAt d newM0
+      classify <$> defaultMeasureCallChange src d facts aliases oldM newM
     (Nothing, Just _proofE) ->
       -- `using` is parsed and retained, but erased proof terms are not a
       -- termination oracle. Until proof checking produces inspectable descent
       -- evidence, a proof annotation can only accompany an internally proved
       -- measure decrease.
-      classify <$> defaultMeasureCallChange src d facts oldM newM
-    (Just rel, Nothing) -> do
-      wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
-      holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
-      if wf && holds
-        then pure (Just (MeasureStrict from target))
-        else if wf
-          then do
-            equal <- visibleMeasuresEqual src d facts oldM newM
-            pure
-              ( if equal
-                  then Just (MeasureNonIncreasing from target)
-                  else Nothing
-              )
-          else pure Nothing
-    (Just rel, Just _proofE) -> do
-      wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
-      holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
-      if wf && holds
-        then pure (Just (MeasureStrict from target))
-        else if wf
-          then do
-            equal <- visibleMeasuresEqual src d facts oldM newM
-            pure
-              ( if equal
-                  then Just (MeasureNonIncreasing from target)
-                  else Nothing
-              )
-          else pure Nothing
+      do
+        oldM <- normalizeTermAt d oldM0
+        newM <- normalizeTermAt d newM0
+        classify <$> defaultMeasureCallChange src d facts aliases oldM newM
+    (Just rel, _) ->
+      case expandStructuralAliases d aliases newM0 of
+        Nothing -> pure Nothing
+        Just expandedNew -> do
+          oldM <- normalizeTermAt d oldM0
+          newM <- normalizeTermAt d expandedNew
+          wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
+          holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
+          if wf && holds
+            then pure (Just (MeasureStrict from target))
+            else if wf
+              then do
+                equal <- visibleMeasuresEqual src d facts oldM newM
+                pure
+                  ( if equal
+                      then Just (MeasureNonIncreasing from target)
+                      else Nothing
+                  )
+              else pure Nothing
 
 defaultMeasureCallChange
   :: TermFun
   -> Int
   -> [AFact]
+  -> Map Int Term
   -> Term
   -> Term
   -> CheckM (Maybe VisibleMeasureChange)
-defaultMeasureCallChange source d facts oldM newM = do
+defaultMeasureCallChange source d facts aliases oldM newM = do
   let oldCs = rankComponents oldM
       newCs = rankComponents newM
       domains =
@@ -1483,48 +1590,77 @@ defaultMeasureCallChange source d facts oldM newM = do
     else case domains of
       Just selectedDomains
         | length selectedDomains == length oldCs -> do
-            nonNegOld <- sequence (zipWith componentNonNegative selectedDomains oldCs)
-            nonNegNew <- sequence (zipWith componentNonNegative selectedDomains newCs)
-            if and nonNegOld && and nonNegNew
-              then lexChange (zip3 selectedDomains oldCs newCs)
-              else pure Nothing
-      _ -> legacyDefaultMeasureCallChange natLvls d facts oldCs newCs
+            aliasEvidence <-
+              traverse
+                (\(domain, oldComponent, newComponent) ->
+                   selectedArithmeticAliasFacts
+                     domain
+                     aliases
+                     d
+                     [oldComponent, newComponent])
+                (zip3 selectedDomains oldCs newCs)
+            case sequence aliasEvidence of
+              Nothing -> pure Nothing
+              Just evidence -> do
+                let aliasFacts = concatMap fst evidence
+                    naturalAliases =
+                      Set.unions
+                        [ levels
+                        | (domain, (_, levels)) <- zip selectedDomains evidence
+                        , domain == ArithmeticNatural
+                        ]
+                    arithmeticFacts = aliasFacts ++ facts
+                    arithmeticNatLvls = naturalAliases `Set.union` natLvls
+                nonNegOld <-
+                  sequence
+                    (zipWith (componentNonNegative arithmeticNatLvls arithmeticFacts) selectedDomains oldCs)
+                nonNegNew <-
+                  sequence
+                    (zipWith (componentNonNegative arithmeticNatLvls arithmeticFacts) selectedDomains newCs)
+                if and nonNegOld && and nonNegNew
+                  then lexChange arithmeticNatLvls arithmeticFacts (zip3 selectedDomains oldCs newCs)
+                  else pure Nothing
+      _ ->
+        case expandStructuralAliases d aliases newM of
+          Nothing -> pure Nothing
+          Just expandedNew ->
+            legacyDefaultMeasureCallChange natLvls d facts oldCs (rankComponents expandedNew)
   where
     natLvls = tfNatLvls source
     measureTypeComponents = \case
       CRecordT fields -> rankComponents (CRecordV fields)
       measureType -> [measureType]
-    componentNonNegative ArithmeticNatural _ = pure True
-    componentNonNegative domain term =
+    componentNonNegative _ _ ArithmeticNatural _ = pure True
+    componentNonNegative selectedNatLvls selectedFacts domain term =
       selectedArithmeticExpression domain d term >>= \case
         Just expression ->
-          proveFact natLvls facts (AFact ACmpLe (AConst 0) expression)
-        Nothing -> proveNonNeg natLvls facts d term
-    lexChange [] =
+          proveFact selectedNatLvls selectedFacts (AFact ACmpLe (AConst 0) expression)
+        Nothing -> proveNonNeg selectedNatLvls selectedFacts d term
+    lexChange _ _ [] =
       pure (Just VisibleMeasureNonIncreasing)
-    lexChange ((domain, oldC, newC) : rest) = do
-      lt <- proveSelected ACmpLt domain newC oldC
+    lexChange selectedNatLvls selectedFacts ((domain, oldC, newC) : rest) = do
+      lt <- proveSelected selectedNatLvls selectedFacts ACmpLt domain newC oldC
       if lt
         then pure (Just VisibleMeasureStrict)
         else do
-          eq <- proveSelected ACmpEq domain newC oldC
+          eq <- proveSelected selectedNatLvls selectedFacts ACmpEq domain newC oldC
           if eq
-            then lexChange rest
+            then lexChange selectedNatLvls selectedFacts rest
             else do
-              nonIncreasing <- proveSelected ACmpLe domain newC oldC
+              nonIncreasing <- proveSelected selectedNatLvls selectedFacts ACmpLe domain newC oldC
               if nonIncreasing
-                then lexChange rest
+                then lexChange selectedNatLvls selectedFacts rest
                 else pure Nothing
 
-    proveSelected comparison domain left right = do
+    proveSelected selectedNatLvls selectedFacts comparison domain left right = do
       leftExpression <- selectedArithmeticExpression domain d left
       rightExpression <- selectedArithmeticExpression domain d right
       case (leftExpression, rightExpression) of
         (Just left', Just right') ->
-          proveFact natLvls facts (AFact comparison left' right')
+          proveFact selectedNatLvls selectedFacts (AFact comparison left' right')
         _ -> case comparison of
-          ACmpLt -> proveLt natLvls facts d left right
-          ACmpEq -> proveEq natLvls facts d left right
+          ACmpLt -> proveLt selectedNatLvls selectedFacts d left right
+          ACmpEq -> proveEq selectedNatLvls selectedFacts d left right
           _ -> pure False
 
 legacyDefaultMeasureCallChange

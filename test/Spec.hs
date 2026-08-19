@@ -59,6 +59,7 @@ import Kappa.Backend.IR
   , backendExactNaturalOperation
   , kbackendRepresentationCertificates
   , lowerKBackendIR
+  , runtimeArgumentFreeGlobal
   , validateCoreCapabilities
   , validateKBackendIR
   )
@@ -76,6 +77,7 @@ import Kappa.Backend.Repr
   , scalarRep
   )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyInputs, verifyUnit)
+import Kappa.Check.Artifact (restoreCheckedPrelude, snapshotCheckedPrelude)
 import Kappa.Builtins
   ( gPrel
   , prelDouble
@@ -219,6 +221,7 @@ import Kappa.Eval
   , globalDefWithCoreType
   , globalDefWithNominalSummary
   , globalDefWithUniverses
+  , globalPrimitiveIdentity
   , quote
   )
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
@@ -333,6 +336,7 @@ import Kappa.Ownership
   )
 import Kappa.Parser (parseExprText, parseModule)
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude, preludeState, resolvedVisibleHeads, sourcePreludeState)
+import Kappa.Prelude (builtinState)
 import Kappa.Usage (sameResolvedTypeHead)
 import Kappa.Pretty (renderJudgment, renderTerm)
 import Kappa.Representation
@@ -440,6 +444,7 @@ main = do
   resolvedStorageHeadOk <- resolvedStorageHeadIdentityDomain
   preludeDemandLoadingOk <- preludeDemandLoadingDomain
   checkedPreludeArtifactOk <- checkedPreludeArtifactDomain
+  runtimeArgumentFreeGlobalOk <- runtimeArgumentFreeGlobalDomain
   structuralBinaryOk <- structuralBinaryDomain
   kfrontIdentityOk <- kfrontOccurrenceIdentityDomain
   kfrontExpansionOk <- kfrontExpansionIdentityDomain
@@ -504,6 +509,7 @@ main = do
         , ("resolvedStorageHeadIdentityDomain", resolvedStorageHeadOk)
         , ("preludeDemandLoadingDomain", preludeDemandLoadingOk)
         , ("checkedPreludeArtifactDomain", checkedPreludeArtifactOk)
+        , ("runtimeArgumentFreeGlobalDomain", runtimeArgumentFreeGlobalOk)
         , ("structuralBinaryDomain", structuralBinaryOk)
         , ("kfrontOccurrenceIdentityDomain", kfrontIdentityOk)
         , ("kfrontExpansionIdentityDomain", kfrontExpansionOk)
@@ -811,11 +817,56 @@ checkedPreludeArtifactDomain = do
         | global <- Set.toAscList (Map.keysSet cachedValues `Set.union` Map.keysSet sourceValues)
         , Map.lookup global cachedValues /= Map.lookup global sourceValues
         ]
+      seededPrimitives =
+        Map.mapMaybeWithKey globalPrimitiveIdentity (csGlobals builtinState)
+      cachedContext =
+        EvalCtx (Globals (csGlobals cached)) (csMetas cached) False (csFacts cached)
+      stalePrimitiveRejected mutate =
+        case Map.toAscList seededPrimitives of
+          [] -> False
+          (primitiveGlobal, _) : _ ->
+            let staleState =
+                  cached
+                    { csGlobals =
+                        Map.adjust
+                          mutate
+                          primitiveGlobal
+                          (csGlobals cached)
+                    }
+                staleArtifact = snapshotCheckedPrelude "stale-primitive-regression" staleState
+             in case restoreCheckedPrelude "stale-primitive-regression" staleArtifact of
+                  Left message -> "primitive value/Core-body identity mismatch" `T.isInfixOf` message
+                  Right _ -> False
+      primitiveCoreAuthority state =
+        all
+          ( \(global, primitive) ->
+              case Map.lookup global (csGlobals state) of
+                Nothing -> False
+                Just definition ->
+                  gdCoreBody definition
+                    == Just (CGlob (GName primModule primitive))
+          )
+          (Map.toList seededPrimitives)
       checks =
         [ ("cached image is clean", not (any isError cachedDiagnostics))
         , ("source bootstrap is clean", not (any isError sourceDiagnostics))
         , ("global Core authority agrees", Map.map globalShape (csGlobals cached) == Map.map globalShape (csGlobals source))
         , ("checked global values agree", null valueMismatches)
+        , ("cached primitive registrations retain Core identity", primitiveCoreAuthority cached)
+        , ("source primitive registrations retain Core identity", primitiveCoreAuthority source)
+        , ( "bodyless cached primitive is rejected"
+          , stalePrimitiveRejected (\definition -> definition {gdCoreBody = Nothing})
+          )
+        , ( "valueless cached primitive is rejected"
+          , stalePrimitiveRejected (\definition -> definition {gdValue = Nothing})
+          )
+        , ( "unrelated cached primitive value is rejected"
+          , stalePrimitiveRejected
+              (\definition ->
+                 definition
+                   { gdValue = Just (eval cachedContext [] (CLit (LitInt 0)))
+                   })
+          )
         , ("data identities agree", Map.keysSet (csDatas cached) == Map.keysSet (csDatas source))
         , ("constructor identities agree", Map.keysSet (csCtors cached) == Map.keysSet (csCtors source))
         , ("trait identities agree", Map.keysSet (csTraits cached) == Map.keysSet (csTraits source))
@@ -834,6 +885,21 @@ checkedPreludeArtifactDomain = do
     unless (null valueMismatches) $
       putStrLn ("  value mismatches=" ++ show (map gKey valueMismatches))
   pure (null failures)
+
+-- | §34.3.10: source icity is not runtime erasure evidence. Once KBackendIR
+-- retains an application argument, selected lowering must preserve it and use
+-- the ordinary call path; only a bare (optionally sealed) global is eligible.
+runtimeArgumentFreeGlobalDomain :: IO Bool
+runtimeArgumentFreeGlobalDomain = do
+  let meta = BackendMeta (BackendNodeId 0) []
+      global = GName (ModuleName ["test"]) "dictionary"
+      bare = BGlob meta global
+      retainedImplicit = BApp meta bare [(Impl, Nothing, BUnit meta)]
+  pure
+    ( runtimeArgumentFreeGlobal bare == Just global
+        && runtimeArgumentFreeGlobal (BSeal meta [] bare) == Just global
+        && runtimeArgumentFreeGlobal retainedImplicit == Nothing
+    )
 
 -- | The checked-interface codec treats opaque byte strings as a primitive,
 -- not as an algebraic value. Length framing must round-trip exact bytes while
@@ -3965,6 +4031,19 @@ arithmeticReplayDomain = do
         AFact ACmpEq (AMod (AAdd n (AConst 2)) (AConst 3)) (AConst 0)
       idempotentMaximumGoal =
         AFact ACmpEq (AMax n n) n
+      positiveGap = AFact ACmpLt n m
+      oldGap = ASub m n
+      newGap = ASub m (AAdd n (AConst 1))
+      maxZeroViaNegatedCondition gap =
+        AIf
+          (ANot (AAtom (AFact ACmpLt (AConst 0) gap)))
+          (AConst 0)
+          gap
+      conditionalMaximumDecrease =
+        AFact
+          ACmpLt
+          (maxZeroViaNegatedCondition newGap)
+          (maxZeroViaNegatedCondition oldGap)
       uncheckedNaturalSubtraction =
         AFact ACmpEq (ASub n (AConst 1)) (ASub n (AConst 1))
       checkedNaturalSubtractionPremise =
@@ -4069,12 +4148,35 @@ arithmeticReplayDomain = do
           naturalVariables
           []
           (AFact ACmpEq explosiveProduct explosiveProduct)
+      aliasVariables = map AVar [10 .. 23]
+      aliasDefinitions =
+        zipWith
+          (\alias expression -> AFact ACmpEq alias expression)
+          aliasVariables
+          ( ASub n (AConst 1)
+              : [ ASub (AAdd prior prior) prior
+                | prior <- init aliasVariables
+                ]
+          )
+      aliasAssumptions = AFact ACmpLt (AConst 0) n : aliasDefinitions
+      aliasGoal = AFact ACmpLt (last aliasVariables) n
+      aliasReplay =
+        deriveArithmeticReplay
+          ArithmeticIntegerSemantics
+          Set.empty
+          aliasAssumptions
+          aliasGoal
       checks =
         [ ("polynomial equality has replay evidence", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) polynomialReplay)
         , ("lexical bound entails strict inequality", maybe False (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [boundedAssumption]) strictReplay)
         , ("mutated normal form rejects", maybe True (not . verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables []) mutated)
         , ("multiplicative factor order is preserved", reorderedProduct == Nothing)
         , ("polynomial expansion fails closed at its deterministic budget", overBudgetPolynomial == Nothing)
+        , ( "oriented affine alias DAGs replay without tree materialization"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticIntegerSemantics Set.empty aliasAssumptions)
+              aliasReplay
+          )
         , ("underconstrained order remains unknown", deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] strictGoal == Nothing)
         , ( "equality assumptions support cancellation"
           , maybe False
@@ -4125,6 +4227,11 @@ arithmeticReplayDomain = do
           , maybe False
               (verifyArithmeticReplay ArithmeticNaturalSemantics naturalVariables [])
               (deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] idempotentMaximumGoal)
+          )
+        , ( "negated conditional maximum proves affine decrease"
+          , maybe False
+              (verifyArithmeticReplay ArithmeticIntegerSemantics Set.empty [positiveGap])
+              (deriveArithmeticReplay ArithmeticIntegerSemantics Set.empty [positiveGap] conditionalMaximumDecrease)
           )
         , ( "unchecked natural subtraction is not proof evidence"
           , deriveArithmeticReplay ArithmeticNaturalSemantics naturalVariables [] uncheckedNaturalSubtraction == Nothing
@@ -4539,10 +4646,9 @@ primArgConventionS23c = do
               CGlob prelUnit
       fakePrimCtx =
         let gd =
-              GlobalDef
-                (eval ctx [] fakePrimTy)
-                (Just (VPrim (T.pack "__ioWriteRef") []))
-                False
+              globalDefWithCoreBody
+                (CGlob (GName primModule (T.pack "__ioWriteRef")))
+                (GlobalDef (eval ctx [] fakePrimTy) Nothing False)
             Globals globals = ecGlobals ctx
          in ctx {ecGlobals = Globals (Map.insert fakePrimG gd globals)}
       b = ArgBorrowed

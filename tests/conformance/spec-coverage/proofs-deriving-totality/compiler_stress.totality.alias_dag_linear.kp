@@ -1,0 +1,58 @@
+-- A dead local-alias DAG must not be eagerly materialized while collecting
+-- the independently valid recursive edge. Expanding each alias on insertion
+-- makes this source exponential even though the recursive argument reaches no
+-- alias node.
+module test
+
+grow : Int -> Int
+let grow n decreases n =
+    let a0 = n
+    let a1 = addInt a0 a0
+    let a2 = addInt a1 a1
+    let a3 = addInt a2 a2
+    let a4 = addInt a3 a3
+    let a5 = addInt a4 a4
+    let a6 = addInt a5 a5
+    let a7 = addInt a6 a6
+    let a8 = addInt a7 a7
+    let a9 = addInt a8 a8
+    let a10 = addInt a9 a9
+    let a11 = addInt a10 a10
+    let a12 = addInt a11 a11
+    let a13 = addInt a12 a12
+    let a14 = addInt a13 a13
+    let a15 = addInt a14 a14
+    let a16 = addInt a15 a15
+    let a17 = addInt a16 a16
+    let a18 = addInt a17 a17
+    let a19 = addInt a18 a18
+    let a20 = addInt a19 a19
+    let a21 = addInt a20 a20
+    let a22 = addInt a21 a21
+    let a23 = addInt a22 a22
+    let a24 = addInt a23 a23
+    if leInt n 0 then a24 else grow (subInt n 1)
+
+-- Reachable aliases are solver equalities, not substitution requests. Every
+-- node below is definitionally n - 1, but tree materialization grows beyond
+-- the old fixed expansion budget before the recursive edge is classified.
+growReachable : Int -> Int
+let growReachable n decreases n =
+    let a0 = subInt n 1
+    let a1 = subInt (addInt a0 a0) a0
+    let a2 = subInt (addInt a1 a1) a1
+    let a3 = subInt (addInt a2 a2) a2
+    let a4 = subInt (addInt a3 a3) a3
+    let a5 = subInt (addInt a4 a4) a4
+    let a6 = subInt (addInt a5 a5) a5
+    let a7 = subInt (addInt a6 a6) a6
+    let a8 = subInt (addInt a7 a7) a7
+    let a9 = subInt (addInt a8 a8) a8
+    let a10 = subInt (addInt a9 a9) a9
+    let a11 = subInt (addInt a10 a10) a10
+    let a12 = subInt (addInt a11 a11) a11
+    let a13 = subInt (addInt a12 a12) a12
+    if leInt n 0 then a13 else growReachable a13
+
+--! mode check
+--! assertNoErrors

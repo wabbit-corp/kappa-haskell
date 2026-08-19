@@ -41,6 +41,7 @@ module Kappa.Check.Arith
   , proveTypeRelationTrue
   , relationIsPrimitiveLtInt
   , renderStructuralTermKey
+  , selectedArithmeticAliasFacts
   , selectedArithmeticExpression
   , selectedArithmeticPredicateFact
   , selectedArithmeticPredicateFactForDomain
@@ -68,6 +69,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Monoid (Any (..))
 import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Builtins
@@ -81,6 +83,7 @@ import Kappa.Check.Types
 import Kappa.Core
 import Kappa.CoreOps
   ( foldTerm
+  , foldTermWithDepth
   , mapTermWithDepth
   , levelParamsOfTerm
   , patBindersC
@@ -303,6 +306,65 @@ selectedArithmeticExpression domain depth = go (24 :: Int)
         ArithmeticInteger -> pure (arithOf depth canonical)
         ArithmeticTypeLevel -> pure Nothing
         ArithmeticProviderLaw -> pure Nothing
+
+-- | Reify reachable transparent local aliases as solver assumptions while
+-- preserving their level-keyed DAG. Each equality is authenticated through
+-- the same selected arithmetic decoder as the enclosing measure; aliases
+-- with unsupported operations, malformed scope, or non-forward dependencies
+-- fail closed instead of being expanded into an unbounded Core tree.
+selectedArithmeticAliasFacts
+  :: ArithmeticDomain
+  -> Map Int Term
+  -> Int
+  -> [Term]
+  -> CheckM (Maybe ([AFact], Set Int))
+selectedArithmeticAliasFacts domain aliases depth terms =
+  case reachableAliasLevels aliases depth terms of
+    Nothing -> pure Nothing
+    Just levels -> do
+      expressions <-
+        traverse
+          (\level ->
+             case Map.lookup level aliases of
+               Nothing -> pure Nothing
+               Just rhs -> selectedArithmeticExpression domain level rhs)
+          (Set.toAscList levels)
+      pure $ do
+        resolved <- sequence expressions
+        pure
+          ( [ AFact ACmpEq (AVar level) expression
+            | (level, expression) <- zip (Set.toAscList levels) resolved
+            ]
+          , levels
+          )
+
+reachableAliasLevels
+  :: Map Int Term
+  -> Int
+  -> [Term]
+  -> Maybe (Set Int)
+reachableAliasLevels aliases depth terms =
+  visit Set.empty
+    (Set.toAscList (Set.unions (map (aliasReferences depth) terms)))
+  where
+    visit seen [] = Just seen
+    visit seen (level : pending)
+      | level `Set.member` seen = visit seen pending
+      | otherwise = do
+          rhs <- Map.lookup level aliases
+          let dependencies = aliasReferences level rhs
+          guard (all (< level) dependencies)
+          visit
+            (Set.insert level seen)
+            (Set.toAscList dependencies ++ pending)
+
+    aliasReferences currentDepth =
+      foldTermWithDepth reference currentDepth
+    reference currentDepth = \case
+      CVar index
+        | let level = currentDepth - 1 - index
+        , Map.member level aliases -> Set.singleton level
+      _ -> Set.empty
 
 -- | Wrappers that are transparent to resolved semantic identity. Universe
 -- lifts constrain classification but do not change the selected global head.
@@ -725,7 +787,7 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTermAt d t0)
           -- their library implementation. Provider decoders need the selected
           -- dictionary identity; reducing past it would retain operational
           -- behavior while discarding the authority used by proof synthesis.
-          primitiveCompare <- primitiveOrderedCompareArgsRaw d t
+          primitiveCompare <- authenticatedPrimitiveOrderedCompareOperands t
           case primitiveCompare of
             Just _ -> reduceProtectedApplication fuel t
             Nothing -> selectedStandardOrderFact d t >>= \case
@@ -1801,7 +1863,7 @@ comparePatternFactsM d scrut pat = do
 compareMatchRelBranchM :: Int -> Term -> CheckM (Maybe AFact)
 compareMatchRelBranchM d = \case
   CMatch scrut _ _ alts -> do
-    mArgs <- primitiveOrderedCompareArgsRaw d scrut
+    mArgs <- selectedPrimitiveOrderedCompareArgs d scrut
     pure $ do
       (aa, bb) <- mArgs
       cmp <- compareBoolMatch alts
@@ -1855,27 +1917,48 @@ primitiveOrderedCompareArgs d t = do
         Nothing -> pure (primitiveCompareShape d t')
 
 primitiveOrderedCompareArgsRaw :: Int -> Term -> CheckM (Maybe (AExpr, AExpr))
-primitiveOrderedCompareArgsRaw d t =
-  case rawCompareArgs t of
-    Just (tyArg, dictArg, aa, bb) -> do
-      ok <- standardPrimitiveOrdDict tyArg dictArg
-      pure (if ok then Just (aa, bb) else Nothing)
+primitiveOrderedCompareArgsRaw d t = do
+  authenticatedPrimitiveOrderedCompareOperands t >>= \case
+    Just (_, left, right) ->
+      pure ((,) <$> arithOf d left <*> arithOf d right)
     Nothing -> pure Nothing
-  where
-    rawCompareArgs :: Term -> Maybe (Term, Term, AExpr, AExpr)
-    rawCompareArgs x = case spineOfTerm x of
-      (CGlob g, args)
-        | g == prelCompare -> do
-            let impls = [a | (Impl, a) <- args]
-                ex = [a | (Expl, a) <- args]
-            case (impls, last2 ex) of
-              (tyArg : dictArg : _, Just (a, b))
-                | primitiveOrderedType tyArg -> do
-                    aa <- arithOf d a
-                    bb <- arithOf d b
-                    Just (tyArg, dictArg, aa, bb)
-              _ -> Nothing
-      _ -> Nothing
+
+-- | Reduce operands only after the exact standard comparison, primitive
+-- carrier, and coherent dictionary have been authenticated. This is the
+-- bounded bridge needed for transparent constants in branch facts; custom
+-- order implementations remain opaque to arithmetic reasoning.
+selectedPrimitiveOrderedCompareArgs
+  :: Int
+  -> Term
+  -> CheckM (Maybe (AExpr, AExpr))
+selectedPrimitiveOrderedCompareArgs depth term =
+  authenticatedPrimitiveOrderedCompareOperands term >>= \case
+    Just (domain, left, right) -> do
+      leftExpression <- selectedArithmeticExpression domain depth left
+      rightExpression <- selectedArithmeticExpression domain depth right
+      pure ((,) <$> leftExpression <*> rightExpression)
+    Nothing -> pure Nothing
+
+authenticatedPrimitiveOrderedCompareOperands
+  :: Term
+  -> CheckM (Maybe (ArithmeticDomain, Term, Term))
+authenticatedPrimitiveOrderedCompareOperands term =
+  case spineOfTerm term of
+    (headTerm, arguments)
+      | termHeadGlob (stripIdentityWrappers headTerm) == Just prelCompare ->
+          case
+              ( [argument | (Impl, argument) <- arguments]
+              , last2 [argument | (Expl, argument) <- arguments]
+              ) of
+            (carrier : dictionary : _, Just (left, right))
+              | primitiveOrderedType carrier -> do
+                  standard <- standardPrimitiveOrdDict carrier dictionary
+                  pure $ do
+                    guard standard
+                    domain <- arithmeticDomainForCarrier carrier
+                    pure (domain, left, right)
+            _ -> pure Nothing
+    _ -> pure Nothing
 
 primitiveCompareShape :: Int -> Term -> Maybe (AExpr, AExpr)
 primitiveCompareShape d t0 = case simplifyDecisionTerm t0 of

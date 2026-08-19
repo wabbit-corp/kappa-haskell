@@ -813,9 +813,9 @@ dependencies, structural level certificates, nominal role inference and closures
 `NominalCumulativitySummary`, explicit `CSchemaLift`, schema certificates, and KCoreText support.
 The current contract validator reports 48 ordinary/parametric suites, 89 package/schema suites,
 34 current variance suites plus 8 gated future suites, and the 67 first-class-level suites plus
-5 strengthening suites. U-E and U-F therefore have clean focused owner gates. The 2026-08-18
-full conformance result is clean at 4,014 passed, zero failed, and ten explicitly unsupported
-optional/future capabilities (4,024 total): eight future variance suites and two optional
+5 strengthening suites. U-E and U-F therefore have clean focused owner gates. The 2026-08-19
+full conformance result is clean at 4,019 passed, zero failed, and ten explicitly unsupported
+optional/future capabilities (4,029 total): eight future variance suites and two optional
 compact Nat/Fin layout suites.
 
 The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
@@ -1019,8 +1019,8 @@ conservative profile and the two optional compact-layout suites report
 `rt-unboxed-refinement`.
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
-The 2026-07-30 aggregate recheck passed `cabal test all`. A fresh 2026-08-18
-active-conformance run passed 4,014 cases with zero failures and the same ten
+The 2026-07-30 aggregate recheck passed `cabal test all`. A fresh 2026-08-19
+active-conformance run passed 4,019 cases with zero failures and the same ten
 declared optional/future capability skips.
 
 - [x] **NFR-0 - contract and harness observability.** Implement every new Appendix T
@@ -1070,10 +1070,18 @@ Logical source/KCore `Nat` remains authoritative throughout. Compact runtime for
 are selected only from verified certificates and never feed back into conversion,
 trait search, proof checking, or source reachability.
 
-**Performance closeout (2026-08-18):** the checked generated Prelude artifact
+**Performance closeout (2026-08-19):** the checked generated Prelude artifact
 eliminates repeated source elaboration during ordinary compiler startup.
-`scripts/check_trivial_compile_budget.sh` now measures a 506 ms cold compile on
-the release workstation, below the one-second regression budget.
+Compiler-seeded primitives retain symbol-bearing Core bodies in both fresh and
+cached Prelude states; schema-v9 restore requires bidirectional semantic
+agreement between primitive Core and cached values against compiler-seeded
+primitive authority, and never reconstructs authority from an artifact's own
+normalized primitive values. Selected dictionary
+members direct-lower only after retained Core proves an exact evidence wrapper
+and primitive eta-forwarder; registry arity and audited ownership conventions
+remain authoritative. `scripts/check_trivial_compile_budget.sh` now
+measures a 376 ms cold compile on the release workstation, below the one-second
+regression budget.
 
 ## Track: Module-wide declaration SCCs / induction-recursion ([`MODULE-SCC-INDUCTION-RECURSION-PLAN.md`](docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md))
 
@@ -1100,6 +1108,19 @@ derives hidden phases from equal-measure call edges and rejects cyclic phase
 constraints; structural descent also follows checked nominal field-projection
 evidence. This is a principled MSI-5 foothold, but it does not complete MSI-5
 or promote the pending 190-suite module-wide contract.
+
+**Termination hardening (2026-08-19):** explicit measures retain checked
+non-recursive local aliases by binder identity through call-edge comparison.
+Aliases remain a level-keyed DAG during edge collection; reachable
+portable arithmetic aliases become authenticated equality facts for the shared
+proof-producing solver, so both dead and reachable duplicating DAGs stay linear
+rather than producing exponential Core trees. Unsupported custom-relation forms
+retain a bounded, fail-closed materialization fallback. Authenticated
+primitive comparisons reduce transparent operand constants before arithmetic
+branch facts are decoded. Imported `max` bounds and equivalent local helper
+forms therefore prove the same strict decrease without making custom order
+implementations transparent. MSI-5 and the pending 190-suite contract remain
+incomplete.
 
 - [ ] **MSI-0 - contract freeze + harness observability.** New Appendix T
   directives typed and routed through public queries; three new diagnostic

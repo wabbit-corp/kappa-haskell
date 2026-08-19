@@ -51,6 +51,7 @@ import Kappa.Eval
   , Globals (..)
   , emptyMetas
   , evalPurePrim
+  , globalDefWithCoreBody
   , globalDefWithUniverses
   , lookupEnv
   , quote
@@ -180,11 +181,15 @@ builtinState =
             Map.fromList [(testingModule, [nm | (GName _ nm, _) <- testingPrims])]
         }
     opaqueTy t = inferDeclarationUniverses (GlobalDef t Nothing False)
-    prim name t = (prel name, inferDeclarationUniverses (GlobalDef t (Just (VPrim name [])) False))
+    prim name t = (prel name, inferDeclarationUniverses (primitiveDefinition name t))
     internalPrim name t =
       ( GName primModule name
-      , inferDeclarationUniverses (GlobalDef t (Just (VPrim name [])) False)
+      , inferDeclarationUniverses (primitiveDefinition name t)
       )
+    primitiveDefinition name t =
+      globalDefWithCoreBody
+        (CGlob (GName primModule name))
+        (GlobalDef t (Just (VPrim name [])) False)
     compilerOpaque identity t =
       ( identity
       , inferDeclarationUniverses (GlobalDef t Nothing False)
@@ -202,7 +207,8 @@ builtinState =
     -- and runtime report as a runtime failure.
     testingPrims =
       [ ( GName testingModule "failNow"
-        , inferDeclarationUniverses (GlobalDef (tyV (piI Q0 "a" tType (tStr ~> CVar 1))) (Just (VPrim "failNow" [])) False)
+        , inferDeclarationUniverses
+            (primitiveDefinition "failNow" (tyV (piI Q0 "a" tType (tStr ~> CVar 1))))
         )
       ]
 
@@ -299,7 +305,12 @@ builtinState =
                 )
             )
         )
-      , (prel "__rowExtend", inferDeclarationUniverses (GlobalDef (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))) (Just (VPrim "__rowExtend" [])) False))
+      , ( prel "__rowExtend"
+        , inferDeclarationUniverses
+            ( primitiveDefinition "__rowExtend"
+                (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4))))
+            )
+        )
       , -- a closed residual row tail '__closedRow (fields record type)':
         -- solving an open record against a closed record instantiates
         -- the row tail with the leftover closed fields (§11.3.1A)
@@ -327,7 +338,7 @@ builtinState =
                 )
             )
         )
-      , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
+      , (prel "ω", primitiveDefinition "__omegaQ" (tyV (tcon "Quantity")))
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> typeToType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> typeToType))) -- §20.10.2
       , -- §12.4.3 first-class projector and accessor descriptors
@@ -336,9 +347,9 @@ builtinState =
       , (prel "Opener", opaqueTy (tyV typeToTypeToType))
       , (prel "Setter", opaqueTy (tyV typeToTypeToType))
       , (prel "Sinker", opaqueTy (tyV typeToTypeToType))
-      , (prel "composeProjector", inferDeclarationUniverses (GlobalDef composeProjectorTy (Just (VPrim "composeProjector" [])) False))
-      , (prel "captureBorrow", inferDeclarationUniverses (GlobalDef captureBorrowTy (Just (VPrim "captureBorrow" [])) False))
-      , (prel "withBorrowView", inferDeclarationUniverses (GlobalDef withBorrowViewTy (Just (VPrim "withBorrowView" [])) False))
+      , (prel "composeProjector", inferDeclarationUniverses (primitiveDefinition "composeProjector" composeProjectorTy))
+      , (prel "captureBorrow", inferDeclarationUniverses (primitiveDefinition "captureBorrow" captureBorrowTy))
+      , (prel "withBorrowView", inferDeclarationUniverses (primitiveDefinition "withBorrowView" withBorrowViewTy))
       , -- §21 metaprogramming: hidden declaration universes let Syntax/Elab
         -- index values from any universe without a term-level TypeLevel Pi.
         (prel "Syntax", opaqueTy (tyV (piM Parametric Expl Q0 False "A" (CSort (LParam 0)) tType)))

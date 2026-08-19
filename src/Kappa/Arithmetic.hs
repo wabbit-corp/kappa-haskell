@@ -759,8 +759,13 @@ deriveArithmeticReplayUnchecked naturalVariables assumptions goal =
                         (NormalPolynomial (canonicalPolynomial lhsPolynomial))
                     )
             _ -> case linOf difference of
-              Just (ALin constant coefficients)
-                | constant == 0
+              Just rawLinear
+                | let ALin constant coefficients =
+                        applyPrincipalAffineSubstitutions
+                          Set.empty
+                          assumptions
+                          rawLinear
+                , constant == 0
                 , all (== 0) (Map.elems coefficients) ->
                     Just
                       ( ArithmeticReplay
@@ -768,8 +773,13 @@ deriveArithmeticReplayUnchecked naturalVariables assumptions goal =
                           ProveLinearEquality
                           (NormalLinear constant (Map.toAscList coefficients))
                       )
-              Just linear@(ALin constant coefficients)
-                | lowerBoundLin naturalVariables assumptions linear >= Just 0
+              Just rawLinear
+                | let linear@(ALin constant coefficients) =
+                        applyPrincipalAffineSubstitutions
+                          Set.empty
+                          assumptions
+                          rawLinear
+                , lowerBoundLin naturalVariables assumptions linear >= Just 0
                 , lowerBoundLin naturalVariables assumptions (scaleLin (-1) linear) >= Just 0 ->
                     Just
                       ( ArithmeticReplay
@@ -987,9 +997,7 @@ simplifyA naturalVariables assumptions = go
           Nothing ->
             let thenExpression' = go thenExpression
                 elseExpression' = go elseExpression
-             in if thenExpression' == elseExpression'
-                  then thenExpression'
-                  else AIf condition' thenExpression' elseExpression'
+             in simplifyPiecewise condition' thenExpression' elseExpression'
       other -> other
 
     simplifyMul a b = case (a, b) of
@@ -1048,6 +1056,21 @@ simplifyA naturalVariables assumptions = go
       (x, y) | x == y -> x
       (AConst x, AConst y) -> AConst (min x y)
       _ -> AMin a b
+
+    simplifyPiecewise condition thenExpression elseExpression
+      | thenExpression == elseExpression = thenExpression
+      | otherwise = case condition of
+          ANot inner -> simplifyPiecewise inner elseExpression thenExpression
+          AAtom (AFact comparison lhs rhs)
+            | comparison == ACmpLt || comparison == ACmpLe
+            , thenExpression == rhs
+            , elseExpression == lhs ->
+                simplifyMax lhs rhs
+            | comparison == ACmpLt || comparison == ACmpLe
+            , thenExpression == lhs
+            , elseExpression == rhs ->
+                simplifyMin lhs rhs
+          _ -> AIf condition thenExpression elseExpression
 
     foldConst constructor operation a b = case (a, b) of
       (AConst x, AConst y) -> AConst (operation x y)
@@ -1219,7 +1242,11 @@ lowerBoundExpr :: Set Int -> [AFact] -> AExpr -> Maybe Integer
 lowerBoundExpr naturalVariables assumptions expression0 =
   case lowerBoundSpecial naturalVariables assumptions expression of
     Just lower -> Just lower
-    Nothing -> case linOf expression >>= lowerBoundLin naturalVariables assumptions of
+    Nothing -> case
+        linOf expression
+          >>= ( lowerBoundLin naturalVariables assumptions
+                  . applyPrincipalAffineSubstitutions Set.empty assumptions
+              ) of
       Just lower -> Just lower
       Nothing -> case boundedPolyOf expression >>= lowerBoundPoly naturalVariables assumptions of
         Just lower -> Just lower

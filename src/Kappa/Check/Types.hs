@@ -1830,6 +1830,7 @@ data StructuralShape
 data StructuralOrigins = StructuralOrigins
   { structuralLocals :: !(Map Int (Set StructuralOrigin))
   , structuralShapes :: !(Map StructuralShape (Set StructuralOrigin))
+  , structuralAliases :: !(Map Int Term)
   }
   deriving stock (Eq, Show)
 
@@ -1844,6 +1845,7 @@ data PartialCall = PartialCall
 data MeasureCall = MeasureCall
   { mcDepth :: !Int
   , mcFacts :: ![AFact]
+  , mcStructuralAliases :: !(Map Int Term)
   , mcOldMeasure :: !Term
   , mcNewMeasure :: !Term
   , mcRelation :: !(Maybe RelationSpec)

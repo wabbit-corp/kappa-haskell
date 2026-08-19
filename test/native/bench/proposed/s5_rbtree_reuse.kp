@@ -17,12 +17,17 @@ data RBTree : Type =
     Empty
     Node (color : Color) (left : RBTree) (key : Int) (value : String) (right : RBTree)
 
-build : Int -> Int -> RBTree
-let build lo hi =
-    if ltInt hi lo then Empty
+buildFuel : Int -> Int -> Int -> RBTree
+let buildFuel fuel lo hi decreases fuel =
+    if leInt fuel 0 then Empty
+    else if ltInt hi lo then Empty
     else
         let mid = divInt (addInt lo hi) 2
-        Node Black (build lo (subInt mid 1)) mid "v" (build (addInt mid 1) hi)
+        let nextFuel = subInt fuel 1
+        Node Black (buildFuel nextFuel lo (subInt mid 1)) mid "v" (buildFuel nextFuel (addInt mid 1) hi)
+
+build : Int -> Int -> RBTree
+let build lo hi = buildFuel (addInt (subInt hi lo) 1) lo hi
 
 mapValues : RBTree -> RBTree
 let mapValues t decreases treeSize t =

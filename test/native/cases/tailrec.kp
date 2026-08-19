@@ -14,13 +14,14 @@ let countDown n = if leInt n 0 then 7 else countDown (subInt n 1)
 
 -- mutual tail recursion (trampoline)
 isEven : Int -> Bool
-let isEven n = if eqInt n 0 then True else isOdd (subInt n 1)
+let isEven n decreases n = if leInt n 0 then True else isOdd (subInt n 1)
 isOdd : Int -> Bool
-let isOdd n = if eqInt n 0 then False else isEven (subInt n 1)
+let isOdd n decreases n = if leInt n 0 then False else isEven (subInt n 1)
 
 -- tail call through a function value (trampoline)
-applyTail : (Int -> Int) -> Int -> Int
-let applyTail f n = if leInt n 0 then 0 else applyTail f (f n)
+applyTail : (Int -> Int) -> Int -> Int -> Int
+let applyTail f fuel n decreases fuel =
+    if leInt fuel 0 then 0 else applyTail f (subInt fuel 1) (f n)
 dec : Int -> Int
 let dec n = subInt n 1
 
@@ -29,4 +30,4 @@ let main = do
     printlnString (showInt (sumTo 2000000 0))      -- 2000001000000 (self-loop)
     printlnString (showInt (countDown 3000000))    -- 7 (self-loop)
     printlnString (if isEven 4000000 then "even" else "odd")  -- mutual
-    printlnString (showInt (applyTail dec 3000000))           -- 0 (indirect)
+    printlnString (showInt (applyTail dec 3000000 3000000))   -- 0 (indirect)
