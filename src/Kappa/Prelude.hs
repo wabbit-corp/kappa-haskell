@@ -728,8 +728,8 @@ builtinState =
       , prim "eqDouble" (tyV (tDouble ~> tDouble ~> tBool)) -- raw-bit equality (§6.1.3)
       , prim "ltDouble" (tyV (tDouble ~> tDouble ~> tBool))
       , prim "floatEq" (tyV (tDouble ~> tDouble ~> tBool)) -- IEEE numeric equality
-      , -- §6.1.7 libm floating-point / transcendental math (TOTAL Double ops,
-        -- IEEE-754 semantics — sqrt of a negative is NaN; no partiality)
+      , -- §6.1.3 Double semantics: libm floating-point / transcendental math
+        -- with IEEE-754 behavior; sqrt of a negative is NaN, not a partiality.
         prim "sqrt" (tyV (tDouble ~> tDouble))
       , prim "sin" (tyV (tDouble ~> tDouble))
       , prim "cos" (tyV (tDouble ~> tDouble))
@@ -744,7 +744,7 @@ builtinState =
       , prim "floor" (tyV (tDouble ~> tDouble))
       , prim "ceil" (tyV (tDouble ~> tDouble))
       , prim "fabs" (tyV (tDouble ~> tDouble))
-      , prim "showFixed" (tyV (tNat ~> tDouble ~> tStr)) -- §6.1.7 "%.*f" formatter
+      , prim "showFixed" (tyV (tNat ~> tDouble ~> tStr)) -- fixed-precision Double formatter
       , -- §28.2 Rational exact-ratio arithmetic prims (the surface
         -- instances below delegate to these); '__ratOfInt' builds n/1
         prim "__ratOfInt" (tyV (tInt ~> tRat))

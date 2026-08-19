@@ -262,7 +262,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
               -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
               rtCFlags = ["-D_GNU_SOURCE", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources = [runtimeDir </> f | f <- runtimeSourceFiles]
-              -- -lm: the libm transcendental Double prims (§6.1.7 sqrt/sin/…).
+              -- -lm: the libm transcendental prims over §6.1.3 Double values.
               -- On macOS libm lives in libSystem (already linked), but -lm is
               -- required on Linux/glibc and harmless elsewhere — pin it for
               -- portability.

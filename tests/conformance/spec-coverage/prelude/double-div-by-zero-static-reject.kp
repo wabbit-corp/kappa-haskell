@@ -1,10 +1,10 @@
--- §28.2.3 (L35450-35458): for Float and Double, divDefined x y = (y /= zero),
+-- §28.2.3: for Float and Double, divDefined x y = (y /= zero),
 -- so CHECKED division by a literal 0.0 has a statically undischargeable proof
 -- obligation — even though IEEE-754 defines 1.0/0.0 = Infinity and 0.0/0.0 =
 -- NaN. Developers coming from IEEE languages will expect Infinity/NaN from
--- `/`; the spec instead routes them to the raw total primitive (divDouble,
--- §6.1.7 operational Double arithmetic), which needs no proof and stays
--- available (see show-double-round-trip-run.kp for its Infinity/NaN output).
+-- `/`; §28.2.3 instead requires the nonzero proof. This implementation also
+-- exposes `divDouble` as a nonportable total IEEE primitive with no proof
+-- argument (see show-double-round-trip-run.kp for its Infinity/NaN output).
 --! mode check
 --! assertErrorCount 2
 --! assertDiagnosticFamily error kappa.implicit.unsolved
@@ -16,7 +16,7 @@ let posInf = 1.0 / 0.0     --!! kappa.implicit.unsolved
 nan : Double
 let nan = 0.0 / 0.0        --!! kappa.implicit.unsolved
 
--- the raw IEEE primitive is total: no proof argument, no diagnostic
+-- the implementation-specific raw IEEE primitive is total: no proof or diagnostic
 ieee : Double
 let ieee = divDouble 1.0 0.0
 

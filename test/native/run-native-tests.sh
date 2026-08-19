@@ -603,7 +603,7 @@ case "$(uname -s)" in
 esac
 
 package_smoke() {
-  local label="$1" manifest="$2" target="$3" expected="$4"
+  local label="$1" manifest="$2" target="$3" expected="$4" build_timeout="$5"
   local pkg="$WORK/${target}.pkg-src"
   local exe="$WORK/${target}.pkg-smoke"
   local log="$WORK/${target}.pkg-build.log"
@@ -612,7 +612,10 @@ package_smoke() {
   mkdir -p "$pkg"
   cp -R "$manifest/." "$pkg/"
   rm -f "$pkg/kappa.lock"
-  if timeout 300 env -u KAPPA_PERCEUS_RC $KAPPA build --update --manifest "$pkg" --target "$target" -o "$exe" >"$log" 2>&1; then
+  # This bounds an entire package graph, not one .kp fixture. Delve's 10k+
+  # source lines need a larger cold-runner budget; smaller packages retain the
+  # existing tighter performance gate.
+  if timeout "$build_timeout" env -u KAPPA_PERCEUS_RC $KAPPA build --update --manifest "$pkg" --target "$target" -o "$exe" >"$log" 2>&1; then
     KAPPA_PERCEUS_RC= check_perceus_rc_log "$log" || return
     local out rc
     out="$(cd "$pkg" && timeout 180 env -u KAPPA_PERCEUS_RC KAPPA_POISON=1 "$exe" 2>"$err")"; rc=$?
@@ -630,9 +633,9 @@ package_smoke() {
     fails=$((fails+1))
   fi
 }
-[ -n "$DELVE_PACKAGE_TEST_TARGET" ] && package_smoke "delve" "$ROOT/examples/packages/delve" "$DELVE_PACKAGE_TEST_TARGET" "DELVE TESTS: ALL PASS"
-package_smoke "railyard" "$ROOT/examples/packages/railyard" "railyard-tests" "RAILYARD TESTS: ALL PASS"
-package_smoke "voxelcraft" "$ROOT/examples/packages/voxelcraft" "voxelcraft-tests" "VOXELCRAFT TESTS: ALL PASS"
+[ -n "$DELVE_PACKAGE_TEST_TARGET" ] && package_smoke "delve" "$ROOT/examples/packages/delve" "$DELVE_PACKAGE_TEST_TARGET" "DELVE TESTS: ALL PASS" 900
+package_smoke "railyard" "$ROOT/examples/packages/railyard" "railyard-tests" "RAILYARD TESTS: ALL PASS" 300
+package_smoke "voxelcraft" "$ROOT/examples/packages/voxelcraft" "voxelcraft-tests" "VOXELCRAFT TESTS: ALL PASS" 300
 
 echo "== Perceus S3.2: generated drops are non-vacuous and poison-clean =="
 s32tmp="$WORK/perceus-s32-generated-drops"; mkdir -p "$s32tmp"

@@ -6,7 +6,7 @@
 --
 -- N = 5500 (HARDCODED to match the refs + expected.txt = 1.274224153).
 --
--- UNBLOCKED by §6.1.7 `sqrt` + `showFixed`.  The remaining concern is the
+-- Uses §6.1.3 Double semantics via `sqrt` + `showFixed`. The remaining concern is the
 -- vectors: Kappa's Array is an immutable cons-list with O(n) index, so a naive
 -- `__arrayIndexUnsafe v j` inside the matvec inner loop is O(n) per access =>
 -- O(n^3) overall and intractable at N=5500.  This port instead CONSUMES the

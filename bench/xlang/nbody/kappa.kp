@@ -6,7 +6,7 @@
 --       -0.169075164
 --       -0.169083134
 --
--- This is the faithful port of ref/c.c, now UNBLOCKED by the §6.1.7 libm prims:
+-- This is the faithful port of ref/c.c, using §6.1.3 Double semantics:
 --   * `sqrt` — the two distance sites (energy: sqrt(dx²+dy²+dz²); advance:
 --     d2 * sqrt(d2)).  `kp_sqrt` is the hardware/libm sqrt, correctly rounded
 --     (IEEE-754), so it is bit-identical to the C/Go/Haskell refs.

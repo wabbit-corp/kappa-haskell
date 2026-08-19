@@ -1,4 +1,4 @@
--- §6.1.7 libm floating-point / transcendental math (sqrt/sin/cos/tan/asin/acos/
+-- §6.1.3 Double semantics: libm math (sqrt/sin/cos/tan/asin/acos/
 -- atan/atan2/exp/log/pow/floor/ceil/fabs).  Each lowers to the SAME kp_* libm
 -- call on C and LLVM, and the interpreter evaluates it through GHC's Prelude
 -- over the same platform libm — so a correctly-rounded IEEE-754 result is

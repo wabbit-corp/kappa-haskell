@@ -1023,7 +1023,7 @@ basePrims =
       -- double
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
-      -- §6.1.7 libm floating-point / transcendental math + fixed-precision format
+      -- §6.1.3 Double semantics: libm math + fixed-precision formatting
     , "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2"
     , "exp", "log", "pow", "floor", "ceil", "fabs", "showFixed"
       -- string / scalar
@@ -3264,7 +3264,7 @@ primDirectTable = Map.fromList
   , ("ltDouble", ("kp_ltDouble", 2))
   , ("floatEq", ("kp_floatEq", 2))
   , ("eqDouble", ("kp_eqDouble", 2))
-  -- §6.1.7 libm floating-point / transcendental math + fixed-precision format
+  -- §6.1.3 Double semantics: libm math + fixed-precision formatting
   , ("sqrt", ("kp_sqrt", 1))
   , ("sin", ("kp_sin", 1))
   , ("cos", ("kp_cos", 1))

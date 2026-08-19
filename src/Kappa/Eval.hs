@@ -110,7 +110,7 @@ canonicalEqualityPayload ctx = go
                   _ -> Nothing
           _ -> Nothing
 
--- §6.1.7: the C libm 'atan2', imported so the interpreter produces the EXACT
+-- §6.1.3 Double semantics: use C libm 'atan2' so the interpreter produces the EXACT
 -- same binary64 as the C/LLVM backends (which call kp_atan2 over the same
 -- libm).  GHC's own 'Data.atan2'/'RealFloat' 'atan2' can round differently in
 -- the last ULP on some platforms (atan2 1 2 disagrees by 1 ULP), which would
@@ -1316,7 +1316,7 @@ evalPurePrim p args = case (p, args) of
   ("eqDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (identicalIEEE a b)
   ("ltDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a < b)
   ("floatEq", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a == b)
-  -- §6.1.7 libm floating-point / transcendental math.  GHC's Prelude is backed
+  -- §6.1.3 Double semantics: floating-point / transcendental math. GHC is backed
   -- by the SAME platform libm the C/LLVM backends call (kp_sqrt/kp_sin/…), so a
   -- correctly-rounded IEEE-754 result is bit-identical across all three.  Total:
   -- sqrt of a negative is NaN, log of a non-positive is NaN/-Infinity, etc.
@@ -1334,7 +1334,7 @@ evalPurePrim p args = case (p, args) of
   ("floor", [VLit (LitDouble a)]) -> dbl (cDoubleFloor a)
   ("ceil", [VLit (LitDouble a)]) -> dbl (cDoubleCeil a)
   ("fabs", [VLit (LitDouble a)]) -> dbl (abs a)
-  -- §6.1.7 fixed-precision formatting: render with N fractional digits exactly
+  -- Fixed-precision formatting for §6.1.3 Double values: render N fractional digits
   -- as C's snprintf("%.*f"), so the CLBG %.9f outputs are byte-identical.
   ("showFixed", [VLit (LitInt p), VLit (LitDouble a)]) ->
     str (T.pack (showFixedC (fromInteger p) a))
@@ -1586,7 +1586,7 @@ evalPurePrim p args = case (p, args) of
     int = Just . VLit . LitInt
     dbl = Just . VLit . LitDouble
     str = Just . VLit . LitStr
-    -- §6.1.7 libm floor/ceil as Double -> Double, IEEE semantics preserved:
+    -- §6.1.3 Double semantics: libm floor/ceil preserve IEEE special values:
     -- floor/ceil of NaN is NaN and of ±Infinity is ±Infinity (Haskell's
     -- 'floor'/'ceiling' return an Integral and diverge on those, so we guard).
     cDoubleFloor :: Double -> Double
@@ -1597,11 +1597,10 @@ evalPurePrim p args = case (p, args) of
     cDoubleCeil a
       | isNaN a || isInfinite a = a
       | otherwise = fromInteger (ceiling a)
-    -- §6.1.7 render exactly as C's snprintf("%.*f"): 'showFFloat' agrees with C
-    -- on every FINITE value (digits, round-half-to-even, the sign of -0.0); the
-    -- ONLY divergence is the special-value spelling, which C prints lowercase
-    -- (nan / inf / -inf) — so we match that here.  'prec' is clamped to C's
-    -- runtime bound [0, 99].
+    -- For finite §6.1.3 Double values, 'showFFloat' agrees with C's snprintf
+    -- (digits, round-half-to-even, the sign of -0.0). Non-finite values
+    -- use the shared canonical spelling nan / inf / -inf because libc may
+    -- expose a platform-dependent NaN sign. 'prec' is clamped to [0, 99].
     showFixedC :: Int -> Double -> String
     showFixedC prec a
       | isNaN a = "nan"

@@ -1,7 +1,7 @@
--- §6.1.7 showFixed : Nat -> Double -> String — fixed-precision Double rendering
--- via snprintf("%.*f").  The interpreter mirrors C's snprintf EXACTLY: identical
--- digits and round-half-to-even on every finite value, and the lowercase
--- nan/inf/-inf spelling on the special values.  So the printed strings are
+-- showFixed : Nat -> Double -> String; fixed rendering of §6.1.3 Double values
+-- via snprintf("%.*f") for finite values: identical digits and round-half-to-even.
+-- Interpreter and native runtime canonicalize special values to lowercase
+-- nan/inf/-inf rather than inheriting platform-dependent libc signs. The strings are
 -- byte-identical across interp == C == LLVM (the parity harness compares full
 -- stdout).  Cases cover several precisions + the edge values (NaN, +inf, -inf,
 -- negative, zero, -0.0, round-half-to-even, very large, very small).
@@ -21,7 +21,7 @@ let main = do
     printlnString (showFixed 9 100000.123456789)        -- 100000.123456789
     printlnString (showFixed 9 1.0e20)                   -- 100000000000000000000.000000000
     printlnString (showFixed 9 1.0e-20)                  -- 0.000000000
-    -- special values: lowercase nan / inf / -inf, matching C snprintf
+    -- special values: canonical lowercase nan / inf / -inf on every platform
     printlnString (showFixed 9 (sqrt (negDouble 1.0)))  -- nan
     printlnString (showFixed 9 (divDouble 1.0 0.0))     -- inf
     printlnString (showFixed 9 (divDouble (negDouble 1.0) 0.0))  -- -inf

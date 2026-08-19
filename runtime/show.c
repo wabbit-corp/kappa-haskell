@@ -291,7 +291,7 @@ KValue *kp_eqDouble(KValue *x, KValue *y) { /* §6.1.3 raw-bit equality */
   return kbool(bx == by);
 }
 
-/* ── §6.1.7 floating-point / transcendental math (libm) ────────────────
+/* ── §6.1.3 Double semantics: floating-point / transcendental math ─────
  * Each is a TOTAL Double op: it delegates to the platform libm routine and
  * boxes the binary64 result (kdbl).  IEEE-754 semantics throughout — sqrt of a
  * negative is NaN, log of 0 is -Infinity, etc.; no partiality is introduced.
@@ -315,10 +315,13 @@ KValue *kp_fabs(KValue *x)  { return kdbl(fabs(kas_dbl(x))); }
 KValue *kp_pow(KValue *x, KValue *y)   { return kdbl(pow(kas_dbl(x), kas_dbl(y))); }
 KValue *kp_atan2(KValue *x, KValue *y) { return kdbl(atan2(kas_dbl(x), kas_dbl(y))); }
 
-/* §6.1.7 fixed-precision formatting: render a Double with `prec` fractional
+/* Fixed-precision formatting for §6.1.3 Double values: render `prec` fractional
  * digits via snprintf("%.*f"), the SAME conversion the C/Go/GHC references use
- * for the CLBG `%.9f` outputs.  `prec` is a Nat (boxed as a non-negative Int at
- * runtime); it is clamped to [0, 99] so the snprintf field width is bounded.
+ * for the CLBG `%.9f` outputs.  Non-finite spellings are canonicalized first:
+ * libc is allowed to expose the sign of a NaN (glibc prints sqrt(-1) as -nan),
+ * while the interpreter's stable textual contract is nan / inf / -inf.
+ * `prec` is a Nat (boxed as a non-negative Int at runtime); it is clamped to
+ * [0, 99] so the snprintf field width is bounded.
  * The two-call snprintf idiom (size 0 to measure, then format into an exact
  * stack/heap buffer) keeps the result exact regardless of magnitude. */
 KValue *kp_showFixed(KValue *prec, KValue *x) {
@@ -326,6 +329,8 @@ KValue *kp_showFixed(KValue *prec, KValue *x) {
   if (p < 0) p = 0;
   if (p > 99) p = 99;
   double d = kas_dbl(x);
+  if (isnan(d)) return kstr0("nan");
+  if (isinf(d)) return kstr0(signbit(d) ? "-inf" : "inf");
   int n = snprintf(NULL, 0, "%.*f", (int)p, d);
   if (n < 0) krt_fail("showFixed: snprintf encoding error");
   /* +1 for the NUL snprintf writes; we hand `len` (== n) to kstr, NUL excluded. */

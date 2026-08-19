@@ -794,7 +794,7 @@ KValue *kp_addDouble(KValue *, KValue *); KValue *kp_subDouble(KValue *, KValue 
 KValue *kp_mulDouble(KValue *, KValue *); KValue *kp_divDouble(KValue *, KValue *);
 KValue *kp_negDouble(KValue *);           KValue *kp_ltDouble(KValue *, KValue *);
 KValue *kp_floatEq(KValue *, KValue *);   KValue *kp_eqDouble(KValue *, KValue *);
-/* §6.1.7 libm floating-point / transcendental math (show.c). */
+/* §6.1.3 Double semantics: libm floating-point / transcendental math (show.c). */
 KValue *kp_sqrt(KValue *);  KValue *kp_sin(KValue *);  KValue *kp_cos(KValue *);
 KValue *kp_tan(KValue *);   KValue *kp_asin(KValue *); KValue *kp_acos(KValue *);
 KValue *kp_atan(KValue *);  KValue *kp_exp(KValue *);  KValue *kp_log(KValue *);

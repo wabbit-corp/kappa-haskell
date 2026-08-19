@@ -444,7 +444,7 @@ KValue *kpf_floatEq(KValue **a) {
 KValue *kpf_eqDouble(KValue **a) {
   return kp_eqDouble(a[0], a[1]);
 }
-/* §6.1.7 libm Double math — kpf_* wrappers over the kp_* helpers (show.c). */
+/* §6.1.3 Double semantics: kpf_* wrappers over the libm kp_* helpers (show.c). */
 KValue *kpf_sqrt(KValue **a)  { return kp_sqrt(a[0]); }
 KValue *kpf_sin(KValue **a)   { return kp_sin(a[0]); }
 KValue *kpf_cos(KValue **a)   { return kp_cos(a[0]); }

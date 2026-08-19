@@ -114,7 +114,9 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
 
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
    (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
-   **nbody + spectralnorm byte-identical to the reference**, parity 115/0.
+   **nbody + spectralnorm byte-identical to the reference**, parity 115/0. Native `showFixed`
+   canonicalizes non-finite spellings to `nan` / `inf` / `-inf` before calling libc, so glibc's
+   signed-NaN rendering cannot diverge from the interpreter or other native platforms.
 2. **Mutable O(1) array** — ✅ **Stage A DONE** (`e4f3378`): IO `MutArray` (boxed), one `K_ARRAY` object with
    the `elemkind`/`element_size` unboxing seam, 3-tier total indexing; design [MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md).
    **OPEN — Stages B→H (element unboxing):** the backend specializes array ops at the call site *pre-erasure*
