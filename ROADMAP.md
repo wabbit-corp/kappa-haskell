@@ -1090,7 +1090,8 @@ gate. Compiler archives bundle the complete native runtime beside `bin/` and
 are extracted away from the checkout for a native compile/run smoke test.
 Delve archives retain their executable self-test; Windows packaging derives and
 bundles the recursive non-system MinGW DLL closure from PE imports and rejects
-imports not resolved by that closure, `System32`, or Windows API sets, while Unix
+failed/empty inspection and imports not resolved by that closure, `System32`,
+or Windows API sets, while Unix
 runtime prerequisites explicitly include libuv. Delve's interactive game loop
 uses the normative effectful `while` form rather than relying on uncertified
 user recursion, so the game target remains compatible with total-by-default

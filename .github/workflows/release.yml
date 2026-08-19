@@ -450,6 +450,15 @@ jobs:
             while ((index < ${#queue[@]})); do
               local binary="${queue[$index]}"
               index=$((index + 1))
+              local imports
+              if ! imports="$("$objdump_bin" -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')"; then
+                printf 'failed to inspect DLL imports for %s\n' "$binary" >&2
+                return 1
+              fi
+              if [[ -z "$imports" ]]; then
+                printf 'DLL inspection returned no imports for %s\n' "$binary" >&2
+                return 1
+              fi
               while IFS= read -r dll; do
                 [[ -n "$dll" ]] || continue
                 local key="${dll,,}"
@@ -470,7 +479,7 @@ jobs:
                   printf 'unresolved non-system DLL import %s from %s\n' "$dll" "$binary" >&2
                   return 1
                 fi
-              done < <("$objdump_bin" -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')
+              done <<<"$imports"
             done
           }
 
