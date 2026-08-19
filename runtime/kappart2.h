@@ -70,20 +70,23 @@ KValue *krt2_resume(KValue *k, KValue *value);
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
-/* Initialize the runtime: GC, worker pool, libuv reactor, blocking lane.
+/* Initialize the GC and runtime state.  The worker pool and reactor start
+ * lazily on the first krt2_run_main; blocking threads start on demand.
  * `nworkers <= 0` selects min(ncpu, RT_MAX_WORKERS) (override: KAPPA_RT_WORKERS).
  * Idempotent-safe to call once at process start (after krt_init from kappart). */
 Rt *krt2_new(int nworkers);
 
 /* Run `action` (an IO computation) as the MAIN fiber on its root scope, drive
  * the scheduler until the main fiber terminates, then return its terminal
- * `Exit e a` value (Success a | Failure (Cause e), §28).  Shuts down the root
- * scope (interrupting/awaiting any still-live children), stops the reactor, and
- * joins workers before returning.  This is what generated `main` calls. */
+ * `Exit e a` value (Success a | Failure (Cause e), §28).  Shuts down the run's
+ * root scope (interrupting/awaiting any still-live children), but keeps the
+ * worker pool and reactor alive for later calls.  This is what generated `main`
+ * calls. */
 KValue *krt2_run_main(KValue *action);
 
-/* Tear down the runtime (stop reactor, join workers).  Normally implicit in
- * krt2_run_main; exposed for embedders. */
+/* Final process teardown: stop the reactor and join workers.  Normal process
+ * exit invokes this automatically.  Embedders may call it only after all
+ * krt2_run_main calls and native blocking work have quiesced. */
 void krt2_shutdown(Rt *rt);
 
 /* 1 if a terminal `Exit` is Success, 0 if Failure.  Used by generated `main` for

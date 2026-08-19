@@ -275,7 +275,8 @@ a safe cancellation mechanism and is rejected by the native profile today.
 ### 6.1 Workers
 
 `N` worker threads (default `min(ncpu, RT_MAX_WORKERS)`, override via
-`KAPPA_RT_WORKERS`), each an OS thread registered with Boehm (`GC_register_my_thread`).
+`KAPPA_RT_WORKERS`), each an OS thread registered with Boehm (through
+`GC_pthread_create` on POSIX or an explicit registration trampoline on MinGW).
 A worker steps one runnable fiber at a time. Today workers draw from one
 mutex-protected global FIFO run queue; per-worker Chase-Lev work-stealing deques
 are the future performance path, not the current implementation.
@@ -361,10 +362,10 @@ implementation without changing the observable contract.
 
 When *all* workers are parked and the run queues are empty, the only thing that
 can make progress is a timer or I/O completion — so the system blocks in the
-reactor's `uv_run` until a callback fires (zero busy-waiting). The program ends
-when the main fiber completes (`Exit` is delivered to the C entrypoint), at which
-point the runtime shuts scopes (§9), stops the reactor (`uv_stop`), joins
-workers, and returns the main `Exit` to `main`.
+reactor's `uv_run` until a callback fires (zero busy-waiting). When the main
+fiber completes, the runtime shuts that run's scopes (§9) and returns its `Exit`
+to the C entrypoint. The persistent worker pool and reactor remain available for
+later `krt2_run_main` calls; final process teardown stops and joins them.
 
 ---
 

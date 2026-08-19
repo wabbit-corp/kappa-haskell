@@ -550,6 +550,8 @@ void    krt2i_all_remove(Rt *rt, Fiber *f);   /* drop from strong root set      
 /* GC-registered thread + fiber-host stack (KAPPA_STACK_MB, default 8 MiB, lazily
  * committed): the running fibers' C stacks live on these threads, so a deep
  * non-tail recursion runs here, not on the main-thread stack. */
+void    krt2i_thread_fatal(const char *message) __attribute__((noreturn));
+void    krt2i_validate_gc_thread(const char *lane);
 int     krt2i_spawn_thread(pthread_t *t, void *(*fn)(void *), void *arg);
 
 /* reactor */

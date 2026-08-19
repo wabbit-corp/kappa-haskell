@@ -12,7 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 Rt *g_rt = NULL;
 
@@ -680,6 +685,7 @@ static void blocking_req_free(BlockingReq *req) {
 static void fiber_step(Rt *rt, Fiber *f);
 
 static void *blocking_worker_main(void *arg) {
+  krt2i_validate_gc_thread("blocking");
   BlockingReq *req = (BlockingReq *)arg;
   Fiber *f = req->fiber;
 
@@ -729,7 +735,8 @@ static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
     blocking_req_free(req);
     return 0;
   }
-  (void)pthread_detach(t);
+  if (pthread_detach(t) != 0)
+    krt2i_thread_fatal("failed to detach runtime blocking thread");
   return 1;
 }
 
@@ -744,7 +751,8 @@ static void krt2i_resume_blocking_lane(Rt *rt, Fiber *f) {
     blocking_req_free(req);
     krt_fail("rt.blocking: failed to resume blocking worker");
   }
-  (void)pthread_detach(t);
+  if (pthread_detach(t) != 0)
+    krt2i_thread_fatal("failed to detach resumed runtime blocking thread");
 }
 
 static void enter_blocking_region(Fiber *f) {
@@ -3029,10 +3037,10 @@ void krt2_scalar_abort(void) {
 
 /* ── workers ────────────────────────────────────────────────────────────── */
 static void *worker_main(void *arg) {
-  /* Created via GC_pthread_create, so this thread is already known to the
-   * collector (registered on entry, unregistered on exit) — do NOT call
-   * GC_register_my_thread here or the double registration corrupts the
-   * per-thread freelists. */
+  /* krt2i_spawn_thread registers this thread with the collector before entry
+   * and unregisters it after return. Do not register it again here: duplicate
+   * registration corrupts Boehm's per-thread freelists. */
+  krt2i_validate_gc_thread("worker");
   Rt *rt = (Rt *)arg;
   for (;;) {
     Fiber *f = rq_pop(rt);
@@ -3047,7 +3055,13 @@ static void *worker_main(void *arg) {
 static int default_workers(void) {
   const char *env = getenv("KAPPA_RT_WORKERS");
   if (env && *env) { int n = atoi(env); if (n > 0) return n; }
+#ifdef _WIN32
+  SYSTEM_INFO system_info;
+  GetSystemInfo(&system_info);
+  long ncpu = (long)system_info.dwNumberOfProcessors;
+#else
   long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
   if (ncpu < 1) ncpu = 1;
   if (ncpu > 64) ncpu = 64;
   return (int)ncpu;
@@ -3135,20 +3149,87 @@ static size_t krt2i_thread_stack_bytes(void) {
   return (size_t)mb * 1024u * 1024u;
 }
 
+void krt2i_thread_fatal(const char *message) {
+  /* This can run before Boehm knows the current stack. Keep the failure path
+   * independent of GC allocation and terminate rather than run unsafely. */
+  fputs(message, stderr);
+  fputc('\n', stderr);
+  abort();
+}
+
+void krt2i_validate_gc_thread(const char *lane) {
+  if (!GC_thread_is_registered())
+    krt2i_thread_fatal("runtime thread entered without GC registration");
+  if (!getenv("KAPPA_RT_VALIDATE_GC_THREADS")) return;
+
+  size_t lane_len = strlen(lane);
+  KValue *volatile probe = kstr0(lane);
+  GC_gcollect();
+  KValue *value = (KValue *)probe;
+  if (kis_imm(value) || value->tag != K_STR || value->as.str.len != lane_len
+      || memcmp(value->as.str.p, lane, lane_len) != 0)
+    krt2i_thread_fatal("runtime thread GC stack validation failed");
+  GC_reachable_here(value);
+}
+
+#ifndef GC_PTHREADS
+typedef struct {
+  void *(*fn)(void *);
+  void *arg;
+} Krt2ThreadStart;
+
+static void *krt2i_registered_thread_main(void *raw) {
+  struct GC_stack_base stack_base;
+  int stack_rc = GC_get_stack_base(&stack_base);
+  if (stack_rc != GC_SUCCESS)
+    krt2i_thread_fatal("runtime thread stack discovery failed");
+  int register_rc = GC_register_my_thread(&stack_base);
+  if (register_rc != GC_SUCCESS && register_rc != GC_DUPLICATE)
+    krt2i_thread_fatal("runtime thread GC registration failed");
+  Krt2ThreadStart start = *(Krt2ThreadStart *)raw;
+  GC_FREE(raw);
+  void *result = start.fn(start.arg);
+  if (register_rc == GC_SUCCESS && GC_unregister_my_thread() != GC_SUCCESS)
+    krt2i_thread_fatal("runtime thread GC unregistration failed");
+  return result;
+}
+#endif
+
 int krt2i_spawn_thread(pthread_t *t, void *(*fn)(void *), void *arg) {
   pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, krt2i_thread_stack_bytes());
-  int rc = GC_pthread_create(t, &attr, fn, arg);
-  pthread_attr_destroy(&attr);
+  int rc = pthread_attr_init(&attr);
+  if (rc != 0) return rc;
+  rc = pthread_attr_setstacksize(&attr, krt2i_thread_stack_bytes());
+  if (rc != 0) {
+    if (pthread_attr_destroy(&attr) != 0)
+      krt2i_thread_fatal("failed to destroy rejected runtime thread attributes");
+    return rc;
+  }
+#ifdef GC_PTHREADS
+  rc = GC_pthread_create(t, &attr, fn, arg);
+#else
+  /* MinGW's Boehm package uses GC_WIN32_THREADS and does not provide the
+   * GC_pthread_* wrappers. Keep the start record uncollectable until the new
+   * pthread has registered its stack, then release it from the child. */
+  Krt2ThreadStart *start = (Krt2ThreadStart *)GC_MALLOC_UNCOLLECTABLE(sizeof(*start));
+  if (!start) krt_fail("runtime thread start allocation failed");
+  start->fn = fn;
+  start->arg = arg;
+  rc = pthread_create(t, &attr, krt2i_registered_thread_main, start);
+  if (rc != 0) GC_FREE(start);
+#endif
+  if (pthread_attr_destroy(&attr) != 0)
+    krt2i_thread_fatal("failed to destroy runtime thread attributes");
   return rc;
 }
 
 static void krt2i_ensure_started(Rt *rt) {
   if (rt->workers_started) return;
   krt2i_reactor_start(rt);
-  for (int i = 0; i < rt->nworkers; i++)
-    krt2i_spawn_thread(&rt->workers[i], worker_main, rt);
+  for (int i = 0; i < rt->nworkers; i++) {
+    if (krt2i_spawn_thread(&rt->workers[i], worker_main, rt) != 0)
+      krt_fail("failed to start runtime worker thread");
+  }
   rt->workers_started = 1;
 }
 
@@ -3248,7 +3329,10 @@ void krt2_shutdown(Rt *rt) {
   pthread_cond_broadcast(&rt->rq_cv);
   pthread_mutex_unlock(&rt->rq_lock);
   if (rt->workers_started) {
-    for (int i = 0; i < rt->nworkers; i++) GC_pthread_join(rt->workers[i], NULL);
+    for (int i = 0; i < rt->nworkers; i++) {
+      if (pthread_join(rt->workers[i], NULL) != 0)
+        krt2i_thread_fatal("failed to join runtime worker thread");
+    }
     krt2i_reactor_stop(rt);
     rt->workers_started = 0;
   }

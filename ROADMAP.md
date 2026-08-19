@@ -131,7 +131,10 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    stack overflow (`997323a`); `sleepFor`/`sleepUntil` nonpositive (`339b8f7`); `fiberId`/`currentFiberId`
    wired (`339b8f7`); `__arrayIndexUnsafe` de-Bruijn (`07cda19`); reactor-shutdown sleep-timer cleanup
    (`1162ddc`). **OPEN:** the C-backend CPS edges (suspend-in-`for`, `var:Double` helper miscompile); the
-   `kctor` value-box multi-worker race (value.c, TSan); the timing-flaky `race`/`timeout` test; **the native
+   `kctor` value-box multi-worker race (value.c, TSan); the timing-flaky `race`/`timeout` test; Windows native
+   runtime startup now uses Win32 CPU discovery and explicitly registered MinGW pthreads when Boehm's
+   `GC_WIN32_THREADS` profile does not expose `GC_pthread_*`, with the Windows archive gate forcing
+   collection on worker, reactor, and detached blocking stacks; **the native
    test harness is not concurrency-safe** (`run-native-tests.sh` shares `/tmp/kserver` + the frag dir + a
    fixed port → false failures under parallel agents — needs a per-run temp dir + dynamic port); the
    remaining runtime spec-coverage stubs (supervisor, labels, sandbox).

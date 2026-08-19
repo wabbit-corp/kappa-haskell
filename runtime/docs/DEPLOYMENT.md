@@ -25,7 +25,7 @@ known, GC-registered thread. From those, the existing posture is correct:
   callbacks fire on that one thread and only enqueue — they never re-enter Kappa.
   No thread attach, no GC registration, no foreign-thread-root problem.
 - **kappart2's own reactor already does the safe thing**: libuv callbacks run on
-  the reactor thread (GC-registered via `GC_pthread_create`) and only enqueue
+  the reactor thread (GC-registered through `krt2i_spawn_thread`) and only enqueue
   woken fibers — exactly the "callbacks enqueue, never re-enter" discipline.
 - **Real callback ingress (§26.1.8), if ever needed**, has two hard prerequisites
   that must land together: (a) `GC_register_my_thread`/`GC_call_with_gc_active`
@@ -44,8 +44,10 @@ kappart2 already implements the recommended discipline; the Driver must back it:
   resolved libgc exposes `GC_do_blocking`/`GC_register_my_thread` — fail closed
   (`E_BACKEND_TOOLCHAIN`) otherwise, and pin the libgc identity in `kappa.lock`.
 - **Thread creation.** `krt_init` → `GC_INIT()` then `GC_allow_register_threads()`;
-  create reactor + worker + pool threads via `GC_pthread_create` so their stacks
-  are located for stop-the-world. (kappart2 already uses `GC_pthread_create`.)
+  create reactor + worker + pool threads through `krt2i_spawn_thread` so their
+  stacks are located for stop-the-world. POSIX Boehm builds use
+  `GC_pthread_create`; MinGW/`GC_WIN32_THREADS` builds use a pthread trampoline
+  that explicitly registers and unregisters the stack.
 - **The rt-blocking lane.** The current correctness lane parks the fiber and runs
   blocking native work on a GC-registered off-worker pthread, so boxed
   marshalling is safe and the scheduler worker is not monopolized. A future

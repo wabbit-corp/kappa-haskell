@@ -139,8 +139,8 @@ void krt2i_reactor_init(Rt *rt) {
 }
 
 static void *reactor_main(void *arg) {
-  /* Created via GC_pthread_create — already collector-registered (see the note
-   * in rt.c:worker_main). */
+  /* krt2i_spawn_thread handles collector registration around this entry. */
+  krt2i_validate_gc_thread("reactor");
   Rt *rt = (Rt *)arg;
   uv_run(&rt->loop, UV_RUN_DEFAULT);
   uv_loop_close(&rt->loop);
@@ -148,7 +148,8 @@ static void *reactor_main(void *arg) {
 }
 
 void krt2i_reactor_start(Rt *rt) {
-  krt2i_spawn_thread(&rt->reactor_thr, reactor_main, rt);
+  if (krt2i_spawn_thread(&rt->reactor_thr, reactor_main, rt) != 0)
+    krt_fail("failed to start runtime reactor thread");
   rt->reactor_started = 1;
 }
 
@@ -190,5 +191,6 @@ void krt2i_reactor_stop(Rt *rt) {
   if (!rt->reactor_started) return;
   atomic_store_explicit(&rt->reactor_stop, 1, memory_order_release);
   uv_async_send(&rt->async);
-  GC_pthread_join(rt->reactor_thr, NULL);
+  if (pthread_join(rt->reactor_thr, NULL) != 0)
+    krt2i_thread_fatal("failed to join runtime reactor thread");
 }
