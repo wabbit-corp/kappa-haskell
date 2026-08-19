@@ -840,6 +840,22 @@ checkedPreludeArtifactDomain = do
              in case restoreCheckedPrelude "stale-primitive-regression" staleArtifact of
                   Left message -> "primitive value/Core-body identity mismatch" `T.isInfixOf` message
                   Right _ -> False
+      stalePrimitiveImplementationRejected =
+        case Map.toAscList seededPrimitives of
+          [] -> False
+          (primitiveGlobal, _) : _ ->
+            let staleState =
+                  cached
+                    { csImportedCoreBodies =
+                        Map.insert
+                          primitiveGlobal
+                          (CLit (LitInt 0))
+                          (csImportedCoreBodies cached)
+                    }
+                staleArtifact = snapshotCheckedPrelude "stale-primitive-implementation" staleState
+             in case restoreCheckedPrelude "stale-primitive-implementation" staleArtifact of
+                  Left message -> "primitive value/Core-body identity mismatch" `T.isInfixOf` message
+                  Right _ -> False
       primitiveCoreAuthority state =
         all
           ( \(global, primitive) ->
@@ -887,6 +903,9 @@ checkedPreludeArtifactDomain = do
                        { gdCoreType = Just replacement
                        , gdType = eval cachedContext [] replacement
                        })
+          )
+        , ( "corrupted imported primitive implementation is rejected"
+          , stalePrimitiveImplementationRejected
           )
         , ("data identities agree", Map.keysSet (csDatas cached) == Map.keysSet (csDatas source))
         , ("constructor identities agree", Map.keysSet (csCtors cached) == Map.keysSet (csCtors source))

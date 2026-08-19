@@ -340,31 +340,39 @@ restoreCheckedPrelude expectedSourceHash artifact
         , Nothing <- [cgaBody global]
         ]
     primitiveIdentityMismatch =
-      listToMaybe
-        [ globalName
-        | globalName <- Set.toAscList primitiveKeys
-        , Map.lookup globalName encodedPrimitiveGlobals
-            /= Map.lookup globalName trustedPrimitiveArtifacts
-        ]
+      firstMapMismatch encodedPrimitiveGlobals trustedPrimitiveArtifacts
+        <|> firstMapMismatch
+          encodedPrimitiveImplementationBodies
+          trustedPrimitiveImplementationBodies
         <|> listToMaybe
           [ globalName
           | (globalName, global) <- cprGlobals artifact
           , primitiveValueAndBodyDisagree global
           ]
-    primitiveKeys =
-      Map.keysSet encodedPrimitiveGlobals
-        `Set.union` Map.keysSet trustedPrimitiveArtifacts
+    firstMapMismatch left right =
+      listToMaybe
+        [ key
+        | key <- Set.toAscList (Map.keysSet left `Set.union` Map.keysSet right)
+        , Map.lookup key left /= Map.lookup key right
+        ]
+    primitiveGlobalKey (GName moduleName _) = moduleName == primModule
     encodedPrimitiveGlobals =
       Map.filterWithKey
-        (\(GName moduleName _) _ -> moduleName == primModule)
+        (\globalName _ -> primitiveGlobalKey globalName)
         encodedGlobals
+    encodedPrimitiveImplementationBodies =
+      Map.filterWithKey
+        (\globalName _ -> primitiveGlobalKey globalName)
+        encodedImplementationBodies
     trustedPrimitiveArtifacts =
       Map.map
         (snapshotGlobalArtifact builtinContext)
         trustedPrimitiveDefinitions
+    trustedPrimitiveImplementationBodies =
+      Map.mapMaybe gdCoreBody trustedPrimitiveDefinitions
     trustedPrimitiveDefinitions =
       Map.filterWithKey
-        (\(GName moduleName _) _ -> moduleName == primModule)
+        (\globalName _ -> primitiveGlobalKey globalName)
         (csGlobals builtinState)
     builtinContext =
       EvalCtx
@@ -487,6 +495,7 @@ restoreCheckedPrelude expectedSourceHash artifact
       ]
     hasDuplicateKey keys = length keys /= Set.size (Set.fromList keys)
     encodedGlobals = Map.fromList (cprGlobals artifact)
+    encodedImplementationBodies = Map.fromList (cprImplementationBodies artifact)
     artifactGlobals = Map.map restoreGlobal encodedGlobals
     globals = Map.union trustedPrimitiveDefinitions artifactGlobals
     context = EvalCtx (Globals globals) emptyMetas False Map.empty
@@ -533,7 +542,10 @@ restoreCheckedPrelude expectedSourceHash artifact
         , csMultiFixOps = Set.fromList (cprMultiFixOperators artifact)
         , csFoundationProviders = Map.fromList (cprFoundationProviders artifact)
         , csCoreBodies = Map.empty
-        , csImportedCoreBodies = Map.fromList (cprImplementationBodies artifact)
+        , csImportedCoreBodies =
+            Map.filterWithKey
+              (\globalName _ -> not (primitiveGlobalKey globalName))
+              encodedImplementationBodies
         , csLevelOperatorAliases = Map.fromList (map (fmap restoreLevelOperator) (cprLevelOperatorAliases artifact))
         , csModEffLabels = Map.fromList (map (fmap restoreEffectLabel) (cprModuleEffectLabels artifact))
         , csEffectInterfaces = Map.fromList (map (fmap restoreEffectLabel) (cprEffectInterfaces artifact))

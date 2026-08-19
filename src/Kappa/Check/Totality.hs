@@ -1552,24 +1552,37 @@ measureCallChange call = do
         newM <- normalizeTermAt d newM0
         classify <$> defaultMeasureCallChange src d facts aliases oldM newM
     (Just rel, _) ->
-      case expandStructuralAliases d aliases newM0 of
-        Nothing -> pure Nothing
-        Just expandedNew -> do
-          oldM <- normalizeTermAt d oldM0
-          newM <- normalizeTermAt d expandedNew
-          wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
-          holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
-          if wf && holds
-            then pure (Just (MeasureStrict from target))
-            else if wf
-              then do
-                equal <- visibleMeasuresEqual src d facts oldM newM
-                pure
-                  ( if equal
-                      then Just (MeasureNonIncreasing from target)
-                      else Nothing
-                  )
-              else pure Nothing
+      do
+        relationHere <-
+          normalizeTermAt d (shiftTerm (d - rsDepth rel) 0 (rsTerm rel))
+        standardLtInt <- relationIsPrimitiveLtInt d relationHere
+        if standardLtInt
+          then do
+            oldM <- normalizeTermAt d oldM0
+            newM <- normalizeTermAt d newM0
+            defaultMeasureCallChange src d facts aliases oldM newM >>= \case
+              Just VisibleMeasureStrict ->
+                pure (Just (MeasureStrict from target))
+              _ -> pure Nothing
+          else
+            case expandStructuralAliases d aliases newM0 of
+              Nothing -> pure Nothing
+              Just expandedNew -> do
+                oldM <- normalizeTermAt d oldM0
+                newM <- normalizeTermAt d expandedNew
+                wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
+                holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
+                if wf && holds
+                  then pure (Just (MeasureStrict from target))
+                  else if wf
+                    then do
+                      equal <- visibleMeasuresEqual src d facts oldM newM
+                      pure
+                        ( if equal
+                            then Just (MeasureNonIncreasing from target)
+                            else Nothing
+                        )
+                    else pure Nothing
 
 defaultMeasureCallChange
   :: TermFun

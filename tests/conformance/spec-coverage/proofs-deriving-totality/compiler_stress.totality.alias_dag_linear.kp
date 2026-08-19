@@ -98,5 +98,34 @@ let growShared n decreases n =
         let z = addInt (subInt a33 b) a0
         growShared z
 
+-- An explicit reference to the authenticated primitive relation has the same
+-- affine measure semantics as the default Int relation. It must not route
+-- through custom-relation tree materialization merely because `by` is present.
+growSharedBy : Int -> Int
+let growSharedBy n decreases n by ltInt =
+    if leInt n 0 then 0 else
+        let a0 = subInt n 1
+        let a1 = a0
+        let a2 = addInt a1 a0
+        let a3 = addInt a2 a1
+        let a4 = addInt a3 a2
+        let a5 = addInt a4 a3
+        let a6 = addInt a5 a4
+        let a7 = addInt a6 a5
+        let a8 = addInt a7 a6
+        let a9 = addInt a8 a7
+        let a10 = addInt a9 a8
+        let a11 = addInt a10 a9
+        let a12 = addInt a11 a10
+        let a13 = addInt a12 a11
+        let a14 = addInt a13 a12
+        let a15 = addInt a14 a13
+        let a16 = addInt a15 a14
+        let a17 = addInt a16 a15
+        let a18 = addInt a17 a16
+        let b = a18
+        let z = addInt (subInt a18 b) a0
+        growSharedBy z
+
 --! mode check
 --! assertNoErrors
