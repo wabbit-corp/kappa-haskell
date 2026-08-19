@@ -1,0 +1,19 @@
+-- §5.2/§5.4/§18.2: bracket-soft newlines in a multiline named block remain
+-- layout-transparent when the block is the indented RHS of a do item.
+module main
+
+data Options : Type =
+    Options { first : Int, second : Int }
+
+makeOptions : IO Options
+let makeOptions =
+    do
+        let options =
+            Options {
+                first = 19,
+                second = 23
+            }
+        pure options
+
+--! assertNoErrors
+--! assertType makeOptions IO Options

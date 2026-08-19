@@ -1,0 +1,18 @@
+-- §14.8: generated Eq laws are proved against the selected comparator after
+-- proof-producing normalization. A definitionally true auxiliary guard must
+-- not prevent transport to the canonical structural equality proof.
+module main
+
+data Wrap : Type = Wrap Bool
+
+instance Eq Wrap =
+    let (==) left right =
+        match left
+        case Wrap a ->
+            match right
+            case Wrap b ->
+                if 0 == 0 then a == b else False
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

@@ -250,6 +250,7 @@ import Kappa.NominalVariance
   , verifyNominalCumulativitySummary
   , withNominalMonotoneWitnesses
   )
+import Kappa.ObservationDeps (constructorPatternObservationSites)
 import Kappa.Level
   ( ConstraintOrigin (..)
   , DeclarationUniverseTelescope (..)
@@ -392,6 +393,7 @@ main = do
   usingBinderScopeOk <- usingBinderScopeDomain
   arithmeticReplayOk <- arithmeticReplayDomain
   constructorPatternAlignmentOk <- constructorPatternAlignmentDomain
+  nullaryConstructorResultShapeOk <- nullaryConstructorResultShapeDomain
   representationCertificateOk <- representationCertificateIdentityDomain
   exactNaturalShapeReplayOk <- exactNaturalShapeReplayDomain
   inhabitanceOk <- inhabitanceIntervalDomain
@@ -455,6 +457,7 @@ main = do
         , ("usingBinderScopeDomain", usingBinderScopeOk)
         , ("arithmeticReplayDomain", arithmeticReplayOk)
         , ("constructorPatternAlignmentDomain", constructorPatternAlignmentOk)
+        , ("nullaryConstructorResultShapeDomain", nullaryConstructorResultShapeOk)
         , ("representationCertificateIdentityDomain", representationCertificateOk)
         , ("exactNaturalShapeReplayDomain", exactNaturalShapeReplayOk)
         , ("inhabitanceIntervalDomain", inhabitanceOk)
@@ -3875,6 +3878,47 @@ constructorPatternAlignmentDomain = do
     putStrLn "constructorPatternAlignmentDomain FAILED:"
     putStrLn ("  expected " ++ show expected)
     putStrLn ("  actual   " ++ show actual)
+  pure ok
+
+-- | A nullary GADT branch may refine family index values, but it must still
+-- authenticate a complete application of the same family. Missing, extra, or
+-- differently implicit indices are malformed at this checkpoint.
+nullaryConstructorResultShapeDomain :: IO Bool
+nullaryConstructorResultShapeDomain = do
+  let ctx = EvalCtx (Globals Map.empty) emptyMetas False Map.empty
+      family = GName (ModuleName [T.pack "test"]) (T.pack "Family")
+      index n = VLit (LitInt n)
+      result args = VGlobal family [] args
+      sites actual =
+        constructorPatternObservationSites
+          ctx
+          False
+          0
+          0
+          (result [(Expl, index 0)])
+          actual
+      acceptsDifferentIndex = case sites (result [(Expl, index 1)]) of
+        Just [] -> True
+        _ -> False
+      rejectsMissingIndex = case sites (result []) of
+        Nothing -> True
+        _ -> False
+      rejectsExtraIndex = case sites (result [(Expl, index 1), (Expl, index 2)]) of
+        Nothing -> True
+        _ -> False
+      rejectsWrongIcity = case sites (result [(Impl, index 1)]) of
+        Nothing -> True
+        _ -> False
+      checks =
+        [ ("different index value", acceptsDifferentIndex)
+        , ("missing index", rejectsMissingIndex)
+        , ("extra index", rejectsExtraIndex)
+        , ("wrong index icity", rejectsWrongIcity)
+        ]
+      ok = all snd checks
+  unless ok $ do
+    putStrLn "nullaryConstructorResultShapeDomain FAILED:"
+    mapM_ (putStrLn . ("  " <>) . fst) (filter (not . snd) checks)
   pure ok
 
 arithmeticReplayDomain :: IO Bool

@@ -1849,6 +1849,7 @@ data MeasureCall = MeasureCall
   , mcRelation :: !(Maybe RelationSpec)
   , mcProof :: !(Maybe Expr)
   , mcSource :: !TermFun
+  , mcTarget :: !GName
   }
 
 data CompareBoolMatch = CompareLt | CompareLe | CompareGt | CompareGe

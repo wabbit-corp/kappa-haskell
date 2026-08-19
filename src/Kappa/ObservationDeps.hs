@@ -372,11 +372,22 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
   -- This is not cosmetic: GADT alignment may equate a constructor parameter
   -- with an outer rigid, so the two namespaces must never alias numerically.
   let (explicitSites, resultType) = collect depth constructorType
-  substitution <- align Map.empty resultType scrutineeType
-  pure
-    [ (mode, substituteValue substitution domain)
-    | (mode, domain) <- drop (max 0 (length explicitSites - fieldCount)) explicitSites
-    ]
+  if fieldCount == 0
+    then do
+      -- A nullary GADT constructor contributes no field classifier to the
+      -- observation environment. Its result indices are branch equations,
+      -- not preconditions that must hold before entering the branch (notably
+      -- @refl : x = x@ may match @p : x = y@ and refine @y@ to @x@).
+      -- Authenticate the nominal family and universe spine, then return the
+      -- exact empty field telescope without manufacturing a substitution.
+      guard (sameNominalResult resultType scrutineeType)
+      pure []
+    else do
+      substitution <- align Map.empty resultType scrutineeType
+      pure
+        [ (mode, substituteValue substitution domain)
+        | (mode, domain) <- drop (max 0 (length explicitSites - fieldCount)) explicitSites
+        ]
   where
     collect level value = case force ctx value of
       VPiM mode icit _ _ _ domain (Closure closureEnv codomain) ->
@@ -474,6 +485,18 @@ constructorPatternObservationSites ctx allowProvisionalLevels depth fieldCount c
           VGlobal global levels spine ->
             Just (global, levels, spine ++ suffix)
           _ -> Nothing
+
+    sameNominalResult patternValue actualValue =
+      case
+          ( globalApplicationView (force ctx patternValue)
+          , globalApplicationView (force ctx actualValue)
+          )
+        of
+        (Just (patternGlobal, patternLevels, patternSpine), Just (actualGlobal, actualLevels, actualSpine)) ->
+          patternGlobal == actualGlobal
+            && (allowProvisionalLevels || patternLevels == actualLevels)
+            && map fst patternSpine == map fst actualSpine
+        _ -> False
 
     bind subject actual substitution =
       let actual' = substituteValue substitution actual

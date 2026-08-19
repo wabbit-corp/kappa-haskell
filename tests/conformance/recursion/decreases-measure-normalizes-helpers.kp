@@ -11,3 +11,13 @@ let maxInt a b =
 countdownViaHelpers : Integer -> Integer
 let countdownViaHelpers n decreases maxInt 0 n =
     if leInt n 0 then 0 else countdownViaHelpers (subInt n 1)
+
+-- The same normalized primitive measure is independent of whether the helper
+-- uses the selected comparison operator surface or names the primitive.
+maxIntViaOperator : Int -> Int -> Int
+let maxIntViaOperator a b =
+    if a >= b then a else b
+
+countdownViaOperators : Int -> Int
+let countdownViaOperators n decreases maxIntViaOperator 0 n =
+    if n <= 0 then 0 else countdownViaOperators (n - 1)

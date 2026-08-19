@@ -1,6 +1,7 @@
--- §11.1.2.5: TypeLevel is an ordinary compile-time value. It can be passed,
--- returned, stored, projected, sealed, and opened without making a universe
--- expression canonical merely by doing so.
+-- §11.1.2.5: TypeLevel is ordinary runtime-capable data. It can be passed,
+-- returned, stored, projected, and sealed without making a universe expression
+-- canonical merely by doing so. Runtime use of an opened existential witness
+-- is covered separately because every existential witness is quantity zero.
 --! mode check
 --! assertNoErrors
 
@@ -19,6 +20,3 @@ type PackedLevel : Type = exists (u : TypeLevel). Unit
 
 packed : PackedLevel
 let packed = seal exists (u = projected). () as PackedLevel
-
-opened : TypeLevel
-let opened = open packed as exists (u). payload in u

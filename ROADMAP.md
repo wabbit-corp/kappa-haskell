@@ -807,23 +807,23 @@ rigid entailment, and portable metavariable inference; represents declaration co
 ordinary erased proof binders; requires rigid declaration-boundary generalization; permits
 same-or-lower recursive schema calls; and versions complete arithmetic replay.
 
-The working tree contains complete U-E and U-F support: global/local
+The implementation contains complete U-E and U-F support: global/local
 schemas and SCC inference, natural-sum levels, witness-package sealing, finite observation
 dependencies, structural level certificates, nominal role inference and closures,
 `NominalCumulativitySummary`, explicit `CSchemaLift`, schema certificates, and KCoreText support.
-The 47 ordinary/parametric/KCoreText suites, 71 package/schema suites, 17 strengthening suites,
-and all 42 variance suites are active; `scripts/validate_universe_contract.py` reports a clean
-`47 + 71 + 17 pre-variance, 34 current variance, 8 gated future` ledger. U-E and U-F therefore
-have clean focused owner gates. The 2026-08-03 full conformance result is clean at 3,888
-passed, zero failed, and ten explicitly unsupported optional/future capabilities (3,898 total):
-eight future variance suites and two optional compact Nat/Fin layout suites.
+The current contract validator reports 48 ordinary/parametric suites, 89 package/schema suites,
+34 current variance suites plus 8 gated future suites, and the 67 first-class-level suites plus
+5 strengthening suites. U-E and U-F therefore have clean focused owner gates. The 2026-08-18
+full conformance result is clean at 4,014 passed, zero failed, and ten explicitly unsupported
+optional/future capabilities (4,024 total): eight future variance suites and two optional
+compact Nat/Fin layout suites.
 
 The first-class-level bundle adds 67 contracts: 47 accepts and 20 rejects, split into 29
 positive source, 17 negative source, 13 solver, and 8 KCoreText suites. All 67 are imported and
 active with 5 implementation-strengthening contracts under
 `tests/conformance/spec-coverage/first-class-levels-solver-generalization/`, and
-`scripts/validate_universe_contract.py` reports the full clean ledger (47 + 71 + 17
-pre-variance, 34 current variance, 8 gated future, 67 first-class-level + 5 strengthening). U-G owns neutral
+`scripts/validate_universe_contract.py` reports the full clean ledger (48 ordinary/parametric,
+89 package/schema, 34 current variance, 8 gated future, 67 first-class-level + 5 strengthening). U-G owns neutral
 level terms, the specified solver outcomes, rigid generalization, proof-binder migration,
 recursive schemas, complete arithmetic replay/versioning, schema reification, and ordinary
 `Monotone` evidence — implemented per `docs/UNIVERSES-PLAN.md` (2026-07-21) with owner gates
@@ -1011,16 +1011,16 @@ backend obligations.
 The implementation now has ordinary logical `Nat`, checked derivation, the
 value-arithmetic solver, refinement surface, independently replayed certificate
 artifacts, exact non-unary native execution, verified proof erasure, and
-profile-scoped backend classes. The exact 103-suite contract is active under
-`tests/conformance/spec-coverage/nat-fin-refinement/`: 101 suites pass in the
+profile-scoped backend classes. The exact 104-suite contract is active under
+`tests/conformance/spec-coverage/nat-fin-refinement/`: 102 suites pass in the
 conservative profile and the two optional compact-layout suites report
 `Unsupported` because that profile does not advertise
 `rt-compact-finite-ordinal`, `rt-packed-finite-fields`, or
 `rt-unboxed-refinement`.
 `scripts/validate_nat_fin_contract.py` owns bundle provenance, paths, categories,
 capabilities, stage ownership, and T.12 coverage.
-The 2026-07-30 aggregate recheck passed `cabal test all`. A fresh 2026-08-03
-active-conformance run passed 3,888 cases with zero failures and the same ten
+The 2026-07-30 aggregate recheck passed `cabal test all`. A fresh 2026-08-18
+active-conformance run passed 4,014 cases with zero failures and the same ten
 declared optional/future capability skips.
 
 - [x] **NFR-0 - contract and harness observability.** Implement every new Appendix T
@@ -1059,7 +1059,7 @@ declared optional/future capability skips.
       erasure on every runnable backend; add certificate-backed finite-ordinal,
       packed-field, and unboxed-refinement classes only where advertised; audit
       dynamic, FFI, bridge, and ABI narrowing.
-- [x] **NFR-8 - adversarial closeout and promotion.** Promote the exact 103 suites
+- [x] **NFR-8 - adversarial closeout and promotion.** Promote the exact 104 suites
       only after every declared outcome and assertion passes, then run full
       conformance/unit, KCoreText/interface/cache, interpreter/C/LLVM parity,
       native exactness, RC/poison/TSan, package, and performance gates.
@@ -1070,11 +1070,10 @@ Logical source/KCore `Nat` remains authoritative throughout. Compact runtime for
 are selected only from verified certificates and never feed back into conversion,
 trait search, proof checking, or source reachability.
 
-**Performance follow-up:** fresh CLI startup currently takes about 33 seconds
-even for the pre-existing native `hello` fixture, exceeding the LLVM parity
-runner's 30-second execution budget before program-specific work becomes
-material. Keep the 30-second default visible as the regression target; use a
-bounded per-run override only while diagnosing prelude/checker startup cost.
+**Performance closeout (2026-08-18):** the checked generated Prelude artifact
+eliminates repeated source elaboration during ordinary compiler startup.
+`scripts/check_trivial_compile_budget.sh` now measures a 506 ms cold compile on
+the release workstation, below the one-second regression budget.
 
 ## Track: Module-wide declaration SCCs / induction-recursion ([`MODULE-SCC-INDUCTION-RECURSION-PLAN.md`](docs/MODULE-SCC-INDUCTION-RECURSION-PLAN.md))
 
@@ -1095,6 +1094,12 @@ The exact 190-suite contract is staged under
 baseline is recorded per-suite in `-- STATUS` lines. Conformance fixtures the
 revision invalidates are rewritten and staged under
 `tests/pending-import/module-scc-ir/retargeted/`.
+
+**Partial implementation note (2026-08-18):** explicit-measure SCC checking now
+derives hidden phases from equal-measure call edges and rejects cyclic phase
+constraints; structural descent also follows checked nominal field-projection
+evidence. This is a principled MSI-5 foothold, but it does not complete MSI-5
+or promote the pending 190-suite module-wide contract.
 
 - [ ] **MSI-0 - contract freeze + harness observability.** New Appendix T
   directives typed and routed through public queries; three new diagnostic
@@ -1148,6 +1153,11 @@ The exact 109-suite contract is staged under
 `-- STATUS(3014a0d9)` baselines: 0 pass / 0 fail / 20 unsupported / 89
 harness errors). Invalidated conformance fixtures are staged under
 `tests/pending-import/derive-automation/retargeted/`.
+
+**Partial implementation note (2026-08-18):** finite-provider `Eq` automation
+now proves the generated law surface for tag-coded enumerations through selected
+evidence. The unified 109-suite derive protocol remains pending and no DA stage
+is marked complete by this narrower support.
 
 - [ ] **DA-0 - contract freeze + harness observability.**
 - [ ] **DA-1 - grammar + expression forms.**

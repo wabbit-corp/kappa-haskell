@@ -36,6 +36,7 @@ module Kappa.Check.StateOps
   , recordMutableBindingFields
   , recordPatternBinderBorrow
   , recordPatternBinderFacts
+  , recordUsageTypeAtSpan
   , recordRecognizedRefOp
   , recordTerminationDecl
   , recordTypeIsDependent
@@ -44,7 +45,6 @@ module Kappa.Check.StateOps
   , setRecursiveSchemaOccurrences
   , setTopCoreQ
   , setTopPrefix
-  , shouldDeferTermination
   , singletonTerminationDependenciesReady
   , solveMetaAcyclic
   , substThisTm
@@ -703,6 +703,24 @@ recordPatternBinderQuantity sp q =
   modify' $ \st ->
     st {csPatternBinderQuantities = Map.insert sp q (csPatternBinderQuantities st)}
 
+-- | Publish a finalized checker type under the stable source identity consumed
+-- by Usage. Unsolved classifiers remain absent so later analysis fails closed
+-- instead of treating a provisional delaboration as storage authority.
+recordUsageTypeAtSpan :: Ctx -> Span -> Value -> CheckM ()
+recordUsageTypeAtSpan ctx sp ty = do
+  typeTerm0 <- quoteIn ctx ty
+  typeTerm <- zonkTermM (ctxLen ctx) typeTerm0
+  state <- get
+  when (null (unsolvedMetasOf state typeTerm)) $
+    case delaborateType ctx sp typeTerm of
+      Nothing -> pure ()
+      Just sourceType ->
+        modify' $ \current ->
+          current
+            { csUsageExpressionTypes =
+                Map.insert sp sourceType (csUsageExpressionTypes current)
+            }
+
 -- | Publish the checked quantity and static-kind status of a pattern binder
 -- to the syntax-level usage pass. Observation mode and quantity are
 -- independent: an @ordinary 0 A : Type@ field remains statically observable
@@ -710,9 +728,10 @@ recordPatternBinderQuantity sp q =
 recordPatternBinderFacts :: Ctx -> Span -> Q -> Value -> CheckM ()
 recordPatternBinderFacts ctx sp q ty = do
   recordPatternBinderQuantity sp q
+  recordUsageTypeAtSpan ctx sp ty
   when (q == Q0) $ do
-    staticKind <- isParametricKind (ctxLen ctx) ty
-    when staticKind $
+    staticClassifier <- isIntrinsicallyCompileTimeClassifier (ctxLen ctx) ty
+    when staticClassifier $
       modify' $ \st ->
         st {csStaticKindBinders = Set.insert sp (csStaticKindBinders st)}
 
@@ -906,24 +925,6 @@ canonicalizeSchemaLiftComposition = mapTermWithDepth rewrite 0
 recordTerminationDecl :: TerminationDecl -> CheckM ()
 recordTerminationDecl td =
   modify' $ \st -> st {csTerminationDecls = Map.insert (tdName td) td (csTerminationDecls st)}
-
--- | Keep a definition opaque until the SCC pass when a later declaration may
--- still close a cycle through it.  Acyclic dependencies on already-reducible
--- functions stay reducible immediately, preserving the existing conversion
--- behavior for ordinary helper definitions.
-shouldDeferTermination :: GName -> Set GName -> CheckM Bool
-shouldDeferTermination g deps = do
-  st <- get
-  let termDeps = Set.intersection deps (csTerminationNames st)
-      pendingDeps = Set.intersection termDeps (Map.keysSet (csSigPending st))
-      deferredDeps =
-        Set.filter
-          (\h ->
-             Map.member h (csTerminationDecls st)
-               && maybe False (not . gdReducible) (Map.lookup h (csGlobals st))
-          )
-          termDeps
-  pure (Set.member g deps || not (Set.null pendingDeps) || not (Set.null deferredDeps))
 
 -- | A direct self-recursive declaration may be certified as soon as every
 -- other termination-relevant dependency is already conversion-reducible.

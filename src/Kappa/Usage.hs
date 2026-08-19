@@ -218,6 +218,27 @@ data VInfo = VInfo
 plainV :: Text -> Span -> VInfo
 plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False False False Nothing Nothing [] [] [] Nothing sp
 
+-- | Compose an outer binder quantity with storage facts inferred from its
+-- classifier. Quantity zero annihilates every runtime obligation below the
+-- binder; classifier and dependency facts remain available for static checks,
+-- and the root quantity still diagnoses any runtime occurrence.
+applyBinderRuntimeQuantity :: Maybe Quantity -> VInfo -> VInfo
+applyBinderRuntimeQuantity outerQuantity vi =
+  case outerQuantity of
+    Just QZero ->
+      vi
+        { vQ = Just QZero
+        , vFields = []
+        , vPathFields = []
+        , vNonDupValue = False
+        , vNonDupFields = []
+        , vOpenTail = Nothing
+        }
+    _ -> vi {vQ = outerQuantity `orElse` vQ vi}
+  where
+    orElse (Just value) _ = Just value
+    orElse Nothing fallback = fallback
+
 -- | Expand a borrow lock over a field path with the §12.4 dependency
 -- rule: borrowing a dependent field also locks the fields its type
 -- mentions ("dependent fields are not disjoint merely because their
@@ -1205,19 +1226,20 @@ moduleUsageResultStorage expressionTypes fns inoutResults resultTypes valueResul
             | otherwise = Nothing
       pure
         ( nameText n
-        , (plainV ("$param:" <> nameText n) (bSpan b))
-            { vQ = q
-            , vStaticKind = binderIsStaticKind staticKindBinders b ms
-            , vBorrowed = isJust mark || borrowViewed
-            , vAnonBorrow = anon
-            , vFields = fields
-            , vPathFields = pathFields
-            , vDeps = deps
-            , vPathDeps = pathDeps
-            , vOpenTail = openTail
-            , vStoredTypeText = renderExprSrc <$> ty
-            , vStoredTypeExpr = ty
-            }
+        , applyBinderRuntimeQuantity q $
+            (plainV ("$param:" <> nameText n) (bSpan b))
+              { vQ = q
+              , vStaticKind = binderIsStaticKind staticKindBinders b ms
+              , vBorrowed = isJust mark || borrowViewed
+              , vAnonBorrow = anon
+              , vFields = fields
+              , vPathFields = pathFields
+              , vDeps = deps
+              , vPathDeps = pathDeps
+              , vOpenTail = openTail
+              , vStoredTypeText = renderExprSrc <$> ty
+              , vStoredTypeExpr = ty
+              }
         )
 
     orElse (Just x) _ = Just x
@@ -1996,32 +2018,46 @@ recordLiteralValueType inferField items sp =
           , rtfType = ty
           }
 
-storedValueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
-storedValueInfoFromType env key sp ty =
+valueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
+valueInfoFromType env key sp ty =
   let pathFields = recordPathFields env ty
       pathDeps = recordPathDeps env ty
       fields = mergeFieldQuantities (resolveFields (eAliases env) ty) (topFieldsFromPaths pathFields)
       nonDupFieldNames = [p | (p, q) <- pathFields, nonDupQuantity q]
-      hiddenPositive = typeMayContainPositive env ty && null [() | (_, q) <- pathFields, positiveLowerQuantity q]
-      hiddenNonDup =
-        typeMayContainNonDuplicable env ty
-          && null nonDupFieldNames
-          && not hiddenPositive
-      diagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
+      hiddenStorageQuantity
+        | null pathFields =
+            typeStorageQuantityWithGroups
+              (eDuplicableStorageHeads env)
+              (eUnaryStorageHeads env)
+              (eBinaryStorageHeads env)
+              (eRecordShapes env)
+              (eCtorGroupsByType env)
+              ty
+        | otherwise = Nothing
+      hiddenQuantity =
+        hiddenStorageQuantity >>= \quantity ->
+          if nonDupQuantity (Just quantity) || positiveLowerQuantity (Just quantity)
+            then Just quantity
+            else Nothing
    in (plainV key sp)
-        { vMutable = True
-        , vQ = if hiddenPositive then Just QOne else Nothing
+        { vQ = hiddenQuantity
         , vFields = fields
         , vPathFields = pathFields
         , vDeps = resolveDeps (eFieldDeps env) ty
         , vPathDeps = pathDeps
-        , vNonDupValue = hiddenNonDup
+        , vNonDupValue = nonDupQuantity hiddenQuantity
         , vNonDupFields = nonDupFieldNames
         , vStorageDuplicable = typeProvesStorageDuplicable env ty
         , vStoredTypeText = Just (renderExprSrc ty)
         , vStoredTypeExpr = Just ty
-        , vMutableDiagFields = diagFields
         }
+
+storedValueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
+storedValueInfoFromType env key sp ty =
+  (valueInfoFromType env key sp ty)
+    { vMutable = True
+    , vMutableDiagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
+    }
 
 storedActionResultInfo :: Env -> VInfo -> Expr -> VInfo
 storedActionResultInfo env oldInfo action =
@@ -2854,19 +2890,20 @@ analyzeLet expansions expressionTypes mutableBindingFields discardedResultTypes 
         pure
             ( Just
                 ( nameText n
-                , (plainV k (bSpan b))
-                    { vQ = q
-                    , vStaticKind = binderIsStaticKind staticKindBinders b ms
-                    , vBorrowed = isJust mark || borrowViewed
-                    , vAnonBorrow = anon
-                    , vFields = fields
-                    , vPathFields = pathFields
-                    , vDeps = deps
-                    , vPathDeps = pathDeps
-                    , vOpenTail = openTail
-                    , vStoredTypeText = renderExprSrc <$> ty
-                    , vStoredTypeExpr = ty
-                    }
+                , applyBinderRuntimeQuantity q $
+                    (plainV k (bSpan b))
+                      { vQ = q
+                      , vStaticKind = binderIsStaticKind staticKindBinders b ms
+                      , vBorrowed = isJust mark || borrowViewed
+                      , vAnonBorrow = anon
+                      , vFields = fields
+                      , vPathFields = pathFields
+                      , vDeps = deps
+                      , vPathDeps = pathDeps
+                      , vOpenTail = openTail
+                      , vStoredTypeText = renderExprSrc <$> ty
+                      , vStoredTypeExpr = ty
+                      }
                 )
             )
     orElseE (Just x) _ = Just x
@@ -3001,8 +3038,8 @@ closeVarWith mctx vi u = do
   -- independent of `vQ vi`; the upper-bound check must do the same, or a
   -- linear field consumed twice (`free r.buf; free r.buf`) escapes.
   pathOver <- fmap or . forM (linPaths vi) $ \p -> do
-    let pc@(UseCount {ucHi = pHi, ucMoves = pOccs}) = pathUsage vi p u
-    if ucHi pc > 0 && rHi + pHi > 1
+    let UseCount {ucHi = pHi, ucMoves = pOccs} = pathUsage vi p u
+    if rHi + pHi > 1
       then do
         -- the path is in linPaths, i.e. quantity-1 (linear/relevant)
         overuse "linear" (nm <> "." <> pathText p) (pOccs ++ rOccs)
@@ -3298,6 +3335,19 @@ projPlacesOf env e0 = case e0 of
       (vi, path, sp) <- placeOf env argE
       pure (vi, path ++ suffix, sp)
     leafPlace _ = Nothing
+
+-- | Storage views selected by a stable expression. Projection descriptors can
+-- select several leaves; ownership is conservative across all alternatives,
+-- so callers must retain a borrowed source even when another leaf is owned.
+selectedPlaceViews :: Env -> Expr -> [VInfo]
+selectedPlaceViews env expression =
+  case placeOf env expression of
+    Just (variable, path, _) -> [sliceVInfo variable path]
+    Nothing ->
+      case projPlacesOf env expression of
+        Just (places, _) ->
+          [sliceVInfo variable path | (variable, path, _) <- places]
+        Nothing -> []
 
 projVarPlacesOf :: Env -> Expr -> Maybe ([(VInfo, [Text], Span)], [Expr])
 projVarPlacesOf env e0 = case e0 of
@@ -3687,8 +3737,48 @@ walkERaw env e0 = case e0 of
     let (u, t) = flatR r
     pure (WalkResult u t Map.empty)
   ESeal b _ _ -> walkE env b -- §13.2.10: hiding is not a consuming destructor
-  EOpenExists {} -> bailOut >> pure rNone
-  ESealExists {} -> bailOut >> pure rNone
+  EOpenExists package witnesses pattern' body _ -> do
+    packageResult <- walkE env package
+    let packageViews = selectedPlaceViews env package
+        borrowedViews = filter vBorrowed packageViews
+        inheritedBorrow = not (null borrowedViews)
+        borrowOrigin = maybe (exprSpan package) vSpan (listToMaybe borrowedViews)
+        inheritedAnonBorrow = any vAnonBorrow packageViews
+    witnessBindings <- forM witnesses $ \witness -> do
+      key <- freshKey (nameText witness)
+      pure
+        ( nameText witness
+        , (plainV key (nameSpan witness))
+            { vQ = Just QZero
+            , vStaticKind = nameSpan witness `Set.member` eStaticKindBinders env
+            }
+        )
+    payloadBindings <- forM (patternBinderNames pattern') $ \binder -> do
+      key <- freshKey (nameText binder)
+      let checked = checkedPatternBinder env binder key
+      pure
+        ( nameText binder
+        , checked
+            { vSpan = if inheritedBorrow then borrowOrigin else vSpan checked
+            , vBorrowed = inheritedBorrow || vBorrowed checked
+            , vAnonBorrow = inheritedAnonBorrow || vAnonBorrow checked
+            }
+        )
+    let bound = filter ((/= "_") . fst) (witnessBindings ++ payloadBindings)
+    bodyResult <- walkE (bindVars bound env) body
+    let bodyUsage = wrUsage bodyResult `seqU` wrLatent bodyResult
+        deleteBound usage = foldr (Map.delete . vKey . snd) usage bound
+        (packageUsage, packageTaint) = flatR packageResult
+    forM_ bound $ \(_, variable) -> closeVar variable bodyUsage
+    pure
+      WalkResult
+        { wrUsage = packageUsage `seqU` deleteBound (wrUsage bodyResult)
+        , wrTaint = packageTaint <|> wrTaint bodyResult
+        , wrLatent = deleteBound (wrLatent bodyResult)
+        }
+  -- Explicit witnesses are checked in an erased quantity-0 context. The
+  -- payload is the only runtime component of the existential package.
+  ESealExists _ payload _ _ -> walkE env payload
   EListLit es _ -> walks es
   ESetLit es _ -> walks es
   EMapLit kvs _ -> walks (concatMap (\(k, v) -> [k, v]) kvs)
@@ -3938,20 +4028,21 @@ lamBind env (b, ms) = case bName b of
     pure
       ( Just
           ( nameText n
-              , (plainV k (bSpan b))
-                  { vQ = q
-                  , vStaticKind = binderIsStaticKind (eStaticKindBinders env) b ms
-                  , vBorrowed = isJust mark
-                  , vAnonBorrow = mark == Just (BorrowMark Nothing)
-                  , vFields = fields
-                  , vPathFields = pathFields
-                  , vDeps = deps
-                  , vPathDeps = pathDeps
-                  , vOpenTail = openTail
-                  , vStorageDuplicable = maybe False (typeProvesStorageDuplicable env) ty
-                  , vStoredTypeText = renderExprSrc <$> ty
-                  , vStoredTypeExpr = ty
-                  }
+              , applyBinderRuntimeQuantity q $
+                  (plainV k (bSpan b))
+                    { vQ = q
+                    , vStaticKind = binderIsStaticKind (eStaticKindBinders env) b ms
+                    , vBorrowed = isJust mark
+                    , vAnonBorrow = mark == Just (BorrowMark Nothing)
+                    , vFields = fields
+                    , vPathFields = pathFields
+                    , vDeps = deps
+                    , vPathDeps = pathDeps
+                    , vOpenTail = openTail
+                    , vStorageDuplicable = maybe False (typeProvesStorageDuplicable env) ty
+                    , vStoredTypeText = renderExprSrc <$> ty
+                    , vStoredTypeExpr = ty
+                    }
           )
       )
   where
@@ -4018,11 +4109,31 @@ walkMatch env scrut cases = do
 
 checkedPatternBinder :: Env -> Name -> Text -> VInfo
 checkedPatternBinder env binder key =
-  (plainV key (nameSpan binder))
-    { vQ = countedQ =<< Map.lookup (nameSpan binder) (ePatternBinderQuantities env)
-    , vStaticKind = nameSpan binder `Set.member` eStaticKindBinders env
-    , vBorrowed = nameSpan binder `Set.member` ePatternBinderBorrows env
-    }
+  applyBinderRuntimeQuantity outerQuantity $
+    maybe base (\ty -> mergeCheckedTypeFacts base (valueInfoFromType env key (nameSpan binder) ty)) checkedType
+  where
+    outerQuantity = countedQ =<< Map.lookup (nameSpan binder) (ePatternBinderQuantities env)
+    checkedType = Map.lookup (nameSpan binder) (eExpressionTypes env)
+    base =
+      (plainV key (nameSpan binder))
+        { vQ = outerQuantity
+        , vStaticKind = nameSpan binder `Set.member` eStaticKindBinders env
+        , vBorrowed = nameSpan binder `Set.member` ePatternBinderBorrows env
+        }
+
+    mergeCheckedTypeFacts checked typed =
+      checked
+        { vQ = joinFieldQuantities [vQ checked, vQ typed]
+        , vFields = mergeFieldQuantities (vFields checked) (vFields typed)
+        , vPathFields = mergePathQuantities (vPathFields checked) (vPathFields typed)
+        , vNonDupValue = vNonDupValue checked || vNonDupValue typed
+        , vNonDupFields = dedupPaths (vNonDupFields checked ++ vNonDupFields typed)
+        , vStorageDuplicable = vStorageDuplicable checked || vStorageDuplicable typed
+        , vStoredTypeText = vStoredTypeText typed
+        , vStoredTypeExpr = vStoredTypeExpr typed
+        , vDeps = vDeps typed
+        , vPathDeps = vPathDeps typed
+        }
 
 -- | Pattern-bound names, with quantity-1 fields of a tracked record
 -- scrutinee inherited by the bindings that receive them (§12.4), and

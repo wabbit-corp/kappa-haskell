@@ -1,0 +1,11 @@
+-- §11.1.2.5/§13.2.10: TypeLevel is runtime-capable, while every existential
+-- witness is quantity zero. Returning the opened witness is therefore a
+-- runtime use of erased data, just as it is for an ordinary Nat witness.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
+
+type PackedLevel : Type = exists (u : TypeLevel). Unit
+
+bad : PackedLevel -> TypeLevel
+let bad packed = open packed as exists (u). payload in u

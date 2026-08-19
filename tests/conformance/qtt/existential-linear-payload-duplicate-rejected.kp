@@ -1,0 +1,26 @@
+-- §12.2.3/§13.2.10: opening an existential does not erase the payload's
+-- componentwise storage obligations. A constructor payload containing a
+-- quantity-one field cannot be consumed twice through the opened binder.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+data Token : Type = Token
+data Box : Type = Box (1 token : Token)
+
+consumeToken : (1 token : Token) -> Int
+let consumeToken (1 token : Token) =
+    match token
+    case Token -> 1
+
+consume : (1 box : Box) -> Int
+let consume (1 box : Box) =
+    match box
+    case Box token -> consumeToken token
+
+type Packed : Type = exists (a : Type). Box
+
+bad : (1 packed : Packed) -> Int
+let bad (1 packed : Packed) =
+    open packed as exists (a). box in
+        consume box + consume box

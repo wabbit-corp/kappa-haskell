@@ -1,0 +1,26 @@
+-- §12.4/§13.2.10: opening a borrowed existential package yields a borrowed
+-- payload view. It cannot satisfy an owned quantity-one parameter.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+data Token : Type = Token
+data Box : Type = Box (1 token : Token)
+
+consumeToken : (1 token : Token) -> Int
+let consumeToken (1 token : Token) =
+    match token
+    case Token -> 1
+
+consume : (1 box : Box) -> Int
+let consume (1 box : Box) =
+    match box
+    case Box token -> consumeToken token
+
+type Packed : Type = exists (a : Type). Box
+
+bad : (& packed : Packed) -> Int
+let bad (& packed : Packed) =
+    open packed as exists (a). box in
+        consume box

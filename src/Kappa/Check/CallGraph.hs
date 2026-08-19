@@ -14,7 +14,9 @@ module Kappa.Check.CallGraph
   , constraintIdOccs
   , constructorFieldBinders
   , derivedEmptyInstance
+  , derivedComparatorBridgeBody
   , derivedEqualityBody
+  , derivedEqualityBodyWithEvidence
   , derivedEqualityCompleteBody
   , derivedEqualitySoundBody
   , derivedFunctionalEqualityMemberBody
@@ -423,11 +425,56 @@ derivedEqualityBody
   -> Name
   -> Expr
 derivedEqualityBody span' target shape xName yName =
+  derivedEqualityBodyWithMethods
+    span'
+    target
+    shape
+    (Map.map (map DerivedEqFieldEvidence) defaultEvidence)
+    xName
+    yName
+  where
+    defaultEvidence =
+      Map.fromList
+        [ (constructor, replicate (length fields) Nothing)
+        | (constructor, fields) <- shape
+        ]
+
+derivedEqualityBodyWithEvidence
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqEvidenceNames
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualityBodyWithEvidence span' target shape evidenceNames xName yName =
+  derivedEqualityBodyWithMethods
+    span'
+    target
+    shape
+    (Map.map (map DerivedEqFieldEvidence) evidenceNames)
+    xName
+    yName
+
+derivedEqualityBodyWithMethods
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> DerivedEqFieldMethods
+  -> Name
+  -> Name
+  -> Expr
+derivedEqualityBodyWithMethods span' target shape methods xName yName =
   EMatch (ETuple [EVar xName, EVar yName] span')
     ( [ MatchCase
           (derivedEqualityPairPattern span' target constructor xFields constructor yFields)
           Nothing
-          (compareFields fields xFields yFields)
+          ( compareFields
+              fields
+              (Map.findWithDefault defaultMethods constructor methods)
+              xFields
+              yFields
+          )
           span'
       | (constructor, fields) <- shape
       , let xFields = derivedEqualityFieldNames span' "__derive_x" constructor fields
@@ -437,31 +484,81 @@ derivedEqualityBody span' target shape xName yName =
     )
     span'
   where
-    compareFields [] [] [] = trueExpr
-    compareFields (field : fields) (left : lefts) (right : rights)
+    compareFields [] _ [] [] = trueExpr
+    compareFields (field : fields) (method : methods') (left : lefts) (right : rights)
       | dnfQuantity field == Q0 =
-          compareFields fields lefts rights
+          compareFields fields methods' lefts rights
       | not (hasRuntimeDerivedField fields) =
-          fieldEquality
-            span'
-            (dnfTypeExpression field)
-            left
-            right
+          fieldCondition field method left right
       | otherwise =
           EIf
-            [ ( fieldEquality
-                  span'
-                  (dnfTypeExpression field)
-                  left
-                  right
-              , compareFields fields lefts rights
+            [ ( fieldCondition field method left right
+              , compareFields fields methods' lefts rights
               )
             ]
             (Just falseExpr)
             span'
-    compareFields _ _ _ = falseExpr
+    compareFields _ _ _ _ = falseExpr
+    defaultMethods = repeat (DerivedEqFieldEvidence Nothing)
+    fieldCondition field method left right =
+      case method of
+        DerivedEqFieldEvidence evidence ->
+          fieldEqualityWithEvidence
+            span'
+            (dnfTypeExpression field)
+            evidence
+            left
+            right
+        DerivedEqFieldRecursive -> falseExpr
     trueExpr = EVar (Name "True" span')
     falseExpr = EVar (Name "False" span')
+
+-- | Expose both comparator applications to the ordinary checker under every
+-- constructor pair, then ask the unified derivation engine for the remaining
+-- equality. This is the proof-producing fallback for selected comparators
+-- that are extensionally structural only after checked normalization.
+derivedComparatorBridgeBody
+  :: Span
+  -> Expr
+  -> DerivedNominalShape
+  -> Name
+  -> Name
+  -> Expr
+derivedComparatorBridgeBody span' target shape xName yName =
+  EMatch (EVar xName)
+    [ MatchCase
+        (derivedEqualityCtorPattern span' target left leftFields)
+        Nothing
+        ( EMatch (EVar yName)
+            [ MatchCase
+                (derivedEqualityCtorPattern span' target right rightFields)
+                Nothing
+                -- Complete checked constructor facts bound the remaining
+                -- equality goal. The unified derivation engine may use
+                -- ordinary conversion, arithmetic normalization, and
+                -- selected evidence, but must still produce a checked proof.
+                (EDerive Nothing span')
+                span'
+            | (right, rightShape) <- shape
+            , let rightFields =
+                    derivedEqualityFieldNames
+                      span'
+                      "__derive_bridge_right"
+                      right
+                      rightShape
+            ]
+            span'
+        )
+        span'
+    | (left, leftShape) <- shape
+    , let leftFields =
+            derivedEqualityFieldNames
+              span'
+              "__derive_bridge_left"
+              left
+              leftShape
+    ]
+    span'
 
 bindDerivedEqEvidence
   :: Ctx
@@ -704,29 +801,35 @@ derivedEqualityCompleteBodyWithMethods
   -> Name
   -> Expr
 derivedEqualityCompleteBodyWithMethods span' target shape methods recursion xName _yName proofName =
-  matchRefl
-    span'
-    (EVar proofName)
-    ( EMatch (EVar xName)
-        [ MatchCase
-            (derivedEqualityCtorPattern span' target constructor fields)
-            Nothing
+  -- Split the ordinary endpoint before eliminating its equality proof.  The
+  -- refl constructor binds its endpoint parametrically; eliminating it first
+  -- lets branch conversion quote a runtime comparator through that erased
+  -- witness.  Constructor-first path induction keeps the comparator motive
+  -- rooted at the checked ordinary endpoint while retaining the same equality
+  -- certificate inside each finite branch.
+  EMatch (EVar xName)
+    [ MatchCase
+        (derivedEqualityCtorPattern span' target constructor fields)
+        Nothing
+        ( matchRefl
+            span'
+            (EVar proofName)
             ( proveReflexive
                 constructorFields
                 (Map.findWithDefault defaultMethods constructor methods)
                 fields
             )
-            span'
-        | (constructor, constructorFields) <- shape
-        , let fields =
-                derivedEqualityFieldNames
-                  span'
-                  "__derive_complete_x"
-                  constructor
-                  constructorFields
-        ]
+        )
         span'
-    )
+    | (constructor, constructorFields) <- shape
+    , let fields =
+            derivedEqualityFieldNames
+              span'
+              "__derive_complete_x"
+              constructor
+              constructorFields
+    ]
+    span'
   where
     proveReflexive [] _ [] = reflExpr span'
     proveReflexive (fieldInfo : fields) (method : methods') (field : rest)

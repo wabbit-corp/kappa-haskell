@@ -1,0 +1,9 @@
+-- §15.10: an unchanged visible measure on a recursive cycle cannot be
+-- repaired by a hidden phase, because the phase-constraint graph is cyclic.
+module main
+
+loop : Int -> Int
+let loop n decreases n = loop n
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_TERMINATION_UNVERIFIED

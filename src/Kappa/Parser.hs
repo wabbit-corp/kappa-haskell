@@ -1956,6 +1956,15 @@ pExpr = do
   peekToken >>= \case
     TokIdent "forall" -> pForall
     TokIdent "exists" -> pExists
+    TokIdent "do" -> do
+      -- Once the layout required by a do suite is present, the keyword
+      -- reading is syntactically active (§5.2).  Committing here preserves
+      -- the nested parse error instead of backtracking to an ordinary name
+      -- and reporting the suite indentation as the primary failure.
+      next <- peekTokenAt 1
+      case next of
+        TokNewline _ -> pDoExpr Nothing
+        _ -> pOpenExpr <|> pArrowExpr
     _ -> pOpenExpr <|> pArrowExpr
 
 -- Open expressions extend to the end of the construct.
@@ -2346,15 +2355,20 @@ namedBlockArg :: P Arg
 namedBlockArg = do
   sp <- currentSpan
   token TokLBrace
-  -- Empty named blocks are syntactically meaningful.  @C {}@ reaches the
-  -- constructor-metadata/default checker, which either fills every omitted
-  -- field or reports the required missing fields (§10.1.1).  Requiring one
-  -- item here made the parser reinterpret the braces as an empty map literal,
-  -- producing an unrelated @Eq _@ obligation.  A standalone @{}@ still goes
-  -- through 'pMapOrComp'; only braces in an application spine use this rule.
-  items <- clearExtraStops (sepBy namedItem (token TokComma))
-  void (optional (token TokComma))
-  token TokRBrace
+  items <- hideSoftNewlines $ do
+    -- Empty named blocks are syntactically meaningful.  @C {}@ reaches the
+    -- constructor-metadata/default checker, which either fills every omitted
+    -- field or reports the required missing fields (§10.1.1).  Requiring one
+    -- item here made the parser reinterpret the braces as an empty map literal,
+    -- producing an unrelated @Eq _@ obligation.  A standalone @{}@ still goes
+    -- through 'pMapOrComp'; only braces in an application spine use this rule.
+    -- The surrounding do-suite parser keeps soft newlines visible as statement
+    -- separators. Braces are an explicit syntactic boundary, so restore their
+    -- ordinary layout-transparent behavior for the complete named block.
+    parsed <- clearExtraStops (sepBy namedItem (token TokComma))
+    void (optional (token TokComma))
+    token TokRBrace
+    pure parsed
   ArgNamedBlock items <$> spanFrom sp
   where
     namedItem = do
@@ -3143,7 +3157,7 @@ pLetIn = do
   ELet binds body <$> spanFrom start
   where
     pLetInBody =
-      pSuiteOrExpr <|> sameIndentContinuationBody
+      sameIndentContinuationBody <|> pSuiteOrExpr
     sameIndentContinuationBody = try $ do
       -- In an expression suite opened by `=`, a line after `in` at the
       -- suite's indentation still belongs to that §5.4 continuation region.
@@ -3354,7 +3368,7 @@ pDoItem = do
       n <- pIdent
       mty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
-      e <- pSuiteOrExpr
+      e <- pStatementRhs
       DoVar n mty e <$> spanFrom start
     TokIdent "using" -> do
       pKeyword "using"
@@ -3373,7 +3387,7 @@ pDoItem = do
     TokIdent "defer" -> do
       pKeyword "defer"
       lbl <- optionMaybe (token TokAt *> pIdent)
-      e <- pSuiteOrExpr
+      e <- pStatementRhs
       DoDefer lbl e <$> spanFrom start
     TokIdent "return" -> do
       pKeyword "return"
@@ -3413,7 +3427,7 @@ pDoItem = do
       ty <- pExpr
       token TokRParen
       arrow <- (token TokBackArrow >> pure True) <|> (token TokEquals >> pure False)
-      e <- pSuiteOrExpr
+      e <- pStatementRhs
       sp <- spanFrom start
       let lb = LetBind True prefix (PVar n) (Just ty) e sp
       pure (if arrow then DoBind lb else DoLet lb)
@@ -3422,7 +3436,7 @@ pDoItem = do
       pat <- pPattern
       mty <- optionMaybe (token TokColon *> noEq pExpr)
       arrow <- (token TokBackArrow >> pure True) <|> (token TokEquals >> pure False)
-      e <- pSuiteOrExpr
+      e <- pStatementRhs
       sp <- spanFrom start
       let lb = LetBind False prefix pat mty e sp
       pure (if arrow then DoBind lb else DoLet lb)
@@ -3793,6 +3807,33 @@ pSuiteOrExpr = indentedSuite <|> pExpr
         ([], Just e) -> pure e
         (_, Just e) -> pure (EBlock decls (Just e) sp)
         (_, Nothing) -> parseFail "indented suite must end with an expression"
+
+-- A do-item RHS owns the following statement boundary. If an introducer has
+-- demanded an expression and the next physical line remains at the item's
+-- indentation, parse one expression for recovery but retain the typed layout
+-- error required by §5.4. Declaration-level bodies deliberately use
+-- 'pSuiteOrExpr': there, the same tokens denote a missing body followed by a
+-- separate declaration, and declaration recovery owns the diagnostic.
+pStatementRhs :: P Expr
+pStatementRhs = pSuiteOrExpr <|> rejectedSameIndentContinuation
+  where
+    rejectedSameIndentContinuation = do
+      pNewline
+      start <- currentSpan
+      expression <- withSameIndentContinuation pExpr
+      recordRecovered $
+        recoveryDiag
+          RecoveryNode
+            { rnSite = "continuation-layout"
+            , rnExpected = "expression-at-strictly-greater-indentation"
+            , rnConfidence = RecCertain
+            , rnCode = "E_UNEXPECTED_INDENTATION"
+            , rnOrigin = start
+            , rnSkipped = Just start
+            , rnMessage =
+                "unexpected indentation: a continued expression must begin at indentation strictly greater than its introducer (Spec §5.4)"
+            }
+      pure expression
 
 -- Expression continued on indented lines (used after ':' in signatures).
 pExprIndented :: P Expr

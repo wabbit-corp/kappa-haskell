@@ -1,0 +1,83 @@
+-- §14.5.1/§14.5.5: the finite provider proves the omitted Eq laws by
+-- exhaustive constructor reasoning even when the comparator normalizes
+-- through a transparent tag function rather than matching both values inline.
+module main
+
+data Direction : Type =
+    D00
+    D01
+    D02
+    D03
+    D04
+    D05
+    D06
+    D07
+    D08
+    D09
+    D10
+    D11
+    D12
+    D13
+    D14
+    D15
+    D16
+    D17
+    D18
+    D19
+    D20
+    D21
+    D22
+    D23
+
+directionCode : Direction -> Int
+let directionCode direction =
+    match direction
+    case D00 -> 0
+    case D01 -> 1
+    case D02 -> 2
+    case D03 -> 3
+    case D04 -> 4
+    case D05 -> 5
+    case D06 -> 6
+    case D07 -> 7
+    case D08 -> 8
+    case D09 -> 9
+    case D10 -> 10
+    case D11 -> 11
+    case D12 -> 12
+    case D13 -> 13
+    case D14 -> 14
+    case D15 -> 15
+    case D16 -> 16
+    case D17 -> 17
+    case D18 -> 18
+    case D19 -> 19
+    case D20 -> 20
+    case D21 -> 21
+    case D22 -> 22
+    case D23 -> 23
+
+instance Eq Direction =
+    let (==) left right = directionCode left == directionCode right
+
+data Command : Type =
+    Move Direction
+    Choose Int
+    Rest
+
+commandTag : Command -> Int
+let commandTag command =
+    match command
+    case Move _ -> 0
+    case Choose _ -> 1
+    case Rest -> 2
+
+instance Eq Command =
+    let (==) left right =
+        match (left, right)
+        case (Move leftDirection, Move rightDirection) -> leftDirection == rightDirection
+        case (Choose leftIndex, Choose rightIndex) -> leftIndex == rightIndex
+        case _ -> commandTag left == commandTag right
+
+--! mode check
+--! assertNoErrors

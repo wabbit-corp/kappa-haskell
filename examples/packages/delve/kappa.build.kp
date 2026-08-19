@@ -3,7 +3,7 @@
 -- provenance; this file is the executable manifest consumed by `kappa build`.
 let buildConfig : BuildConfig = package
     { name = "delve"
-    , version = semver "0.2.0"
+    , version = semver "0.3.0"
     , sourceRoots = [sourceRoot "src", sourceRoot "test"]
     , fragmentAxes =
         [ axis "backend" [tag "native"]

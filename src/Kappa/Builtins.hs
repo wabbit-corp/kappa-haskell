@@ -74,6 +74,7 @@ module Kappa.Builtins
   , prelFin
   , prelRefined
   , associatedStaticCarrierGlobals
+  , intrinsicCompileTimeCarrierGlobals
 
     -- * Prelude constructors
   , prelTrue
@@ -363,6 +364,14 @@ associatedStaticCarrierGlobals =
   , prelElab
   , gPrel "ElabGoal"
   ]
+
+-- | Exact semantic identities whose inhabitants are intrinsically
+-- compile-time-only under §11.1.6.1. 'TypeLevel' remains an associated-static
+-- carrier, but is deliberately absent here because it is ordinary
+-- runtime-capable data (§11.1.2.5).
+intrinsicCompileTimeCarrierGlobals :: [GName]
+intrinsicCompileTimeCarrierGlobals =
+  filter (/= prelTypeLevel) associatedStaticCarrierGlobals
 
 -- ── Prelude constructors ─────────────────────────────────────────────
 

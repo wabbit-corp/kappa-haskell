@@ -1063,7 +1063,10 @@ edgeStructuralGraph st funMap selectedNames useSchemaDimension edge =
             else do
               let ordinaryEntries =
                     [ ((sourceIndex, targetIndex), change)
-                    | (targetIndex, argument) <- zip [0 :: Int ..] normalizedArguments
+                    | (targetIndex, arguments) <-
+                        zip [0 :: Int ..]
+                          (zipWith definitionallyEqualForms targetArguments normalizedArguments)
+                    , argument <- arguments
                     , (sourceIndex, change) <-
                         structuralArgChanges
                           srcParams
@@ -1087,6 +1090,13 @@ edgeStructuralGraph st funMap selectedNames useSchemaDimension edge =
                       }
                 )
     _ -> pure Nothing
+  where
+    -- Normalization can reveal constructor reconstruction, but it can also
+    -- rewrite a typed field projection to an eliminator match. Both terms are
+    -- definitionally equal, so either may supply structural provenance.
+    definitionallyEqualForms original normalized
+      | original == normalized = [original]
+      | otherwise = [original, normalized]
 
 -- | Classify the static declaration-schema component of one SCT call edge.
 -- Calls carry their exact finalized universe spine.  We match that spine
@@ -1206,6 +1216,15 @@ termStructuralOrigins depth origins = go
       CApp _ function _ -> go function
       CProj receiver field -> Set.map (appendStep (StructuralField field)) (go receiver)
       CProjAt receiver field _ -> Set.map (appendStep (StructuralField field)) (go receiver)
+      -- Named fields of nominal constructors elaborate to a one-arm typed
+      -- eliminator rather than 'CProjAt'. Replay that checked pattern binding
+      -- so selecting the field retains its structural-child provenance. Other
+      -- eliminators remain fail-closed.
+      CMatch scrutinee _ _ [CaseAlt pattern' Nothing body] ->
+        let depth' = depth + patBindersC pattern'
+            origins' =
+              bindPatternStructuralOrigins depth origins scrutinee pattern'
+         in termStructuralOrigins depth' origins' body
       CCtorI constructor universes _ arguments ->
         let payload = [caTerm argument | argument <- arguments, caPayload argument]
          in if null payload
@@ -1280,8 +1299,12 @@ measureSccOKWithEdges funMap mEdges = do
             Just edges -> case traverse (measureCallOfEdge funMap) edges of
               Nothing -> pure False
               Just calls -> do
-                oks <- mapM measureCallOK calls
-                pure (not (null calls) && and oks)
+                changes <- traverse measureCallChange calls
+                pure $ case sequence changes of
+                  Nothing -> False
+                  Just classified ->
+                    not (null classified)
+                      && isJust (canonicalHiddenPhaseAssignment classified)
 
 measureSpecsCompatible :: [MeasureSpec] -> CheckM Bool
 measureSpecsCompatible [] = pure False
@@ -1327,10 +1350,19 @@ measureCallOfEdge funMap edge = do
           , mcRelation = msRelation srcSpec
           , mcProof = msProof srcSpec
           , mcSource = src
+          , mcTarget = edgeTo edge
           }
 
-measureCallOK :: MeasureCall -> CheckM Bool
-measureCallOK call = do
+data MeasureChange
+  = MeasureStrict !GName !GName
+  | MeasureNonIncreasing !GName !GName
+
+data VisibleMeasureChange
+  = VisibleMeasureStrict
+  | VisibleMeasureNonIncreasing
+
+measureCallChange :: MeasureCall -> CheckM (Maybe MeasureChange)
+measureCallChange call = do
   let d = mcDepth call
       facts = mcFacts call
       oldM0 = mcOldMeasure call
@@ -1338,46 +1370,193 @@ measureCallOK call = do
       mRel = mcRelation call
       mProof = mcProof call
       src = mcSource call
+      from = tfName src
+      target = mcTarget call
+      classify = fmap $ \case
+        VisibleMeasureStrict -> MeasureStrict from target
+        VisibleMeasureNonIncreasing -> MeasureNonIncreasing from target
   oldM <- normalizeTermAt d oldM0
   newM <- normalizeTermAt d newM0
   case (mRel, mProof) of
-    (Nothing, Nothing) -> defaultMeasureCallOK (tfNatLvls src) d facts oldM newM
+    (Nothing, Nothing) -> classify <$> defaultMeasureCallChange src d facts oldM newM
     (Nothing, Just _proofE) ->
       -- `using` is parsed and retained, but erased proof terms are not a
       -- termination oracle. Until proof checking produces inspectable descent
       -- evidence, a proof annotation can only accompany an internally proved
       -- measure decrease.
-      defaultMeasureCallOK (tfNatLvls src) d facts oldM newM
+      classify <$> defaultMeasureCallChange src d facts oldM newM
     (Just rel, Nothing) -> do
       wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
       holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
-      pure (wf && holds)
+      if wf && holds
+        then pure (Just (MeasureStrict from target))
+        else if wf
+          then do
+            equal <- visibleMeasuresEqual src d facts oldM newM
+            pure
+              ( if equal
+                  then Just (MeasureNonIncreasing from target)
+                  else Nothing
+              )
+          else pure Nothing
     (Just rel, Just _proofE) -> do
       wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
       holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
-      pure (wf && holds)
+      if wf && holds
+        then pure (Just (MeasureStrict from target))
+        else if wf
+          then do
+            equal <- visibleMeasuresEqual src d facts oldM newM
+            pure
+              ( if equal
+                  then Just (MeasureNonIncreasing from target)
+                  else Nothing
+              )
+          else pure Nothing
 
-defaultMeasureCallOK :: Set Int -> Int -> [AFact] -> Term -> Term -> CheckM Bool
-defaultMeasureCallOK natLvls d facts oldM newM = do
+defaultMeasureCallChange
+  :: TermFun
+  -> Int
+  -> [AFact]
+  -> Term
+  -> Term
+  -> CheckM (Maybe VisibleMeasureChange)
+defaultMeasureCallChange source d facts oldM newM = do
   let oldCs = rankComponents oldM
       newCs = rankComponents newM
+      domains =
+        tfMeasure source
+          >>= (traverse arithmeticDomainForCarrier . measureTypeComponents . msMeasureTypeKey)
   if length oldCs /= length newCs
-    then pure False
-    else do
-      nonNegOld <- mapM (componentNonNegative oldCs) oldCs
-      nonNegNew <- mapM (componentNonNegative newCs) newCs
-      dec <- lexDecreases (zip oldCs newCs)
-      pure (and nonNegOld && and nonNegNew && dec)
+    then pure Nothing
+    else case domains of
+      Just selectedDomains
+        | length selectedDomains == length oldCs -> do
+            nonNegOld <- sequence (zipWith componentNonNegative selectedDomains oldCs)
+            nonNegNew <- sequence (zipWith componentNonNegative selectedDomains newCs)
+            if and nonNegOld && and nonNegNew
+              then lexChange (zip3 selectedDomains oldCs newCs)
+              else pure Nothing
+      _ -> legacyDefaultMeasureCallChange natLvls d facts oldCs newCs
   where
-    componentNonNegative _ t = proveNonNeg natLvls facts d t
-    lexDecreases [] = pure False
-    lexDecreases ((oldC, newC) : rest) = do
-      lt <- proveLt natLvls facts d newC oldC
+    natLvls = tfNatLvls source
+    measureTypeComponents = \case
+      CRecordT fields -> rankComponents (CRecordV fields)
+      measureType -> [measureType]
+    componentNonNegative ArithmeticNatural _ = pure True
+    componentNonNegative domain term =
+      selectedArithmeticExpression domain d term >>= \case
+        Just expression ->
+          proveFact natLvls facts (AFact ACmpLe (AConst 0) expression)
+        Nothing -> proveNonNeg natLvls facts d term
+    lexChange [] =
+      pure (Just VisibleMeasureNonIncreasing)
+    lexChange ((domain, oldC, newC) : rest) = do
+      lt <- proveSelected ACmpLt domain newC oldC
       if lt
-        then pure True
+        then pure (Just VisibleMeasureStrict)
         else do
-          eq <- proveEq natLvls facts d newC oldC
-          if eq then lexDecreases rest else pure False
+          eq <- proveSelected ACmpEq domain newC oldC
+          if eq
+            then lexChange rest
+            else do
+              nonIncreasing <- proveSelected ACmpLe domain newC oldC
+              if nonIncreasing
+                then lexChange rest
+                else pure Nothing
+
+    proveSelected comparison domain left right = do
+      leftExpression <- selectedArithmeticExpression domain d left
+      rightExpression <- selectedArithmeticExpression domain d right
+      case (leftExpression, rightExpression) of
+        (Just left', Just right') ->
+          proveFact natLvls facts (AFact comparison left' right')
+        _ -> case comparison of
+          ACmpLt -> proveLt natLvls facts d left right
+          ACmpEq -> proveEq natLvls facts d left right
+          _ -> pure False
+
+legacyDefaultMeasureCallChange
+  :: Set Int
+  -> Int
+  -> [AFact]
+  -> [Term]
+  -> [Term]
+  -> CheckM (Maybe VisibleMeasureChange)
+legacyDefaultMeasureCallChange natLvls d facts oldComponents newComponents = do
+  nonNegOld <- mapM (proveNonNeg natLvls facts d) oldComponents
+  nonNegNew <- mapM (proveNonNeg natLvls facts d) newComponents
+  if and nonNegOld && and nonNegNew
+    then lexChange (zip oldComponents newComponents)
+    else pure Nothing
+  where
+    lexChange [] =
+      pure (Just VisibleMeasureNonIncreasing)
+    lexChange ((oldComponent, newComponent) : rest) = do
+      strict <- proveLt natLvls facts d newComponent oldComponent
+      if strict
+        then pure (Just VisibleMeasureStrict)
+        else do
+          equal <- proveEq natLvls facts d newComponent oldComponent
+          if equal then lexChange rest else pure Nothing
+
+visibleMeasuresEqual
+  :: TermFun
+  -> Int
+  -> [AFact]
+  -> Term
+  -> Term
+  -> CheckM Bool
+visibleMeasuresEqual source d facts oldMeasure newMeasure = do
+  let oldComponents = rankComponents oldMeasure
+      newComponents = rankComponents newMeasure
+  if length oldComponents /= length newComponents
+    then pure False
+    else
+      and
+        <$> sequence
+          [ proveEq (tfNatLvls source) facts d newComponent oldComponent
+          | (oldComponent, newComponent) <- zip oldComponents newComponents
+          ]
+
+canonicalHiddenPhaseAssignment :: [MeasureChange] -> Maybe (Map GName Int)
+canonicalHiddenPhaseAssignment changes
+  | all isAcyclic components = Just assignment
+  | otherwise = Nothing
+  where
+    names =
+      Set.toList . Set.fromList $
+        concatMap
+          (\case
+             MeasureStrict from target -> [from, target]
+             MeasureNonIncreasing from target -> [from, target])
+          changes
+    nonIncreasingTargets from =
+      [ target
+      | MeasureNonIncreasing source target <- changes
+      , source == from
+      ]
+    nodes =
+      [ (name, name, nonIncreasingTargets name)
+      | name <- names
+      ]
+    components = stronglyConnComp nodes
+    isAcyclic = \case
+      AcyclicSCC _ -> True
+      CyclicSCC _ -> False
+    assignment = execState (mapM_ assignPhase names) Map.empty
+    assignPhase :: GName -> State (Map GName Int) Int
+    assignPhase name = do
+      known <- gets (Map.lookup name)
+      case known of
+        Just phase -> pure phase
+        Nothing -> do
+          successors <- mapM assignPhase (nonIncreasingTargets name)
+          let phase = case successors of
+                [] -> 0
+                _ -> 1 + maximum successors
+          modify' (Map.insert name phase)
+          pure phase
 
 relationWellFoundedAtCall :: Set Int -> Int -> [AFact] -> RelationSpec -> Term -> Term -> CheckM Bool
 relationWellFoundedAtCall natLvls d facts rel oldM newM

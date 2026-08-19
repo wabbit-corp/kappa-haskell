@@ -818,6 +818,8 @@ registry =
       "A compiler-generated constructor pattern, patch, or branch environment does not match the checked source-field telescope. Compilation fails closed rather than guessing binder positions."
   , ent "E_INTERNAL_GENERATED_APPLICATION" (Just "kappa.internal.compiler")
       "A compiler-generated application does not match the checked dependent telescope from which its argument spine was derived."
+  , ent "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT" (Just "kappa.internal.compiler")
+      "A generated Eq completeness proof cannot be transported through the checked equality interface while preserving its selected comparator and dictionary evidence."
   , ent "E_INTERNAL_ARITHMETIC_PROOF" (Just "kappa.internal.compiler")
       "The value-arithmetic elaborator selected evidence whose checked law does not prove the equality required by a generated transport."
   , ent "E_INTERNAL_ARITHMETIC_TRANSPORT" (Just "kappa.internal.compiler")

@@ -1,0 +1,31 @@
+-- §12.4.2/§13.2.10: a computed projection retains the ownership of its
+-- selected stable-place roots. Opening an existential selected from a borrowed
+-- root therefore yields a borrowed payload that cannot satisfy an owned use.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+data Token : Type = Token
+data Box : Type = Box (1 token : Token)
+
+consumeToken : (1 token : Token) -> Int
+let consumeToken (1 token : Token) =
+    match token
+    case Token -> 1
+
+consume : (1 box : Box) -> Int
+let consume (1 box : Box) =
+    match box
+    case Box token -> consumeToken token
+
+type Packed : Type = exists (a : Type). Box
+type Holder : Type = (packed : Packed,)
+
+projection packedOf (place holder : Holder) : Packed =
+    yield holder.packed
+
+bad : (& holder : Holder) -> Int
+let bad (& holder : Holder) =
+    open (packedOf holder) as exists (a). box in
+        consume box

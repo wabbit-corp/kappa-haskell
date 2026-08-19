@@ -550,6 +550,690 @@ checkTraitMemberLambdaAgainst ctx ty binders body site = do
         "trait member has more parameters than its checked member type"
       check ctx body forced
 
+-- | One binder from an already-checked generated member lambda. Retaining
+-- the semantic domain beside the Core contract lets the equality transport
+-- builder replay every argument through the ordinary checked telescopes.
+data DerivedMemberBinder = DerivedMemberBinder
+  { dmbMode :: !ObservationMode
+  , dmbIcit :: !Icit
+  , dmbQuantity :: !Q
+  , dmbName :: !Text
+  , dmbDomain :: !Value
+  }
+
+data DerivedComparatorBridge = DerivedComparatorBridge
+  { dcbTerm :: !Term
+  , dcbType :: !Value
+  }
+
+-- | Rebuild the exact @Eq.eqComplete@ telescope with only its final decision
+-- endpoint replaced by the compiler's structural comparator. The telescope
+-- itself remains the checked trait member ABI, including modes, quantities,
+-- borrow markers, assumptions, and runtime-erasure evidence. The replacement
+-- expression is elaborated under that exact telescope and therefore retains
+-- the selected field dictionaries by identity.
+derivedStructuralEqualityMemberType
+  :: Ctx
+  -> Span
+  -> Value
+  -> Term
+  -> [Name]
+  -> Expr
+  -> CheckM (Maybe Term)
+derivedStructuralEqualityMemberType outerCtx site memberType memberTypeAuthority explicitBinders comparator =
+  go outerCtx memberType memberTypeAuthority explicitBinders
+  where
+    go activeCtx currentType currentAuthority remainingExplicitBinders = do
+      forcedType <- forceM currentType
+      case (forcedType, currentAuthority) of
+        ( VPiBoundM mode icit quantity borrowed expectedName assumption domain closure
+          , CPiRuntimeM authorityMode formation authorityIcit authorityQuantity authorityBorrowed authorityName authorityAssumption origin runtimeErasure authorityDomain authorityCodomain
+          )
+            | authorityMode == mode
+            , authorityIcit == icit
+            , authorityQuantity == quantity
+            , authorityBorrowed == borrowed
+            , authorityAssumption == assumption -> do
+                withBound <- extendLevelAssumption site activeCtx assumption
+                let (binderName, nextExplicitBinders) =
+                      case (authorityIcit, remainingExplicitBinders) of
+                        (Expl, explicitBinder : rest) ->
+                          (nameText explicitBinder, rest)
+                        _ ->
+                          ( if T.null authorityName then expectedName else authorityName
+                          , remainingExplicitBinders
+                          )
+                    nextCtx =
+                      bindCtxMQB
+                        mode
+                        quantity
+                        binderName
+                        (icit == Impl)
+                        borrowed
+                        domain
+                        withBound
+                codomain <- clApp closure (VRigid (ctxLen activeCtx) [])
+                structuralDomain <-
+                  replaceDecisionGoal activeCtx authorityDomain
+                go nextCtx codomain authorityCodomain nextExplicitBinders >>= \case
+                  Just structuralCodomain ->
+                    pure
+                      ( Just
+                          ( CPiRuntimeM
+                              authorityMode
+                              formation
+                              authorityIcit
+                              authorityQuantity
+                              authorityBorrowed
+                              authorityName
+                              authorityAssumption
+                              origin
+                              runtimeErasure
+                              structuralDomain
+                              structuralCodomain
+                          )
+                      )
+                  Nothing -> pure Nothing
+        (VPi {}, _) -> pure Nothing
+        (_, CPiRuntimeM {}) -> pure Nothing
+        (_, _)
+          | null remainingExplicitBinders ->
+              Just <$> replaceDecisionGoal activeCtx currentAuthority
+          | otherwise -> pure Nothing
+
+    replaceDecisionGoal activeCtx goal = do
+      let (equalityHead, equalityArguments) = spineOfTerm goal
+          explicitCount =
+            length [() | (Expl, _) <- equalityArguments]
+      evaluation <- ec_
+      goalValue <- evalIn activeCtx goal >>= forceM
+      decisionGoal <-
+        case canonicalEqualityPayload evaluation goalValue of
+          Just (carrier, _, right) -> do
+            carrier' <- forceM carrier
+            right' <- forceM right
+            pure
+              ( case carrier' of
+                  VGlobN boolean [] -> boolean == prelBool
+                  VGlobI boolean _ [] -> boolean == prelBool
+                  _ -> False
+              , case right' of
+                  VCtor constructor _ -> constructor == prelTrue
+                  _ -> False
+              )
+          Nothing -> pure (False, False)
+      case decisionGoal of
+        (True, True)
+          | termHeadGlob (stripIdentityWrappers equalityHead) == Just prelEqType
+          , explicitCount >= 2 -> do
+              (comparatorTerm, comparatorType) <- infer activeCtx comparator
+              booleanType <- globalValueM prelBool []
+              comparatorIsBoolean <-
+                unifyDefinitional activeCtx comparatorType booleanType
+              pure
+                ( if comparatorIsBoolean
+                    then
+                      replaceSecondLastExplicitArgument
+                        comparatorTerm
+                        equalityHead
+                        equalityArguments
+                    else goal
+                )
+        _ -> pure goal
+
+    replaceSecondLastExplicitArgument replacement equalityHead arguments =
+      let explicitCount = length [() | (Expl, _) <- arguments]
+          replace index argument =
+            case argument of
+              (Expl, _)
+                | index == explicitCount - 2 -> (Expl, replacement)
+              _ -> argument
+          (_, replaced) =
+            List.mapAccumL
+              (\index argument ->
+                 ( index + if fst argument == Expl then 1 else 0
+                 , replace index argument
+                 ))
+              0
+              arguments
+       in List.foldl'
+            (\function (argumentIcit, argument) ->
+               CApp argumentIcit function argument)
+            equalityHead
+            replaced
+
+-- | Adapt a member checked against the structural comparator to the exact
+-- selected comparator. Every changed proposition crosses the boundary through
+-- 'canonicalizeProviderEqualityProof', which emits a replayable certificate
+-- only when authenticated provider normalization proves the endpoints equal.
+-- Unsupported comparator differences fail closed as an internal derive error.
+transportDerivedEqualityMember
+  :: Ctx
+  -> Span
+  -> DerivedComparatorBridge
+  -> Value
+  -> Value
+  -> Term
+  -> CheckM Term
+transportDerivedEqualityMember outerCtx site bridge exactMemberType sourceMemberType checked =
+  go outerCtx exactMemberType sourceMemberType checked [] >>= \case
+    Just transported -> pure transported
+    Nothing -> do
+      errAt
+        site
+        "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT"
+        (Just "kappa.internal.compiler")
+        "could not transport the checked structural equality member to its exact selected comparator"
+      freshMetaFor outerCtx exactMemberType
+  where
+    go activeCtx exactType sourceType sourceTerm explicitLevels = do
+      exactForced <- forceM exactType
+      sourceForced <- forceM sourceType
+      case (exactForced, sourceForced) of
+        ( VPiBoundM exactMode exactIcit exactQuantity exactBorrowed exactName exactAssumption exactDomain exactClosure
+          , VPiBoundM sourceMode sourceIcit sourceQuantity sourceBorrowed _ sourceAssumption sourceDomain sourceClosure
+          )
+            | exactMode == sourceMode
+            , exactIcit == sourceIcit
+            , exactQuantity == sourceQuantity
+            , exactBorrowed == sourceBorrowed
+            , exactAssumption == sourceAssumption -> do
+                withBound <- extendLevelAssumption site activeCtx exactAssumption
+                let nextCtx =
+                      bindCtxMQB
+                        exactMode
+                        exactQuantity
+                        exactName
+                        (exactIcit == Impl)
+                        exactBorrowed
+                        exactDomain
+                        withBound
+                    exactArgument = CVar 0
+                    explicitLevels' =
+                      if exactIcit == Expl
+                        then explicitLevels ++ [ctxLen activeCtx]
+                        else explicitLevels
+                (sourceArgument, sourceArgumentType) <-
+                  adaptProof
+                    nextCtx
+                    explicitLevels'
+                    exactArgument
+                    exactDomain
+                    sourceDomain
+                sourceArgumentMatches <-
+                  unifyDefinitional nextCtx sourceArgumentType sourceDomain
+                if not sourceArgumentMatches
+                  then pure Nothing
+                  else do
+                    exactCodomain <-
+                      clApp exactClosure (VRigid (ctxLen activeCtx) [])
+                    sourceArgumentValue <- evalIn nextCtx sourceArgument
+                    sourceCodomain <- clApp sourceClosure sourceArgumentValue
+                    body <-
+                      go
+                        nextCtx
+                        exactCodomain
+                        sourceCodomain
+                        ( CApp
+                            sourceIcit
+                            (shiftTerm 1 0 sourceTerm)
+                            sourceArgument
+                        )
+                        explicitLevels'
+                    pure
+                      ( CLamM
+                          exactMode
+                          exactIcit
+                          exactQuantity
+                          exactName
+                          <$> body
+                      )
+        (VPi {}, _) -> pure Nothing
+        (_, VPi {}) -> pure Nothing
+        (_, _) -> do
+          (transported, transportedType) <-
+            adaptProof
+              activeCtx
+              explicitLevels
+              sourceTerm
+              sourceType
+              exactType
+          matches <- unifyDefinitional activeCtx transportedType exactType
+          pure (transported <$ guard matches)
+
+    adaptProof activeCtx explicitLevels source actual expected = do
+      baseline <- get
+      definitionallyEqual <- unifyDefinitional activeCtx actual expected
+      if definitionallyEqual
+        then pure (source, expected)
+        else do
+          put baseline
+          transportEqualityEndpoint activeCtx explicitLevels source actual expected
+
+    transportEqualityEndpoint activeCtx explicitLevels source actual expected = do
+      evaluation <- ec_
+      actual' <- forceM actual
+      expected' <- forceM expected
+      case
+          ( canonicalEqualityPayload evaluation actual'
+          , canonicalEqualityPayload evaluation expected'
+          )
+        of
+          ( Just (actualCarrier, actualLeft, actualRight)
+            , Just (expectedCarrier, expectedLeft, expectedRight)
+            )
+              | sameValue activeCtx evaluation actualCarrier expectedCarrier
+              , sameValue activeCtx evaluation actualRight expectedRight -> do
+                  (bridgeProof, bridgeEquality) <- bridgeAt activeCtx explicitLevels
+                  case canonicalEqualityPayload evaluation bridgeEquality of
+                    Just (bridgeCarrier, bridgeLeft, bridgeRight)
+                      | sameValue activeCtx evaluation actualCarrier bridgeCarrier -> do
+                          oriented <-
+                            if sameValue activeCtx evaluation actualLeft bridgeLeft
+                                && sameValue activeCtx evaluation expectedLeft bridgeRight
+                              then pure (Just bridgeProof)
+                              else
+                                if sameValue activeCtx evaluation actualLeft bridgeRight
+                                    && sameValue activeCtx evaluation expectedLeft bridgeLeft
+                                  then
+                                    Just
+                                      <$> reverseEqualityProof
+                                        activeCtx
+                                        bridgeCarrier
+                                        bridgeLeft
+                                        bridgeRight
+                                        bridgeProof
+                                        bridgeEquality
+                                  else pure Nothing
+                          case oriented of
+                            Nothing -> pure (source, actual)
+                            Just endpointProof -> do
+                              actualLeftTerm <- quoteIn activeCtx actualLeft
+                              expectedLeftTerm <- quoteIn activeCtx expectedLeft
+                              transported <-
+                                buildTransportAlongEqualityWithType
+                                  activeCtx
+                                  site
+                                  "derived comparator endpoint"
+                                  Nothing
+                                  source
+                                  actual
+                                  expected
+                                  actualCarrier
+                                  actualLeftTerm
+                                  expectedLeftTerm
+                                  endpointProof
+                              pure (transported, expected)
+                    _ -> pure (source, actual)
+          _ -> pure (source, actual)
+
+    bridgeAt activeCtx explicitLevels =
+      case explicitLevels of
+        xLevel : yLevel : _ -> do
+          let depth = ctxLen activeCtx
+              liftedBridge =
+                shiftTerm (depth - ctxLen outerCtx) 0 (dcbTerm bridge)
+              variable level = CVar (depth - level - 1)
+              xTerm = variable xLevel
+              yTerm = variable yLevel
+              applied = CApp Expl (CApp Expl liftedBridge xTerm) yTerm
+          xValue <- evalIn activeCtx xTerm
+          yValue <- evalIn activeCtx yTerm
+          forceM (dcbType bridge) >>= \case
+            VPiM _ Expl _ _ _ _ firstClosure -> do
+              afterX <- clApp firstClosure xValue >>= forceM
+              case afterX of
+                VPiM _ Expl _ _ _ _ secondClosure -> do
+                  result <- clApp secondClosure yValue
+                  pure (applied, result)
+                _ -> pure (applied, dcbType bridge)
+            _ -> pure (applied, dcbType bridge)
+        _ -> pure (dcbTerm bridge, dcbType bridge)
+
+    reverseEqualityProof activeCtx carrier left right proof proofType = do
+      carrierTerm <- quoteIn activeCtx carrier
+      leftTerm <- quoteIn activeCtx left
+      rightTerm <- quoteIn activeCtx right
+      carrierLevel <- fromMaybe LZero <$> typeValueClassifierLevel activeCtx carrier
+      globalTypeIn activeCtx site (gPrel "sym") >>= \case
+        Just (symmetry, symmetryType) ->
+          fst
+            <$> applyGeneratedCoreSpine
+              activeCtx
+              site
+              symmetry
+              symmetryType
+              [ (Impl, carrierTerm, VSort carrierLevel)
+              , (Impl, leftTerm, carrier)
+              , (Impl, rightTerm, carrier)
+              , (Expl, proof, proofType)
+              ]
+        Nothing -> pure proof
+
+    sameValue activeCtx evaluation left right =
+      convertible
+        evaluation
+        (ctxLen activeCtx)
+        (force evaluation left)
+        (force evaluation right)
+
+-- | Check a pointwise equality between the selected instance comparator and
+-- the compiler's structural comparator. The proof body exposes each nominal
+-- constructor pair and delegates only the residual proposition to the unified
+-- derivation engine. The resulting lambda is ordinary Core and is
+-- reclassified before it can authorize endpoint transport.
+checkDerivedComparatorBridge
+  :: Ctx
+  -> Span
+  -> Expr
+  -> Term
+  -> DerivedNominalShape
+  -> Term
+  -> Value
+  -> Expr
+  -> Name
+  -> Name
+  -> CheckM (Maybe DerivedComparatorBridge)
+checkDerivedComparatorBridge outerCtx site target targetTerm shape selectedComparator comparatorType structuralComparator xName yName = do
+  targetType <- evalIn outerCtx targetTerm
+  let xCtx = bindCtxMQ Ordinary QW (nameText xName) False targetType outerCtx
+      yCtx = bindCtxMQ Ordinary QW (nameText yName) False targetType xCtx
+      xTerm = CVar 1
+      yTerm = CVar 0
+  (selectedResult, selectedResultType) <-
+    applyGeneratedCoreSpine
+      yCtx
+      site
+      (shiftTerm 2 0 selectedComparator)
+      comparatorType
+      [ (Expl, xTerm, targetType)
+      , (Expl, yTerm, targetType)
+      ]
+  (structuralResult, structuralResultType) <-
+    infer yCtx structuralComparator
+  booleanType <- globalValueM prelBool []
+  selectedIsBoolean <-
+    unifyDefinitional yCtx selectedResultType booleanType
+  structuralIsBoolean <-
+    unifyDefinitional yCtx structuralResultType booleanType
+  if not (selectedIsBoolean && structuralIsBoolean)
+    then malformed "a derived Eq comparator bridge did not produce Bool on both sides"
+    else do
+      selectedValue <- evalIn yCtx selectedResult
+      structuralValue <- evalIn yCtx structuralResult
+      bridgeGoal <-
+        globalValueM
+          prelEqType
+          [ (Impl, booleanType)
+          , (Expl, selectedValue)
+          , (Expl, structuralValue)
+          ]
+      checkedBody <-
+        check
+          yCtx
+          (derivedComparatorBridgeBody site target shape xName yName)
+          bridgeGoal
+      bridgeGoalTerm <- quoteIn yCtx bridgeGoal
+      let bridgeTerm =
+            CLamM Ordinary Expl QW (nameText xName)
+              (CLamM Ordinary Expl QW (nameText yName) checkedBody)
+          bridgeTypeTerm =
+            CPiRuntimeM Ordinary FormationOrdinary Expl QW False
+              (nameText xName) Nothing BinderGenerated RuntimeRelevant
+              targetTerm
+              ( CPiRuntimeM Ordinary FormationOrdinary Expl QW False
+                  (nameText yName) Nothing BinderGenerated RuntimeRelevant
+                  (shiftTerm 1 0 targetTerm)
+                  bridgeGoalTerm
+              )
+      bridgeType <- evalIn outerCtx bridgeTypeTerm
+      pure (Just (DerivedComparatorBridge bridgeTerm bridgeType))
+  where
+    malformed message = do
+      errAt
+        site
+        "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT"
+        (Just "kappa.internal.compiler")
+        message
+      pure Nothing
+
+-- | Put a generated @Eq.eqComplete@ proof into the path-inductive form
+-- required by §11.4.1 and §10.2.1. The structural proof is first elaborated
+-- by the ordinary source checker. We then specialize that checked lambda to
+-- @x x refl@ for the base case and transport the result along the caller's
+-- equality proof with the resolved standard @subst@ identity.
+--
+-- The motive comes from the instantiated member result type, so it contains
+-- the exact selected comparator and dictionary evidence. No source name or
+-- comparator syntax participates in the transformation. Any unexpected
+-- member telescope, non-canonical equality premise, or missing prelude
+-- interface is rejected rather than translated approximately.
+transportDerivedEqualityComplete
+  :: Ctx
+  -> Span
+  -> Value
+  -> Term
+  -> Term
+  -> Term
+  -> CheckM Term
+transportDerivedEqualityComplete outerCtx site memberType memberTypeAuthority sourceTypeAuthority checked =
+  collect outerCtx memberType memberTypeAuthority sourceTypeAuthority checked [] []
+  where
+    collect activeCtx currentType currentTypeAuthority currentSourceTypeAuthority currentTerm binders explicitPositions = do
+      forcedType <- forceM currentType
+      case (forcedType, currentTypeAuthority, currentSourceTypeAuthority, currentTerm) of
+        ( VPiBoundM expectedMode expectedIcit expectedQuantity borrowed expectedName assumption domain closure
+          , CPiRuntimeM authorityMode _ authorityIcit authorityQuantity authorityBorrowed _ authorityAssumption _ _ _ authorityCodomain
+          , CPiRuntimeM sourceMode _ sourceIcit sourceQuantity sourceBorrowed _ sourceAssumption _ _ _ sourceCodomain
+          , CLamM actualMode actualIcit actualQuantity actualName body
+          )
+            | expectedMode == actualMode
+            , expectedIcit == actualIcit
+            , expectedQuantity == actualQuantity
+            , authorityMode == expectedMode
+            , authorityIcit == expectedIcit
+            , authorityQuantity == expectedQuantity
+            , authorityBorrowed == borrowed
+            , authorityAssumption == assumption
+            , sourceMode == expectedMode
+            , sourceIcit == expectedIcit
+            , sourceQuantity == expectedQuantity
+            , sourceBorrowed == borrowed
+            , sourceAssumption == assumption -> do
+                withBound <- extendLevelAssumption site activeCtx assumption
+                let binderName =
+                      if T.null actualName then expectedName else actualName
+                    nextCtx =
+                      bindCtxMQB
+                        expectedMode
+                        expectedQuantity
+                        binderName
+                        (expectedIcit == Impl)
+                        borrowed
+                        domain
+                        withBound
+                    position = length binders
+                    binder =
+                      DerivedMemberBinder
+                        expectedMode
+                        expectedIcit
+                        expectedQuantity
+                        binderName
+                        domain
+                    explicitPositions' =
+                      if expectedIcit == Expl
+                        then explicitPositions ++ [position]
+                        else explicitPositions
+                codomain <- clApp closure (VRigid (ctxLen activeCtx) [])
+                collect
+                  nextCtx
+                  codomain
+                  authorityCodomain
+                  sourceCodomain
+                  body
+                  (binders ++ [binder])
+                  explicitPositions'
+        (VPi {}, _, _, _) -> malformed "the checked member term or Core authorities do not match its function telescope"
+        (_, CPiRuntimeM {}, _, _) -> malformed "the exact Core authority has more binders than the semantic member telescope"
+        (_, _, CPiRuntimeM {}, _) -> malformed "the structural Core authority has more binders than the semantic member telescope"
+        (_, _, _, CLamM {}) -> malformed "the checked member term has more lambdas than its member telescope"
+        (_, _, _, _) ->
+          case explicitPositions of
+            [xPosition, yPosition, proofPosition] ->
+              buildTransport
+                activeCtx
+                currentTypeAuthority
+                currentSourceTypeAuthority
+                currentTerm
+                binders
+                xPosition
+                yPosition
+                proofPosition
+            _ -> malformed "Eq.eqComplete does not have exactly three explicit arguments"
+
+    buildTransport activeCtx resultTypeAuthority sourceResultTypeAuthority terminalBody binders xPosition yPosition proofPosition = do
+      let binderCount = length binders
+          binderAt position = binders !! position
+          variableAt position = CVar (binderCount - position - 1)
+          xTerm = variableAt xPosition
+          yTerm = variableAt yPosition
+          proofTerm = variableAt proofPosition
+          carrier = dmbDomain (binderAt xPosition)
+          yCarrier = dmbDomain (binderAt yPosition)
+          proofType = dmbDomain (binderAt proofPosition)
+      evaluation <- ec_
+      xValue <- evalIn activeCtx xTerm
+      yValue <- evalIn activeCtx yTerm
+      let sameValue left right =
+            convertible
+              evaluation
+              (ctxLen activeCtx)
+              (force evaluation left)
+              (force evaluation right)
+          validPremise =
+            case canonicalEqualityPayload evaluation proofType of
+              Just (proofCarrier, leftEndpoint, rightEndpoint) ->
+                sameValue carrier yCarrier
+                  && sameValue carrier proofCarrier
+                  && sameValue xValue leftEndpoint
+                  && sameValue yValue rightEndpoint
+              Nothing -> False
+      if not validPremise
+        then malformed "Eq.eqComplete has no canonical x = y premise"
+        else do
+            carrierLevel <- typeValueClassifierLevel activeCtx carrier
+            resultTypeTerm <- zonkTermM (ctxLen activeCtx) resultTypeAuthority
+            sourceResultTypeTerm <-
+              zonkTermM (ctxLen activeCtx) sourceResultTypeAuthority
+            zonkedResultType <- evalIn activeCtx resultTypeTerm
+            resultLevel <- typeValueClassifierLevel activeCtx zonkedResultType
+            case (carrierLevel, resultLevel) of
+              (Just carrierUniverse, Just resultUniverse) -> do
+                carrierTerm <- quoteIn activeCtx carrier >>= zonkTermM (ctxLen activeCtx)
+                let shiftedResult = shiftTerm 1 0 resultTypeTerm
+                    shiftedEndpoint = shiftTerm 1 0 yTerm
+                    motiveBody =
+                      mapTermWithDepth
+                        (\depth candidate ->
+                           if candidate == shiftTerm depth 0 shiftedEndpoint
+                             then Just (CVar depth)
+                             else Nothing)
+                        0
+                        shiftedResult
+                    motiveName = "__derive_complete_endpoint"
+                    motive =
+                      CLamM Ordinary Expl Q0 motiveName motiveBody
+                    motiveType =
+                      CPiFormedM
+                        Ordinary
+                        FormationOrdinary
+                        Expl
+                        Q0
+                        False
+                        motiveName
+                        carrierTerm
+                        (CSort resultUniverse)
+                motiveTypeValue <- evalIn activeCtx motiveType
+                let baseTypeTerm = CApp Expl motive xTerm
+                baseType <- evalIn activeCtx baseTypeTerm
+                equalityXX <-
+                  globalValueM
+                    prelEqType
+                    [ (Impl, carrier)
+                    , (Expl, xValue)
+                    , (Expl, xValue)
+                    ]
+                refl <- generatedReflAtM activeCtx equalityXX
+                substEntry <- globalTypeIn activeCtx site prelSubst
+                case substEntry of
+                  Just (substHead, substType) -> do
+                    let specializeReflexive =
+                          mapTermWithDepth
+                            (\depth candidate ->
+                               if candidate == shiftTerm depth 0 proofTerm
+                                 then Just (shiftTerm depth 0 refl)
+                                 else
+                                   if candidate == shiftTerm depth 0 yTerm
+                                     then Just (shiftTerm depth 0 xTerm)
+                                     else Nothing)
+                            0
+                        specializedBase = specializeReflexive terminalBody
+                        specializedSourceResult =
+                          specializeReflexive sourceResultTypeTerm
+                    sourceBaseType <-
+                      evalIn activeCtx specializedSourceResult
+                    base <-
+                      canonicalizeProviderEqualityProofFromTypes
+                        activeCtx
+                        specializedSourceResult
+                        sourceBaseType
+                        baseTypeTerm
+                        baseType
+                        specializedBase
+                    (transported, transportedType) <-
+                      applyGeneratedCoreSpine
+                        activeCtx
+                        site
+                        substHead
+                        substType
+                        [ (Impl, carrierTerm, VSort carrierUniverse)
+                        , (Impl, motive, motiveTypeValue)
+                        , (Impl, xTerm, carrier)
+                        , (Impl, yTerm, yCarrier)
+                        , (Expl, proofTerm, proofType)
+                        , (Expl, base, baseType)
+                        ]
+                    resultMatches <- unify activeCtx transportedType zonkedResultType
+                    if resultMatches
+                      then pure (foldr rebuild transported binders)
+                      else do
+                        actualResult <- quoteIn activeCtx transportedType
+                        expectedResult <- quoteIn activeCtx zonkedResultType
+                        malformed
+                          ( "the generated subst result does not match Eq.eqComplete; actual "
+                              <> renderTerm actualResult
+                              <> ", expected "
+                              <> renderTerm expectedResult
+                          )
+                  Nothing -> malformed "the checked prelude has no subst declaration interface"
+              _ -> malformed "Eq.eqComplete contains a type without a checked universe classifier"
+
+    rebuild binder body =
+      CLamM
+        (dmbMode binder)
+        (dmbIcit binder)
+        (dmbQuantity binder)
+        (dmbName binder)
+        body
+
+    malformed detail = do
+      errAt
+        site
+        "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT"
+        (Just "kappa.internal.compiler")
+        ("could not construct the checked Eq.eqComplete transport: " <> detail)
+      pure checked
+
 -- | Specialize a source-free checked ordinary-default template.  The hidden
 -- declaration has exactly the member accessor's universe/type telescope, so
 -- the owning trait occurrence fixes the leading universe prefix and only a
@@ -3768,30 +4452,45 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ prefix binders mResTy mdec body) s
       let termDecl = TerminationDecl g sigTy binders mdec tm sp
       when (participates && isFunction) $
         recordTerminationDecl termDecl
+      terminationDependenciesReady <-
+        if participates && isFunction
+          then singletonTerminationDependenciesReady g deps
+          else pure True
+      provisionalTerminationCycle <-
+        if participates && isFunction
+          then provisionalTerminationCyclePossible g deps
+          else pure False
       earlyTerminationResult <-
         if participates && isFunction && recursive
-          then do
-            singletonReady <- singletonTerminationDependenciesReady g deps
-            if singletonReady
+          then
+            if terminationDependenciesReady
               then withSccOpaque [g] (verifyTerminationScc [termDecl])
               else pure TerminationUnverified
           else pure TerminationUnverified
       reducible <-
-        if recursive && not isFunction
-          then do
-            -- a self-referential value (no intervening function
-            -- abstraction) is a definitional cycle (§15.3, §16.4)
-            errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.failure")
-              ("recursive value cycle: '" <> nameText n
-                 <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15)")
-            pure False
-          else if participates && isFunction
-            then
-              case earlyTerminationResult of
-                TerminationConversionSafe -> pure True
-                TerminationTotalOnly -> pure False
-                TerminationUnverified -> not <$> shouldDeferTermination g deps
-            else pure True
+        if recursive || provisionalTerminationCycle
+          then
+            if not isFunction
+              then do
+                -- a self-referential value (no intervening function
+                -- abstraction) is a definitional cycle (§15.3, §16.4)
+                errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.failure")
+                  ("recursive value cycle: '" <> nameText n
+                     <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15)")
+                pure False
+              else
+                -- §15.1: definitions in a potential recursion SCC are
+                -- fail-closed for delta reduction. A forward dependency on a
+                -- pending signature may later close a mutual SCC, so it must
+                -- remain opaque until the module SCC pass has classified it.
+                -- Bodies excluded by an earlier error, deferred to that pass,
+                -- or certified total-only likewise have no conversion-safety
+                -- certificate.
+                pure
+                  ( participates
+                      && earlyTerminationResult == TerminationConversionSafe
+                  )
+          else pure True
       when (manifestShaped tm) $
         modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
       currentUniverses <-
@@ -3865,6 +4564,50 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ prefix [] mty Nothing body) sp = do
           recordCoreBody g proj
 elabLetDecl _ _ sp =
   unsupportedAt sp "this let-definition form is not supported at top level"
+
+-- | Decide whether a just-checked function must remain opaque until the
+-- module termination pass. A forward reference whose body is still pending
+-- may close a future SCC, and a cycle already present in the recorded
+-- declaration graph is likewise provisional. An acyclic wrapper over an
+-- opaque callee is safe to unfold: reduction stops at that callee and cannot
+-- create a conversion cycle through the wrapper.
+provisionalTerminationCyclePossible :: GName -> Set GName -> CheckM Bool
+provisionalTerminationCyclePossible self directDependencies = do
+  state <- get
+  let terminationNames = csTerminationNames state
+      pendingForward =
+        not
+          ( Set.null
+              ( Set.intersection
+                  (Set.delete self directDependencies)
+                  (Set.intersection terminationNames (Map.keysSet (csSigPending state)))
+              )
+          )
+      declarations =
+        Map.filterWithKey
+          (\identity _ -> Set.member identity terminationNames)
+          (csTerminationDecls state)
+      identities = Map.keysSet declarations
+      dependencies declaration =
+        Set.toList
+          ( Set.intersection
+              identities
+              (expandedGlobalsOfTerm state (tdCoreBody declaration))
+          )
+      components =
+        stronglyConnComp
+          [ (declaration, identity, dependencies declaration)
+          | (identity, declaration) <- Map.toAscList declarations
+          ]
+      recordedCycle =
+        any
+          (\case
+             CyclicSCC group -> self `elem` map tdName group
+             AcyclicSCC declaration ->
+               tdName declaration == self
+                 && self `elem` dependencies declaration)
+          components
+  pure (pendingForward || recordedCycle)
 
 -- Termination verification (§15.3/§15.11, SCC-level).
 --
@@ -4820,9 +5563,13 @@ deriveNominalShape ctx sourceSpan target = do
 -- | Align each runtime-relevant nominal field with the exact @Eq@ dictionary
 -- selected by the already checked comparator. The comparator Core, dictionary
 -- classifier, trait identity, and carrier conversion all participate in the
--- check; source spellings do not. A comparator with a different control-flow
--- shape (including a call to a recursive helper) returns 'Nothing' for the
--- functional-induction provider rather than guessing an alignment.
+-- check; source spellings do not. Auxiliary selected operations (for example
+-- an integer equality used only to compare constructor tags) do not need to
+-- correspond to a payload field. Evidence occurrences are consumed in the
+-- checked comparator's traversal order, matching the structural comparator
+-- generator's field order; repeated carriers therefore retain distinct
+-- selected occurrences. Missing or out-of-order field evidence returns
+-- 'Nothing' for the next provider rather than guessing an alignment.
 derivedEqEvidenceForComparator
   :: Ctx
   -> Span
@@ -4843,16 +5590,17 @@ derivedEqEvidenceForComparator ctx site shape comparator = do
   candidates <- mapM authenticate checkedCandidates
   case sequence candidates of
     Nothing -> pure Nothing
-    Just exact
-      | length exact /= length runtimeFields -> pure Nothing
-      | otherwise -> do
-          let aligned = zip runtimeFields exact
+    Just exact -> do
+      selected <- alignFields runtimeFields exact
+      case selected of
+        Nothing -> pure Nothing
+        Just dictionaries -> do
+          let aligned = zip runtimeFields dictionaries
           beforeAlignment <- get
-          carrierMatches <-
+          allCarriersMatch <-
             forM aligned $ \((_, _, fieldType), (_, _, carrier)) ->
               unify ctx fieldType carrier
-          let carriersMatch = and carrierMatches
-          if not carriersMatch
+          if not (and allCarriersMatch)
             then put beforeAlignment >> pure Nothing
             else do
               let bindings =
@@ -4917,6 +5665,23 @@ derivedEqEvidenceForComparator ctx site shape comparator = do
                       traitSemanticSpineIn state trait arguments ->
                       pure (Just (dictionary, dictionaryType, carrier))
                 _ -> pure Nothing
+
+    alignFields [] _ = pure (Just [])
+    alignFields _ [] = pure Nothing
+    alignFields fields@((_, _, fieldType) : remainingFields) (candidate : remainingCandidates) = do
+      matches <- carrierMatches fieldType candidate
+      if matches
+        then
+          alignFields remainingFields remainingCandidates >>= \case
+            Just aligned -> pure (Just (candidate : aligned))
+            Nothing -> pure Nothing
+        else alignFields fields remainingCandidates
+
+    carrierMatches fieldType (_, _, carrier) = do
+      baseline <- get
+      matches <- unify ctx fieldType carrier
+      put baseline
+      pure matches
 
     evidenceName constructor fieldIndex ordinal =
       Name
@@ -6064,26 +6829,59 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
           case (shape, lookup "==" done) of
             ([], _) -> pure Nothing
             (_, Nothing) -> pure Nothing
-            (_, Just comparator) ->
-              derivedEqEvidenceForComparator
-                ctx
-                site
-                shape
-                comparator >>= \case
-                Just exact -> Just <$> checkGenerated target shape exact
-                Nothing ->
-                  checkedFunctionalEqualityHelpers comparator >>= \case
-                    [] -> pure Nothing
-                    helpers -> attemptFunctional comparator target shape helpers
+            (_, Just comparator0) -> do
+              -- Generated laws inspect the selected comparator's checked Core.
+              -- Settle only its connected evidence (including ordinary
+              -- numeric defaults) before that inspection; the surrounding
+              -- instance remains one inference boundary with shared universe
+              -- occurrences across all dictionary members.
+              comparator <-
+                settleTermEvidenceWithNumericDefaults ctx comparator0
+              -- A checked functional plan proves the comparator through its
+              -- defining equations and scales linearly with the nominal
+              -- shape. Prefer it to the complete constructor-pair bridge,
+              -- which remains the fail-closed fallback for comparators that
+              -- mix structural and auxiliary decisions.
+              checkedFunctionalEqualityHelpers comparator >>= \case
+                helpers@(_ : _) ->
+                  attemptFunctional comparator target shape helpers >>= \case
+                    Just generated -> pure (Just generated)
+                    Nothing -> attemptStructural targetTerm comparator target shape helpers
+                [] -> attemptStructural targetTerm comparator target shape []
       | otherwise = pure Nothing
       where
         memberIdentity = memberGlobal trait member
 
-        checkGenerated target shape (evidenceBindings, evidenceNames) = do
+        attemptStructural targetTerm comparator target shape reducibleHelpers =
+          derivedEqEvidenceForComparator
+            ctx
+            site
+            shape
+            comparator >>= \case
+            Just exact ->
+              Just
+                <$> checkGenerated
+                  targetTerm
+                  comparator
+                  target
+                  shape
+                  reducibleHelpers
+                  exact
+            Nothing -> pure Nothing
+
+        checkGenerated targetTerm selectedComparator target shape reducibleHelpers (evidenceBindings, evidenceNames) = do
           let generatedSpan = derivedGeneratedSpan site 43
               xName = Name "__derive_member_x" generatedSpan
               yName = Name "__derive_member_y" generatedSpan
               proofName = Name "__derive_member_proof" generatedSpan
+              structuralComparator =
+                derivedEqualityBodyWithEvidence
+                  generatedSpan
+                  target
+                  shape
+                  evidenceNames
+                  xName
+                  yName
               body
                 | memberIdentity == memberGlobal (gPrel "Eq") "eqSound" =
                     derivedEqualitySoundBody
@@ -6104,13 +6902,26 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                       yName
                       proofName
           evidenceCtx <- bindDerivedEqEvidence ctx evidenceBindings
-          checked <- checkGeneratedBody evidenceCtx body
-          pure
-            ( closeDerivedEqEvidence evidenceBindings (fst checked)
-            , closeDerivedEqEvidence evidenceBindings (snd checked)
-            )
+          checked <-
+            checkGeneratedBody
+              ( Just
+                  ( target
+                  , targetTerm
+                  , shape
+                  , selectedComparator
+                  , structuralComparator
+                  , reducibleHelpers
+                  )
+              )
+              evidenceCtx
+              body
+          let closed =
+                ( closeDerivedEqEvidence evidenceBindings (fst checked)
+                , closeDerivedEqEvidence evidenceBindings (snd checked)
+                )
+          pure closed
 
-        checkGeneratedBody activeCtx body = do
+        checkGeneratedBody structuralFallback activeCtx body = do
           let generatedSpan = derivedGeneratedSpan site 43
               xName = Name "__derive_member_x" generatedSpan
               yName = Name "__derive_member_y" generatedSpan
@@ -6126,20 +6937,100 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
               supers
               done
           let partialDictionary = CRecordV (sortOn fst (supers ++ done))
+          let checkAgainst expected =
+                withThis (Just (ThisTraitSibs siblingTypes)) $
+                  checkMemberAgainst
+                    memberMode
+                    activeCtx
+                    expected
+                    [simpleBinder xName, simpleBinder yName, simpleBinder proofName]
+                    Nothing
+                    body
+                    generatedSpan
           checked <-
-            withThis (Just (ThisTraitSibs siblingTypes)) $
-              checkMemberAgainst
-                memberMode
-                activeCtx
-                memberTy
-                [simpleBinder xName, simpleBinder yName, simpleBinder proofName]
-                Nothing
-                body
-                generatedSpan
-          pure
-            ( substThisTm partialDictionary checked
-            , checked
-            )
+            case structuralFallback of
+              Nothing -> checkAgainst memberTy
+              Just (target, targetTerm, shape, selectedComparator, structuralComparator, reducibleHelpers) -> do
+                let requiresPathTransport =
+                      memberIdentity == memberGlobal (gPrel "Eq") "eqComplete"
+                directBaseline <- get
+                direct <-
+                  if requiresPathTransport
+                    then pure Nothing
+                    else
+                      Just
+                        <$> withTemporaryReducibleGlobals reducibleHelpers
+                          (checkAgainst memberTy)
+                directState <- get
+                case direct of
+                  Just checkedDirect
+                    | checkerErrorCount directState == checkerErrorCount directBaseline ->
+                        pure checkedDirect
+                  _ -> do
+                    put directBaseline
+                    memberTypeAuthority <- quoteIn activeCtx memberTy
+                    sourceTypeAuthority <-
+                      derivedStructuralEqualityMemberType
+                        activeCtx
+                        generatedSpan
+                        memberTy
+                        memberTypeAuthority
+                        [xName, yName, proofName]
+                        structuralComparator >>= \case
+                        Just authority -> pure authority
+                        Nothing -> do
+                          errAt
+                            generatedSpan
+                            "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT"
+                            (Just "kappa.internal.compiler")
+                            "could not construct the checked structural equality member type"
+                          pure memberTypeAuthority
+                    sourceMemberType <- evalIn activeCtx sourceTypeAuthority
+                    checkedSource <- checkAgainst sourceMemberType
+                    if requiresPathTransport
+                      then
+                        transportDerivedEqualityComplete
+                          activeCtx
+                          generatedSpan
+                          memberTy
+                          memberTypeAuthority
+                          sourceTypeAuthority
+                          checkedSource
+                      else case List.find ((== "==") . rfName) siblingTypes of
+                      Nothing -> do
+                        errAt
+                          generatedSpan
+                          "E_INTERNAL_DERIVED_EQUALITY_TRANSPORT"
+                          (Just "kappa.internal.compiler")
+                          "the checked Eq sibling interface has no comparator member"
+                        pure checkedSource
+                      Just comparatorField ->
+                        withTemporaryReducibleGlobals reducibleHelpers $
+                          checkDerivedComparatorBridge
+                            activeCtx
+                            generatedSpan
+                            target
+                            targetTerm
+                            shape
+                            selectedComparator
+                            (rfType comparatorField)
+                            structuralComparator
+                            xName
+                            yName >>= \case
+                            Nothing -> pure checkedSource
+                            Just bridge ->
+                              transportDerivedEqualityMember
+                                activeCtx
+                                generatedSpan
+                                bridge
+                                memberTy
+                                sourceMemberType
+                                checkedSource
+          let completed =
+                ( substThisTm partialDictionary checked
+                , checked
+                )
+          pure completed
 
         -- A custom comparator may delegate to a transparent recursive helper
         -- instead of projecting the selected field dictionaries directly.
@@ -6150,12 +7041,6 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
         -- diagnostics behind.
         attemptFunctional comparator target shape helpers = do
           baseline <- get
-          let errors state =
-                length
-                  [ ()
-                  | diagnostic <- csDiags state
-                  , dSeverity diagnostic == SevError
-                  ]
           checkedFunctionalEqualityPlan ctx site comparator helpers >>= \case
             Nothing -> put baseline >> pure Nothing
             Just functional -> do
@@ -6189,15 +7074,22 @@ elabInstance (InstanceDecl _ premises hd completion) sp = do
                   close = substTopTermAt 0 (dfeTerm functional)
               generated <-
                 withTemporaryReducibleGlobals helpers $
-                  checkGeneratedBody helperCtx body
+                  checkGeneratedBody Nothing helperCtx body
               current <- get
-              if errors current == errors baseline
+              if checkerErrorCount current == checkerErrorCount baseline
                 then
                   pure
                     ( Just
                         (close (fst generated), close (snd generated))
                     )
                 else put baseline >> pure Nothing
+
+        checkerErrorCount state =
+          length
+            [ ()
+            | diagnostic <- csDiags state
+            , dSeverity diagnostic == SevError
+            ]
 
     completeOmittedMember declaredDerived member trait traitUniverses info argTms ctx supers done memberTy site = do
       admissible <-

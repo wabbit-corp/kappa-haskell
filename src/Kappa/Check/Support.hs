@@ -92,6 +92,7 @@ module Kappa.Check.Support
   , invalidateSemanticCaches
   , invalidateVarCurrent
   , isKindLike
+  , isIntrinsicallyCompileTimeClassifier
   , isParametricKind
   , isTraitGoal
   , isTypeLevelValue
@@ -2581,6 +2582,24 @@ isTypeLevelValue :: Value -> CheckM Bool
 isTypeLevelValue v = forceM v >>= \case
   VGlobN g [] -> pure (g == prelTypeLevel)
   _ -> pure False
+
+-- | Exact §11.1.6.1 intrinsic compile-time classifier judgment used to
+-- justify erasing source occurrences. Associated-static members have a
+-- broader contract: notably, @TypeLevel@ is runtime-capable even though it is
+-- admitted as an associated static carrier. Function spaces inherit this
+-- classification from their eventual result.
+isIntrinsicallyCompileTimeClassifier :: Int -> Value -> CheckM Bool
+isIntrinsicallyCompileTimeClassifier lvl value =
+  forceM value >>= \case
+    VSort {} -> pure True
+    VPi _ _ _ _ _ codomain -> do
+      result <- clApp codomain (VRigid lvl [])
+      isIntrinsicallyCompileTimeClassifier (lvl + 1) result
+    VUniverseLift _ _ _ inner ->
+      isIntrinsicallyCompileTimeClassifier lvl inner
+    VGlobN global _ ->
+      pure (global `elem` intrinsicCompileTimeCarrierGlobals)
+    _ -> pure False
 
 -- | Select and retain the formation judgment while the domain and source
 -- annotation are available. Later phases consume this fact; they must not

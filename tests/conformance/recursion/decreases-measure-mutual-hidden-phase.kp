@@ -1,0 +1,19 @@
+-- §15.10/§15.11: an equal-measure routing edge may use the canonical hidden
+-- phase when the return edge decreases the checked visible measure.
+module main
+
+route : Int -> Int
+descend : Int -> Int
+
+maxInt : Int -> Int -> Int
+let maxInt left right =
+    if left >= right then left else right
+
+let route n decreases maxInt 0 n =
+    if n <= 0 then 0 else descend n
+
+let descend n decreases maxInt 0 n =
+    if n <= 0 then 0 else route (n - 1)
+
+--! assertNoErrors
+--! assertNoWarnings

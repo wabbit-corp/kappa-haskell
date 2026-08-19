@@ -1,6 +1,6 @@
 cabal-version:   3.8
 name:            kappa-haskell
-version:         0.1.0.0
+version:         0.3.0
 synopsis:        A Haskell implementation of the Kappa language
 description:
     Lexer, parser, resolver, elaborator, interpreter, prelude, CLI and

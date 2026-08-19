@@ -1,0 +1,25 @@
+-- §15.1/§15.10: a declaration that may belong to a still-open mutual SCC is
+-- opaque until the module termination pass certifies the complete group. A
+-- general-measure certificate proves totality only and cannot retrospectively
+-- justify conversion that occurred while later declarations were checked.
+module main
+
+route : Int -> Int
+descend : Int -> Int
+
+maxInt : Int -> Int -> Int
+let maxInt left right =
+    if left >= right then left else right
+
+let route n decreases maxInt 0 n =
+    if n <= 0 then 0 else descend n
+
+let descend n decreases maxInt 0 n =
+    if n <= 0 then 0 else route (n - 1)
+
+routeZero : route 0 = 0
+let routeZero = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

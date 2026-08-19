@@ -76,6 +76,7 @@ import Kappa.Check.UniverseConstraints
   , rewriteSelectedConstraints
   )
 import Kappa.Check.Support
+import Kappa.Check.StateOps (recordUsageTypeAtSpan)
 import Kappa.Core
 import Kappa.CoreOps
   ( declarationUniverseConstraintBinder
@@ -268,22 +269,8 @@ retireProvisionalUniverseOccurrences retired
                 }
 
 recordUsageExpressionType :: Ctx -> Expr -> Value -> CheckM ()
-recordUsageExpressionType ctx expression ty = do
-  typeTerm0 <- quoteIn ctx ty
-  typeTerm <- zonkTermM (ctxLen ctx) typeTerm0
-  state <- get
-  when (null (unsolvedMetasOf state typeTerm)) $
-    case delaborateType ctx (exprSpan expression) typeTerm of
-      Nothing -> pure ()
-      Just sourceType ->
-        modify' $ \current ->
-          current
-            { csUsageExpressionTypes =
-                Map.insert
-                  (exprSpan expression)
-                  sourceType
-                  (csUsageExpressionTypes current)
-            }
+recordUsageExpressionType ctx expression ty =
+  recordUsageTypeAtSpan ctx (exprSpan expression) ty
 
 recordErasedProjection :: Expr -> DotMember -> CheckM ()
 recordErasedProjection receiver member =

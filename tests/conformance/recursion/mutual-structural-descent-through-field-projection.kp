@@ -1,0 +1,33 @@
+-- §15.3: heterogeneous members of a recursive SCC retain structural
+-- provenance through a typed constructor-field projection.
+module main
+
+data JsonValue : Type =
+    JNull
+    JArray (items : List JsonValue)
+    JObject (fields : List JsonField)
+
+data JsonField : Type =
+    JsonField (value : JsonValue)
+
+sizeValue : JsonValue -> Int
+let sizeValue value =
+    match value
+    case JNull -> 0
+    case JArray items -> sizeValues items
+    case JObject fields -> sizeFields fields
+
+sizeValues : List JsonValue -> Int
+let sizeValues values =
+    match values
+    case Nil -> 0
+    case value :: rest -> 1 + sizeValue value + sizeValues rest
+
+sizeFields : List JsonField -> Int
+let sizeFields fields =
+    match fields
+    case Nil -> 0
+    case field :: rest -> 1 + sizeValue field.value + sizeFields rest
+
+--! assertNoErrors
+--! assertNoWarnings

@@ -32,11 +32,15 @@
 -- literals §6.1.5, do blocks §18).
 module Kappa.Check.Kernel
   ( applyGeneratedCoreSpine
+  , buildTransportAlongEqualityWithType
+  , canonicalizeProviderEqualityProof
+  , canonicalizeProviderEqualityProofFromTypes
   , check
   , checkExplicitArg
   , checkIrrefutable
   , checkObservedExpr
   , classifyLevelOperatorTerm
+  , coerceTerm
   , ctorFieldTypesWithQ
   , deferTypeEqualityOnPendingEvidence
   , elabDo
@@ -60,6 +64,7 @@ module Kappa.Check.Kernel
   , flushPendingWith
   , generalizeDeclarationUniverses
   , generalizeDeclarationUniversesWith
+  , generatedReflAtM
   , globalHeadM
   , globalTypeIn
   , globalValueM
@@ -89,6 +94,7 @@ module Kappa.Check.Kernel
   , resolveLevelOperatorAliasIdentity
   , resolveRequiredImplicitWithTerm
   , runtimeErasureEvidenceAvailable
+  , settleTermEvidenceWithNumericDefaults
   , settleActiveUniverseRequirements
   , solveDeferredLevelConstraints
   , synchronizeGeneratedConstraintInterfacesFor
@@ -97,6 +103,7 @@ module Kappa.Check.Kernel
   , termMatchesTerm
   , traitEvidence
   , traitParameterClassifiers
+  , typeValueClassifierLevel
   , tryInstance
   , tryTypeCompatibility
   , unify
@@ -3503,7 +3510,59 @@ canonicalizeProviderEqualityProof
   -> Value
   -> Term
   -> CheckM Term
-canonicalizeProviderEqualityProof ctx sourceGoal targetGoal fallback = do
+canonicalizeProviderEqualityProof ctx sourceGoal targetGoal fallback =
+  canonicalizeProviderEqualityProofWithTypes
+    ctx
+    Nothing
+    sourceGoal
+    Nothing
+    targetGoal
+    fallback
+
+-- | Variant of 'canonicalizeProviderEqualityProof' for a caller that retains
+-- the exact checked Core spelling of both propositions. Evaluation may
+-- preserve a proposition while quotation at an enclosing context cannot
+-- reconstruct constructor-pattern binders captured by the Core term. The
+-- supplied terms remain subject to ordinary scope validation and complete
+-- provider-certificate replay; it is not additional conversion authority.
+canonicalizeProviderEqualityProofFromTypes
+  :: Ctx
+  -> Term
+  -> Value
+  -> Term
+  -> Value
+  -> Term
+  -> CheckM Term
+canonicalizeProviderEqualityProofFromTypes
+  ctx
+  sourceGoalTerm
+  sourceGoal
+  targetGoalTerm
+  targetGoal
+  fallback =
+  canonicalizeProviderEqualityProofWithTypes
+    ctx
+    (Just sourceGoalTerm)
+    sourceGoal
+    (Just targetGoalTerm)
+    targetGoal
+    fallback
+
+canonicalizeProviderEqualityProofWithTypes
+  :: Ctx
+  -> Maybe Term
+  -> Value
+  -> Maybe Term
+  -> Value
+  -> Term
+  -> CheckM Term
+canonicalizeProviderEqualityProofWithTypes
+  ctx
+  sourceGoalTerm
+  sourceGoal
+  targetGoalTerm
+  targetGoal
+  fallback = do
   goal' <- forceM targetGoal
   case goal' of
     VGlobI equality _ [(_, carrier), (_, lhs), (_, rhs)]
@@ -3518,18 +3577,33 @@ canonicalizeProviderEqualityProof ctx sourceGoal targetGoal fallback = do
     _ -> pure fallback
   where
     canonicalize carrier lhs rhs = do
-      sourceGoalTerm <- quoteIn ctx sourceGoal
-      providerLawProof
-        ctx
-        (Just sourceGoalTerm)
-        (Just fallback)
-        targetGoal
-        carrier
-        lhs
-        rhs
-        >>= \case
-          Just certificate -> pure certificate
-          Nothing -> pure fallback
+      checkedGoalTerm sourceGoalTerm sourceGoal >>= \case
+        Nothing -> pure fallback
+        Just checkedSourceGoal ->
+          providerLawProof
+            ctx
+            (Just checkedSourceGoal)
+            (Just fallback)
+            targetGoalTerm
+            targetGoal
+            carrier
+            lhs
+            rhs
+            >>= \case
+              Just certificate -> pure certificate
+              Nothing -> pure fallback
+
+    checkedGoalTerm exactGoal semanticGoal =
+      case exactGoal of
+        -- Canonicalization is an optional read-only normalization probe. A
+        -- value retained from a deeper pattern context is valid semantic
+        -- state but cannot be reified at this enclosing depth, so decline the
+        -- rewrite instead of treating that mismatch as a Core-construction
+        -- invariant failure.
+        Nothing -> tryQuoteIn ctx semanticGoal
+        Just exact -> do
+          zonked <- zonkTermM (ctxLen ctx) exact
+          pure (zonked <$ guard (termScopedAt (ctxLen ctx) zonked))
 
 -- | Bridge two spellings of one coherent trait-evidence value by ordinary
 -- propositional transport (§15.8.2, §16.1.8).  This does not extend
@@ -6616,6 +6690,18 @@ flushPendingSelectedWithPolicy defaultNumerics selected = do
   retained <- gets csPending
   modify' $ \state -> state {csPending = retained ++ outside}
 
+-- | Close the evidence component reachable from one checked Core term at a
+-- semantic-inspection boundary, applying the ordinary numeric defaults only
+-- inside that component. This leaves unrelated obligations and universe
+-- occurrences in the enclosing declaration untouched. An unresolved
+-- component is retained without diagnostics, so callers must continue to
+-- validate the selected semantic shape and fail closed when it is unavailable.
+settleTermEvidenceWithNumericDefaults :: Ctx -> Term -> CheckM Term
+settleTermEvidenceWithNumericDefaults ctx term = do
+  selected <- pendingEvidenceComponentTerms ctx [term]
+  flushPendingSelectedWithPolicy True selected
+  zonkTermM (ctxLen ctx) term
+
 -- | Commit only numeric-literal carrier choices without resolving or emitting
 -- any pending evidence goal. A completed monadic action statement is an
 -- inference boundary for an otherwise unconstrained overloaded literal: a
@@ -7360,8 +7446,10 @@ propProofWithTerm ctx sourceGoal goal = do
             equalityFromCheckedBranchFacts ctx sourceGoal lhs rhs
           if contextualEquality
             then Just <$> generatedReflForGoalAtM ctx sourceGoal equalityGoal
-            else
-              booleanEqualityFromBranchFacts ctx sourceGoal equalityGoal >>= \case
+            else conditionalCongruenceProof ctx equalityGoal lhs rhs >>= \case
+              Just proof -> pure (Just proof)
+              Nothing ->
+                booleanEqualityFromBranchFacts ctx sourceGoal equalityGoal >>= \case
                 True -> Just <$> generatedReflForGoalAtM ctx sourceGoal equalityGoal
                 False ->
                   equalityReflectionFromCheckedBranchFacts
@@ -7386,7 +7474,7 @@ propProofWithTerm ctx sourceGoal goal = do
                                 carrier >>= \case
                                 Just proof -> pure (Just proof)
                                 Nothing ->
-                                  providerLawProof ctx sourceGoal Nothing equalityGoal carrier lhs rhs >>= \case
+                                  providerLawProof ctx sourceGoal Nothing Nothing equalityGoal carrier lhs rhs >>= \case
                                     Just proof -> pure (Just proof)
                                     Nothing -> do
                                       providerNormalFormBridgeProof
@@ -7403,6 +7491,144 @@ propProofWithTerm ctx sourceGoal goal = do
                                             if typeLevelEquality == Just True || typeLevelRelationEquality == Just True
                                               then Just <$> typeLevelPropositionCertificate ctx equalityGoal
                                               else arithmeticEqualityCertificate ctx sourceGoal equalityGoal carrier lhs rhs
+
+-- | Prove equality through a checked Boolean condition without promoting the
+-- condition proof into conversion.  If one endpoint is @if c then t else f@
+-- and the other is definitionally @t@, a separately synthesized @c = True@
+-- certificate is lifted by the standard path-congruence operation.  This is
+-- generic proof-producing normalization: the condition may be solved by any
+-- ordinary proposition provider, and unsupported conditional shapes leave
+-- the goal untouched.
+conditionalCongruenceProof
+  :: Ctx
+  -> Value
+  -> Value
+  -> Value
+  -> CheckM (Maybe Term)
+conditionalCongruenceProof ctx equalityGoal lhs rhs =
+  do
+    checkpoint <- get
+    lhsTerm <- quoteIn ctx lhs >>= zonkTermM depth
+    rhsTerm <- quoteIn ctx rhs >>= zonkTermM depth
+    result <-
+      firstConditional lhsTerm rhsTerm False >>= \case
+        Just proof -> pure (Just proof)
+        Nothing -> do
+          put checkpoint
+          firstConditional rhsTerm lhsTerm True
+    when (isNothing result) (put checkpoint)
+    pure result
+  where
+    depth = ctxLen ctx
+
+    firstConditional conditional other reverseResult =
+      case stripIdentityWrappers conditional of
+        CIf condition thenBranch elseBranch -> do
+          thenValue <- evalIn ctx thenBranch
+          otherValue <- evalIn ctx other
+          evaluation <- ec_
+          if not
+              ( convertible
+                  evaluation
+                  depth
+                  (force evaluation thenValue)
+                  (force evaluation otherValue)
+              )
+            then pure Nothing
+            else do
+              booleanType <- globalValueM prelBool []
+              truth <- generatedCtorAtM ctx booleanType prelTrue
+              truthValue <- evalIn ctx truth
+              conditionValue <- evalIn ctx condition
+              conditionGoal <-
+                globalValueM
+                  prelEqType
+                  [ (Impl, booleanType)
+                  , (Expl, conditionValue)
+                  , (Expl, truthValue)
+                  ]
+              conditionGoalTerm <- quoteIn ctx conditionGoal
+              propProofTerm ctx conditionGoalTerm conditionGoal >>= \case
+                Nothing -> pure Nothing
+                Just conditionProof -> do
+                  booleanTerm <- quoteIn ctx booleanType
+                  booleanUniverse <-
+                    fromMaybe LZero
+                      <$> typeValueClassifierLevel ctx booleanType
+                  let motive =
+                        CLamM
+                          Ordinary
+                          Expl
+                          QW
+                          "__derive_conditional"
+                          ( CIf
+                              (CVar 0)
+                              (shiftTerm 1 0 thenBranch)
+                              (shiftTerm 1 0 elseBranch)
+                          )
+                      motiveTypeTerm =
+                        CPiFormedM
+                          Ordinary
+                          FormationOrdinary
+                          Expl
+                          QW
+                          False
+                          "__derive_conditional"
+                          booleanTerm
+                          (shiftTerm 1 0 booleanTerm)
+                  motiveType <- evalIn ctx motiveTypeTerm
+                  globalTypeIn ctx noSpan (gPrel "cong") >>= \case
+                    Nothing -> pure Nothing
+                    Just (congruence, congruenceType) -> do
+                      (forward, forwardType) <-
+                        applyGeneratedCoreSpine
+                          ctx
+                          noSpan
+                          congruence
+                          congruenceType
+                          [ (Impl, booleanTerm, VSort booleanUniverse)
+                          , (Impl, booleanTerm, VSort booleanUniverse)
+                          , (Impl, condition, booleanType)
+                          , (Impl, truth, booleanType)
+                          , (Expl, motive, motiveType)
+                          , (Expl, conditionProof, conditionGoal)
+                          ]
+                      candidate <-
+                        if reverseResult
+                          then reverseProof booleanType forward forwardType
+                          else pure (Just (forward, forwardType))
+                      case candidate of
+                        Nothing -> pure Nothing
+                        Just (proof, proofType) -> do
+                          matches <- unifyDefinitional ctx proofType equalityGoal
+                          pure (proof <$ guard matches)
+        _ -> pure Nothing
+
+    reverseProof booleanType proof proofType = do
+      evaluation <- ec_
+      case canonicalEqualityPayload evaluation proofType of
+        Nothing -> pure Nothing
+        Just (_, left, right) -> do
+          booleanTerm <- quoteIn ctx booleanType
+          leftTerm <- quoteIn ctx left
+          rightTerm <- quoteIn ctx right
+          booleanUniverse <-
+            fromMaybe LZero
+              <$> typeValueClassifierLevel ctx booleanType
+          globalTypeIn ctx noSpan (gPrel "sym") >>= \case
+            Nothing -> pure Nothing
+            Just (symmetry, symmetryType) ->
+              Just
+                <$> applyGeneratedCoreSpine
+                  ctx
+                  noSpan
+                  symmetry
+                  symmetryType
+                  [ (Impl, booleanTerm, VSort booleanUniverse)
+                  , (Impl, leftTerm, booleanType)
+                  , (Impl, rightTerm, booleanType)
+                  , (Expl, proof, proofType)
+                  ]
 
 -- | Normalize an arithmetic goal through the deterministic representative of
 -- one coherent local trait-evidence value, prove the normalized goal through
@@ -8151,40 +8377,51 @@ providerLawProof
   :: Ctx
   -> Maybe Term
   -> Maybe Term
+  -> Maybe Term
   -> Value
   -> Value
   -> Value
   -> Value
   -> CheckM (Maybe Term)
-providerLawProof ctx sourceGoal sourceProof equalityGoal carrier _lhsValue _rhsValue =
+providerLawProof ctx sourceGoal sourceProof replayGoalTerm equalityGoal carrier _lhsValue _rhsValue =
   transactional $ do
     checkedProposition <-
       case sourceGoal of
         Just source -> zonkTermM (ctxLen ctx) source
         Nothing -> quoteIn ctx equalityGoal >>= zonkTermM (ctxLen ctx)
-    replayGoal <- quoteIn ctx equalityGoal >>= zonkTermM (ctxLen ctx)
-    directSourceCertificate replayGoal >>= \case
-      Just certificate -> pure (Just certificate)
-      Nothing -> do
-        state <- get
-        -- Synthesized provider search proves a closed equality already
-        -- selected by the caller; it is not an assignment rule. In
-        -- particular, commutativity must not turn @x + y = 4@ into one
-        -- arbitrary split by instantiating source holes. An exact source law
-        -- application is different: it was already checked by the ordinary
-        -- application rule, so its existing metas may remain in the
-        -- certificate until declaration finalization zonks them.
-        if not (null (unsolvedMetasOf state checkedProposition))
-          then pure Nothing
-          else
-            case fmap fst (equalityExplicitEndpoints checkedProposition) of
-              Nothing -> pure Nothing
-              Just sourceLhs ->
-                firstProvider
-                  checkedProposition
-                  sourceLhs
-                  standardProofNormalizationProviders
+    checkedReplayGoal >>= \case
+      Nothing -> pure Nothing
+      Just replayGoal ->
+        directSourceCertificate replayGoal >>= \case
+          Just certificate -> pure (Just certificate)
+          Nothing -> do
+            state <- get
+            -- Synthesized provider search proves a closed equality already
+            -- selected by the caller; it is not an assignment rule. In
+            -- particular, commutativity must not turn @x + y = 4@ into one
+            -- arbitrary split by instantiating source holes. An exact source law
+            -- application is different: it was already checked by the ordinary
+            -- application rule, so its existing metas may remain in the
+            -- certificate until declaration finalization zonks them.
+            if not (null (unsolvedMetasOf state checkedProposition))
+              then pure Nothing
+              else
+                case fmap fst (equalityExplicitEndpoints checkedProposition) of
+                  Nothing -> pure Nothing
+                  Just sourceLhs ->
+                    firstProvider
+                      checkedProposition
+                      sourceLhs
+                      standardProofNormalizationProviders
   where
+    checkedReplayGoal =
+      case replayGoalTerm of
+        Nothing ->
+          Just <$> (quoteIn ctx equalityGoal >>= zonkTermM (ctxLen ctx))
+        Just exactGoal -> do
+          zonked <- zonkTermM (ctxLen ctx) exactGoal
+          pure (zonked <$ guard (termScopedAt (ctxLen ctx) zonked))
+
     directSourceCertificate replayGoal =
       firstDirect standardProofNormalizationProviders
       where
@@ -8762,6 +8999,7 @@ providerNormalFormBridgeProof ctx sourceGoal equalityGoal carrier lhs rhs =
           providerLawProof
             ctx
             (Just equalityTerm)
+            Nothing
             Nothing
             equality
             carrier
@@ -12666,7 +12904,9 @@ elabExists ctx bs body sp = do
           pure (CSort level, levelSucc level)
       let t0' = renameThisLabels labelOf t0
       tV <- evalIn levelCtx t0'
-      (mode, q) <- resolveBinderModeQ levelCtx b tV QW
+      -- §13.2.11 fixes every existential witness at quantity 0; unlike an
+      -- ordinary record field, an omitted annotation must never default to ω.
+      (mode, q) <- resolveBinderModeQ levelCtx b tV Q0
       formation <- selectFormationMode levelCtx mode tV
       let contributed = formationContribution formation rawWlvl
           (t0'', wlvl) = case formation of
@@ -15014,9 +15254,11 @@ elabRecordLit ctx items sp = do
 -- Constructor result unification determines family parameters and indices,
 -- but it cannot determine preceding payload binders that do not occur in the
 -- result. A later dependent field must therefore be instantiated with the
--- exact projection terms of those preceding binders. This routine walks the
--- checked source telescope in declaration order, constructs each predecessor
--- projection at most once, and only then reads the requested field type.
+-- exact projection terms of those preceding binders. This routine walks only
+-- the predecessor identities that occur in the requested field type and
+-- constructs each required projection at most once. Independent fields must
+-- not force unrelated receiver computations merely because they occur later
+-- in source order.
 --
 -- The same result drives both explicit payload projection and erased hidden
 -- projection, keeping the term used in the dependent type identical to the
@@ -15034,13 +15276,11 @@ nominalConstructorSourceFieldProjection
   ctx receiverTerm receiverType constructors targetName site =
     evalStateT (project targetName) (Map.empty, Set.empty)
   where
-    -- A late field may depend on every preceding source field. Re-elaborating
-    -- each predecessor recursively gives the recurrence T(n) = sum T(i),
-    -- which made a 15-field ordinary constructor allocate roughly 2^15 full
-    -- constructor spines. The projection is a pure function of this checked
-    -- receiver, constructor subset, and field identity, while the associated
-    -- unifications are monotone, so cache each result for this projection
-    -- query. The active set retains the old fail-closed cycle behavior.
+    -- A late field may depend on several preceding source fields, and those
+    -- fields may themselves be dependent. The projection is a pure function
+    -- of this checked receiver, constructor subset, and field identity, while
+    -- the associated unifications are monotone, so cache each result for this
+    -- query. The active set retains fail-closed cycle behavior.
     project fieldName = do
       (cache, active) <- get
       case Map.lookup fieldName cache of
@@ -15089,25 +15329,35 @@ nominalConstructorSourceFieldProjection
                           , (targetArgumentIndex, _, targetMode, targetQuantity, targetType)
                           )
                         ) -> do
+                          targetTypeTerm <- lift (quoteIn ctx targetType)
+                          let requiredMetas = termMetaIdentities targetTypeTerm
                           hydrated <-
                             and <$> forM
                               (take targetSourceIndex sourceEntries)
                               (\(priorIcit, (argumentIndex, priorName, priorMode, _, _)) -> do
-                                priorTerm <-
-                                  case priorIcit of
-                                    Impl ->
-                                      pure
-                                        (Just (CProjM priorMode receiverTerm priorName))
-                                    Expl ->
-                                      fmap (\(term, _, _, _, _) -> term)
-                                        <$> project priorName
-                                case (priorTerm, drop argumentIndex arguments) of
-                                  (Just exactTerm, argument : _) -> do
-                                    argumentValue <-
-                                      lift (evalIn ctx (caTerm argument))
-                                    exactValue <- lift (evalIn ctx exactTerm)
-                                    lift (unify ctx argumentValue exactValue)
-                                  _ -> pure False)
+                                case drop argumentIndex arguments of
+                                  argument : _
+                                    | Set.disjoint
+                                        requiredMetas
+                                        (termMetaIdentities (caTerm argument)) ->
+                                        pure True
+                                    | otherwise -> do
+                                        priorTerm <-
+                                          case priorIcit of
+                                            Impl ->
+                                              pure
+                                                (Just (CProjM priorMode receiverTerm priorName))
+                                            Expl ->
+                                              fmap (\(term, _, _, _, _) -> term)
+                                                <$> project priorName
+                                        case priorTerm of
+                                          Just exactTerm -> do
+                                            argumentValue <-
+                                              lift (evalIn ctx (caTerm argument))
+                                            exactValue <- lift (evalIn ctx exactTerm)
+                                            lift (unify ctx argumentValue exactValue)
+                                          Nothing -> pure False
+                                  [] -> pure False)
                           if not hydrated
                             then pure Nothing
                             else do
@@ -15209,6 +15459,17 @@ nominalConstructorSourceFieldProjection
                             projection
                         )
             _ -> pure Nothing
+
+    -- Constructor payload placeholders and universe-level identities share
+    -- the MetaId representation but not the semantic namespace. Field-value
+    -- hydration follows only ordinary CMeta occurrences in the field type.
+    termMetaIdentities =
+      Set.fromList
+        . foldTerm
+            (\case
+               CMeta meta -> [meta]
+               _ -> [])
+            (const [])
 
 elabDot :: Ctx -> Expr -> DotMember -> CheckM (Term, Value)
 elabDot ctx e member = do
@@ -17176,7 +17437,7 @@ elabOpenExists ctx e ns pat body sp = do
           pkgAt c = CVar (ctxLen c - 1 - pkgLvl)
       -- bind each opened witness as a rigid quantity-0 local; record its
       -- de Bruijn level so we can later detect escape in the result type
-      (ctxW, witAccRev) <- foldM (bindWit pkgAt) (ctxP, []) (zip names witFs)
+      (ctxW, witAccRev) <- foldM (bindWit pkgAt) (ctxP, []) (zip ns witFs)
       let witAcc = reverse witAccRev -- (level, typeTerm) per witness, oldest-first
           witLvls = map fst witAcc
       -- the payload view (Spec.md 13535)
@@ -17237,11 +17498,16 @@ elabOpenExists ctx e ns pat body sp = do
       pure (whole, resultType)
     -- bind one opened witness as a quantity-0 local; returns the extended
     -- context and the witness's (de Bruijn LEVEL, quoted type term)
-    bindWit pkgAt (c, acc) (nm, field) = do
+    bindWit pkgAt (c, acc) (sourceName, field) = do
       wty' <- substThisInto c (pkgAt c) (rfType field)
       wtyTm <- quoteIn c wty'
-      let lvl = ctxLen c
+      let nm = nameText sourceName
+          lvl = ctxLen c
           c' = bindCtxMQ (rfMode field) (rfQ field) nm False wty' c
+      -- Usage distinguishes an erased runtime witness (for example @Nat@)
+      -- from an intrinsically compile-time classifier such as @Type@ or
+      -- @TypeLevel@ using this checked identity-bearing source fact.
+      recordPatternBinderFacts c (nameSpan sourceName) (rfQ field) wty'
       pure (c', (lvl, wtyTm) : acc)
 
 -- | A record literal against a §13.2.1 dependent record type (or one

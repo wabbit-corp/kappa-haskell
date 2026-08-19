@@ -1,0 +1,10 @@
+-- §12.2: quantity zero is the exact demand interval [0,0]. It annihilates
+-- nested runtime field obligations while retaining the field's static type.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+
+data Token : Type = Token
+
+ok : (0 box : (1 token : Token,)) -> Int
+let ok (0 box : (1 token : Token,)) = 1
